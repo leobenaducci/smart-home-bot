@@ -7548,6 +7548,21 @@ def _ollama_card(cfg: dict) -> dict:
             "cpu_mib": _cpu_spill(inst) if inst else 0})
     card["setup_blank"] = {"id": "", "name": "", "model": "", "context": 8192, "kv_cache": "q4_0",
                            "parallel": 1, "gpu": "auto"}
+    # "Use in a new setup" from the fit panel: the new setup's row arrives
+    # filled in. Every value is checked here; the save checks them again.
+    if has_request_context() and request.args.get("fit_model"):
+        a = request.args
+        model = a.get("fit_model", "")
+        if OI.HF_RE.fullmatch(model) or (OI.MODEL_RE.fullmatch(model) and not model.startswith("/")):
+            card["setup_blank"].update({
+                "model": model,
+                "name": re.sub(r"[^\w .:-]", "", a.get("fit_name", ""))[:40],
+                "context": a.get("fit_ctx", 8192, type=int) or 8192,
+                "kv_cache": a.get("fit_kv") if a.get("fit_kv") in OI.KV_TYPES else "q4_0",
+                "parallel": max(1, min(8, a.get("fit_slots", 1, type=int) or 1)),
+                "gpu": [int(a["fit_gpu"])] if a.get("fit_gpu", "").isdigit() else "auto",
+                "engine": a.get("fit_engine") if a.get("fit_engine") in OI.ENGINES else "ollama"})
+            card["setup_prefilled"] = True
     card["instances"] = [i for i in card["instances"] if not i.get("setup")]
     # Servers the host still runs for this stack and the list no longer has:
     # the next Apply stops them (ollama_host.py plan). From the host's last
@@ -8154,7 +8169,9 @@ def library_queue():
     import model_library as ML
     try:
         job = ML.check_job({"op": request.form.get("op"), "model": request.form.get("model"),
-                            "engines": request.form.getlist("engine")})
+                            "engines": request.form.getlist("engine"),
+                            "name": request.form.get("name"),
+                            "renderer": request.form.get("renderer", "")})
     except ML.LibraryError as exc:
         flash(str(exc), "error")
         return redirect(url_for("models_page") + "#library")
@@ -8181,6 +8198,47 @@ def library_queue():
                     "Sent to the host. Every new model is tested on each engine that could run "
                     "it; the log below follows it."), "ok")
     return redirect(url_for("models_page") + "#library")
+
+
+@app.get("/models/fit")
+def model_fit_view():
+    """Which of a Hugging Face repo's GGUF quants fits one card, at the context,
+    cache type, slots and engine asked for (admin/model_fit.py). Reads the file
+    list and one file's metadata; downloads nothing."""
+    import model_fit as F
+    try:
+        repo = F.parse_repo(request.args.get("repo", ""))
+    except F.FitError as exc:
+        return jsonify(ok=False, error=str(exc))
+    gpus = _gpus_with_tenants(load_config())
+    gpu = next((g for g in gpus if str(g.get("index")) == request.args.get("gpu", "")), None)
+    if gpu is None:
+        return jsonify(ok=False, error=_t_or("admin.models.fit_no_card",
+                                             "The host has not reported its cards yet."))
+    context = request.args.get("context", 131072, type=int)
+    context = context if context in F.CONTEXTS else 131072
+    parallel = max(1, min(8, request.args.get("parallel", 1, type=int) or 1))
+    kv = request.args.get("kv", "q4_0")
+    kv = kv if kv in OI.KV_TYPES else "q4_0"
+    engine = request.args.get("engine", "ollama")
+    engine = engine if engine in OI.ENGINES else "ollama"
+    whole = request.args.get("budget", "card") != "free"
+    try:
+        files = F.repo_files(repo)
+        rows, _split = F.quants(files)
+        if not rows:
+            return jsonify(ok=False, error=_t_or("admin.models.fit_no_gguf",
+                                                 "{repo} has no single-file GGUF quants.", repo=repo))
+        # Every quant of one model shares its metadata: read the smallest.
+        facts = F.inspect(f"https://huggingface.co/{repo}/resolve/main/{rows[-1]['path']}")
+    except (OSError, ValueError) as exc:
+        return jsonify(ok=False, error=str(exc)[:200])
+    out = F.plan(repo, files, facts["info"], F.card_budget(gpu, whole), context, parallel, kv, engine)
+    renderer = "qwen3.5" if facts["arch"] == "qwen35" else ""
+    for row in out["rows"]:
+        row["ollama_name"] = F.ollama_name(repo, row["quant"])
+    return jsonify(ok=True, arch=facts["arch"], template_raises=facts["template_raises"],
+                   renderer=renderer, gpu=gpu.get("index"), whole=whole, **out)
 
 
 @app.get("/models/library/hf-files")
