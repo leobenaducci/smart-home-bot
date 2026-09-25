@@ -162,6 +162,7 @@ config/cameras.json
 config/config_bkp.json
 config/secret_key
 web_server/config/*.json
+!web_server/config/config.example.json
 camera_registry/config/*.json
 
 # Model weights — deleted from the repo (commit cc0ab21); ~330 MB of binaries
