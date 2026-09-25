@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "Live camera configuration. Copy to config.json on the host, at the path",
+    "the deployer bind-mounts (paths.config/home-cameras), never inside the",
+    "deploy directory: a re-deploy replaces that tree and every camera would",
+    "silently vanish.",
+    "",
+    "Keyed by device IP. The username and password are the camera's own RTSP",
+    "credentials and are stored in the clear, because that is what the stream",
+    "URL needs -- keep this file 600 and off the share."
+  ],
+  "192.0.2.10": {
+    "device_ip": "192.0.2.10",
+    "username": "CHANGE_ME",
+    "password": "CHANGE_ME",
+    "port": 554,
+    "stream_type": "rtsp",
+    "stream_path": "/live0",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "rotation": 0,
+    "show_all_objects": true,
+    "motion_zones": [
+      {
+        "name": "Zone 1",
+        "x": 0.01, "y": 0.08,
+        "width": 0.97, "height": 0.89,
+        "sensitivity": 0.5,
+        "min_area": 500
+      }
+    ]
+  }
+}
