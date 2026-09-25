@@ -1,0 +1,53 @@
+# Workflow automation: the things the house does when something happens
+# somewhere else.
+#
+# Upstream's image, one directory. `/home/node/.n8n` holds `database.sqlite`
+# and a file called `config` whose entire content is the encryption key every
+# stored credential is sealed with. Move the database without it and n8n starts
+# cleanly, lists every workflow, and cannot decrypt a single credential --
+# which reads as "all my integrations logged out" rather than as a missing
+# 56-byte file.
+services:
+  n8n:
+    image: ${N8N_IMAGE:-n8nio/n8n:latest}
+    container_name: n8n
+    restart: unless-stopped
+    # The directory arrives owned by whoever copied it; upstream's image runs
+    # as `node` (1000). Same uid the rest of the stack deploys as.
+    user: "${UID:-1000}:${GID:-1000}"
+    # Where the house is, from in here.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${N8N_PORT:-21061}:5678"
+    volumes:
+      - ${N8N_DATA_DIR:-/var/lib/home-stack/state/n8n}:/home/node/.n8n
+    environment:
+      TZ: ${TZ:-UTC}
+      GENERIC_TIMEZONE: ${TZ:-UTC}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      # What n8n stamps into the webhook URLs it *hands out* -- the addresses
+      # you paste into whatever is going to call them. It was a literal, and a
+      # literal for an address the house has not used in some time: every
+      # webhook n8n offered pointed at a machine on a different subnet. The
+      # hub's own address needs no DNS and no editing.
+      N8N_HOST: ${N8N_HOST:-127.0.0.1}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://127.0.0.1:5678}
+      WEBHOOK_URL: ${N8N_EDITOR_BASE_URL:-http://127.0.0.1:5678}
+      # Plain http on the LAN, like everything else behind the house proxy. A
+      # secure cookie over http is a login page that accepts your password and
+      # returns you to the login page.
+      N8N_SECURE_COOKIE: "false"
+      # Upstream warns on every start without it and will refuse in a later
+      # release. Files in this directory are the credential store.
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_RUNNERS_ENABLED: "true"
+    healthcheck:
+      # n8n's own readiness endpoint, which answers only once the database has
+      # migrated and the workflows are registered.
+      test: ["CMD-SHELL",
+             "wget -qO- http://127.0.0.1:5678/healthz | grep -q '\"status\":\"ok\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

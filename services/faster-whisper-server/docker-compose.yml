@@ -1,0 +1,21 @@
+services:
+  whisper:
+    build: ./whisper
+    container_name: faster-whisper
+    restart: unless-stopped
+    environment:
+      # Which card, when WHISPER_DEVICE is cuda: an index, a GPU uuid or `all`.
+      # Chosen on the admin page's Models tab, beside the Ollama servers.
+      - NVIDIA_VISIBLE_DEVICES=${WHISPER_GPU_DEVICE:-all}
+      - HF_HOME=/cache/huggingface
+      # STT model (retune without code edits). large-v3-turbo = near-large
+      # accuracy, ~8x faster, multilingual. Use large-v3 for max accuracy.
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3-turbo}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cuda}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-float16}
+    ports:
+      - "${WHISPER_PORT:-21010}:8000"
+    volumes:
+      # Absolute: this is several gigabytes of downloaded model weights,
+      # and a relative path here meant re-downloading them on every deploy.
+      - ${WHISPER_CACHE_DIR:-/var/lib/home-stack/state/faster-whisper/hf_cache}:/cache/huggingface

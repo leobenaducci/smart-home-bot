@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Home — Shopping</title>
+  <!-- The house faces, served by this app. See
+       HomeCore/tools/fetch-fonts.sh for where they come from and why they
+       are not fetched from the internet. -->
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --paper-2:#fff;
+      --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2;
+      --olive:#57633F; --olive-2:#7E8A61;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh; background: var(--plaster);
+      background-image:
+        radial-gradient(ellipse at 12% -10%, #F6F1E5 0%, transparent 55%),
+        radial-gradient(ellipse at 100% 0%, #E7DFCC 0%, transparent 45%);
+      font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased;
+    }
+    header {
+      background: var(--wall); color: var(--wall-fg);
+      padding: 14px 20px; display: flex; align-items: center; gap: 13px;
+    }
+    header .plate {
+      width: 40px; height: 40px; flex: none; display: grid; place-items: center;
+      /* Light off the top, shadow at the bottom, both translucent: the
+         plate reads as a tile raised off the bar whatever colour the bar
+         is. It used to be literal olive, which on a pink house was a
+         green square sitting in the corner of the header. */
+      background: linear-gradient(160deg, rgba(255,255,255,.15), rgba(0,0,0,.17));
+      border: 1px solid rgba(235,212,155,.25); border-radius: 12px; font-size: 1.3rem;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 800; letter-spacing: -.01em; color: #F3EEDF; }
+    header p { font-size: .6rem; text-transform: uppercase; letter-spacing: .22em; color: var(--wall-dim, #ABB296); margin-top: 2px; }
+    header .hlink {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--wall-fg); text-decoration: none; font-size: .8rem; font-weight: 600;
+      padding: 7px 11px; border-radius: 10px; border: 1px solid rgba(218,212,194,.16);
+    }
+    header .hlink:first-of-type { margin-left: auto; }
+    header .hlink:hover { background: rgba(255,255,255,.06); }
+
+    main { max-width: 720px; margin: 22px auto 80px; padding: 0 16px; }
+
+    .section-title {
+      display: flex; align-items: center; gap: 12px;
+      font-size: .7rem; color: var(--olive); text-transform: uppercase;
+      letter-spacing: .18em; font-weight: 700; margin: 26px 0 12px;
+    }
+    .section-title .rule { flex: 1; height: 1px; background: var(--line); }
+    .section-title button {
+      border: 1px solid var(--line); background: var(--paper-2); color: var(--ink-soft);
+      font-size: .68rem; font-weight: 700; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+    }
+    .section-title button:hover { border-color: var(--clay); color: var(--clay); }
+
+    /* add card */
+    .add-card {
+      background: var(--paper-2); border: 1px solid var(--line); border-radius: 16px;
+      padding: 14px; box-shadow: 0 1px 0 rgba(0,0,0,.02);
+      display: grid; grid-template-columns: 1fr 108px; gap: 8px;
+    }
+    .add-card input, .add-card select {
+      font: inherit; padding: 10px 12px; border: 1px solid var(--line);
+      border-radius: 10px; background: #fff; color: var(--ink); width: 100%;
+    }
+    .add-card input:focus, .add-card select:focus { outline: 2px solid var(--honey-lt); border-color: var(--honey); }
+    .add-card .full { grid-column: 1 / -1; }
+    .add-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+    .add-actions button {
+      flex: 1; font: inherit; font-weight: 700; padding: 10px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--paper); color: var(--olive); cursor: pointer;
+    }
+    .add-actions button.primary { background: var(--olive); border-color: var(--olive); color: #fff; }
+    .add-actions button:hover { filter: brightness(.97); }
+
+    /* suggestions */
+    #suggestions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+      background: var(--paper-2); border: 1px dashed var(--honey-lt); color: var(--ink-soft);
+      font-size: .8rem; font-weight: 600; padding: 5px 11px; border-radius: 999px;
+    }
+    .chip:hover { border-style: solid; border-color: var(--honey); color: var(--honey); }
+    .chip .plus { color: var(--honey); font-weight: 800; }
+
+    /* items */
+    .cat-group { margin-bottom: 4px; }
+    .cat-head { font-size: .74rem; font-weight: 700; color: var(--olive-2); margin: 14px 0 6px; }
+    .item {
+      display: flex; align-items: center; gap: 11px; background: var(--paper-2);
+      border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 7px;
+    }
+    .item .box {
+      width: 22px; height: 22px; flex: none; border-radius: 7px; border: 2px solid var(--olive-2);
+      background: #fff; cursor: pointer; display: grid; place-items: center; color: #fff; font-size: .8rem;
+    }
+    .item.bought .box { background: var(--olive); border-color: var(--olive); }
+    .item .body { flex: 1; min-width: 0; }
+    .item .name { font-weight: 600; font-size: .95rem; }
+    .item.bought .name { text-decoration: line-through; color: var(--ink-soft); }
+    .item .sub { font-size: .74rem; color: var(--ink-soft); margin-top: 1px; }
+    .item .x {
+      border: none; background: none; color: #c3b8a4; font-size: 1.1rem; cursor: pointer; padding: 2px 4px;
+    }
+    .item .x:hover { color: var(--clay); }
+    .item .req-chip {
+      font-size: .64rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--honey); background: rgba(198,137,43,.12); padding: 3px 8px; border-radius: 999px;
+    }
+    .item .act { border: 1px solid var(--line); background: var(--paper); color: var(--olive);
+      font: inherit; font-size: .78rem; font-weight: 700; padding: 6px 11px; border-radius: 8px; cursor: pointer; }
+    .item .act.ok { background: var(--olive); border-color: var(--olive); color: #fff; }
+    .item .act.no:hover { border-color: var(--clay); color: var(--clay); }
+    .empty { text-align: center; color: var(--ink-soft); font-size: .85rem; padding: 22px 0; }
+    .toast {
+      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+      background: var(--wall); color: #fff; padding: 10px 18px; border-radius: 999px;
+      font-size: .85rem; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20;
+    }
+    .toast.show { opacity: 1; }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+  </style>
+  <!-- This member's colours, after the house style so it wins by
+       order. Empty when nobody is logged in or nobody has a theme,
+       which leaves The House exactly as it is. -->
+  <link rel="stylesheet" href="/theme.css">
+  <script>
+    /* Pick up a theme Alfred set while this page was open. See /theme/version. */
+    (function () {
+      var link = document.querySelector('link[href^="/theme.css"]');
+      if (!link) return;
+      var seen = null, timer = null;
+      function apply(v) {
+        // Swapping href re-fetches the sheet; the old one stays until the new
+        // one parses, so the page never flashes unstyled.
+        link.href = '/theme.css?v=' + v;
+        link.addEventListener('load', tellTheApp, { once: true });
+      }
+      /* The Android app owns the status bar and the window behind this
+         WebView, and CSS cannot reach either. Read the two colours back out of
+         the computed style so this can never disagree with the sheet, and hand
+         them over; in a browser the bridge is simply absent. */
+      function tellTheApp() {
+        try {
+          if (!window.AndroidTheme || !window.AndroidTheme.apply) return;
+          var css = getComputedStyle(document.documentElement);
+          var wall = css.getPropertyValue('--wall').trim();
+          var plaster = css.getPropertyValue('--plaster').trim();
+          if (wall && plaster) window.AndroidTheme.apply(wall, plaster);
+        } catch (e) {}
+      }
+      async function check() {
+        if (document.hidden) return;
+        try {
+          var r = await fetch('/theme/version', { cache: 'no-store' });
+          if (!r.ok) return;
+          var v = (await r.json()).v;
+          if (seen === null) { seen = v; return; }   // first look: just remember
+          if (v !== seen) { seen = v; apply(v); }
+        } catch (e) { /* offline, or logged out: try again next tick */ }
+      }
+      function start() { clearInterval(timer); timer = setInterval(check, 20000); check(); }
+      tellTheApp();          // whatever theme this page loaded with
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) clearInterval(timer); else start();
+      });
+      start();
+    })();
+  </script>
+</head>
+<body>
+  {% set app_icon = '🛒' %}
+  {% set app_title = t('common.grocery') %}
+  {% set current = 'grocery' %}
+  {% include '_app_header.html' %}
+
+  <main>
+    <div class="add-card">
+      <input id="add-name" placeholder="Add an item…" autocomplete="off">
+      <input id="add-qty" placeholder="Cant." autocomplete="off">
+      <select id="add-cat" class="full"></select>
+      <div class="add-actions">
+        {% if is_admin %}
+        <button id="btn-add" class="primary">Add to the list</button>
+        <button id="btn-request">Pedir</button>
+        {% else %}
+        <button id="btn-request" class="primary">Pedir producto</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <div id="suggestions"></div>
+
+    <div id="requests-wrap" style="display:none">
+      <div class="section-title"><span>Solicitudes especiales</span><span class="rule"></span></div>
+      <div id="requests-list"></div>
+    </div>
+
+    <div class="section-title"><span>To buy</span><span class="rule"></span></div>
+    <div id="list"><div class="empty">Loading…</div></div>
+
+    <div id="bought-wrap" style="display:none">
+      <div class="section-title"><span>Comprados</span><span class="rule"></span><button id="clear-bought">Vaciar</button></div>
+      <div id="bought-list"></div>
+    </div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+    const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+    const ME = {{ user | tojson }};
+    let CATS = [];
+
+    async function api(path, method = 'GET', body = null) {
+      const opts = { method, headers: {} };
+      if (body !== null) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      if (method !== 'GET') opts.headers['X-CSRF-Token'] = CSRF;
+      const r = await fetch(path, opts);
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok) throw new Error(j.error || 'Something went wrong');
+      return j;
+    }
+    function el(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    }
+    let toastTimer = null;
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg; t.classList.add('show');
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+    }
+
+    const nameInput = document.getElementById('add-name');
+    const qtyInput = document.getElementById('add-qty');
+    const catSelect = document.getElementById('add-cat');
+
+    function fillCategories() {
+      catSelect.innerHTML = '';
+      const auto = el('option', null, '📁 Automatic category'); auto.value = '';
+      catSelect.appendChild(auto);
+      CATS.forEach(c => { const o = el('option', null, c.icon + ' ' + c.label); o.value = c.key; catSelect.appendChild(o); });
+    }
+
+    async function addItem(asRequest, presetName) {
+      const name = (presetName || nameInput.value).trim();
+      if (!name) { nameInput.focus(); return; }
+      const body = { name };
+      if (!presetName && qtyInput.value.trim()) body.qty = qtyInput.value.trim();
+      if (!presetName && catSelect.value) body.category = catSelect.value;
+      if (asRequest) body.request = true;
+      try {
+        const r = await api('/grocery/api/add', 'POST', body);
+        toast(r.requested ? 'Request sent 🙋' : 'Agregado 🛒');
+        if (!presetName) { nameInput.value = ''; qtyInput.value = ''; catSelect.value = ''; nameInput.focus(); }
+        load();
+      } catch (e) { toast(e.message); }
+    }
+
+    document.getElementById('btn-request').addEventListener('click', () => addItem(true));
+    const addBtn = document.getElementById('btn-add');
+    if (addBtn) addBtn.addEventListener('click', () => addItem(false));
+    nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(!IS_ADMIN); });
+
+    function itemRow(it) {
+      const row = el('div', 'item' + (it.status === 'bought' ? ' bought' : ''));
+      const box = el('div', 'box', it.status === 'bought' ? '✓' : '');
+      box.title = it.status === 'bought' ? 'Mark as not bought' : 'Mark as bought';
+      box.addEventListener('click', async () => {
+        try { await api('/grocery/api/toggle', 'POST', { id: it.id }); load(); }
+        catch (e) { toast(e.message); }
+      });
+      row.appendChild(box);
+      const body = el('div', 'body');
+      const nm = el('div', 'name', (it.cat_icon ? it.cat_icon + ' ' : '') + it.name + (it.qty ? '  ·  ' + it.qty : ''));
+      body.appendChild(nm);
+      const subBits = [];
+      if (it.note) subBits.push('“' + it.note + '”');
+      if (it.bought_by) subBits.push('bought by ' + it.bought_by);
+      if (subBits.length) body.appendChild(el('div', 'sub', subBits.join('  ·  ')));
+      row.appendChild(body);
+      if (IS_ADMIN) {   // deleting list items is an admin power; kids only tick off / request
+        const x = el('button', 'x', '✕'); x.title = 'Remove';
+        x.addEventListener('click', async () => {
+          try { await api('/grocery/api/remove', 'POST', { id: it.id }); load(); }
+          catch (e) { toast(e.message); }
+        });
+        row.appendChild(x);
+      }
+      return row;
+    }
+
+    function requestRow(it) {
+      const row = el('div', 'item');
+      const body = el('div', 'body');
+      body.appendChild(el('div', 'name', (it.cat_icon ? it.cat_icon + ' ' : '') + it.name + (it.qty ? '  ·  ' + it.qty : '')));
+      body.appendChild(el('div', 'sub', 'requested by ' + (it.requested_by || '—')));
+      row.appendChild(body);
+      if (IS_ADMIN) {
+        const ok = el('button', 'act ok', 'Approve');
+        ok.addEventListener('click', async () => { try { await api('/grocery/api/approve', 'POST', { id: it.id }); toast('Aprobado ✓'); load(); } catch (e) { toast(e.message); } });
+        const no = el('button', 'act no', 'Reject');
+        no.addEventListener('click', async () => { try { await api('/grocery/api/reject', 'POST', { id: it.id }); load(); } catch (e) { toast(e.message); } });
+        row.appendChild(ok); row.appendChild(no);
+      } else {
+        row.appendChild(el('span', 'req-chip', 'esperando'));
+        if (it.requested_by_id === ME) {
+          const x = el('button', 'x', '✕'); x.title = 'Cancel my request';
+          x.addEventListener('click', async () => { try { await api('/grocery/api/remove', 'POST', { id: it.id }); load(); } catch (e) { toast(e.message); } });
+          row.appendChild(x);
+        }
+      }
+      return row;
+    }
+
+    function renderSuggestions(sug) {
+      const box = document.getElementById('suggestions');
+      box.innerHTML = '';
+      (sug || []).forEach(s => {
+        const chip = el('div', 'chip');
+        chip.appendChild(el('span', 'plus', '+'));
+        chip.appendChild(document.createTextNode((s.cat_icon ? s.cat_icon + ' ' : '') + s.name));
+        chip.title = 'Bought often (' + s.count + '×)';
+        chip.addEventListener('click', () => addItem(!IS_ADMIN, s.name));
+        box.appendChild(chip);
+      });
+    }
+
+    async function load() {
+      let data;
+      try { data = await api('/grocery/api/list'); }
+      catch (e) { document.getElementById('list').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; return; }
+      CATS = data.categories || []; fillCategories();
+      renderSuggestions(data.suggestions);
+
+      const items = data.items || [];
+      const requested = items.filter(i => i.status === 'requested');
+      const pending = items.filter(i => i.status === 'pending');
+      const bought = items.filter(i => i.status === 'bought');
+
+      // requests
+      const rWrap = document.getElementById('requests-wrap');
+      const rList = document.getElementById('requests-list');
+      if (requested.length) {
+        rWrap.style.display = ''; rList.innerHTML = '';
+        requested.forEach(i => rList.appendChild(requestRow(i)));
+      } else { rWrap.style.display = 'none'; }
+
+      // pending, grouped by category in store order
+      const list = document.getElementById('list');
+      list.innerHTML = '';
+      if (!pending.length) { list.appendChild(el('div', 'empty', 'The list is empty 🎉')); }
+      else {
+        CATS.forEach(c => {
+          const group = pending.filter(i => i.category === c.key);
+          if (!group.length) return;
+          const g = el('div', 'cat-group');
+          g.appendChild(el('div', 'cat-head', c.icon + ' ' + c.label));
+          group.forEach(i => g.appendChild(itemRow(i)));
+          list.appendChild(g);
+        });
+      }
+
+      // bought
+      const bWrap = document.getElementById('bought-wrap');
+      const bList = document.getElementById('bought-list');
+      if (bought.length) {
+        bWrap.style.display = ''; bList.innerHTML = '';
+        bought.forEach(i => bList.appendChild(itemRow(i)));
+      } else { bWrap.style.display = 'none'; }
+    }
+
+    document.getElementById('clear-bought').addEventListener('click', async () => {
+      try { await api('/grocery/api/clear-bought', 'POST', {}); toast('Bought items cleared'); load(); }
+      catch (e) { toast(e.message); }
+    });
+
+    load();
+  </script>
+</body>
+</html>

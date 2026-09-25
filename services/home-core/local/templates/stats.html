@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alfred's usage — Home</title>
+  <!-- The house faces, served by this app. See HomeCore/tools/fetch-fonts.sh
+       for where they come from and why they are not fetched from the internet. -->
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2; --olive:#57633F;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --ink-deep:#17140F; --olive-deep:#3E4A2B; --clay-deep:#8B3826; --honey-deep:#8A5E17;
+      --r-lg:16px; --r:10px; --r-sm:8px; --r-pill:999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+    }
+    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:var(--sans); background:var(--plaster); color:var(--ink); }
+    header {
+      display:flex; align-items:center; gap:.75rem; padding:.9rem 1.2rem;
+      background:var(--wall); color:var(--wall-fg);
+    }
+    header h1 { font-family:var(--display); font-size:1.15rem; font-weight:600; flex:1; }
+    header a { color:var(--wall-fg); text-decoration:none; font-size:.85rem; opacity:.85; }
+    main { max-width:1100px; margin:0 auto; padding:1.2rem; }
+    .back-link { display:inline-block; margin-bottom:1rem; color:var(--olive-deep);
+                 text-decoration:none; font-size:.85rem; }
+    .sheet { background:var(--paper); border:1px solid var(--line); border-radius:var(--r-lg);
+             box-shadow:var(--shadow); padding:1.1rem; margin-bottom:1.1rem; }
+    .sheet > h2 { font-family:var(--display); font-size:1rem; font-weight:600;
+                  margin-bottom:.15rem; }
+    .sheet > p.note { font-size:.78rem; color:var(--ink-soft); margin-bottom:.9rem; }
+    .row { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin-bottom:1rem; }
+    button.range {
+      font-family:var(--sans); font-size:.8rem; padding:.35rem .8rem; cursor:pointer;
+      border:1px solid var(--line); background:var(--paper); color:var(--ink-soft);
+      border-radius:var(--r-pill);
+    }
+    button.range[aria-pressed="true"] { background:var(--wall); color:var(--wall-fg);
+                                        border-color:var(--wall); }
+    .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:.7rem; }
+    .tile { background:var(--paper); border:1px solid var(--line); border-radius:var(--r);
+            padding:.75rem .85rem; }
+    .tile .k { font-size:.72rem; color:var(--ink-soft); text-transform:uppercase;
+               letter-spacing:.04em; }
+    .tile .v { font-family:var(--mono); font-size:1.35rem; color:var(--ink-deep); margin-top:.15rem; }
+    .tile .sub { font-size:.72rem; color:var(--ink-soft); margin-top:.1rem; }
+    /* A second figure inside a cell — «412 llamadas / 4,3 por turno» — so a row
+       can say two things without the table growing another column. */
+    td .sub { font-size:.7rem; color:var(--ink-soft); font-weight:400; }
+    table { width:100%; border-collapse:collapse; font-size:.85rem; }
+    th, td { text-align:right; padding:.45rem .5rem; border-bottom:1px solid var(--line); }
+    th:first-child, td:first-child { text-align:left; }
+    th { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+         color:var(--ink-soft); font-weight:600; }
+    td.num { font-family:var(--mono); }
+    tr.total td { font-weight:600; border-bottom:none; border-top:2px solid var(--line); }
+    /* The share bar: one row per category, width proportional to cost. A table
+       of nine numbers hides which two matter; a bar does not. */
+    .bar { height:.5rem; border-radius:var(--r-pill); background:var(--honey);
+           min-width:2px; }
+    .bar.alt { background:var(--olive); }
+    .cap { margin-bottom:.7rem; }
+    .cap .lbl { display:flex; justify-content:space-between; font-size:.8rem;
+                margin-bottom:.25rem; }
+    .cap .track { height:.55rem; background:var(--plaster); border-radius:var(--r-pill);
+                  overflow:hidden; }
+    .cap .fill { height:100%; background:var(--olive); border-radius:var(--r-pill); }
+    .cap .fill.warn { background:var(--honey-deep); }
+    .cap .fill.hot { background:var(--clay-deep); }
+    .spark { display:flex; align-items:flex-end; gap:2px; height:64px; margin-top:.5rem; }
+    .spark div { flex:1; background:var(--honey-lt); border-radius:2px 2px 0 0; min-height:1px; }
+    .spark div:hover { background:var(--honey); }
+    .empty { color:var(--ink-soft); font-size:.85rem; padding:1rem 0; }
+    /* Local work is olive, billed work is honey, everywhere on this page.
+       The house's own models cost no money, and a `$0,00` in the same column
+       as a real charge reads as a model nobody priced -- which is exactly
+       what a missing rate looked like when this page under-reported August.
+       So local rows never get a money column at all: they get the thing that
+       is actually scarce, which on one 12 GB card is the card. */
+    .pill { display:inline-block; font-size:.66rem; text-transform:uppercase;
+            letter-spacing:.05em; padding:.1rem .42rem; border-radius:var(--r-pill);
+            vertical-align:.08em; margin-left:.35rem; font-weight:600; }
+    .pill.local { background:var(--olive); color:var(--wall-fg); }
+    .pill.cloud { background:var(--honey-lt); color:var(--honey-deep); }
+    .sheet.local { border-left:3px solid var(--olive); }
+    .sheet.local > h2::after {
+      content:"free · runs on the house's card"; float:right; font-family:var(--sans);
+      font-size:.68rem; font-weight:500; color:var(--olive-deep);
+      text-transform:uppercase; letter-spacing:.04em; padding-top:.25rem;
+    }
+    td.local-cost { color:var(--olive-deep); font-family:var(--mono); }
+    .bar.local { background:var(--olive); }
+    .bar.local.alt { background:var(--olive-deep); }
+    /* The card. One chart per GPU and never a summed one -- see _gpu_series:
+       two 12 GB cards are not one 24 GB card, and a model that fits neither
+       would look comfortable on a merged graph. */
+    .card-chart { margin-bottom:1.1rem; }
+    .card-chart h3 { font-family:var(--display); font-size:.88rem; font-weight:600;
+                     display:flex; justify-content:space-between; align-items:baseline;
+                     margin-bottom:.3rem; }
+    .card-chart h3 .sub { font-family:var(--mono); font-size:.75rem;
+                          color:var(--ink-soft); font-weight:400; }
+    .card-chart svg { width:100%; height:120px; display:block;
+                      background:var(--plaster); border-radius:var(--r-sm);
+                      border:1px solid var(--line); }
+    .legend { display:flex; flex-wrap:wrap; gap:.6rem; font-size:.72rem;
+              color:var(--ink-soft); margin-top:.35rem; }
+    .legend span { display:flex; align-items:center; gap:.3rem; }
+    .legend i { width:.65rem; height:.65rem; border-radius:2px; display:inline-block; }
+    .swatch { width:.65rem; height:.65rem; border-radius:2px; display:inline-block;
+              margin-right:.4rem; vertical-align:-.02em; }
+    .foot { font-size:.72rem; color:var(--ink-soft); margin-top:.4rem; }
+    @media (max-width:640px) { th.opt, td.opt { display:none; } }
+  </style>
+  <link rel="stylesheet" href="/theme.css">
+</head>
+<body>
+  <header>
+    <span>📈</span>
+    <h1>Alfred's usage</h1>
+    <a href="/">{{ user_name }} &#x2192; Back</a>
+  </header>
+
+  <main>
+    <a href="/" class="back-link">&#8592; Panel principal</a>
+
+    <div class="row">
+      <button class="range" data-days="1">Today</button>
+      <button class="range" data-days="7">7 days</button>
+      <button class="range" data-days="30" aria-pressed="true">30 days</button>
+      <button class="range" data-days="90">90 days</button>
+      <button class="range" data-days="365">A year</button>
+    </div>
+
+    <div class="sheet">
+      <h2>The total</h2>
+      <p class="note" id="range-note"></p>
+      <div class="tiles" id="totals"></div>
+      <p class="foot" id="rates-note"></p>
+    </div>
+
+    <div class="sheet">
+      <h2>Against the budget</h2>
+      <p class="note">What each trailing window has cost. OpenCode Zen and
+        together.ai are both billed per token and neither publishes an
+        allowance, so the bar is the household's own budget — set it in
+        assistant.spend_budget. Without one this is spend and nothing else.
+        Either way it is an estimate from the token counts, not a bill.</p>
+      <div id="caps"></div>
+    </div>
+
+    <div class="sheet">
+      <h2>Where it goes</h2>
+      <p class="note">Uncached input, cached input and output. About three
+        fifths of the input arrives cached, so the cache price carries real
+        weight — though not as much as the uncached one.</p>
+      <div id="split"></div>
+    </div>
+
+    <div class="sheet">
+      <h2>By turn type</h2>
+      <p class="note">Where each turn comes from: a phone notification, a chore
+        reminder, a profession, or an ordinary conversation.</p>
+      <table id="by-scope"></table>
+      <h2>By routing</h2>
+      <p class="note">Which tier each turn started on and who decided — the
+        caller, a sticky session, the classifier, or an escalation after a
+        cheap attempt failed. Escalations from <em>action</em> are the
+        classifier being wrong; a big <em>complex</em> share with none is it
+        being cautious.</p>
+      <table id="by-route"></table>
+    </div>
+
+    <div class="sheet">
+      <h2>By model</h2>
+      <table id="by-model"></table>
+    </div>
+
+    <div class="sheet">
+      <h2>By tool</h2>
+      <p class="note">What Alfred did, not just what it cost. <b>Calls</b> is
+        counted per call — forty commands in one turn is exactly the shape worth
+        seeing, the one that took four and a half minutes to answer how much a
+        bill was. Everything else is counted per turn, because the tokens are
+        spent by the turn and not by the tool: a turn that used two appears in
+        both, which is why the percentages add up to more than 100%. Splitting
+        the cost evenly would look tidier and would be invented.</p>
+      <table id="by-tool"></table>
+    </div>
+
+    <div class="sheet">
+      <h2>By person</h2>
+      <table id="by-user"></table>
+    </div>
+
+    <div class="sheet local">
+      <h2>The house's own models</h2>
+      <p class="note">Vision, speech and listening, on this household's own
+        card. None of it appears in any figure above, because none of it is
+        billed &mdash; which is exactly why it went unmeasured. What it spends
+        is the GPU, and on one card that is the scarcer of the two: a vision
+        model and a voice competing for the same 12&nbsp;GB is a decision, and
+        a dollar column would say nothing about it.</p>
+      <div class="tiles" id="local-totals"></div>
+      <table id="local-models" style="margin-top:1rem"></table>
+      <p class="foot">Latency is the median and the 95th percentile of real
+        calls, never a mean: an engine that is warm for an hour and then
+        reloads has a mean nobody ever waited. Failed calls are counted and
+        excluded from the timings, so a model does not look faster the more
+        often it breaks.</p>
+    </div>
+
+    <div class="sheet local">
+      <h2>Which path used which model</h2>
+      <p class="note">The same model can serve two jobs with different needs.
+        The camera wall reviews every clip unattended and can take its time;
+        a room waiting for an answer cannot. This is the table to read before
+        moving either of them.</p>
+      <table id="local-routes"></table>
+    </div>
+
+    <div class="sheet" id="gpu-sheet" hidden>
+      <h2>The card</h2>
+      <p class="note" id="gpu-note"></p>
+      <div class="row">
+        <button class="range gpu" data-hours="6">6 hours</button>
+        <button class="range gpu" data-hours="24" aria-pressed="true">A day</button>
+        <button class="range gpu" data-hours="72">3 days</button>
+        <button class="range gpu" data-hours="168">A week</button>
+      </div>
+      <div id="gpu-charts"></div>
+      <h3 style="font-family:var(--display);font-size:.9rem;margin:1rem 0 .2rem">
+        What was in it</h3>
+      <p class="note">Peak is what a model needs &mdash; the number that
+        decides whether it fits beside something else. Resident is how much of
+        the window it was on the card at all, which is what separates a model
+        worth keeping warm from one paged in for a clip and gone again.
+        <b>Only Ollama can name what it is holding</b>, and it counts weights
+        rather than the CUDA context, the vision encoder or the KV cache
+        &mdash; so &ldquo;other&rdquo; is that undercount plus audio.cpp and
+        the camera detector, neither of which reports a per-model size. It is
+        shown rather than shared out, because splitting it would put a number
+        on this table that nothing measured.</p>
+      <table id="gpu-breakdown"></table>
+    </div>
+
+    <div class="sheet">
+      <h2>Day by day</h2>
+      <div class="spark" id="by-day"></div>
+      <p class="foot" id="day-note"></p>
+    </div>
+  </main>
+
+<script>
+// es everywhere: this is a page in a Chilean house, so 1.234,5 and $0,42.
+const nf = new Intl.NumberFormat('es');
+const money = n => '$' + n.toLocaleString('es', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+// Tokens are counted in millions often enough that raw digits stop being read.
+const tok = n => n >= 1e6 ? (n / 1e6).toLocaleString('es', {maximumFractionDigits: 1}) + 'M'
+             : n >= 1e3 ? Math.round(n / 1e3) + 'k' : nf.format(n);
+
+let days = 30;
+
+function tile(k, v, sub) {
+  return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div>` +
+         (sub ? `<div class="sub">${sub}</div>` : '') + '</div>';
+}
+
+/* The tool table answers a different question from the ones above it, so it
+   has its own columns: which tools show up in the turns that cost money.
+
+   Calls are per call and everything else is per turn, because a token is spent
+   by a turn and not by a tool — so a turn that used two tools counts in both
+   and the shares add up to more than 100%. The header says so rather than
+   hiding it behind an even split, which would read as precision and be
+   invention: nothing here knows how much of an 86k prompt belonged to the
+   search and how much to the file read. */
+function toolTable(el, rows) {
+  if (!rows.length) {
+    el.outerHTML = `<p class="empty">Nothing yet — recording starts from Alfred's next deploy.</p>`;
+    return;
+  }
+  const max = Math.max(...rows.map(r => r.cost)) || 1;
+  const spend = rows.reduce((a, r) => a + r.cost, 0) || 1;
+  const calls = rows.reduce((a, r) => a + r.calls, 0);
+  el.innerHTML =
+    `<thead><tr><th>Tool</th><th>Calls</th><th>Turns</th>` +
+    `<th class="opt">Mean prompt</th><th class="opt">Cached</th>` +
+    `<th>Cost</th><th>Share</th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr>
+        <td>${r.icon ? r.icon + ' ' : ''}${r.label}${
+          (r.names || []).length ? `<span class="sub"> ${r.names.join(' · ')}</span>` : ''}</td>
+        <td class="num">${nf.format(r.calls)}</td>
+        <td class="num">${nf.format(r.turns)}<span class="sub"> ${(r.calls / r.turns).toFixed(1)}/turno</span></td>
+        <td class="num opt">${tok(r.avg_prompt)}</td>
+        <td class="num opt">${r.prompt ? Math.round(r.cached / r.prompt * 100) : 0}%</td>
+        <td class="num">${money(r.cost)}<span class="sub"> ${Math.round(r.cost / spend * 100)}%</span></td>
+        <td><div class="bar${i % 2 ? ' alt' : ''}" style="width:${Math.max(2, r.cost / max * 100)}%"></div></td>
+      </tr>`).join('') +
+    `<tr class="total"><td>Total</td><td class="num">${nf.format(calls)}</td>
+       <td class="num"></td><td class="num opt"></td><td class="num opt"></td>
+       <td class="num"></td><td></td></tr></tbody>`;
+}
+
+function table(el, rows, keyHead, opts = {}) {
+  if (!rows.length) { el.outerHTML = `<p class="empty">Nothing yet.</p>`; return; }
+  const max = Math.max(...rows.map(r => r.cost)) || 1;
+  const totals = rows.reduce((a, r) => ({
+    turns: a.turns + r.turns, prompt: a.prompt + r.prompt, cached: a.cached + r.cached,
+    completion: a.completion + r.completion, cost: a.cost + r.cost,
+  }), {turns: 0, prompt: 0, cached: 0, completion: 0, cost: 0});
+  el.innerHTML =
+    `<thead><tr><th>${keyHead}</th><th>Turns</th><th class="opt">Input</th>` +
+    `<th class="opt">Cached</th><th class="opt">Output</th><th>Cost</th><th>Share</th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr>
+        <td>${r.icon ? r.icon + ' ' : ''}${r.label || r.key || '—'}${
+          opts.cloud ? '<span class="pill cloud">billed</span>' : ''}</td>
+        <td class="num">${nf.format(r.turns)}</td>
+        <td class="num opt">${tok(r.prompt - r.cached)}</td>
+        <td class="num opt">${tok(r.cached)}</td>
+        <td class="num opt">${tok(r.completion)}</td>
+        <td class="num">${money(r.cost)}</td>
+        <td><div class="bar${i % 2 ? ' alt' : ''}" style="width:${Math.max(2, r.cost / max * 100)}%"></div></td>
+      </tr>`).join('') +
+    `<tr class="total"><td>Total</td><td class="num">${nf.format(totals.turns)}</td>
+       <td class="num opt">${tok(totals.prompt - totals.cached)}</td>
+       <td class="num opt">${tok(totals.cached)}</td>
+       <td class="num opt">${tok(totals.completion)}</td>
+       <td class="num">${money(totals.cost)}</td><td></td></tr></tbody>`;
+}
+
+// Milliseconds as a person reads them. Under a second is where every one of
+// these lives when things are well, and "0,4 s" is harder to scan than "412 ms".
+const ms = n => n >= 10000 ? (n / 1000).toLocaleString('es', {maximumFractionDigits: 1}) + ' s'
+           : n >= 1000 ? (n / 1000).toLocaleString('es', {maximumFractionDigits: 2}) + ' s'
+           : Math.round(n) + ' ms';
+const mib = n => n >= 1024 ? (n / 1024).toLocaleString('es', {maximumFractionDigits: 1}) + ' GB'
+            : Math.round(n) + ' MB';
+// How long the card was actually working, which is the local answer to the
+// question "cost". Not GPU-hours against a rate -- that would be a price
+// invented for hardware the household already owns -- but the measured sum of
+// every call that ran.
+const busy = n => n >= 3600000 ? (n / 3600000).toLocaleString('es', {maximumFractionDigits: 1}) + ' h'
+            : n >= 60000 ? Math.round(n / 60000) + ' min' : ms(n);
+
+/* The house's own models. No money column anywhere in here, deliberately:
+   these cost nothing to run and everything about them that matters is time
+   and VRAM. A `$0,00` beside a real charge is how an unpriced model looked
+   the last time this page was wrong. */
+/* Empty renders *into* the element, never over it. The pre-existing tables
+   here use `el.outerHTML = …`, which deletes the node -- survivable when the
+   only empty case is a brand-new install, and not survivable here: these
+   tables are empty on every existing household until the reporters are
+   deployed, so the first click on a range button would call
+   getElementById() on a node that no longer exists, throw, and abort the
+   rest of load() -- taking the day-by-day sparkline with it. */
+function localTable(el, rows) {
+  if (!rows.length) {
+    el.innerHTML = `<tbody><tr><td class="empty">Nothing yet &mdash; recording starts with the next deploy of the voice gateway and the camera wall.</td></tr></tbody>`;
+    return;
+  }
+  const max = Math.max(...rows.map(r => r.calls)) || 1;
+  el.innerHTML =
+    `<thead><tr><th>Model</th><th>Calls</th><th>Median</th><th class="opt">p95</th>` +
+    `<th class="opt">Throughput</th><th>Card time</th><th>Share</th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr>
+        <td>${r.icon} ${r.model || r.engine}<span class="pill local">local</span>
+          <span class="sub"> ${r.label}${r.engine && r.engine !== r.model ? ' · ' + r.engine : ''}</span></td>
+        <td class="num">${nf.format(r.calls)}${
+          r.failed ? `<span class="sub"> ${nf.format(r.failed)} failed</span>` : ''}</td>
+        <td class="num">${ms(r.median_ms)}</td>
+        <td class="num opt">${ms(r.p95_ms)}</td>
+        <td class="num opt">${r.rate === null ? '—'
+          : r.rate.toLocaleString('es', {maximumFractionDigits: r.rate < 10 ? 2 : 0}) + ' ' + r.rate_unit}</td>
+        <td class="local-cost">${busy(r.busy_ms)}</td>
+        <td><div class="bar local${i % 2 ? ' alt' : ''}" style="width:${Math.max(2, r.calls / max * 100)}%"></div></td>
+      </tr>`).join('') + '</tbody>';
+}
+
+function routeTable(el, rows) {
+  if (!rows.length) {
+    el.innerHTML = `<tbody><tr><td class="empty">Nothing yet.</td></tr></tbody>`;
+    return;
+  }
+  const max = Math.max(...rows.map(r => r.calls)) || 1;
+  el.innerHTML =
+    `<thead><tr><th>Path</th><th>Model</th><th>Calls</th><th>Median</th>` +
+    `<th class="opt">p95</th><th>Card time</th><th>Share</th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr>
+        <td>${r.icon} ${r.label}</td>
+        <td>${r.model}<span class="pill local">local</span></td>
+        <td class="num">${nf.format(r.calls)}</td>
+        <td class="num">${ms(r.median_ms)}</td>
+        <td class="num opt">${ms(r.p95_ms)}</td>
+        <td class="local-cost">${busy(r.busy_ms)}</td>
+        <td><div class="bar local${i % 2 ? ' alt' : ''}" style="width:${Math.max(2, r.calls / max * 100)}%"></div></td>
+      </tr>`).join('') + '</tbody>';
+}
+
+/* One chart per card. Inline SVG rather than a charting library: this portal
+   ships its own assets and fetches nothing from a CDN, and an area plus a
+   line is not worth 90 kB of dependency on every household's build. */
+function gpuChart(card, hours) {
+  const pts = card.points, total = card.total_mib || 1;
+  const W = 600, H = 120, pad = 2;
+  const x = i => pad + i * (W - 2 * pad) / Math.max(1, pts.length - 1);
+  const y = v => H - pad - (v / total) * (H - 2 * pad);
+  const area = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.used).toFixed(1)}`).join('')
+    + `L${x(pts.length - 1).toFixed(1)},${H}L${x(0).toFixed(1)},${H}Z`;
+  const peak = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.peak).toFixed(1)}`).join('');
+  const util = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${(H - pad - p.util / 100 * (H - 2 * pad)).toFixed(1)}`).join('');
+  const last = pts[pts.length - 1] || {used: 0, util: 0};
+  return `<div class="card-chart">
+      <h3>GPU ${card.gpu}${card.name ? ' · ' + card.name : ''}
+        <span class="sub">${mib(last.used)} of ${mib(total)} now · peak ${mib(card.peak_mib)}</span></h3>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
+           aria-label="VRAM used on GPU ${card.gpu} over the last ${hours} hours">
+        <path d="${area}" fill="var(--olive)" opacity=".28"></path>
+        <path d="${peak}" fill="none" stroke="var(--olive-deep)" stroke-width="1.5"></path>
+        <path d="${util}" fill="none" stroke="var(--honey)" stroke-width="1"
+              stroke-dasharray="3 2" opacity=".8"></path>
+      </svg>
+      <div class="legend">
+        <span><i style="background:var(--olive);opacity:.4"></i>VRAM used (mean)</span>
+        <span><i style="background:var(--olive-deep)"></i>peak in the bucket</span>
+        <span><i style="background:var(--honey)"></i>GPU busy %</span>
+      </div>
+    </div>`;
+}
+
+function breakdownTable(el, rows) {
+  if (!rows.length) {
+    el.innerHTML = `<tbody><tr><td class="empty">Nothing named the card's contents yet.</td></tr></tbody>`;
+    return;
+  }
+  const max = Math.max(...rows.map(r => r.peak_mib)) || 1;
+  el.innerHTML =
+    `<thead><tr><th>What</th><th>Peak</th><th class="opt">Mean</th>` +
+    `<th>Resident</th><th>Share of peak</th></tr></thead><tbody>` +
+    rows.map(r => `<tr>
+        <td>${r.other ? '<span class="swatch" style="background:var(--line)"></span>' : ''}${r.model}${
+          r.source ? `<span class="sub"> ${r.source}</span>` : ''}</td>
+        <td class="num">${mib(r.peak_mib)}</td>
+        <td class="num opt">${mib(r.mean_mib)}</td>
+        <td class="num">${r.resident_pct}%</td>
+        <td><div class="bar${r.other ? '' : ' local'}" style="width:${Math.max(2, r.peak_mib / max * 100)}%"></div></td>
+      </tr>`).join('') + '</tbody>';
+}
+
+let gpuHours = 24;
+
+async function loadGpu() {
+  const sheet = document.getElementById('gpu-sheet');
+  const r = await fetch('/stats/api/gpu?hours=' + gpuHours);
+  if (!r.ok) return;
+  const d = await r.json();
+  // No exporter configured is not an error and not an empty graph: the sheet
+  // simply is not there, the same way a `dns:` entry nobody set is empty
+  // rather than invented.
+  if (!d.configured) return;
+  sheet.hidden = false;
+  const cards = d.cards || [];
+  document.getElementById('gpu-charts').innerHTML =
+    cards.length ? cards.map(c => gpuChart(c, d.hours)).join('')
+                 : `<p class="empty">No samples yet &mdash; the first one lands within a minute of the portal starting.</p>`;
+  document.getElementById('gpu-note').textContent = cards.length > 1
+    ? `${cards.length} cards, drawn separately. Two 12 GB cards are not one 24 GB card: a model that fits on neither still does not fit, so these are never added up.`
+    : 'How full the card has been, and how hard it was working.';
+  breakdownTable(document.getElementById('gpu-breakdown'),
+                 (d.breakdown || {}).models || []);
+}
+
+async function load() {
+  const r = await fetch('/stats/api/summary?days=' + days);
+  if (!r.ok) {
+    document.querySelector('main').innerHTML =
+      '<p class="empty">Could not load (permissions?).</p>';
+    return;
+  }
+  const d = await r.json();
+  const t = d.total;
+
+  document.getElementById('range-note').textContent =
+    `Last ${d.days} day${d.days === 1 ? '' : 's'}.`;
+  document.getElementById('rates-note').textContent =
+    `Prices are a snapshot of models.dev from ${d.rates_as_of}; the plan is flat, ` +
+    `so this is a dollar equivalent, not what was charged.` +
+    (t.unpriced ? ` ${nf.format(t.unpriced)} turns with no known price are not counted in the cost.` : '');
+
+  document.getElementById('totals').innerHTML =
+    tile('Turns', nf.format(t.turns)) +
+    tile('Entrada', tok(t.prompt), `${tok(t.cached)} cacheada (${t.prompt ? Math.round(t.cached / t.prompt * 100) : 0}%)`) +
+    tile('Salida', tok(t.completion), `${tok(t.reasoning)} pensando`) +
+    tile('Equivalent cost', money(t.cost),
+         t.turns ? money(t.cost / t.turns * 1000) + ' per 1,000 turns' : '') +
+    tile('Skill calls', nf.format(t.tools),
+         t.turns ? (t.tools / t.turns).toFixed(1) + ' per turn' : '');
+
+  document.getElementById('caps').innerHTML = [
+    ['h5', '5 hours'], ['week', 'Week'], ['month', 'Month'],
+  ].map(([k, name]) => {
+    const c = d.caps[k];
+    // No budget set is the default, and it is not a budget of zero: draw the
+    // spend and no track at all, rather than a full bar against nothing.
+    if (c.cap === null || c.pct === null)
+      return `<div class="cap"><div class="lbl"><span>${name}</span>
+        <span>${money(c.spent)}</span></div></div>`;
+    const cls = c.pct > 85 ? 'hot' : c.pct > 60 ? 'warn' : '';
+    return `<div class="cap"><div class="lbl"><span>${name}</span>
+        <span>${money(c.spent)} de ${money(c.cap)} · ${c.pct}%</span></div>
+      <div class="track"><div class="fill ${cls}" style="width:${Math.min(100, c.pct)}%"></div></div></div>`;
+  }).join('');
+
+  const s = d.split, st = s.uncached_in + s.cached_in + s.out || 1;
+  document.getElementById('split').innerHTML =
+    [['Uncached input', s.uncached_in], ['Cached input', s.cached_in],
+     ['Salida', s.out]].map(([n, v], i) => `
+      <div class="cap"><div class="lbl"><span>${n}</span>
+        <span>${money(v)} · ${Math.round(v / st * 100)}%</span></div>
+      <div class="track"><div class="fill" style="width:${v / st * 100}%;${i === 1 ? 'background:var(--honey-deep)' : ''}"></div></div></div>`).join('');
+
+  table(document.getElementById('by-scope'), d.by_scope, 'Turn type');
+  table(document.getElementById('by-route'), (d.by_route || []).map(r => ({
+    ...r, label: `${r.label}${r.escalations ? ` · ${r.escalations} escalated` : ''}`,
+  })), 'Route');
+  table(document.getElementById('by-model'), d.by_model, 'Modelo', {cloud: true});
+  table(document.getElementById('by-user'), d.by_user, 'Persona');
+  toolTable(document.getElementById('by-tool'), d.by_tool || []);
+
+  const L = d.local || {by_model: [], by_kind: [], by_route: []};
+  document.getElementById('local-totals').innerHTML = L.by_kind.length
+    ? L.by_kind.map(k => tile(
+        `${k.icon} ${k.label}`, nf.format(k.calls),
+        `${ms(k.median_ms)} median · ${busy(k.busy_ms)} on the card`)).join('')
+    : tile('The card', '—', 'nothing recorded yet');
+  localTable(document.getElementById('local-models'), L.by_model);
+  routeTable(document.getElementById('local-routes'), L.by_route);
+
+  const dayMax = Math.max(...d.by_day.map(x => x.cost), 0.0001);
+  document.getElementById('by-day').innerHTML = d.by_day.map(x =>
+    `<div style="height:${Math.max(1, x.cost / dayMax * 100)}%" title="${x.key}: ${money(x.cost)} · ${nf.format(x.turns)} turns"></div>`).join('');
+  document.getElementById('day-note').textContent = d.by_day.length
+    ? `${d.by_day.length} days with activity. Hover a bar to see the day.`
+    : 'No data yet — Alfred starts reporting as soon as it is deployed.';
+}
+
+document.querySelectorAll('button.range:not(.gpu)').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('button.range:not(.gpu)').forEach(o => o.removeAttribute('aria-pressed'));
+  b.setAttribute('aria-pressed', 'true');
+  days = parseInt(b.dataset.days, 10);
+  load();
+}));
+// The card has its own window, in hours. A week of GPU samples is as far back
+// as they are kept, and a day of tokens is not the same question as a day of
+// VRAM -- one is "what did we spend", the other is "was it full last night".
+document.querySelectorAll('button.range.gpu').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('button.range.gpu').forEach(o => o.removeAttribute('aria-pressed'));
+  b.setAttribute('aria-pressed', 'true');
+  gpuHours = parseInt(b.dataset.hours, 10);
+  loadGpu();
+}));
+load();
+loadGpu();
+</script>
+</body>
+</html>

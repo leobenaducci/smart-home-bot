@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HomeCameras</title>
+    <!-- The house faces, served by this app. See
+         HomeCore/tools/fetch-fonts.sh for where they come from and why they
+         are not fetched from the internet. -->
+    <link rel="stylesheet" href="{{ base }}/static/fonts/house.css">
+    <style>
+        /* ---- "The House", after dark ----------------------------------------
+           The same tokens HomeCore, finance_helper, the MQTT dashboard and the
+           SmartButton page use, in the palette's night values. The house has a
+           night mode and this is the room that lives in it: reviewing footage
+           on a lit cream page is worse, not more consistent, so the kinship is
+           carried by the palette, the type and the shapes rather than by making
+           a camera wall bright.
+
+           Names are the ones this app already used, so nothing downstream had
+           to be renamed to adopt them. `--accent` and `--warning` are both
+           honey on purpose: the house has three semantic hues — honey for
+           attention, olive for good, clay for bad — and inventing a fourth to
+           fill a slot would be the opposite of normalising. */
+        :root {
+            --bg: #16180F;
+            --surface: #1E2117;
+            --surface-2: #242819;
+            --border: #333823;
+            --text: #EBE4D2;
+            --text-muted: #9D9781;
+            --accent: #DFAA54;
+            --accent-quiet: #5C4A25;
+            --accent-hot: #EDBE71;
+            --danger: #D2705A;
+            --success: #93A46E;
+            --warning: #DFAA54;
+            --radius: 12px;
+            --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: var(--sans);
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        .nav {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 10px 20px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .nav h1 {
+            margin: 0;
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+        .nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.82rem;
+            padding: 5px 10px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .nav a:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .nav a.active { color: var(--accent); }
+        .nav .spacer { flex: 1; }
+
+        .main {
+            padding: 16px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        /* Tiles are laid out by aspect ratio, the way a photo gallery is:
+           every card in a row ends up about the same height, and the row is
+           filled rather than left ragged.
+
+           Before this, each card got a fixed pixel width from its resolution
+           (width / 2.5, clamped) and the stream box was hardcoded to 16/9 or
+           9/16. Three things went wrong with that. Fixed widths in a wrapping
+           flex row leave whatever does not divide evenly as dead space at the
+           end of every row. A rotated camera became a 432x768 tile standing
+           next to a 768x432 one, and `align-items: flex-start` left the gap
+           beside the short one empty. And a 4:3 camera — cam2 is 640x480 —
+           was pillarboxed inside a 16/9 box by `object-fit: contain`, so the
+           tile reserved space the picture never used.
+
+           --ar is the *effective* ratio, set per card, already swapped for
+           rotation. Growing each card in proportion to it is what keeps a row
+           level: a 16/9 tile needs 3.2x the width of a 9/16 one to stand the
+           same height, which is exactly the ratio of their --ar values. */
+        .cameras-grid {
+            --tile-h: 260px;      /* nominal row height; cards grow past it */
+            /* Only there to stop a single card on the last row growing to the
+               full width of the page. Set too low it defeats the point of the
+               whole layout — at 420px the current three cameras capped out and
+               left 11% of a 1400px row empty, which is the bug being fixed.
+               560 fills the row at three and at four cameras, on a wide screen
+               and a narrow one, and still holds a lone tile to 560px tall. */
+            --tile-max-h: 560px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            align-items: flex-start;
+        }
+
+        .camera-card {
+            --ar: 1.7778;  /* 16/9 until the card says otherwise */
+            /* grow in proportion to the ratio, basis is that ratio at the
+               nominal row height, and never shrink below something readable */
+            flex: var(--ar) 1 calc(var(--ar) * var(--tile-h));
+            min-width: 200px;
+            max-width: min(100%, calc(var(--ar) * var(--tile-max-h)));
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+        .camera-card:hover { border-color: var(--accent); }
+        .camera-card.dragging { opacity: 0.4; }
+        .camera-card.drag-over {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(223,170,84,0.3);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px 6px;
+            gap: 8px;
+        }
+        .card-header .ip {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--accent);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .card-header .drag-handle {
+            cursor: grab;
+            color: var(--text-muted);
+            font-size: 14px;
+            letter-spacing: 3px;
+            user-select: none;
+            flex-shrink: 0;
+        }
+        .card-header .drag-handle:active { cursor: grabbing; }
+
+        .camera-stream {
+            position: relative;
+            background: #000;
+            margin: 4px 0;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+        /* The camera's own ratio, so `contain` has nothing left to letterbox. */
+        .camera-stream { aspect-ratio: var(--ar); }
+        .camera-stream img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+        .camera-stream .loading-text {
+            position: absolute;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+        .timestamp-overlay {
+            position: absolute;
+            bottom: 6px;
+            right: 6px;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            font-size: 10px;
+            font-family: var(--mono);
+            padding: 2px 6px;
+            border-radius: 3px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .status-dot {
+            position: absolute;
+            top: 6px;
+            left: 6px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            z-index: 10;
+            pointer-events: none;
+        }
+        .status-dot.offline { background: var(--danger); }
+        .recording-badge {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--danger);
+            color: var(--bg);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            z-index: 10;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .recording-badge.active { opacity: 1; }
+        .recording-badge .rec-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--bg);
+            animation: blink 1s ease-in-out infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
+        .camera-card.recording { border-color: var(--danger); box-shadow: 0 0 8px rgba(210,112,90, 0.4); }
+
+        .card-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .card-footer .meta {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+        .card-footer .actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn {
+            padding: 5px 10px;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.72rem;
+            font-weight: 500;
+            transition: all 0.15s;
+            background: transparent;
+            color: var(--text-muted);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }
+        .btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .btn-settings { border-color: var(--accent); color: var(--accent); }
+        .btn-settings:hover { background: rgba(223,170,84,0.1); }
+        .btn-remove { border-color: var(--danger); color: var(--danger); }
+        .btn-remove:hover { background: rgba(210,112,90,0.1); }
+
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            width: 100%;
+        }
+        .empty-state h2 { margin: 0 0 8px 0; }
+        .empty-state p { color: var(--text-muted); margin: 0 0 16px 0; }
+        .empty-state .btn-primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--bg);
+            padding: 8px 16px;
+            font-size: 0.82rem;
+            text-decoration: none;
+            border-radius: 6px;
+            display: inline-block;
+        }
+        .empty-state .btn-primary:hover { background: var(--accent-hot); border-color: var(--accent-hot); }
+
+        .events-section {
+            margin-top: 24px;
+            max-width: 600px;
+        }
+        .events-section h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin: 0 0 10px 0;
+            color: var(--text);
+        }
+        .events-list {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .event-item {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.78rem;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .event-item:last-child { border-bottom: none; }
+        .event-item .evt-time { color: var(--text-muted); white-space: nowrap; font-family: var(--mono); }
+        .event-item .evt-ip { color: var(--accent); }
+        .event-item .evt-tags { color: var(--warning); font-size: 0.7rem; }
+
+        @media (max-width: 768px) {
+            /* One per row on a phone. The ratio still comes from --ar, so a
+               rotated camera is tall and a 4:3 one is not stretched — only
+               the packing changes, not the shape. */
+            .camera-card {
+                flex: 1 1 100%;
+                max-width: 100%;
+            }
+            .nav h1 { font-size: 0.95rem; }
+        }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+    </style>
+    <!-- HomeCore's CSRF token on every request of ours that changes something.
+         Empty `base` means the LAN, where there is no HomeCore session to
+         protect and the file does nothing. What it covers and what it cannot
+         (socket.io, which is XHR) is written down in the file itself. -->
+    <script src="{{ base }}/static/js/csrf.js" data-base="{{ base }}"></script>
+    <!-- This member's theme, in the night register this page is written in.
+         Only reachable when the page is served through HomeCore (/camaras/),
+         which is also the only time the app knows who is looking; opened
+         straight off the LAN it 404s and the page keeps its own colours,
+         which is exactly the wanted behaviour and needs no branch. -->
+    <link rel="stylesheet" href="/theme/night.css">
+    <script>
+      /* Repaint when somebody changes their theme while this is open, the
+         same twenty seconds the house pages use. Only swaps the href, so a
+         camera feed is never reloaded by a colour change. */
+      (function () {
+        var link = document.querySelector('link[href$="/theme/night.css"]');
+        if (!link || !"{{ base }}") return;
+        var seen = null;
+        setInterval(async function () {
+          try {
+            var r = await fetch("/theme/version", { cache: 'no-store' });
+            if (!r.ok) return;
+            var v = (await r.json()).v;
+            if (seen === null) { seen = v; return; }
+            if (v !== seen) { seen = v; link.href = "/theme/night.css?v=" + v; }
+          } catch (e) { /* offline or logged out; try again next tick */ }
+        }, 20000);
+      })();
+    </script>
+</head>
+<body>
+    <nav class="nav">
+        <h1>HomeCameras</h1>
+        <a href="{{ base }}/" class="active">Dashboard</a>
+        <a href="{{ base }}/settings">Settings</a>
+        <a href="{{ base }}/recordings">Recordings</a>
+    </nav>
+
+    <div class="main">
+        <div class="cameras-grid" id="cameras-container">
+            {% for mac, config in cameras.items() %}
+            {% set _portrait = config.get('rotation', 0) in (90, 270) %}
+            {# Effective ratio: a camera rotated 90 or 270 is displayed with its
+               width and height swapped. Falls back to 16/9 if either dimension
+               is missing or zero, which is what a camera that has not reported
+               its geometry yet looks like. #}
+            {% set _w = config.get('width', 0) or 0 %}
+            {% set _h = config.get('height', 0) or 0 %}
+            {% set _ar = ((_h / _w) if _portrait else (_w / _h)) if (_w and _h) else 1.7778 %}
+            <div class="camera-card {{ 'portrait-card' if _portrait else '' }}" data-mac="{{ mac }}" data-ip="{{ config.get('device_ip', '') }}" data-rotation="{{ config.get('rotation', 0) }}" style="--ar: {{ '%.4f' | format(_ar) }};">
+                <div class="card-header">
+                    <div class="drag-handle">::</div>
+                    <span class="ip">{{ (config.name + ' (' + config.device_ip + ')') if config.name else config.device_ip }}</span>
+                </div>
+                <div class="camera-stream {{ 'portrait' if config.get('rotation', 0) in (90, 270) else '' }}">
+                    <img alt="Stream">
+                    <span class="status-dot" id="dot-{{ mac }}"></span>
+                    <span class="timestamp-overlay"></span>
+                    <div class="recording-badge" id="rec-{{ mac }}"><span class="rec-dot"></span>REC</div>
+                </div>
+                <div class="card-footer">
+                    <span class="meta">{{ config.width }}x{{ config.height }} @ {{ config.fps }}fps</span>
+                    <div class="actions">
+                        <a class="btn btn-settings" href="{{ base }}/cameras/{{ mac }}/edit_settings">Settings</a>
+                        <button class="btn btn-remove" onclick="removeCamera('{{ mac }}')">Remove</button>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+            {% if not cameras %}
+            <div class="empty-state">
+                <h2>No Cameras</h2>
+                <p>Add or import cameras to get started.</p>
+                <a href="{{ base }}/settings" class="btn-primary">Go to Settings</a>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="events-section" id="events-section" style="display:none;">
+            <h3>Recent Motion Events</h3>
+            <div class="events-list" id="events-list"></div>
+        </div>
+    </div>
+
+    <!-- Served from this app, not a CDN. Same reason the fonts are:
+         a house that cannot reach the internet must still get its
+         pages, and this one is load-bearing - see the guard below. -->
+    <script src="{{ base }}/static/js/socket.io.js"></script>
+    <script>
+        /* Everything below used to hang off this line. `io` undefined - the
+           script blocked, or simply not there - threw before the observers at
+           the bottom ever attached, so no camera polled and the page came up
+           complete and completely still. The live view must not depend on the
+           socket: it is what tells us a camera was *added*, not what fetches
+           frames, and behind HomeCore's proxy at /camaras/ there is no
+           websocket to have (the proxy speaks HTTP; it cannot upgrade). So the
+           dashboard is built to work without it, and to use it when it is
+           there. */
+        const socket = (typeof io === 'function') ? io() : null;
+        function onSocket(event, fn) { if (socket) socket.on(event, fn); }
+        function emitSocket(event, arg) { if (socket) socket.emit(event, arg); }
+
+        const POLL_INTERVAL_MS = 200;
+        const POLL_SLOW_INTERVAL_MS = 5000;
+        const POLL_RETRY_MS = 1000;
+        const isMobile = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+        const activePollers = {};
+        const visibilityRatios = {};
+        let mostVisibleIp = null;
+
+        function startPoller(mac, imgEl, interval) {
+            if (activePollers[mac]) activePollers[mac].stop();
+            let running = true;
+            let timer = null;
+            const streamDiv = imgEl.parentElement;
+            const tsEl = streamDiv && streamDiv.querySelector('.timestamp-overlay');
+            const dotEl = document.getElementById('dot-' + mac);
+            function poll() {
+                if (!running || document.hidden) return;
+                const next = new Image();
+                next.onload = function() {
+                    if (running) {
+                        imgEl.src = this.src;
+                        if (tsEl) tsEl.textContent = new Date().toLocaleTimeString();
+                        if (dotEl) dotEl.classList.remove('offline');
+                        timer = setTimeout(poll, interval);
+                    }
+                };
+                next.onerror = function() {
+                    if (running) {
+                        if (dotEl) dotEl.classList.add('offline');
+                        timer = setTimeout(poll, Math.max(interval, POLL_RETRY_MS));
+                    }
+                };
+                next.src = '{{ base }}/snapshot/' + mac + '?t=' + Date.now();
+            }
+            poll();
+            activePollers[mac] = { interval, stop() { running = false; clearTimeout(timer); delete activePollers[mac]; } };
+        }
+
+        function updateMostVisible() {
+            if (document.hidden) {
+                for (const mac in activePollers) activePollers[mac].stop();
+                mostVisibleIp = null;
+                return;
+            }
+            let bestMac = null, bestRatio = 0;
+            for (const mac in visibilityRatios) {
+                if (visibilityRatios[mac] > bestRatio) { bestMac = mac; bestRatio = visibilityRatios[mac]; }
+            }
+            mostVisibleIp = bestRatio > 0 ? bestMac : null;
+
+            for (const mac in visibilityRatios) {
+                const ratio = visibilityRatios[mac];
+                const desired = (ratio === 0) ? null
+                    : (isMobile && mac !== mostVisibleIp) ? POLL_SLOW_INTERVAL_MS : POLL_INTERVAL_MS;
+
+                if (desired === null) {
+                    if (activePollers[mac]) activePollers[mac].stop();
+                } else if (!activePollers[mac] || activePollers[mac].interval !== desired) {
+                    const card = document.querySelector('[data-mac="' + mac + '"]');
+                    const img = card && card.querySelector('.camera-stream img');
+                    if (img) startPoller(mac, img, desired);
+                }
+            }
+        }
+
+        const visibilityObserver = new IntersectionObserver(function(entries) {
+            entries.forEach(function(e) { visibilityRatios[e.target.dataset.mac] = e.intersectionRatio; });
+            updateMostVisible();
+        }, { threshold: [0, 0.5, 1.0] });
+        document.addEventListener('visibilitychange', updateMostVisible);
+
+        function isPortraitRotation(rotation) { return rotation === 90 || rotation === 270; }
+
+        // Effective display ratio: a camera rotated 90 or 270 is shown with its
+        // width and height swapped. 16/9 when the geometry is missing or zero,
+        // which is what a camera that has not reported itself yet looks like —
+        // and avoids a division by zero setting every tile to NaN.
+        function aspectRatioFor(config, portrait) {
+            const w = Number(config.width) || 0;
+            const h = Number(config.height) || 0;
+            if (!w || !h) return 1.7778;
+            return portrait ? (h / w) : (w / h);
+        }
+
+        onSocket('camera_list', function(cameras) {
+            const container = document.getElementById('cameras-container');
+            for (const ip in activePollers) activePollers[ip].stop();
+            for (const ip in visibilityRatios) delete visibilityRatios[ip];
+            mostVisibleIp = null;
+            visibilityObserver.disconnect();
+            container.innerHTML = '';
+
+            const entries = Object.entries(cameras);
+            if (entries.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h2>No Cameras</h2><p>Add or import cameras to get started.</p><a href="{{ base }}/settings" class="btn-primary">Go to Settings</a></div>';
+                return;
+            }
+
+            for (const [mac, config] of entries) {
+                const rotation = config.rotation || 0;
+                const portrait = isPortraitRotation(rotation);
+                // Same effective ratio the server-rendered cards get, so a
+                // card built by this refresh is laid out identically to one
+                // that arrived with the page.
+                const ar = aspectRatioFor(config, portrait);
+
+                const card = document.createElement('div');
+                card.className = 'camera-card' + (portrait ? ' portrait-card' : '');
+                card.dataset.mac = mac;
+                card.dataset.ip = config.device_ip;
+                card.dataset.rotation = rotation;
+                card.style.setProperty('--ar', ar.toFixed(4));
+
+                const displayName = config.name ? (config.name + ' (' + config.device_ip + ')') : (config.device_ip || mac);
+                card.innerHTML =
+                    '<div class="card-header">' +
+                        '<div class="drag-handle">::</div>' +
+                        '<span class="ip">' + displayName + '</span>' +
+                    '</div>' +
+                    '<div class="camera-stream ' + (portrait ? 'portrait' : '') + '">' +
+                        '<img alt="Stream">' +
+                        '<span class="status-dot" id="dot-' + mac + '"></span>' +
+                        '<span class="timestamp-overlay"></span>' +
+                        '<div class="recording-badge" id="rec-' + mac + '"><span class="rec-dot"></span>REC</div>' +
+                    '</div>' +
+                    '<div class="card-footer">' +
+                        '<span class="meta">' + config.width + 'x' + config.height + ' @ ' + config.fps + 'fps</span>' +
+                        '<div class="actions">' +
+                            '<a class="btn btn-settings" href="{{ base }}/cameras/' + mac + '/edit_settings">Settings</a>' +
+                            '<button class="btn btn-remove" onclick="removeCamera(\'' + mac + '\')">Remove</button>' +
+                        '</div>' +
+                    '</div>';
+
+                container.appendChild(card);
+                makeDraggable(card);
+                visibilityRatios[mac] = 0;
+                visibilityObserver.observe(card);
+            }
+            applyOrder(container);
+        });
+
+        onSocket('camera_added', function(data) {
+            alert(data.status === 'success' ? 'Camera added!' : 'Error: ' + data.message);
+        });
+        onSocket('camera_removed', function(data) {
+            if (data.status === 'success') {
+                location.reload();
+            } else {
+                alert('Error removing camera: ' + (data.message || 'Unknown error'));
+            }
+        });
+        onSocket('error', function(data) { alert('Error: ' + data.message); });
+
+        onSocket('recording_status', function(data) {
+            const key = data.camera_key || data.camera_ip;
+            const card = document.querySelector('[data-mac="' + key + '"]');
+            const badge = document.getElementById('rec-' + key);
+            if (data.recording) {
+                if (card) card.classList.add('recording');
+                if (badge) badge.classList.add('active');
+            } else {
+                if (card) card.classList.remove('recording');
+                if (badge) badge.classList.remove('active');
+            }
+        });
+
+        // Motion events
+        onSocket('motion_event', function(data) {
+            const section = document.getElementById('events-section');
+            const list = document.getElementById('events-list');
+            if (!section || !list) return;
+            section.style.display = 'block';
+            const item = document.createElement('div');
+            item.className = 'event-item';
+            item.innerHTML =
+                '<span class="evt-time">' + new Date().toLocaleTimeString() + '</span>' +
+                '<span class="evt-ip">' + data.camera_ip + '</span>' +
+                (data.tags ? '<span class="evt-tags">' + data.tags.join(', ') + '</span>' : '');
+            list.insertBefore(item, list.firstChild);
+            while (list.children.length > 20) list.lastChild.remove();
+        });
+
+        function removeCamera(cameraMac) {
+            if (confirm('Remove this camera?')) {
+                emitSocket('remove_camera', { camera_key: cameraMac });
+            }
+        }
+
+        let dragSrcMac = null, dragCard = null, dragClone = null;
+        let dragOffsetX = 0, dragOffsetY = 0, dragOverCard = null;
+
+        function createDragClone(card, x, y) {
+            const rect = card.getBoundingClientRect();
+            dragOffsetX = x - rect.left;
+            dragOffsetY = y - rect.top;
+            const clone = card.cloneNode(true);
+            clone.style.position = 'fixed';
+            clone.style.width = rect.width + 'px';
+            clone.style.left = (x - dragOffsetX) + 'px';
+            clone.style.top = (y - dragOffsetY) + 'px';
+            clone.style.zIndex = '10000';
+            clone.style.opacity = '0.85';
+            clone.style.pointerEvents = 'none';
+            clone.style.boxShadow = '0 8px 25px rgba(0,0,0,0.3)';
+            clone.classList.add('dragging');
+            document.body.appendChild(clone);
+            return clone;
+        }
+
+        function moveDragClone(x, y) {
+            if (dragClone) { dragClone.style.left = (x - dragOffsetX) + 'px'; dragClone.style.top = (y - dragOffsetY) + 'px'; }
+        }
+
+        function findDropTarget(x, y) {
+            const cards = document.querySelectorAll('.camera-card:not(.dragging)');
+            for (const card of cards) {
+                const rect = card.getBoundingClientRect();
+                if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return card;
+            }
+            let closest = null, closestDist = Infinity;
+            for (const card of cards) {
+                const dist = Math.abs(y - (card.getBoundingClientRect().top + card.getBoundingClientRect().height / 2));
+                if (dist < closestDist) { closestDist = dist; closest = card; }
+            }
+            return closest;
+        }
+
+        function reorderCards(container, dragEl, targetEl) {
+            const cards = Array.from(container.querySelectorAll('.camera-card'));
+            const dragIdx = cards.indexOf(dragEl);
+            const targetIdx = cards.indexOf(targetEl);
+            if (dragIdx === -1 || targetIdx === -1 || dragIdx === targetIdx) return false;
+            container.insertBefore(dragEl, dragIdx < targetIdx ? targetEl.nextSibling : targetEl);
+            return true;
+        }
+
+        function startDrag(card, clientX, clientY) {
+            dragSrcMac = card.dataset.mac;
+            dragCard = card;
+            card.classList.add('dragging');
+            dragClone = createDragClone(card, clientX, clientY);
+        }
+
+        function moveDrag(clientX, clientY) {
+            moveDragClone(clientX, clientY);
+            const target = findDropTarget(clientX, clientY);
+            if (dragOverCard && dragOverCard !== target) dragOverCard.classList.remove('drag-over');
+            if (target && target !== dragOverCard) {
+                document.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+                target.classList.add('drag-over');
+            }
+            dragOverCard = target;
+        }
+
+        function endDrag() {
+            if (dragOverCard && dragCard) reorderCards(document.getElementById('cameras-container'), dragCard, dragOverCard);
+            if (dragCard) dragCard.classList.remove('dragging');
+            document.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+            if (dragClone) { dragClone.remove(); dragClone = null; }
+            saveOrder();
+            dragSrcMac = null; dragCard = null; dragOverCard = null;
+        }
+
+        function cancelDrag() {
+            if (dragCard) dragCard.classList.remove('dragging');
+            document.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+            if (dragClone) { dragClone.remove(); dragClone = null; }
+            dragSrcMac = null; dragCard = null; dragOverCard = null;
+        }
+
+        function makeDraggable(card) {
+            const handle = card.querySelector('.drag-handle');
+            const target = handle || card;
+            target.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                startDrag(card, e.clientX, e.clientY);
+            });
+            target.addEventListener('touchstart', function(e) {
+                startDrag(card, e.touches[0].clientX, e.touches[0].clientY);
+            }, { passive: true });
+        }
+
+        document.addEventListener('mousemove', function(e) {
+            if (dragCard) { e.preventDefault(); moveDrag(e.clientX, e.clientY); }
+        });
+        document.addEventListener('mouseup', function() { if (dragCard) endDrag(); });
+        document.addEventListener('touchmove', function(e) {
+            if (dragCard) { e.preventDefault(); moveDrag(e.touches[0].clientX, e.touches[0].clientY); }
+        }, { passive: false });
+        document.addEventListener('touchend', function() { if (dragCard) endDrag(); });
+        document.addEventListener('touchcancel', function() { if (dragCard) cancelDrag(); });
+
+        function saveOrder() {
+            const macs = Array.from(document.querySelectorAll('.camera-card')).map(c => c.dataset.mac);
+            localStorage.setItem('camera_order', JSON.stringify(macs));
+        }
+
+        function applyOrder(container) {
+            try {
+                const saved = localStorage.getItem('camera_order');
+                if (!saved) return;
+                JSON.parse(saved).forEach(function(mac) {
+                    const card = container.querySelector('[data-mac="' + mac + '"]');
+                    if (card) container.appendChild(card);
+                });
+            } catch (e) {}
+        }
+
+        emitSocket('request_camera_list');
+
+        document.querySelectorAll('[data-mac]').forEach(function(card) {
+            makeDraggable(card);
+            visibilityRatios[card.dataset.mac] = 0;
+            visibilityObserver.observe(card);
+        });
+        applyOrder(document.getElementById('cameras-container'));
+    </script>
+  <script src="{{ url_for('static', filename='i18n/i18n.js') }}"></script>
+  <script>
+    (async function () {
+      const lang = new URLSearchParams(location.search).get('lang')
+        || document.documentElement.lang || 'es';
+      await window.i18n.load("{{ url_for('static', filename='i18n') }}", lang);
+      window.i18n.apply();
+    })();
+  </script>
+</body>
+</html>

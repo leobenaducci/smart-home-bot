@@ -1,0 +1,171 @@
+# The one service the wall panels talk to.
+#
+# Runs on compute: beside the whisper it calls (the audio upload never crosses
+# the LAN twice) and on the 56 cores piper synthesizes with. hub has ~200 MB
+# free and is in swap; only the text hop goes there, to nanobot-house.
+#
+# The gateway itself never touches the GPU — piper is CPU-only, and whisper is a
+# separate compose project that owns the card and has its own deploy job.
+#
+# The `bench` profile below is the exception, and it is why this paragraph is
+# worth reading before blaming something else: `qwen-tts` reserves the card, and
+# on this box that card is also Ollama's (`qwen3-vl:4b`, 3.3 GB, loaded on demand
+# for Alfred's vision turns) and the camera detectors'. It is started by hand and
+# never by the deploy — but if a vision turn or a detector is suddenly slow,
+# `docker ps` for qwen-tts before looking anywhere else.
+
+services:
+  voice-gateway:
+    build:
+      context: ./voice-gateway
+    # Tagged rather than left to compose, which would name it after the project
+    # directory. Several things run the image directly by name — the smoke
+    # tests in README.md and the Jenkinsfile's own — and `home-voice-voice-gateway`
+    # is both ugly and dependent on what the checkout directory is called.
+    image: voice-gateway:latest
+    container_name: voice-gateway
+    restart: unless-stopped
+    # No `ports:` — `network_mode: host` below makes it a no-op, and compose
+    # accepts both silently. The gateway binds the host's port directly, so the
+    # number has to come in as an environment variable rather than a mapping.
+    environment:
+      # From `services.home-voice.port`. Without this the Dockerfile's own
+      # default decided it, and moving the config key changed only what the
+      # health check polled.
+      - PORT=${VOICE_PORT:-21011}
+      # Same host, so localhost rather than whisper.home: one less thing that
+      # breaks when pi-hole has a bad day, which has happened here.
+      - WHISPER_URL=${WHISPER_URL:-http://127.0.0.1:21010/transcribe}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-en}
+      # How long a room waits for the assistant before the panel is told
+      # nobody answered. The built-in was 90s and not settable, which is too
+      # short for a loaded room session on a fallback model: the gateway gave
+      # up, said "I could not reach Alfred", and the assistant finished
+      # answering seconds later into a caller that had gone.
+      - TURN_TIMEOUT=${TURN_TIMEOUT:-90}
+      - NANOBOT_URL=${NANOBOT_URL:-http://assistant.home:21399/v1/chat/completions}
+      - NANOBOT_API_SECRET_HOUSE=${NANOBOT_API_SECRET_HOUSE}
+      - VOICE_GATEWAY_TOKEN=${VOICE_GATEWAY_TOKEN}
+      # MQTT_BROKER/MQTT_PORT, in the ${VAR:-default} form the stack-wide
+      # conventions require so the documented knob actually works — see
+      # docs/mqtt-conventions.md. MQTT_PORT had no entry at
+      # all, so a broker moved off 1883 changed every other service and not this
+      # one. The gateway still reads MQTT_HOST if that is what is set.
+      - MQTT_BROKER=${MQTT_BROKER:-mqtt.home}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - DEVICES_FILE=/config/devices.json
+      # The trained wake word, in /config so it can be swapped and the container
+      # restarted rather than rebuilt. Raise WAKE_THRESHOLD if the house trips it
+      # by accident, lower it if quiet voices are missed.
+      - WAKE_MODEL=/config/wake.onnx
+      - WAKE_THRESHOLD=${WAKE_THRESHOLD:-0.5}
+      # How Alfred speaks — see gateway.py. The voice itself is baked into the
+      # image (a rebuild), but the delivery is a restart, because getting a
+      # butler's pace right takes more than one try. Piper's own defaults are
+      # 1.0 / 0.667 / 0.8 / 0.2, which is a neutral reading voice.
+      - PIPER_LENGTH_SCALE=${PIPER_LENGTH_SCALE:-1.18}
+      - PIPER_NOISE_SCALE=${PIPER_NOISE_SCALE:-0.55}
+      - PIPER_NOISE_W=${PIPER_NOISE_W:-0.65}
+      - PIPER_SENTENCE_SILENCE=${PIPER_SENTENCE_SILENCE:-0.45}
+      # Extra piper voices to compare against, dropped into the config dir by
+      # hand. Empty or absent is fine — the baked voice is still the default.
+      - PIPER_VOICES_DIR=/config/voices
+      # The Qwen3-TTS sidecar. Unset means the engine simply is not offered;
+      # it is a listening bench, not something the house depends on.
+      - QWEN_TTS_URL=${QWEN_TTS_URL:-}
+      # services/audio-cpp, empty unless that service is on. See derive().
+      - AUDIOCPP_TTS_URL=${AUDIOCPP_TTS_URL:-}
+      # Where to report what the card did, and which container is reporting.
+      # Both empty is "do not report" -- a working gateway with a quieter
+      # usage page, not a failure. Empty defaults on purpose: an address
+      # invented here is a name that resolves on some other household.
+      - HOMECORE_URL=${HOMECORE_URL:-}
+      - USAGE_SERVICE_TOKEN=${USAGE_SERVICE_TOKEN:-}
+      # Which package it asks for. **Not an admin-page setting**: the server
+      # serves a menu and every request names one, so this is the gateway's
+      # own default for the house voice and a caller can override it per call
+      # with `voice`. supertonic_3_q8_0 is what the profiles picked -- 0.037
+      # WER against piper's 0.098, 637 MiB, 0.07 s a line on the card.
+      - AUDIOCPP_TTS_MODEL=${AUDIOCPP_TTS_MODEL:-supertonic_3_q8_0}
+      # What speaks when the chosen engine is *down*. A name nobody offers is
+      # still a 400 and an engine never configured is still a 503 -- this only
+      # catches a real engine failing, so a restarting container is not
+      # silence in the kitchen. Empty turns it off.
+      - TTS_FALLBACK_ENGINE=${TTS_FALLBACK_ENGINE:-piper}
+      # What answers when nobody names an engine — every room, every
+      # announcement, every reply. Stays piper until something wins by ear.
+      - DEFAULT_TTS_ENGINE=${DEFAULT_TTS_ENGINE:-piper}
+      # Which voice of that engine, when nobody names one. Empty is the
+      # engine's own default -- piper's baked house voice. Both are set on the
+      # admin page, and they are one choice: a piper voice handed to audio.cpp
+      # is a 404, so the gateway only applies this to the engine it belongs to.
+      - DEFAULT_TTS_VOICE=${DEFAULT_TTS_VOICE:-}
+      # Learned IR codes. In /state and not /config because this one is written
+      # while running — a code is captured off a remote or confirmed by Alfred
+      # long after any deploy — and /config is mounted read-only on purpose.
+      - IR_CODES_FILE=/state/ir-codes.json
+    volumes:
+      # Live config, mounted from outside any Jenkins workspace. This house has
+      # wiped live state on deploy four separate times (HomeCameras' cameras.json,
+      # SmartButton storage, the mqtt-dashboard bridges, HomeCore's SQLite) by
+      # keeping it next to the code — see AGENTS.md. Adding a panel is editing
+      # this file; the gateway re-reads it per request, so there is no restart.
+      - ${VOICE_CONFIG_DIR:-/home/homestack/home-lab/configs/home-voice}:/config:ro
+      # Writable, and beside the read-only config rather than inside it: the IR
+      # codes are live state the gateway owns. Everything above about Jenkins
+      # workspaces applies here twice over — a learned code cost somebody a
+      # walk to a drawer and a button press, and there is no re-deriving it.
+      - ${VOICE_STATE_DIR:-/home/homestack/home-lab/state/home-voice}:/state
+    # host networking so 127.0.0.1:8000 reaches the whisper container's published
+    # port, and so the MQTT broker on hub is reachable by name.
+    network_mode: host
+
+  # The Qwen3-TTS listening bench. Started by hand, not by the deploy:
+  #
+  #     docker compose --profile bench up -d qwen-tts
+  #
+  # A profile rather than a service, because it holds VRAM on a card that
+  # Ollama needs for Alfred's vision turns, and because `deploy-home-voice`
+  # should not start pulling gigabytes of torch to change a wake threshold. The
+  # gateway offers the engine only when QWEN_TTS_URL is set, so with this down
+  # the dropdown greys it out and says why.
+  qwen-tts:
+    profiles: ["bench"]
+    build:
+      context: ./qwen-tts
+    image: qwen-tts:latest
+    container_name: qwen-tts
+    # NOT `unless-stopped`, unlike the gateway. This is started by hand for a
+    # listening session; `unless-stopped` would bring it back on every reboot
+    # and every `docker` restart from then on, quietly reserving the card
+    # forever for a bench nobody is using — which is the opposite of the whole
+    # arrangement above it. Stop it when you are done, or reboot.
+    restart: "no"
+    environment:
+      # 0.6B by default. 1.7B is better and does not leave room for Ollama's
+      # 6.1 GB vision model on a 12 GB card — watch nvidia-smi before changing.
+      - QWEN_TTS_MODEL=${QWEN_TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-Base}
+      # Hand the card back after five quiet minutes. Somebody comparing voices
+      # does it in bursts; holding VRAM for the rest of the day so the cameras
+      # cannot see is the wrong trade for a bench. 0 keeps it resident.
+      - QWEN_TTS_IDLE_UNLOAD_S=${QWEN_TTS_IDLE_UNLOAD_S:-300}
+      - QWEN_TTS_VOICES_DIR=/voices
+    volumes:
+      # Weights, downloaded once and kept across rebuilds. Not baked into the
+      # image: it is gigabytes, and unlike the piper voice the house does not
+      # depend on this being present.
+      - ${VOICE_STATE_DIR:-/home/homestack/home-lab/state/home-voice}/qwen-models:/models
+      # Reference clips for cloned voices — mayordomo.wav becomes the voice
+      # `mayordomo`. Record these in Spanish: cross-lingual cloning carries the
+      # accent of the reference, so an English clip speaking Spanish sounds it.
+      - ${VOICE_CONFIG_DIR:-/home/homestack/home-lab/configs/home-voice}/qwen-voices:/voices:ro
+    ports:
+      # Driven from `services.home-voice.tts_port`.
+      - "${VOICE_TTS_PORT:-21012}:8082"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

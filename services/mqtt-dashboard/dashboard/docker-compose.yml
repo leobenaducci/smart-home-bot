@@ -1,0 +1,20 @@
+services:
+  dashboard:
+    container_name: mqtt-dashboard
+    build: .
+    network_mode: host
+    environment:
+      # Same MQTT_BROKER / MQTT_PORT pair the rest of the stack uses.
+      - MQTT_BROKER=${MQTT_BROKER:-mqtt.home}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - PORT=${PORT:-21050}
+      # Must match the container side of the volume below. Without it, server.js
+      # falls back to __dirname (/app) and every bridge is destroyed by
+      # --force-recreate, the same way the smart-lights config used to be.
+      - DATA_DIR=/app/data
+    restart: unless-stopped
+    volumes:
+      # Host side defaults to ./data for a local run. Point
+      # MQTT_DASHBOARD_DATA_DIR at a stable path outside any CI workspace when
+      # deploying, so a re-checkout cannot take the bridges with it.
+      - ${MQTT_DASHBOARD_DATA_DIR:-./data}:/app/data

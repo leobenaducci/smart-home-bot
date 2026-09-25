@@ -1,0 +1,20 @@
+# The camera wall's GPU reservation, applied only when
+# `services.home-cameras.gpu` is on.
+#
+# It cannot live in the base file. `driver: nvidia` is a hard requirement, not
+# a preference: on a machine with no NVIDIA runtime `docker compose up` fails
+# with "could not select device driver" and the wall never starts. Whether
+# there is a GPU is a fact about the box, so it belongs in the site config
+# rather than in a file that ships with the service.
+#
+# Without it the detector runs on CPU -- slower per frame, which for a wall
+# watching several cameras means a longer gap between looks at each one.
+services:
+  homecameras:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

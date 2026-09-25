@@ -1,0 +1,2313 @@
+# ---------------------------------------------------------------------------
+# What it takes to deploy each service
+# ---------------------------------------------------------------------------
+# This file replaces the nineteen Jenkinsfiles the stack used to carry. It is
+# static: it describes how a service is built and how you know it worked. Where
+# it runs, whether it runs at all, and on which ports comes from
+# config/home-stack.yml.
+#
+# Two rules are load-bearing, both learned by outage:
+#
+#   1. `verify` is not optional and may not be written so it cannot fail. A
+#      deploy that greps for a string only the new code emits is the only way
+#      to tell a rebuild from a workspace that never advanced — they look
+#      identical from outside, about ten seconds either way.
+#
+#   2. Anything under `state` is bind-mounted from an absolute path outside the
+#      deploy directory. Live config inside a checkout has been destroyed by a
+#      re-deploy four times in this stack's history: the camera registry, the
+#      button/light storage, the dashboard's notification bridges and the
+#      portal's databases. The deployer hard-fails a state path that resolves
+#      inside the service directory.
+# ---------------------------------------------------------------------------
+
+version: 1
+
+services:
+
+  home-core:
+    description: The household portal, the PHP entry page, and the house-facing proxy.
+    role: hub
+    # The portal itself: chat, tasks, the shopping list, files.
+    tier: basic
+    # The tile's icon. Here rather than in the portal because the portal draws
+    # tiles for services it does not know exist -- a plugin's, a household's
+    # own -- and a lookup table it has to be taught about is the thing `tier:`
+    # was introduced to stop needing.
+    icon: "🏠"
+    # It serves the dashboard, so its own tile is the page you are already on.
+    # Declared anyway rather than special-cased in deploy.py: `portal_path:`
+    # means "the portal serves this", and the portal drops `/` because that is
+    # itself. One rule, no name in the deployer's code.
+    portal_path: "/"
+    # Ordered. The proxy is restarted last because there is no reason to point
+    # it at an upstream this same run is about to replace.
+    units:
+      - name: local
+        # The shared translation catalogues, staged into the build context.
+        # Each app serves its own copy -- see i18n/README.md.
+        assets:
+          - { from: i18n, to: i18n }
+        dir: services/home-core/local
+        compose:
+          - docker-compose.yml
+          # Pin one resolver, when the household has the rate-limit problem the
+          # overlay describes. Off by default: an address that is wrong here is
+          # not a slow lookup, it is no lookups at all -- which is how a
+          # redacted placeholder shipped as an operational value and killed
+          # every notification this portal sent.
+          - { file: docker-compose.resolver.yml, when: site.resolver }
+        build: true
+        # The dashboard's tiles: the enabled services whose `tier:` is basic or
+        # advanced, plus the household's own `custom_services`. Regenerated on
+        # every deploy, and read at request time rather than at import -- so a
+        # service switched off in the admin page leaves the wall on the next
+        # deploy of *that* service, without restarting the portal. A tile for a
+        # service nobody runs is a dead square.
+        portal_dashboard: "{paths.config}/home-core/services.json"
+        # Who lives here, for the assistant's family directory. The admin page
+        # already holds names, birthdays, languages and who is whose parent;
+        # the directory was a second record of the same household, filled in by
+        # hand, and the one that drifted was the one nobody was looking at -- a
+        # member renamed on the admin page kept the old name in every answer the
+        # assistant gave.
+        family_directory: "{paths.config}/home-core/family.json"
+        # Each member's ntfy topic, written into an env_file because the set is
+        # dynamic and a compose file's `environment:` is not. app.py has always
+        # read NTFY_TOPIC_<FOLDER>; nothing ever supplied it, so a household
+        # with an existing ntfy had notifications published to `User1` while
+        # every phone was subscribed to a person's name.
+        member_ntfy_topics: true
+        contributions_env_file: member-topics.env
+        # The portal serves HTTPS and nothing else, so it cannot start without
+        # these two files -- and /certs is a bind mount from the state
+        # directory, which shadows anything baked into the image. Generated on
+        # the machine, kept out of git, and left alone once it exists.
+        pre: ./ensure-cert.sh
+        # The portal says the assistant's name on nearly every page, and puts
+        # it in the prompts it sends. Same word-bounded rule.
+        assistant_name_in:
+          - "templates/*.html"
+          - "personas/*.md"
+          - "app.py"
+        # The names on the left are what this compose file interpolates. Two of
+        # them are aliases: the app reads SECRET_KEY and DEBUG_API_KEY, while
+        # the env file calls them HOMECORE_*. Declaring the secret without the
+        # alias fed the container an empty string, and app.py refuses to start
+        # on an empty SECRET_KEY -- a crash loop that read as a build fault.
+        env:
+          PORT: "{services.home-core.port}"
+          # The Programmer profession, when the household runs it on opencode
+          # rather than on the assistant. Empty when `cloud.opencode` is off,
+          # and empty is the whole switch: the space falls back to nanobot.
+          #
+          # Where the code broker checks projects out, as the *host* sees it.
+          # Never opened by this container: it is handed to opencode as a
+          # session's working directory, and opencode runs on the host.
+          OPENCODE_WORKSPACE_ROOT: "{paths.state}/nanobot-code-workspace"
+          # The member the opencode server is configured for -- the same one
+          # `services.alfred-mcp.member` names, because the bridge it talks to
+          # holds that person's credentials and no others. Anybody else keeps
+          # the assistant's Programmer.
+          # Which members have an opencode of their own, as
+          # `<member>=<url>` pairs. The Programmer routes there for those
+          # people and stays on the assistant for everybody else -- each
+          # opencode holds one member's MCP token, and the profession spaces
+          # are open to the whole household.
+          OPENCODE_SERVERS: "{derived.opencode_servers}"
+          # The hostname opencode is served on. Empty when `dns.code` is
+          # unset, and empty is the switch: the Programmer says it is not
+          # configured rather than linking to a name nothing resolves.
+          CODE_NAME: "{dns.code}"
+          # Which of opencode's two HTTP surfaces to drive.
+          OPENCODE_API: "{derived.opencode_api}"
+          # The host side of the dashboard mount, and the same path
+          # `portal_dashboard:` above writes. The compose file carried a
+          # default for it and nothing exported it, so the two agreed only on
+          # a machine whose `paths.config` happened to be the default one.
+          HOMECORE_SERVICES_FILE_HOST: "{paths.config}/home-core/services.json"
+          HOMECORE_FAMILY_FILE_HOST: "{paths.config}/home-core/family.json"
+          # The name on the portal's own certificate (ensure-cert.sh reads it).
+          SITE_HOST: "{dns.portal}"
+          # The household's zone, for everything a person reads or a schedule
+          # fires on. `site.timezone` was configured and exported to **nothing**,
+          # so `TASKS_TZ` fell back to its `Etc/UTC` default -- and the comment
+          # above that default in app.py says exactly what then goes wrong:
+          # "all 'what day is it' math must use local time or daily tasks would
+          # roll over at 8-9pm Chile time". They did, and reminders for a chore
+          # at 18:00 fired at 14:00.
+          #
+          # Both names, because the two halves of this app read different ones:
+          # TASKS_TZ is what the chore worker takes, TZ is what anything using
+          # the process's own local time gets. Setting one and not the other is
+          # how half a service ends up in a different hour from the other half.
+          TASKS_TZ: "{site.timezone}"
+          TZ: "{site.timezone}"
+          SECRET_KEY: $HOMECORE_SECRET_KEY
+          DEBUG_API_KEY: $HOMECORE_DEBUG_API_KEY
+          SMB_PASSWORD: $SHARE_SMB_PASSWORD
+          SMB_HOST: "{derived.share_host}"
+          NTFY_BASE_URL: "{derived.ntfy_url}"
+          VOICE_GATEWAY_URL: "http://{dns.voice}:{services.home-voice.port}"
+          # The vision model, resolved from cloud.ollama — local or ollama.com,
+          # the same pair either way. See ollama_endpoint() in deploy.py.
+          # Host networking here, so the host-facing address rather than
+          # the container gateway, which would not resolve.
+          OLLAMA_URL: "{derived.ollama_url_host}"
+          # The chat titler's model, from `assistant.models.titles` on the
+          # Models page. All three empty when the household names none, and
+          # app.py then keeps its own default on OLLAMA_URL above -- so the
+          # export must never beat that default with an empty string. The
+          # URL is host-facing (home-core is on the host's network).
+          CHAT_TITLE_MODEL: "{derived.title_model}"
+          CHAT_TITLE_URL: "{derived.title_url}"
+          CHAT_TITLE_KEY: "{derived.title_key}"
+          HOMECORE_PUBLIC_URL: "https://{dns.portal}:{services.home-core.port}"
+          # What the household budgets per trailing window, in dollars, for the
+          # /stats page to draw spend against. Empty means no ceiling, which is
+          # the default: Zen is pay-as-you-go and publishes no allowance, so an
+          # invented one would be somebody else's budget. See derive().
+          # A Prometheus-format GPU exporter for the card graph on /stats, or
+          # empty. Empty means the page has no card section at all -- an
+          # invented default here would be an address on somebody else's
+          # machine, and a graph drawn from a service that answers something
+          # else is worse than no graph. See `site.gpu_exporter`.
+          GPU_EXPORTER_URL: "{derived.gpu_exporter_url}"
+          USAGE_BUDGET_5H: "{derived.usage_budget_5h}"
+          USAGE_BUDGET_WEEK: "{derived.usage_budget_week}"
+          USAGE_BUDGET_MONTH: "{derived.usage_budget_month}"
+          # Which language each person reads the portal in, and which languages
+          # this house ships at all. `_pick_locale` promised "then the member's
+          # saved preference" and had nothing to consult: the container received
+          # no locale settings of any kind, so every member got the house
+          # default however their profile was set.
+          MEMBER_LOCALES: "{derived.member_locales}"
+          HOME_STACK_DEFAULT_LOCALE: "{locale.default}"
+          HOME_STACK_LOCALES: "{derived.locales_available}"
+          HOUSE_ONLY_APPS: "{derived.house_only_apps}"
+          # Who lives here. The portal keys the share folders, chore editing
+          # and the adult-only pages on the *login* id; users.json says which
+          # login is which member, and these say what a member is. All three
+          # were written into app.py as five login ids from one household, so
+          # any other install had /files answering 403 to everybody.
+          # Only read by the resolver overlay, which is only applied when this
+          # is set. Empty otherwise, and nothing interpolates it.
+          HOMECORE_RESOLVER: "{site.resolver}"
+          HOMECORE_MEMBERS: "{derived.members}"
+          HOMECORE_ADMIN_MEMBERS: "{derived.admin_members}"
+          HOMECORE_MEMBER_FOLDERS: "{derived.member_folders}"
+          WHISPER_URL: "http://{dns.whisper}:{services.faster-whisper.port}/transcribe"
+          # Where the per-member assistants answer. The portal derives each
+          # instance's port by adding the member's index to a base, and both
+          # bases were literals in app.py -- so the renumbering moved the
+          # published ports and left the portal dialling the old ones, on every
+          # path it uses to reach an assistant, with the deploy green because
+          # its checks poll these same config values.
+          # The house-only apps the portal proxies for a phone that is off the
+          # LAN. Nothing exported these, so app.py's own defaults ran -- and
+          # they named a host and a port that had moved.
+          CAMERAS_APP_URL: "http://{dns.cameras}:{services.home-cameras.web_port}"
+          NANOBOT_HOST: "{dns.assistant}"
+          NANOBOT_API_PORT_BASE: "{services.nanobot.api_port_base}"
+          NANOBOT_WEBSOCKET_PORT_BASE: "{services.nanobot.websocket_port_base}"
+        state:
+          - { path: "{paths.state}/home-core/data", mount: /app/backup_data,
+              env: HOMECORE_DATA_DIR, renamed_from: "{paths.state}/home-web/data" }
+          # opencode_sessions.db lives in the directory above rather than in a
+          # `state:` entry of its own. It is already outside the pushed tree,
+          # already in the backup inventory and already covered by
+          # guard_state_paths(); a second declaration would be one more thing
+          # to keep in docs/backups.md for no gain.
+          - { path: "{paths.state}/home-core/history", mount: /app/history,
+              env: HOMECORE_HISTORY_DIR, renamed_from: "{paths.state}/home-web/history" }
+          - { path: "{paths.state}/home-core/certs", mount: /certs,
+              env: HOMECORE_CERTS_DIR, renamed_from: "{paths.state}/home-web/certs" }
+          # The shared user store: written by the entry page, read here.
+          - { path: "{paths.state}/home-core/users.json", mount: /app/users.json,
+              env: HOMECORE_USERS_FILE, kind: file, seed: "[]",
+              renamed_from: "{paths.state}/home-web/users.json" }
+        # The portal's own suite, against the image that is about to replace the
+        # running one. Forty-three scripts, and until now not one of them ran on
+        # a deploy: `app.py` is the largest file in this repository and the piece
+        # a household touches most, and it was the one service shipping without
+        # a gate. Two of today's bugs lived in it.
+        #
+        # `|| exit 1` on the loop rather than `&&` between them: these are plain
+        # scripts that report by exit code, and a for-loop swallows every status
+        # but the last one -- so a suite where the first forty fail and the last
+        # passes exits 0 and the deploy goes green.
+        #
+        # The tests are in the image already (they are part of the service, and
+        # the Dockerfile copies the directory), so there is nothing to mount and
+        # nothing that can drift between what ran and what ships.
+        test:
+          image: home-core-local-web
+          # Skips are counted and named at the end, not left to be noticed in a
+          # scroll. Two of these need node and one needs the whole checkout, so
+          # a run inside the image legitimately cannot do everything -- and a
+          # gate that reports "passed" while quietly having run half the suite
+          # is the shape of check this stack keeps finding and deleting.
+          #
+          # `*"SKIP:"*` and not `SKIP*`: most of these say it from a module-level
+          # guard and it is the first thing they print, but the two that need
+          # node say it from inside `main()`, after the suites they *could* run
+          # have already printed their passes. Anchoring at the start counted
+          # exactly those two as having run -- the same silence this is here to
+          # break, on the two most likely to be skipped.
+          command: ["sh", "-c",
+                    "cd /app && skipped=''; ran=0;
+                     for t in test_*.py; do
+                       out=$(python \"$t\" 2>&1) || { echo \"$out\"; echo \"FAILED: $t\"; exit 1; };
+                       ran=$((ran+1));
+                       case \"$out\" in *\"SKIP:\"*) skipped=\"$skipped $t\";; esac;
+                     done;
+                     echo \"$ran suite(s) ran\";
+                     [ -z \"$skipped\" ] || echo \"skipped (cannot run in the image):$skipped\""]
+        verify:
+          # `/ping`, which is the route this app actually serves — it had no
+          # `/healthz` and this check 404'd on every deploy of a fresh box. And
+          # the payload, not the status: a 404 page is a 200 as far as "did it
+          # answer" goes.
+          - http: "https://127.0.0.1:{services.home-core.port}/ping"
+            expect_json: {ok: true}
+            insecure: true          # local CA; the trust check happens in `proxy`
+            timeout: 120
+      - name: cloud
+        # The shared translation catalogues, staged into the build context.
+        # Each app serves its own copy -- see i18n/README.md.
+        assets:
+          - { from: i18n, to: i18n }
+        dir: services/home-core/cloud
+        compose: docker-compose.yml
+        build: true
+        env:
+          # Loopback-only, and it was a literal 8081 in both the compose file
+          # and the two checks below -- so it had no config key at all and
+          # moving it meant editing three files in step.
+          ENTRY_PAGE_PORT: "{services.home-core.entry_port}"
+          # The address the entry page probes and redirects to. Neither this
+          # nor HOME_STACK_DOMAIN was ever exported, so home.php and
+          # privado.php fell through to their own fallback and built the
+          # portal URL out of a literal suffix -- a name no household here
+          # has. Same class as the literal port above.
+          HOME_STACK_PORTAL_URL: "https://{dns.portal}:{services.home-core.port}"
+          HOME_STACK_DOMAIN: "{site.domain}"
+        state:
+          - { path: "{paths.state}/home-core/users.json",
+              mount: /var/www/html/users.json,
+              env: HOMECORE_USERS_FILE, kind: file, seed: "[]",
+              renamed_from: "{paths.state}/home-web/users.json" }
+        verify:
+          # A 200 on `/` only proves Apache is listening. Asking for a routed
+          # path proves .htaccess was read, which is the failure that otherwise
+          # looks like a code bug on every path except the root.
+          - http: "http://127.0.0.1:{services.home-core.entry_port}/"
+            status_only: "the PHP entry page renders HTML; asserting a body here would pin markup"
+            timeout: 60
+          - http: "http://127.0.0.1:{services.home-core.entry_port}/publico/login"
+            status_only: "the point is that the front controller routed at all, not what it said"
+            fail_message: "front controller did not route - is AllowOverride on?"
+      - name: proxy
+        dir: services/home-core/proxy
+        compose: docker-compose.yml
+        pre: ./ensure-cert.sh          # local CA by default; ACME only if configured
+        env:
+          # Read by the Caddyfile's own `{$VAR:default}` substitutions -- it is
+          # bind-mounted verbatim and never rendered, so a literal in there is
+          # invisible to every check this stack has.
+          LOCAL_PROXY_PORT: "{services.local-proxy.port}"
+          ENTRY_PAGE_PORT: "{services.home-core.entry_port}"
+          # The two names the site blocks answer to. They were literals in a
+          # file that is bind-mounted verbatim, so a household whose `dns:`
+          # says anything else had a proxy matching nothing anybody types --
+          # and Caddy answers an unmatched Host with an empty 200, which the
+          # verify below used to accept. This is the same class as the ports
+          # above and the certificate names below: a literal in a file nothing
+          # renders is invisible to every check this stack has.
+          PORTAL_NAME: "{dns.portal}"
+          CHAT_NAME: "{dns.chat}"
+          CODE_NAME: "{dns.code}"
+          HOMECORE_PORT: "{services.home-core.port}"
+          ACME_MODE: "{cloud.certificates.mode}"
+          ACME_DNS_PROVIDER: "{cloud.certificates.acme_dns_provider}"
+          DOMAIN: "{site.domain}"
+          # The names the certificate has to carry. local-cert.sh hardcoded
+          # them -- `chat.home`, `house.home`, `*.home` and an
+          # IP on a network nobody here is on -- so a household whose domain is
+          # anything else got a certificate for somebody else's names, and the
+          # verify below could never pass. The same shape as the Caddyfile's
+          # literal ports: a file mounted verbatim, never rendered, invisible
+          # to every check this stack has.
+          CERT_NAMES: "{dns.portal},{dns.chat},{dns.cameras},{dns.assistant},{dns.code}"
+          CERT_IP: "{hosts.hub.address}"
+        verify:
+          # --resolve, never -k: the question is whether a client that trusts
+          # the right CA accepts what we serve for that name, and -k answers no
+          # question at all.
+          #
+          # And a path with a payload on it, because the handshake is not the
+          # question either. The local CA certificate carries `*.<domain>`, so
+          # TLS succeeds for every name in the house whether or not a site
+          # block matches -- and an unmatched Host gets an empty 200 that
+          # `curl -f -o /dev/null` accepts. Both names are checked, because
+          # they are two site blocks and one of them being right says nothing
+          # about the other.
+          # Only the portal's name here. The chat name fronts `local-proxy`,
+          # which is deployed after this unit and cannot be reached from it --
+          # asserting it here made a whole-stack deploy fail on home-core
+          # because a service later in the order was not up yet. It is
+          # verified by local-proxy, which owns that upstream and runs when it
+          # exists.
+          - https_resolve: "{dns.portal}"
+            port: 443
+            # The entry page is PHP and its body is the household's, so the
+            # assertion is that there *is* one: an empty body is exactly what
+            # a missing site block returns.
+            ca: certs/ca.pem
+            fail_message: "the portal name answers with an empty body -- no site block matched it"
+            timeout: 60
+    secrets:
+      required: [HOMECORE_SECRET_KEY, HOMECORE_DEBUG_API_KEY, PROXY_SHARED_SECRET]
+      # NANOBOT_DEBUG_SECRET: the portal proxies the assistants' profile panel
+      # and adds this header on their behalf, so the browser never carries it.
+      # Optional -- without it /alfred/profile says so instead of guessing.
+      # PROJECTS_KEY encrypts the stored project credentials; without it the
+      # registry refuses to keep a secret rather than keeping it in the clear.
+      # PROJECTS_BROKER_TOKEN is the one door a credential leaves by, and it is
+      # the code broker's -- no browser session, however admin.
+      optional: [PROJECTS_KEY, PROJECTS_BROKER_TOKEN,
+                 SHARE_SMB_PASSWORD, NTFY_CREDENTIALS, VOICE_GATEWAY_TOKEN,
+                 OPENCODE_API_KEY, ACME_DNS_API_TOKEN,
+                 NANOBOT_DEBUG_SECRET, MENU_DEVICE_TOKEN]
+      # Per-member, expanded from services.nanobot.members
+      per_member: ["NANOBOT_API_SECRET_{M}"]
+
+  admin:
+    description: Local settings and service-enable page. Never exposed off the LAN.
+    role: hub
+    # Settings, services and deploys.
+    tier: advanced
+    icon: "⚙️"
+    # Not on a child's wall. It does not *let* them in -- it has its own
+    # password -- but a square that asks for a password nobody gave them
+    # is a square that reads as broken.
+    adults: true
+    units:
+      - name: admin
+        dir: admin
+        compose: docker-compose.yml
+        # One mount per plugin directory that is not already under
+        # `paths.plugins`. The deployer runs on the host and sees them; this
+        # page runs in a container and sees only what is mounted -- so a
+        # plugin living in its own repository was invisible here, and
+        # `load_plugins` refusing an absent directory took the *whole* merged
+        # service list with it.
+        generated_compose: admin
+        build: true
+        # The page needs the whole package, not just its own directory: it reads
+        # the manifest, writes the config and runs the deployer.
+        assets:
+          - { from: i18n, to: i18n }
+          - { from: deploy, to: deploy }
+          - { from: config, to: config }
+          # The payload, because Deploy from this page rsyncs a service's own
+          # tree onto the target and cannot do that without having it. ~90 MB
+          # on a ~390 MB image, which is the price of the button working; the
+          # staging exclusions keep .git, the caches and any secrets out.
+          - { from: services, to: services }
+        env:
+          ADMIN_BIND: "{services.admin.bind}"
+          ADMIN_PORT: "{services.admin.port}"
+          SSH_KEY_DIR: "{paths.config}/ssh"
+          # Mounted at the *same* path inside the container as out, each of
+          # them, so a tree this page writes and a bind mount compose resolves
+          # against the host are the same directory. One per path rather than a
+          # shared root: `paths:` names five directories that a household can
+          # put anywhere, and there is no parent they are guaranteed to share.
+          HOME_STACK_CONFIG_DIR: "{paths.config}"
+          HOME_STACK_STATE_DIR: "{paths.state}"
+          HOME_STACK_MEDIA_DIR: "{paths.media}"
+          HOME_STACK_BACKUPS_DIR: "{paths.backups}"
+          HOME_STACK_PLUGINS_DIR: "{paths.plugins}"
+          HOME_STACK_DEPLOY_ROOT: "{derived.deploy_root}"
+          # The container runs as the deploying account, so that a deploy from
+          # this page and a deploy from a shell leave identically owned files.
+          # Root does not: it writes trees the household's own user cannot
+          # rsync over afterwards.
+          DEPLOY_UID: "{derived.deploy_uid}"
+          DEPLOY_GID: "{derived.deploy_gid}"
+          DOCKER_GID: "{derived.docker_gid}"
+        state:
+          # The live config the page edits, and the credentials it writes. Both
+          # are state on the target, not files baked into the image.
+          #
+          # No `mount:`. The page opens them by these host paths through the
+          # `{paths.config}` directory mount, never as single-file mounts:
+          # those pin an inode, and a host-side rename left the page writing a
+          # deleted file (2026-09-11; see admin/docker-compose.yml). So both
+          # must stay inside `{paths.config}` -- test_deploy.py checks that.
+          - { path: "{paths.config}/home-stack.yml", kind: file,
+              env: ADMIN_CONFIG_FILE,
+              seed_from_local: config/home-stack.yml }
+          - { path: "{paths.config}/smart-home-bot.env", kind: file,
+              env: ADMIN_SECRETS_FILE,
+              seed_from_local: secrets/smart-home-bot.env }
+          # The admin container's ssh home, and the one this stack owns --
+          # separate from the deploying account's ~/.ssh on purpose, because a
+          # container has no business reading somebody's personal keys. The
+          # Access screen writes here: a deploy key and the host keys it
+          # trusts. 0700, because ssh refuses a key any wider.
+          - { path: "{paths.config}/ssh", mount: /root/.ssh, env: SSH_KEY_DIR,
+              mode: "0700" }
+          # The Android app's signing key. The APK page mounts this directory
+          # into its builder, which creates the key on a house's first build.
+          # Never in the repository -- whoever holds it can sign an update every
+          # installed app accepts -- and irreplaceable: a new key means every
+          # phone uninstalls and reinstalls the app. Opened by host path through
+          # the `{paths.config}` mount, like the two files above.
+          - { path: "{paths.config}/alfred-app", mode: "0700" }
+          # A writable directory for what this page caches -- the model roster
+          # today. A *directory* and not the file, because save_cache writes
+          # `models.json.tmp` beside it and renames: an atomic write needs its
+          # temporary on the same filesystem, so mounting only the file left
+          # the write with nowhere to land. /state cannot serve either -- it is
+          # a directory in the image, root owns it, and this container is the
+          # deploying user now.
+          #
+          # On the host rather than inside, so the roster is not thrown away by
+          # every redeploy and the first load afterwards does not go back to
+          # models.dev.
+          # `backup: skip`, and docs/backups.md already said so -- but the
+          # entry did not, so every archive was carrying it as essential. The
+          # inventory test checks that a declared path is *documented*, not
+          # which table it is documented in, so the two disagreed quietly.
+          - { path: "{paths.state}/admin", mount: /cache,
+              env: HOME_STACK_ADMIN_CACHE_DIR, backup: skip }
+        verify:
+          - http: "http://127.0.0.1:{services.admin.port}/healthz"
+            expect_json: {status: ok}
+            timeout: 60
+    secrets:
+      # VOICE_GATEWAY_TOKEN so the Voice page can play a sample. It asks the
+      # gateway to speak, rather than the engine directly, because the point of
+      # a preview is to hear what the house will actually say -- through the
+      # chosen engine, with the fallback underneath it. Read-only use of a
+      # token this page already lets somebody rotate.
+      required: [ADMIN_SECRET_KEY, VOICE_GATEWAY_TOKEN]
+
+  nanobot:
+    description: The household assistant, one instance per member.
+    role: hub
+    # The assistants answer through the portal; no page of their own.
+    tier: none
+    units:
+      - name: multiuser
+        dir: services/nanobot
+        compose: docker-compose.multiuser.yml
+        # The per-member assistants, and the WhatsApp bridge of any member who
+        # has a linked phone, are rendered into docker-compose.members.yml from
+        # `services.nanobot.members` -- one block per person, each derived from
+        # that person's id. The compose file named five by hand, so a sixth
+        # member got a profile and a set of secrets and no container.
+        generated_compose: members
+        # One image, by name, then `up -d` rolls the containers onto it. No
+        # stop stage: stopping first took every assistant down for the length
+        # of the build rather than the length of a restart.
+        #
+        # `image_build`, not `build: true`. The compose file shares one image
+        # across every instance and declares no per-service `build:`, so
+        # `docker compose build` builds nothing and `up` tries to *pull*
+        # alfred-nanobot from a registry it does not live in.
+        # `target: runtime` is load-bearing now that a stage follows it. A
+        # targetless build is "the last stage in the file", so adding `code`
+        # at the end of the Dockerfile without this would have quietly made the
+        # coding binary part of every assistant's image -- the one thing the
+        # separate image exists to prevent, undone by a default.
+        image_build: {tag: alfred-nanobot:latest, context: ., target: runtime}
+        # Shared with the `broker` unit below, which is a separate compose
+        # project and so has a default network of its own. The assistants dial
+        # `http://code-broker:8910` by name, so both join this one instead.
+        pre_create_networks: [nanobot-net]
+        # Where a plugin's `floor:` skill is staged. Builtin, not workspace:
+        # SkillsLoader checks workspace, then remote, then builtin, so a floor
+        # copy in the workspace would permanently beat the live one the service
+        # serves.
+        skill_floors: nanobot/skills
+        # Read by every nanobot service through an optional `env_file:`.
+        contributions_env_file: plugin-contributions.env
+        # Start exactly the members `services.nanobot.members` lists. The
+        # compose file names five and gates each behind its own profile.
+        member_profiles_gate: true
+        # Export NANOBOT_STAGGER_INDEX_<M> -- each member's position in the live
+        # list, for the heartbeat's phase. Only this unit: the roster is
+        # per-member material, and the shared room-facing assistant must not
+        # receive it.
+        member_stagger_index: true
+        # IMAGE_MODEL / IMAGE_MODEL_HIGH, from `assistant.models` on the admin
+        # page. The theme skill has always read TOGETHER_IMAGE_MODEL and
+        # nothing ever supplied it, so every backdrop came from a literal in
+        # that script.
+        image_models: true
+        # Derive CODE_BROKER_TOKEN_<M> per member and the instance -> username
+        # map the broker checks its access list against. Only this unit: the
+        # broker runs beside the members, and the shared assistant has no
+        # projects and must not hold their tokens.
+        code_broker_tokens: true
+        # Each member's USER.md, generated from the admin page's profile
+        # (hobbies, birthdate, relationships). Seeds that member's assistant
+        # once, on first boot.
+        member_profiles: "{paths.config}/nanobot/user-profiles"
+        # Which model answers as which persona, from `assistant.models`. The
+        # site config is where that is chosen; this is what makes it true.
+        model_config: config/config.json
+        # `searxng` and `vane` only exist while home-search is deployed. Off,
+        # their names go into `disabledSkills` -- not left to fail at call time,
+        # because an env-unmet skill still ships its name and full description
+        # into every prompt, marked unavailable, which invites the agent to try
+        # it and spend a turn apologising. On, the same switch points `web_search` at the
+        # house instance: the schema default is duckduckgo, and leaving it there
+        # sends every ordinary lookup off the LAN, which is the one thing
+        # running your own instance was for.
+        when_service:
+          home-search:
+            disable_skills: [searxng, vane]
+            set:
+              tools.web.search.provider: searxng
+          # Off unless the household asked for it. Removed from the config
+          # rather than left with an empty token: nanobot dials whatever is
+          # listed, and a failed MCP connect is paid on every message.
+          brightdata:
+            disable_mcp: [brightdata]
+          # The house's own crawler, on the container network. Off, its entry
+          # goes too -- `http://crawl4ai:11235` does not resolve when the
+          # container is not deployed, and nanobot dials whatever is listed.
+          crawl4ai:
+            disable_mcp: [crawl4ai]
+          # The browser, reached over the container network. Off, its entry goes
+          # too: `http://browser-use:21034` does not resolve when the container
+          # is not deployed, and that is a failed connect on every message.
+          browser-use:
+            disable_mcp: [browser-use]
+        # Where the assistant's name appears. Its own prompts and every skill
+        # that speaks as it -- the capitalised word only, so the `alfred/`
+        # paths and the `alfred-nanobot` image are untouched.
+        assistant_name_in:
+          - "config/*.md"
+          - "config/instances/*/*.md"
+          - "nanobot/skills/*/SKILL.md"
+        env:
+          # Where Home Assistant is, for the assistants' MCP entry. That
+          # config carried the literal `homeassistant.home`, which the
+          # "Names are for people" rule forbids for internal traffic and which
+          # is NXDOMAIN inside the container -- so every message paid a failed
+          # MCP connect (37s, measured on this house) before a word reached the
+          # model, and the log said only "failed to connect ... will retry next
+          # message". A voice turn that has to answer in a room took two minutes.
+          #
+          # A base, not an endpoint: `/mcp_server/sse` stays in the nanobot
+          # config beside the thing that knows that path, so a value set here
+          # can never be "shorter than the default" the way NANOBOT_URL was.
+          # Blank when the household has no Home Assistant -- the shipped state.
+          HOMEASSISTANT_URL: "{services.homeassistant.url}"
+          # The one private range the assistant's SSRF check treats as this
+          # house rather than as somewhere it is being steered. Empty means no
+          # exemption, and empty is the shipped state -- see site.lan_cidr.
+          NANOBOT_LAN_CIDR: "{site.lan_cidr}"
+          # Where "the weather" means when nobody named a place. The weather
+          # skill tries the person's last known fix and the saved "home" place
+          # first; this is the last resort, so a household that has never used
+          # geo still gets its own forecast instead of being asked which city.
+          # The timezone's last segment is a city on every tz this stack can be
+          # set to (America/Santiago, Europe/London) and wttr.in takes a city
+          # name. Set SITE_LOCATION in the env file to override with a real one.
+          SITE_LOCATION: "{site.timezone}"
+          NANOBOT_PROFILES_DIR: "{paths.config}/nanobot/user-profiles"
+          # The *base* the skills append to, not a route: every skill reads it
+          # as `<base>/list`, and nine of them derive a sibling API from it with
+          # `.replace("/tasks/api", "/grocery/api")`. HomeCore serves
+          # `/tasks/api/...`; `/api/tasks` is not a route it has, so that
+          # spelling 404s every call and silently drops grocery, menu, geo,
+          # file-share and family-message out of `discover_endpoints`, which
+          # skips a row whose rewrite target is absent.
+          TASKS_API_URL: "https://{dns.portal}:{services.home-core.port}/tasks/api"
+          PAPERLESS_URL: "http://{dns.paperless}:{services.home-paperless.port}"
+          # The camera wall's API. Nothing carried this address, so the
+          # camera-feed skill and the exec guard both fell back to a host
+          # written into their own source -- and to :5000, the port *inside*
+          # that container, while compose publishes it on `web_port`. The
+          # guard's camera signal is derived from this variable, so an unset
+          # one is a model free to hand-curl the wall with nothing redirecting
+          # it to the skill that owns it.
+          CAMERA_API_URL: "http://{dns.cameras}:{services.home-cameras.web_port}"
+          # n8n runs on the hub, and nothing exported this until now -- so the
+          # skill only ever saw its compose default. A household that switches
+          # n8n on would still not have reached it. Container-facing address,
+          # like the two lines above it; when n8n is off this refuses at once
+          # and the remote skill simply does not materialise.
+          # An address on purpose, and the exception worth reading. There *is*
+          # an `n8n.home` in the household resolver -- it points at the old
+          # stack on the other box and answers nothing. n8n runs here now, so
+          # the name would be a working service traded for a dead one, which
+          # is the failure this whole change was about, pointing the other way.
+          NANOBOT_N8N_BASE_URL: "http://{hosts.hub.from_container}:{services.n8n.port}"
+          NTFY_BASE_URL: "{derived.ntfy_url_from_container}"
+          # The answer buttons in a notification. A phone opens this, so it is
+          # the name people type -- which falls back to the hub's address when
+          # the household runs no local DNS.
+          HOMECORE_URL: "https://{dns.portal}:{services.home-core.port}"
+          # Dialled, not shown: the file-share and document skills connect to
+          # `\\<host>\<share>` with smbclient from inside this container, and
+          # the link a person gets back is a relative `download:` path. So it
+          # needs the container-facing address for the same reason the URLs
+          # above do -- 127.0.0.1 here is the assistant's own container.
+          # The base each search skill appends to. Addresses, never the
+          # `dns:` names -- a container retrying getaddrinfo forever is
+          # indistinguishable from the service being down.
+          # Addresses, for the same reason as n8n above: `searxng.home` and
+          # `vane.home` resolve to a different box than the one the `compute`
+          # role puts them on, so the name would point somewhere the deploy
+          # never put anything. Revisit if home-search moves there.
+          SEARXNG_BASE_URL: "http://{hosts.compute.from_container}:{services.home-search.port}"
+          VANE_BASE_URL: "http://{hosts.compute.from_container}:{services.home-search.vane_port}"
+          # The household's language, for the query the searxng skill sends.
+          SEARCH_LANGUAGE: "{locale.default}"
+          # The portal, as the broker dials it from inside the compose network.
+          # Separate from HOMECORE_URL above, which is the name a *phone* opens
+          # from a notification -- this one must resolve from a container, so it
+          # is an address.
+          HOMECORE_CONTAINER_URL: "https://{dns.portal}:{services.home-core.port}"
+          # Whose name goes on the co-author line of a commit the broker makes.
+          # The assistant is renameable here, and `git log` is read by people --
+          # `assistant_name_in` only rewrites prompt files, so this is how the
+          # name reaches code. The `alfred/` branch prefix deliberately does NOT
+          # move: it is a stored format in every remote's branch list, the same
+          # reason `alfred/documents` and `alfred-nanobot` kept their names.
+          CODE_COMMIT_NAME: "{site.assistant_name} (nanobot)"
+          FILE_SHARE_HOST: "{derived.share_host_from_container}"
+          FILE_SHARE_PASSWORD: $SHARE_SMB_PASSWORD
+          # config/config.json reads both as ${...}. nanobot refuses to start
+          # on an unset reference, so neither may ever be empty — which is why
+          # the key is the literal "ollama" in local mode rather than blank.
+          OLLAMA_URL: "{derived.ollama_url}"
+          OLLAMA_API_KEY: "{derived.ollama_api_key}"
+          OLLAMA_CLOUD_URL: "{derived.ollama_cloud_url}"
+          OLLAMA_CLOUD_API_KEY: "{derived.ollama_cloud_api_key}"
+          # config.json names this provider whether or not it is on, so both
+          # have to be exported whether or not it is on -- nanobot resolves
+          # ${...} across the whole file and refuses to start on an unset one.
+          OPENAI_COMPATIBLE_URL: "{derived.openai_compatible_url}"
+          OPENAI_COMPATIBLE_API_KEY: "{derived.openai_compatible_api_key}"
+          # A serving engine on the household's own hardware, pointed at rather
+          # than deployed -- the same relationship the stack has with Ollama.
+          # Its own slot, so `openai-compatible:` stays free for whatever else
+          # speaks that API.
+          FREETOKEN_URL: "{derived.freetoken_url}"
+          FREETOKEN_API_KEY: "{derived.freetoken_api_key}"
+          # The second ollama, for vision/OCR. Empty when it is switched off:
+          # nanobot reads every string for ${...} and refuses to start on an
+          # unset reference, so the variable has to exist either way.
+          OLLAMA_VISION_URL: "{derived.ollama_vision_url}"
+          OLLAMA_CONTEXT_LENGTH: "{derived.ollama_local_context}"
+        state:
+          # `bulk_dirs: [media]` and not `backup: bulk` on the whole entry:
+          # this one path holds both kinds. Per-member config, memory,
+          # sessions and the WhatsApp credentials are small, change every day,
+          # and are the whole reason for a nightly archive. `media/` is every
+          # image the assistant has ever sent or been sent -- large, static,
+          # and re-tarred, re-compressed and re-encrypted every night for as
+          # long as the archive is kept.
+          #
+          # Measured before this line existed: 241 MB of one member's 281 MB
+          # was that folder, roughly two thirds of a 351 MB archive, and seven
+          # retained copies of files unchanged since the day they arrived.
+          # It is named in each archive's `not_archived` meta as something
+          # the archive is not, exactly as the camera recordings and the
+          # scanned documents are.
+          - { path: "{paths.state}/nanobot", mount: "/home/nanobot/.nanobot (one subdirectory per member)", env: NANOBOT_STATE_DIR,
+              bulk_dirs: [media] }
+          - { path: "{paths.config}/nanobot", mount: /nanobot-config-rw, env: NANOBOT_CONFIG_DIR }
+          # Where the code broker checks projects out, one subdirectory per
+          # member. Under paths.state and never inside the deploy tree: the
+          # deployer rsyncs that with --delete, and a checkout that vanished
+          # would be re-cloned silently on the next ask, losing whatever was not
+          # pushed. `backup: skip` -- every project here has a git remote, which
+          # is the copy that matters; what is not pushed is not this stack's to
+          # promise.
+          #
+          # `require_file:` is the broker's own guard, seeded rather than only
+          # asserted. It refuses to clone into a directory not carrying this
+          # marker -- absence means CODE_WORKSPACE_DIR points somewhere nobody
+          # intended, and cloning into a home directory is worse than refusing.
+          # Upstream's build-multiuser.sh wrote it and this package does not
+          # ship that script, so nothing wrote it: the broker answered its own
+          # health endpoint with `"ok": false` and refused every request, while
+          # docker called the container healthy because the endpoint returned
+          # 200 saying so.
+          - { path: "{paths.state}/nanobot-code-workspace",
+              mount: "/nanobot-code-workspace (one subdirectory per member)",
+              env: CODE_WORKSPACE_DIR, backup: skip,
+              require_file: ".nanobot-code-workspace",
+              seed_from: "code-workspace-marker" }
+          # One JSON file of model-outage deadlines, read and written by every
+          # assistant process on the box -- the five members here and the house
+          # instance, which declares the same path from its own unit. The
+          # in-process window each of them already kept was rediscovered per
+          # container: six processes each spent ~31s proving the same model dead
+          # at the same gateway. Derived, and losing it costs exactly one
+          # rediscovery -- see docs/backups.md.
+          - { path: "{paths.state}/nanobot-shared", mount: /shared-state,
+              env: NANOBOT_SHARED_STATE_DIR, backup: skip }
+        verify:
+          - http: "http://127.0.0.1:{services.nanobot.api_port_base}/health"
+            expect_json: {status: ok}
+            timeout: 180
+      # The code broker, and the only unit that builds the image carrying the
+      # coding harness binary.
+      #
+      # Last on purpose. Units run in declaration order and a failure stops the
+      # ones after it, so anything that can fail for a reason of its own belongs
+      # behind the things a household depends on daily. This one can: the binary
+      # comes from a GitHub release at build time, and in a single unit a failed
+      # download aborted everything *after* `alfred-nanobot:latest` was built
+      # and *before* the containers rolled -- the family's assistants did not
+      # deploy because a coding harness nobody had asked for yet could not reach
+      # github.com. Here that failure is the broker's alone, and the assistants
+      # are already up.
+      - name: broker
+        dir: services/nanobot
+        compose: docker-compose.broker.yml
+        image_build: {tag: alfred-nanobot:latest, context: ., target: runtime}
+        # Both projects join it and neither creates it. See the assistants' unit.
+        pre_create_networks: [nanobot-net]
+        # CODE_BROKER_USERS -- the instance -> portal username map this service
+        # checks its access list against. The per-member tokens derived beside it
+        # are the assistants' half and are exported there; this needs the map.
+        code_broker_tokens: true
+        env:
+          # The portal, as the broker dials it from inside the compose network.
+          HOMECORE_CONTAINER_URL: "https://{dns.portal}:{services.home-core.port}"
+          CODE_COMMIT_NAME: "{site.assistant_name} (nanobot)"
+          # Where the house's Ollama is, if it has one. The broker receives one
+          # API key and no others, because a provider it cannot authenticate is
+          # a 401 it reports by name -- but `ollama:` is the choice that fails
+          # *silently*: omp auto-discovers a local Ollama, and local inside this
+          # container is the container.
+          OLLAMA_URL: "{derived.ollama_url}"
+        state:
+          # The same declaration the assistants' unit makes, and deliberately
+          # not moved out of it: the broker mounts the whole workspace and
+          # each assistant mounts its own subdirectory, so both units need
+          # the path. `nanobot-shared` is declared twice for the same reason.
+          - { path: "{paths.state}/nanobot-code-workspace",
+              mount: "/nanobot-code-workspace (one subdirectory per member)",
+              env: CODE_WORKSPACE_DIR, backup: skip,
+              require_file: ".nanobot-code-workspace",
+              seed_from: "code-workspace-marker" }
+        verify:
+          # The code broker has no published port -- it answers on 8910 inside
+          # the bridge network and only the assistants dial it -- so every
+          # check here was blind to it. It had never started in this package:
+          # its `command:` ran under an ENTRYPOINT ending in
+          # `exec nanobot "$@"`, so it became `nanobot python -m ...` and
+          # crash-looped, while this unit reported success from the line above.
+          # 180, not the default: the compose healthcheck is `interval: 30s,
+          # retries: 3`, so a container that will never be healthy takes 90
+          # seconds to say so. A timeout close to that is a check that reports
+          # a slow start as a failure and a real failure as a slow start.
+          - container_healthy: code-broker
+            fail_message: "the code broker is not running; the assistants' git verbs will all refuse"
+            timeout: 180
+    secrets:
+      required: [OPENCODE_API_KEY, NANOBOT_DEBUG_SECRET, PROXY_SHARED_SECRET]
+      # CODE_BROKER_SECRET derives the per-member tokens; unset, the broker
+      # refuses every request, which is the right way round. PROJECTS_BROKER_TOKEN
+      # opens the portal's credential door and nothing else in the stack.
+      optional: [CODE_BROKER_SECRET, PROJECTS_BROKER_TOKEN,
+                 HOMEASSISTANT_TOKEN, NANOBOT_N8N_API_KEY, SHARE_SMB_PASSWORD,
+                 NTFY_CREDENTIALS, TAVILY_API_KEY, BRAVE_API_KEY, KAGI_API_KEY,
+                 JINA_API_KEY, BRIGHTDATA_API_TOKEN,
+                 CRAWL4AI_API_TOKEN,
+                 TOGETHER_API_KEY,
+                 # The bearer the drawing skill sends when `image_normal` or
+                 # `image_high` is on an endpoint that is not Together. The
+                 # compose files list it and `allowedEnvKeys` names it;
+                 # without a declaration here it is never exported, so a
+                 # household that puts one in the env file gets an empty
+                 # string and a 401 -- the decorative-declaration failure
+                 # `--check-contract` exists for. Empty is fine for an
+                 # endpoint that answers whoever asks.
+                 IMAGE_API_KEY,
+                 OPENROUTER_API_KEY, OPENAI_API_KEY]
+      per_member: ["NANOBOT_API_SECRET_{M}", "HOMECORE_PROXY_TOKEN_{M}",
+                   "PAPERLESS_API_TOKEN_{M}"]
+
+  nanobot-house:
+    description: The shared room-facing assistant. House credentials only.
+    role: hub
+    # The room-facing assistant, reached by voice.
+    tier: none
+    units:
+      - name: house
+        dir: services/nanobot
+        compose: docker-compose.house.yml
+        # The same image as the per-member instances, and the same reason it
+        # cannot come from `build: true`. Docker's layer cache makes building
+        # it here cheap when the other unit already did.
+        image_build: {tag: alfred-nanobot:latest, context: ., target: runtime}
+        # Where a plugin's `floor:` skill is staged. Builtin, not workspace:
+        # SkillsLoader checks workspace, then remote, then builtin, so a floor
+        # copy in the workspace would permanently beat the live one the service
+        # serves.
+        skill_floors: nanobot/skills
+        # Read by every nanobot service through an optional `env_file:`.
+        contributions_env_file: plugin-contributions.env
+        # The house instance's own config, patched from the same site setting.
+        # The room-facing assistant draws too -- the same two slots.
+        image_models: true
+        # Both files, and be precise about why, because the obvious reason is
+        # wrong. `instances/house/config.json` exists, so entrypoint.sh copies
+        # *it* and never reads the base -- the two are exclusive and the
+        # complete file wins (see the header of services/nanobot/entrypoint.sh).
+        # The gates below therefore take effect through the first entry alone;
+        # the house config's own `tools.mcpServers` holds `homeassistant` and
+        # nothing else, so `browser-use` was never reachable from a room.
+        #
+        # The second entry is here so the copy of the base that this unit ships
+        # into its own tree is not a stale, ungated one sitting beside the
+        # config that runs -- somebody reading `/nanobot-config/config.json`
+        # in this container is otherwise reading a file the assistant ignores
+        # and drawing conclusions from it. It patches a spare, not the config.
+        model_config:
+          - config/instances/house/config.json
+          - config/config.json
+        # `searxng` and `vane` only exist while home-search is deployed. Off,
+        # their names go into `disabledSkills` -- not left to fail at call time,
+        # because an env-unmet skill still ships its name and full description
+        # into every prompt, marked unavailable, which invites the agent to try
+        # it and spend a turn apologising. On, the same switch points `web_search` at the
+        # house instance: the schema default is duckduckgo, and leaving it there
+        # sends every ordinary lookup off the LAN, which is the one thing
+        # running your own instance was for.
+        when_service:
+          home-search:
+            disable_skills: [searxng, vane]
+            set:
+              tools.web.search.provider: searxng
+          # Off unless the household asked for it. Removed from the config
+          # rather than left with an empty token: nanobot dials whatever is
+          # listed, and a failed MCP connect is paid on every message.
+          brightdata:
+            disable_mcp: [brightdata]
+          # The house's own crawler, on the container network. Off, its entry
+          # goes too -- `http://crawl4ai:11235` does not resolve when the
+          # container is not deployed, and nanobot dials whatever is listed.
+          crawl4ai:
+            disable_mcp: [crawl4ai]
+          # The browser, reached over the container network. Off, its entry goes
+          # too: `http://browser-use:21034` does not resolve when the container
+          # is not deployed, and that is a failed connect on every message.
+          browser-use:
+            disable_mcp: [browser-use]
+        assistant_name_in:
+          - "config/*.md"
+          - "config/instances/house/*.md"
+          - "nanobot/skills/*/SKILL.md"
+        env:
+          # Same as the per-member unit above, and for the same reason: the
+          # MCP entry pointed at `homeassistant.home`, which is NXDOMAIN
+          # in here, and cost every message a 37-second failed connect. The
+          # house assistant is the one a room talks to, so it paid that on
+          # every voice turn.
+          HOMEASSISTANT_URL: "{services.homeassistant.url}"
+          # The one private range the assistant's SSRF check treats as this
+          # house rather than as somewhere it is being steered. Empty means no
+          # exemption, and empty is the shipped state -- see site.lan_cidr.
+          NANOBOT_LAN_CIDR: "{site.lan_cidr}"
+          # Where "the weather" means when nobody named a place. The weather
+          # skill tries the person's last known fix and the saved "home" place
+          # first; this is the last resort, so a household that has never used
+          # geo still gets its own forecast instead of being asked which city.
+          # The timezone's last segment is a city on every tz this stack can be
+          # set to (America/Santiago, Europe/London) and wttr.in takes a city
+          # name. Set SITE_LOCATION in the env file to override with a real one.
+          SITE_LOCATION: "{site.timezone}"
+          VOICE_GATEWAY_URL: "http://{dns.voice}:{services.home-voice.port}"
+          # Same as the per-member unit above: the wall's API, so the
+          # camera-feed skill and the exec guard both stop reading a host and
+          # a port out of their own source.
+          CAMERA_API_URL: "http://{dns.cameras}:{services.home-cameras.web_port}"
+          # The base each search skill appends to. Addresses, never the
+          # `dns:` names -- a container retrying getaddrinfo forever is
+          # indistinguishable from the service being down.
+          # Addresses, for the same reason as n8n above: `searxng.home` and
+          # `vane.home` resolve to a different box than the one the `compute`
+          # role puts them on, so the name would point somewhere the deploy
+          # never put anything. Revisit if home-search moves there.
+          SEARXNG_BASE_URL: "http://{hosts.compute.from_container}:{services.home-search.port}"
+          VANE_BASE_URL: "http://{hosts.compute.from_container}:{services.home-search.vane_port}"
+          # The household's language, for the query the searxng skill sends.
+          SEARCH_LANGUAGE: "{locale.default}"
+          NTFY_BASE_URL: "{derived.ntfy_url_from_container}"
+          HOMECORE_URL: "https://{dns.portal}:{services.home-core.port}"
+          # Same pair as the per-member instances: its config reads both as
+          # ${...} and will not start on an unset reference.
+          OLLAMA_URL: "{derived.ollama_url}"
+          OLLAMA_API_KEY: "{derived.ollama_api_key}"
+          OLLAMA_CLOUD_URL: "{derived.ollama_cloud_url}"
+          OLLAMA_CLOUD_API_KEY: "{derived.ollama_cloud_api_key}"
+          # config.json names this provider whether or not it is on, so both
+          # have to be exported whether or not it is on -- nanobot resolves
+          # ${...} across the whole file and refuses to start on an unset one.
+          OPENAI_COMPATIBLE_URL: "{derived.openai_compatible_url}"
+          OPENAI_COMPATIBLE_API_KEY: "{derived.openai_compatible_api_key}"
+          # A serving engine on the household's own hardware, pointed at rather
+          # than deployed -- the same relationship the stack has with Ollama.
+          # Its own slot, so `openai-compatible:` stays free for whatever else
+          # speaks that API.
+          FREETOKEN_URL: "{derived.freetoken_url}"
+          FREETOKEN_API_KEY: "{derived.freetoken_api_key}"
+          # The second ollama, for vision/OCR. Empty when it is switched off:
+          # nanobot reads every string for ${...} and refuses to start on an
+          # unset reference, so the variable has to exist either way.
+          OLLAMA_VISION_URL: "{derived.ollama_vision_url}"
+          OLLAMA_CONTEXT_LENGTH: "{derived.ollama_local_context}"
+        state:
+          - { path: "{paths.state}/nanobot-house", mount: /home/nanobot/.nanobot, env: NANOBOT_STATE_DIR }
+          # One JSON file of model-outage deadlines, read and written by every
+          # assistant process on the box -- this one and the five members, whose
+          # unit declares the same path. The
+          # in-process window each of them already kept was rediscovered per
+          # container: six processes each spent ~31s proving the same model dead
+          # at the same gateway. Derived, and losing it costs exactly one
+          # rediscovery -- see docs/backups.md.
+          - { path: "{paths.state}/nanobot-shared", mount: /shared-state,
+              env: NANOBOT_SHARED_STATE_DIR, backup: skip }
+        verify:
+          - http: "http://127.0.0.1:{services.nanobot-house.api_port}/health"
+            expect_json: {status: ok}
+            timeout: 120
+          # /health answers before the agent can think, and an agent that boots
+          # but cannot reach its model meets a voice user as silence. Take a
+          # real turn.
+          - chat_completion:
+              url: "http://127.0.0.1:{services.nanobot-house.api_port}/v1/chat/completions"
+              bearer: NANOBOT_API_SECRET_HOUSE
+              prompt: "Reply with exactly: ready"
+              expect_contains: "ready"
+              timeout: 90
+          # The security boundary, asserted rather than assumed: a future edit
+          # that pastes a per-member env block in here would otherwise deploy
+          # green.
+          - container_env_absent:
+              container: nanobot-house
+              pattern: "^(HOMECORE_PROXY_TOKEN|FILE_SHARE_PASSWORD|PAPERLESS_API_TOKEN)="
+              fail_message: "the shared assistant holds per-member credentials it must not have"
+    secrets:
+      required: [OPENCODE_API_KEY, NANOBOT_API_SECRET_HOUSE, NANOBOT_DEBUG_SECRET]
+      # The three paid providers are optional here as well as on the member
+      # units. The house assistant could name `openrouter:` or `together:` and
+      # the key never reached it -- its compose file did not list them at all,
+      # so the provider block resolved to an empty string and every call 401'd.
+      # IMAGE_API_KEY for the same reason as on the member units: the room
+      # assistant draws too, its compose file lists the key, and nothing was
+      # exporting it.
+      optional: [HOMEASSISTANT_TOKEN, VOICE_GATEWAY_TOKEN, NTFY_CREDENTIALS,
+                 TOGETHER_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY,
+                 IMAGE_API_KEY]
+      # Deliberately no per_member block. `docker compose up` re-interpolates
+      # the whole environment, so anything absent here is blank in the
+      # container, which for this service is the point.
+
+  alfred-mcp:
+    description: >
+      Alfred's own capabilities, offered to opencode. Off unless the
+      Programmer profession runs on opencode -- see docs/opencode-programmer.md.
+    role: hub
+    # No page of its own: it is reached by `opencode serve` on the host and by
+    # nothing a person opens.
+    tier: none
+    icon: "🔌"
+    units:
+      - name: bridge
+        dir: services/alfred-mcp
+        compose: docker-compose.yml
+        # One bridge per member, rendered from `services.alfred-mcp.members`.
+        # A compose file naming them by hand is wrong for every household but
+        # the one it was written for, and wrong quietly -- see the header of
+        # deploy/compose_members.py for the four live bugs that shape produced.
+        generated_compose: alfred-mcp
+        image_build: {tag: alfred-mcp:latest, context: .}
+        # The broker is on this network and publishes no port, so joining it is
+        # the only way to reach it. Created by the assistants' unit; declared
+        # here too because `docker compose config` does not check that an
+        # external network exists and `up` aborts on a fresh host with no hint.
+        pre_create_networks: [nanobot-net]
+        # Which person this container serves, in all three ids, plus the token
+        # opencode presents. The conversion happens in the deployer and nowhere
+        # else -- the service holds one person's credentials and has no way to
+        # act for another. See collect_env().
+        alfred_mcp_identity: true
+        # The household's own opencode configuration: the MCP block that points
+        # opencode at this bridge, and the agent it answers as. Written here
+        # rather than into ~/.config/opencode, which belongs to whoever uses
+        # opencode at this keyboard -- opencode loads theirs first and this over
+        # it, so their settings survive and only the household's additions are
+        # ours. The systemd unit points OPENCODE_CONFIG and OPENCODE_CONFIG_DIR
+        # at this directory; `./home-stack install --opencode` writes that.
+        #
+        # This unit rather than a service of its own because it is the one that
+        # holds the token, and a second place to derive it is a second place for
+        # it to be wrong.
+        opencode_config: "{paths.config}/opencode"
+        env:
+          # The portal, as this container dials it: the same value the broker
+          # gets, over the same self-signed certificate.
+          HOMECORE_CONTAINER_URL: "https://{dns.portal}:{services.home-core.port}"
+          # By name on the shared network. An address would be wrong here --
+          # the broker publishes no port and exists only inside it.
+          CODE_BROKER_URL: "http://code-broker:8910"
+          # The same directory as CODE_WORKSPACE_DIR below, named the way the
+          # *host* sees it. Both are needed because two processes with different
+          # filesystems have to name one directory: the broker answers with its
+          # own container path, and what receives that answer is `opencode
+          # serve`, which runs on the host and cannot open it. The bridge
+          # translates on the way out -- see alfred_mcp/broker.py:retarget.
+          # Without this the agent was told to read and edit a directory that
+          # does not exist for it, and the turn stopped without saying why.
+          CODE_WORKSPACE_HOST_DIR: "{paths.state}/nanobot-code-workspace"
+        state:
+          # Read-only here, and declared rather than assumed: the deployer's
+          # state guard has to know about a path before it can refuse one that
+          # resolves inside the pushed tree. Same path the broker and the
+          # assistants declare, for the same reason they each declare it.
+          #
+          # `backup: skip` -- every project here has a git remote, which is the
+          # copy that matters, and this mount is a read-only view of what the
+          # broker already owns.
+          - { path: "{paths.state}/nanobot-code-workspace",
+              mount: "/nanobot-code-workspace (read-only)",
+              env: CODE_WORKSPACE_DIR, backup: skip }
+        verify:
+          # The payload, not the container's own healthy flag: /healthz answers
+          # **503** when the code broker is unreachable, and that is the failure
+          # that turns every git verb into a refusal while the container itself
+          # looks perfectly fine.
+          #
+          # The first member's port only, which is the same thing the
+          # assistants' unit checks and the same gap: a later member's bridge
+          # failing on its own is not seen here. Worth knowing rather than
+          # assumed -- they are one image and one configuration, so the ways
+          # they differ are the per-member values the renderer derives.
+          - http: "http://127.0.0.1:{services.alfred-mcp.port_base}/healthz"
+            expect_json: {ok: true}
+            fail_message: >
+              the MCP bridge is not answering; opencode will connect and every
+              household tool -- projects, commits, the share, the Designer --
+              will refuse
+            timeout: 120
+    secrets:
+      # ALFRED_MCP_SECRET derives the token opencode presents to this bridge.
+      # Separate from the broker's and the portal's on purpose: this one sits
+      # in opencode.json on the host where a person can read it, and it must
+      # not also be the value that opens the broker directly.
+      required: [ALFRED_MCP_SECRET, CODE_BROKER_SECRET, PROXY_SHARED_SECRET]
+
+  home-cameras:
+    description: Camera registry and the camera wall.
+    role: compute
+    # The camera wall.
+    tier: basic
+    icon: "📷"
+    # The portal proxies the wall at this path, so the tile is a link somebody
+    # can follow from outside the house -- if `services.home-cameras.house_only`
+    # says so. Linking `http://<compute>:<port>` instead would be a dead square
+    # on every phone that is not on the LAN.
+    portal_path: "/camaras/"
+    units:
+      - name: registry
+        dir: services/home-cameras/camera_registry
+        compose: docker-compose.yml
+        build: true
+        # Both units join this network and neither creates it. It is declared
+        # `external:` in their compose files, and `docker compose config` does
+        # not check that an external network exists -- `up` simply aborts on a
+        # fresh host with no hint that creating it was part of the old pipeline.
+        pre_create_networks: [homecameras-net]
+        env:
+          CAMERAS_REGISTRY_PORT: "{services.home-cameras.registry_port}"
+        verify:
+          # /api/ping, not /health: the registry has no /health and answered 404
+          # to it for as long as this check existed. The payload names the
+          # service and the state of its database, so assert both -- a 200 on
+          # this port has already meant a different container in this stack.
+          - http: "http://127.0.0.1:{services.home-cameras.registry_port}/api/ping"
+            expect_json: {status: healthy, service: camera-registry}
+            timeout: 90
+      - name: web
+        # The shared translation catalogues, staged into the build context.
+        # Each app serves its own copy -- see i18n/README.md.
+        assets:
+          - { from: i18n, to: i18n }
+        dir: services/home-cameras/web_server
+        compose:
+          - docker-compose.yml
+          # Only on a box that has one; see the file's own note.
+          - { file: docker-compose.gpu.yml, when: services.home-cameras.gpu }
+        build: true
+        # The YOLO weights, fetched before the containers come up. The script
+        # has always documented itself as "the `pre:` step for the camera web
+        # unit" and this file has never run it -- so on a fresh host the wall
+        # started with no weights at all, and on this one somebody had put a
+        # single file in by hand.
+        #
+        # Only missing files are downloaded, so this is a no-op on every deploy
+        # after the first. It runs after the image build and before `up`,
+        # which is the right order: the weights are bind-mounted at runtime,
+        # not baked into the image.
+        #
+        # It depends on the CAMERAS_MODELS_DIR declared in `state:` below --
+        # `pre:` gets the unit's env. Without that export the script falls back
+        # to its own directory inside the checkout, downloads 330 MB into a
+        # tree the next deploy replaces, and the container goes on mounting an
+        # empty directory somewhere else. That is what "the weights are
+        # missing but the deploy was green" looked like.
+        pre: ./download_models.sh
+        env:
+          CAMERAS_GPU_DEVICE: "{services.home-cameras.gpu_device}"
+          CAMERAS_WEB_PORT: "{services.home-cameras.web_port}"
+          # How long a KEPT recording stays on this disk. 0 is never delete and
+          # is what ships. The reviewer's own bin (CLIP_REVIEW_DELETE_KINDS) is
+          # a different question and stays in the compose file: that decides
+          # what was never worth keeping, this expires what was.
+          #
+          # Off by default for a specific reason, not general caution: these
+          # clips are `backup: bulk` below, which `home-stack backup` skips
+          # from every archive. Whatever off-box
+          # mirror exists is the only other copy, so switching this on before
+          # that mirror is known to be working deletes the sole copy of
+          # everything past the cutoff.
+          CLIP_RECORDING_MAX_AGE_DAYS: "{services.home-cameras.recording_retention_days}"
+          # The house's own vision model, so `assistant.models.vision` means
+          # the same thing to the camera wall as it does to the assistants.
+          # It reached nanobot and stopped there, and this reviewer kept its
+          # own hardcoded 8b -- a setting that never reached a container.
+          CLIP_REVIEW_MODEL: "{derived.vision_model}"
+          # Whether clips are reviewed at all. `services.home-cameras.
+          # clip_review: false` frees the card for something else and keeps
+          # every recording -- off is not a purge, and clip_review.py says so
+          # in as many words. Supplied as "1"/"0"; see derived above for why
+          # it cannot be the config's own bool.
+          CLIP_REVIEW_ENABLED: "{derived.clip_review_enabled}"
+          # The clip reviewer is the heaviest user of this household's card --
+          # every recorded clip is three frames through a vision model -- and
+          # it was the one part of Alfred's work that appeared nowhere on the
+          # usage page, because it costs no money. Same pair as the voice
+          # gateway above, same reasons.
+          HOMECORE_URL: "https://{dns.portal}:{services.home-core.port}"
+          USAGE_SERVICE_TOKEN: "{derived.usage_token_cameras}"
+          # The household's zone. `is_recording_enabled()` compares the window
+          # against `datetime.now(get_timezone())`, and get_timezone() reads TZ
+          # -- a literal `Etc/UTC` in the compose file until now, so nothing
+          # could override it. A window of 23:00-06:00 was applied in UTC:
+          # four hours off its own evening, on a page that shows the hours back
+          # correctly.
+          CAMERAS_TZ: "{site.timezone}"
+          # The clip reviewer's vision model. `ollama.home` used to be the
+          # hardcoded default here, which is a hostname in an internal URL --
+          # exactly the failure this stack has already had.
+          #
+          # The vision endpoint: clip review asks a VLM what is in a frame, so
+          # it belongs with the other image work rather than competing with the
+          # text roles for their slots.
+          OLLAMA_URL: "{derived.ollama_vision_url}"
+          OLLAMA_API_KEY: "{derived.ollama_api_key}"
+          # The broker the wall publishes camera events to. Same failure as
+          # OLLAMA_URL above and it outlived the fix: the compose default is
+          # `mqtt.home`, `settings_manager.py` reads it, and nothing
+          # exported it -- so the wall was dialling whatever that name happened
+          # to be rather than the one this household configured. The `dns:`
+          # entry, like every other MQTT consumer in this manifest.
+          MQTT_BROKER_HOST: "{dns.mqtt}"
+          MQTT_BROKER_PORT: "{services.mqtt.broker_port}"
+        state:
+          # Both carry their variable names. Without them the deployer exported
+          # nothing and the compose file fell back to its own defaults, which
+          # happened to be these same two paths -- so the declaration was
+          # decorative and would have quietly stopped matching the moment
+          # `paths:` was edited.
+          - { path: "{paths.config}/home-cameras", mount: /app/config,
+              env: CAMERAS_CONFIG_DIR }
+          # camera recordings -- the largest thing here by far
+          - { path: "{paths.media}/cameras", mount: /app/data/recordings,
+              env: CAMERAS_RECORDINGS_DIR,
+              backup: bulk }
+          # YOLO weights. `backup: skip` -- download_models.sh re-fetches them
+          # and they are the same bytes for everybody.
+          #
+          # Declared for the *path*, not for the backup. This was the one state
+          # mount with no entry, so the deployer exported nothing and compose
+          # fell back to its own `${CAMERAS_MODELS_DIR:-/var/lib/home-stack/
+          # state/home-cameras/models}` -- an absolute default, which is why
+          # `--check-contract` passed it: the check asks whether every variable
+          # resolves, and this one resolved to somebody else's idea of where
+          # state lives.
+          #
+          # On this household that is a different disk from `paths.state`, and
+          # docs/backups.md has been claiming `{state}/home-cameras/models` the
+          # whole time. Both copies existed, 44 MB each; the container was
+          # using the one nothing declared and nothing documented.
+          #
+          # This is the same failure the "env contract" section of CLAUDE.md
+          # describes, in its quietest form: not a wrong export, but no export
+          # at all behind a default that happens to be absolute, so the
+          # declaration was missing rather than decorative.
+          - { path: "{paths.state}/home-cameras/models",
+              mount: /app/web_server/models,
+              env: CAMERAS_MODELS_DIR, backup: skip }
+        verify:
+          - http: "http://127.0.0.1:{services.home-cameras.web_port}/api/ping"
+            expect_json: {status: healthy, service: camera-wall}
+            timeout: 120
+    secrets:
+      required: [PROXY_SHARED_SECRET]
+      optional: [NTFY_CREDENTIALS]
+
+  faster-whisper:
+    description: Speech to text for the voice panels.
+    role: compute
+    # Speech to text, same reason.
+    tier: advanced
+    icon: "🎙️"
+    # The OpenAPI page: `/` is a 404 on a FastAPI app. Worth a tile because
+    # "is whisper answering?" is the first question when a panel goes quiet.
+    tile_path: "/docs"
+    units:
+      - name: whisper
+        dir: services/faster-whisper-server
+        compose: docker-compose.yml
+        build: true
+        # container_name is pinned in the compose file, and container names are
+        # global rather than project-scoped: a container created by hand or
+        # under another project name is invisible to `down` and makes `up` fail
+        # on a name conflict. Remove by name first.
+        pre_remove_containers: [faster-whisper]
+        env:
+          WHISPER_PORT: "{services.faster-whisper.port}"
+          # The image is CUDA-based and defaults to it. On a box with no NVIDIA
+          # driver that is not a slow start, it is an import-time crash loop,
+          # so this is a setting rather than something to discover from logs.
+          WHISPER_DEVICE: "{services.faster-whisper.device}"
+          WHISPER_GPU_DEVICE: "{services.faster-whisper.gpu_device}"
+          WHISPER_COMPUTE_TYPE: "{services.faster-whisper.compute_type}"
+          WHISPER_MODEL: "{services.faster-whisper.model}"
+        state:
+          # Downloaded model weights: gigabytes, and re-fetched on first use.
+          # Backing them up costs a lot and buys nothing.
+          - { path: "{paths.state}/faster-whisper/hf_cache", mount: /cache/huggingface,
+              env: WHISPER_CACHE_DIR, backup: skip }
+        verify:
+          - http: "http://127.0.0.1:{services.faster-whisper.port}/health"
+            status_only: "upstream image; /health is bare and the fallback is the root"
+            fallback_http: "http://127.0.0.1:{services.faster-whisper.port}/"
+            timeout: 300     # model load on first boot
+
+  audio-cpp:
+    description: One C++ runtime for speech to text and text to speech.
+    role: compute
+    # Not something a household turns on to get a feature: nothing points at
+    # it until somebody moves TTS_ENGINE, so it belongs beside whisper rather
+    # than on the first page.
+    #
+    # And not a tile at all. This was `advanced` with `tile_path: /health`,
+    # which drew a square at `http://<compute>:21014/health` -- refused from
+    # every phone in the house, because the compose file publishes on
+    # `127.0.0.1` and says exactly who that is for: "the callers that matter
+    # reach it by name on nanobot-net; the published port is for a person
+    # debugging and for the profile scripts in test/". A tile is neither of
+    # those, and a link that cannot connect reads as the service being down.
+    #
+    # /health is still what tells cpu and cuda apart -- it is a payload, and it
+    # names the backend and the model count -- but it is read from this machine
+    # rather than from the wall:
+    #
+    #     curl -s http://127.0.0.1:<services.audio-cpp.port>/health
+    tier: none
+    icon: "🗣️"
+    units:
+      - name: server
+        dir: services/audio-cpp
+        # Two images from one Dockerfile. The overlay swaps the CUDA bases in
+        # and asks for the card; without it the build is the 187 MB CPU one.
+        # `gpu: false` here means "do not use the card", not "run slower" --
+        # both builds work, and the measurements for each are in the README.
+        #
+        # A list under `compose:`, which is what the deployer reads. This was
+        # `compose_overrides:` for a while, which nothing reads at all: the
+        # deploy went green, reported the overlay nowhere, and ran the CPU
+        # image while the config said cuda.
+        compose:
+          - docker-compose.yml
+          - { file: docker-compose.gpu.yml, when: services.audio-cpp.gpu }
+        build: true
+        # container_name is pinned in the compose file and container names are
+        # global rather than project-scoped, so a container left by a hand-run
+        # `docker compose up` is invisible to `down` and makes `up` fail on a
+        # name conflict. Same reason as faster-whisper next door -- and this
+        # one really was started by hand, repeatedly, while it was a bench.
+        pre_remove_containers: [audio-cpp]
+        # It joins the assistants' network so a caller can reach it by name,
+        # and declares it `external:` -- which `docker compose config` does not
+        # check. `up` on a host that has not run nanobot yet simply aborts.
+        pre_create_networks: [nanobot-net]
+        env:
+          AUDIOCPP_PUBLISH_PORT: "{services.audio-cpp.port}"
+          AUDIOCPP_THREADS: "{services.audio-cpp.threads}"
+          # Which packages the server *offers*. Not which one it uses: the
+          # caller names a model per request, so this is a list of what is
+          # available and there is deliberately no picker for it on the admin
+          # page. Adding one would move a per-call decision into a per-house
+          # setting.
+          AUDIOCPP_TTS_PACKAGES: "{derived.tts_packages}"
+          AUDIOCPP_ASR_PACKAGES: "{derived.asr_packages}"
+          # Must match the image the overlay built. A cuda backend in a
+          # cpu-built image refuses to start, which is the better failure --
+          # the reverse runs on the CPU at CPU speed and looks like a
+          # disappointing GPU.
+          AUDIOCPP_BACKEND: "{services.audio-cpp.backend}"
+          AUDIOCPP_GPU_DEVICE: "{services.audio-cpp.gpu_device}"
+        state:
+          # Model packages: 6.9 GB for the seven shipped defaults, measured,
+          # and re-fetched from Hugging Face on demand. Backing them up costs
+          # a lot and buys nothing, the same trade whisper's weights make.
+          - { path: "{paths.state}/audio-cpp/models", mount: /models,
+              env: AUDIOCPP_MODELS_DIR, backup: skip }
+        verify:
+          # A payload, not a 200: this port has served a different container in
+          # this stack before, and `status` alone cannot tell a CPU build from
+          # a CUDA one -- which is the single most likely thing to be wrong
+          # after a deploy that flipped `gpu`.
+          - http: "http://127.0.0.1:{services.audio-cpp.port}/health"
+            expect_json: {status: ok}
+            # The first deploy downloads ~1.6 GB before it can answer
+            # anything. 600 needed 2.7 MB/s to pass, which is a deploy that
+            # fails on a slow line for no reason but the clock. Measured here
+            # with the packages already staged: 433 s end to end.
+            timeout: 1200
+
+  home-voice:
+    description: Voice gateway; panels reach the shared assistant through it.
+    role: compute
+    # The voice gateway's health, for when a panel goes quiet.
+    tier: advanced
+    icon: "🔊"
+    # mqtt as well: test/smoke.py exercises /v1/announce, which publishes to
+    # the broker. Deploying the whole stack in one run put home-voice before
+    # mqtt, so the smoke test asked a gateway to reach a broker that had not
+    # been brought up yet and reported `502 could not reach the broker` -- a
+    # true statement about a stack mid-deploy, and a failure that says nothing
+    # about home-voice.
+    depends_on: [faster-whisper, nanobot-house, mqtt]
+    # Same shape as whisper above, same reason.
+    tile_path: "/docs"
+    units:
+      - name: voice
+        dir: services/home-voice
+        compose: docker-compose.yml
+        build: true
+        # The gateway speaks two sentences of its own when the assistant cannot
+        # be reached, and both name it. Renaming the assistant has to reach the
+        # words a person hears standing in a room, not just its own prompts.
+        assistant_name_in:
+          - "voice-gateway/gateway.py"
+          - "test/*.py"
+        env:
+          # The full endpoint, not the base: the gateway posts to this URL
+          # exactly as given, and its own default carries the path. Without it
+          # every turn 404s and reaches a panel as "stt failed".
+          VOICE_PORT: "{services.home-voice.port}"
+          VOICE_TTS_PORT: "{services.home-voice.tts_port}"
+          WHISPER_URL: "http://{dns.whisper}:{services.faster-whisper.port}/transcribe"
+          # Which language whisper is told to expect. It was pinned to `es` in
+          # the image, from the household this came from, so an English house
+          # got its speech force-decoded as Spanish -- which produces confident
+          # nonsense rather than an error.
+          WHISPER_LANGUAGE: "{locale.default}"
+          # The endpoint, not the host. gateway.py POSTs to this value
+          # directly -- its own default is
+          # `http://hub.home:8906/v1/chat/completions` -- so exporting the
+          # bare base overrode a correct fallback with a 404. The gateway then
+          # answered every room with "I could not reach Alfred", which reads as
+          # the assistant being down rather than as the address being wrong,
+          # and the assistant was up the whole time.
+          NANOBOT_URL: "http://{dns.assistant}:{services.nanobot-house.api_port}/v1/chat/completions"
+          MQTT_BROKER: "{dns.mqtt}"
+          MQTT_PORT: "{services.mqtt.broker_port}"
+          # 180, not the gateway's built-in 90. A room session grows until it
+          # consolidates at 65536 tokens and every turn re-sends it: this
+          # house's kitchen sits around 37k, which on the fallback model an
+          # OpenCode Zen outage routes to takes well over 90 seconds. The gateway
+          # then tells the room "I could not reach Alfred" about an assistant
+          # that answers correctly moments later -- the worst of the three
+          # outcomes, because it reads as the assistant being down rather than
+          # slow. A panel waiting longer is the better trade.
+          TURN_TIMEOUT: "180"
+          # services/audio-cpp, and empty unless that service is enabled --
+          # see derive(). The gateway offers the engine only when this is
+          # set, so an address for a container nobody started would put a
+          # choice in the dropdown that fails when taken.
+          AUDIOCPP_TTS_URL: "{derived.audiocpp_url}"
+          # What catches a *failing* engine. Not a name nobody offers (400)
+          # and not one never configured (503) -- only a real engine that is
+          # down, so a restarting container is not silence in the kitchen.
+          TTS_FALLBACK_ENGINE: "piper"
+          # Which audio.cpp package the gateway asks for. A setting now, on
+          # the Voice page: the package is a file and the voice is a style
+          # inside it, and a household choosing "the male one" is choosing the
+          # style while the package stays whatever is installed. Derived so a
+          # config that never named one still deploys, and so a stale choice
+          # cannot outlive the package being removed.
+          AUDIOCPP_TTS_MODEL: "{derived.tts_model}"
+          # What Alfred speaks with. One choice in two parts, set on the admin
+          # page: the engine, and a voice belonging to that engine. Empty voice
+          # means the engine's own default, which is what a household that has
+          # never opened the page gets.
+          # Derived rather than read straight from the service block, so a
+          # config written before these keys existed still deploys. A required
+          # key is a hard failure on every household that upgrades, and a
+          # voice setting is not worth that.
+          DEFAULT_TTS_ENGINE: "{derived.tts_engine}"
+          DEFAULT_TTS_VOICE: "{derived.tts_voice}"
+          # Where to report what the card did, and the token that says which
+          # container is reporting. A service token, not a member's: this
+          # container has no user behind it, and lending it somebody's proxy
+          # token would put a person's name on a row that belongs to a room.
+          # Both empty is "do not report", which is a working gateway with a
+          # quieter usage page and not a failure.
+          HOMECORE_URL: "https://{dns.portal}:{services.home-core.port}"
+          USAGE_SERVICE_TOKEN: "{derived.usage_token_voice}"
+        state:
+          # The device registry is live config: a deploy that starts with no
+          # devices file produces a gateway that 403s every panel and reads as
+          # a firmware bug.
+          - { path: "{paths.config}/home-voice", mount: /config, require_file: devices.json,
+              seed_from: devices.example.json, env: VOICE_CONFIG_DIR }
+          # Learned IR codes. The one directory here that cannot be re-derived:
+          # each code cost somebody a walk to a drawer and a button press.
+          - { path: "{paths.state}/home-voice", mount: /state, writable: true,
+              env: VOICE_STATE_DIR }
+        # Run the image's own tests before it replaces the running one, so a red
+        # run stops the house getting the change rather than reporting on it
+        # afterwards.
+        test:
+          image: voice-gateway:latest
+          # -p no:cacheprovider: /test is mounted read-only, and without this
+          # pytest buries the one real failure under a screen of warnings about
+          # not being able to write its cache.
+          command: ["pytest", "-q", "-p", "no:cacheprovider", "/test"]
+          mount: { from: test, to: /test }
+        verify:
+          # `curl -sf` does not fail on a 3xx. The first version of this went
+          # green against another service's 307 on the same port while the
+          # gateway crash-looped on "address already in use". Assert the
+          # payload, not the status.
+          - http: "http://127.0.0.1:{services.home-voice.port}/health"
+            expect_json: {status: ok}
+            timeout: 120
+          - http: "http://127.0.0.1:{services.faster-whisper.port}/health"
+            status_only: "a dependency gate; the round-trip check below is the real one"
+            fail_message: "speech-to-text is not answering - deploy faster-whisper first"
+          # piper speaks, whisper hears it back, the assistant answers. The only
+          # check that tells a working stack from three containers that started.
+          - script: test/smoke.py
+            # `--lang` is the same value the gateway gets as WHISPER_LANGUAGE,
+            # from the same place. Without it the probe was always English:
+            # piper spoke an English sentence in this house's Spanish voice and
+            # whisper, told to expect Spanish, duly transcribed Spanish. The
+            # word it looked for could not appear, so a healthy stack failed all
+            # five attempts and looked like the sampling flakiness the re-rolls
+            # exist to absorb.
+            args: ["--base", "http://127.0.0.1:{services.home-voice.port}",
+                   "--lang", "{locale.default}"]
+            # Five attempts against an assistant carrying a loaded room session.
+            # Measured at ~58s a turn here once the Home Assistant MCP stopped
+            # costing 37s of failed connect per message -- so three attempts fit
+            # in 180s and five do not. Raised rather than cutting the re-rolls:
+            # they are what makes a VITS sampler tolerable, and a check that
+            # cannot afford them reddens deploys for a working house.
+            timeout: 360
+    secrets:
+      required: [NANOBOT_API_SECRET_HOUSE, VOICE_GATEWAY_TOKEN]
+
+  mqtt:
+    description: The broker and its dashboard.
+    role: hub
+    # The broker's dashboard -- for when a device is not reporting.
+    tier: advanced
+    icon: "📡"
+    units:
+      - name: broker
+        dir: deploy/units/mosquitto
+        compose: docker-compose.yml
+        # Upstream image, never built here.
+        build: false
+        env:
+          MQTT_BROKER_IMAGE: "{services.mqtt.broker_image}"
+          MQTT_BROKER_PORT: "{services.mqtt.broker_port}"
+        state:
+          # The broker will not start with an empty config directory: the image
+          # runs `mosquitto -c /mosquitto/config/mosquitto.conf`, and the bind
+          # mount hides whatever the image shipped there.
+          - { path: "{paths.config}/mosquitto", mount: /mosquitto/config,
+              env: MQTT_CONFIG_DIR, require_file: mosquitto.conf,
+              seed_from: mosquitto.conf.example }
+          # `backup: skip`: the broker runs `persistence false` -- checked in
+          # the shipped mosquitto.conf -- so there is nothing durable in here
+          # to lose. docs/mqtt-conventions.md says the same thing from the
+          # other side: treat `status` as the liveness signal rather than
+          # trusting a retained value.
+          - { path: "{paths.state}/mosquitto", mount: /mosquitto/data, backup: skip,
+              env: MQTT_STATE_DIR }
+        verify:
+          - mqtt_roundtrip:
+              host: 127.0.0.1
+              port: "{services.mqtt.broker_port}"
+              topic: "home-stack/deploy/probe"
+              timeout: 30
+      - name: dashboard
+        # The shared translation catalogues, staged into the build context.
+        # Each app serves its own copy -- see i18n/README.md.
+        assets:
+          - { from: i18n, to: i18n }
+        dir: services/mqtt-dashboard/dashboard
+        compose: docker-compose.yml
+        build: true
+        env:
+          PORT: "{services.mqtt.dashboard_port}"
+          MQTT_BROKER: "{dns.mqtt}"
+          MQTT_PORT: "{services.mqtt.broker_port}"
+        state:
+          # DATA_DIR unset once meant /app, which --force-recreate then
+          # destroyed along with every configured notification bridge. It was
+          # unset again in the first version of this manifest, for the same
+          # reason: declaring the path here without naming the variable that
+          # carries it changes nothing the container sees.
+          - { path: "{paths.state}/mqtt-dashboard", mount: /data,
+              env: MQTT_DASHBOARD_DATA_DIR }
+        verify:
+          - http: "http://127.0.0.1:{services.mqtt.dashboard_port}/health"
+            expect_json: {status: ok}
+            timeout: 60
+    secrets:
+      optional: [NTFY_CREDENTIALS]
+
+  registry:
+    description: >
+      An image registry on your own network. Only needed when a service runs
+      under Kubernetes on more than one machine: a node can only start a pod
+      whose image it can pull, and the assistant image is built rather than
+      published. Off unless you turned Kubernetes on.
+    role: hub
+    # An image registry. Nothing a person opens.
+    tier: none
+    units:
+      - name: registry
+        dir: deploy/units/registry
+        compose: docker-compose.yml
+        build: false
+        pull: true
+        env:
+          REGISTRY_PORT: "{services.registry.port}"
+        state:
+          # Images, and they are large. Outside the deploy tree like everything
+          # else: a re-deploy replaces that directory.
+          - { path: "{paths.state}/registry", mount: /var/lib/registry,
+              env: REGISTRY_STATE_DIR,
+              # Rebuilt by pushing again, and gigabytes. Backing it up would
+              # cost more than re-pushing ever does.
+              backup: skip }
+        verify:
+          # `/v2/` is the registry API's own root. It answers 200 with an empty
+          # JSON object when it is working; a status-only check here would pass
+          # against anything at all listening on the port.
+          - http: "http://127.0.0.1:{services.registry.port}/v2/"
+            expect: "{}"
+            timeout: 60
+
+  ntfy:
+    description: Notifications, on this network. Off when cloud.notifications.mode is not `local`.
+    role: hub
+    # Notifications, when they are served from this house.
+    tier: advanced
+    icon: "🔔"
+    units:
+      - name: ntfy
+        dir: deploy/units/ntfy
+        compose: docker-compose.yml
+        build: false
+        pull: true
+        env:
+          NTFY_PORT: "{services.ntfy.port}"
+          # ntfy's own base-url, and it is not decoration: ntfy stamps it into
+          # the attachment and click URLs it *delivers*, which open on the
+          # phones the notifications arrive on. So it has to be something those
+          # phones can reach.
+          #
+          # It was `{dns.ntfy}` -- a second place to say where ntfy is, when
+          # `cloud.notifications` already says it, and a name that only works
+          # if somebody made a DNS record for it. On the house this came from
+          # nobody had, so every link ntfy delivered pointed at a name that did
+          # not resolve. The hub's own address needs no DNS at all.
+          NTFY_BASE_URL: "{derived.ntfy_self_url}"
+        self_urls:
+          NTFY_BASE_URL: >
+            ntfy's own address, not somewhere it dials, so the container
+            gateway name is wrong here -- it would not resolve on a phone.
+            If this reads as loopback, that is the hub having no LAN address
+            rather than an exemption doing its job: notifications will arrive
+            and their attachment links will not open. Give hosts.hub a real
+            address; `browsable_address` picks it up on its own, so the fix is on
+              the machine rather than in the config.
+
+        state:
+          - { path: "{paths.state}/ntfy", mount: /var/lib/ntfy, env: NTFY_STATE_DIR }
+          - { path: "{paths.config}/ntfy", mount: /etc/ntfy, env: NTFY_CONFIG_DIR }
+        verify:
+          - http: "http://127.0.0.1:{services.ntfy.port}/v1/health"
+            expect_json: {healthy: true}
+            timeout: 60
+
+  nodered:
+    description: Flows the house runs on a schedule or a trigger.
+    # Off by default. This is one of the services the package can deploy
+    # rather than one it is about: a household without flows already written
+    # has nothing for it to run.
+    role: hub
+    tier: advanced
+    icon: "🕸"
+    units:
+      - name: nodered
+        dir: deploy/units/nodered
+        compose: docker-compose.yml
+        build: false
+        pull: true
+        env:
+          NODERED_PORT: "{services.nodered.port}"
+          # Where a flow posts back to the house, and where it publishes.
+          # Addresses, not `dns:` names -- a container retrying getaddrinfo
+          # forever is indistinguishable from the service being down.
+          HOMECORE_URL: "https://{dns.portal}:{services.home-core.port}"
+          MQTT_BROKER: "{dns.mqtt}"
+          MQTT_PORT: "{services.mqtt.broker_port}"
+        state:
+          # The whole directory, and that is not a preference:
+          # `flows_cred.json` is encrypted with `credentialSecret` out of the
+          # `settings.js` beside it. Carry the flows without it and every node
+          # is in place with every credential blank, which reads as a broken
+          # integration rather than a missing file.
+          - path: "{paths.state}/nodered"
+            mount: /data
+            env: NODERED_DATA_DIR
+            backup: essential
+            # 20.7 MB of the 20.8 MB this entry contributed was these two, and
+            # neither is authored. `.npm` is npm's download cache -- the
+            # runtime never reads it. `node_modules` is `npm install`'s output
+            # for the palette, and the palette itself is declared in the
+            # `package.json` beside it: one direct dependency here
+            # (node-red-contrib-home-assistant-websocket) and 55 transitive
+            # ones, pinned exactly by the 27 KB `package-lock.json`. Both of
+            # those files are copied, so what was installed is still known.
+            #
+            # This is `skip_dirs` and NOT `bulk_dirs` on purpose: there is no
+            # `--with-media` run that brings a node_modules back, because
+            # there is nothing to bring back to -- a tool rebuilds it.
+            #
+            # The cost, stated because it is real and docs/backups.md used to
+            # promise the opposite: Node-RED does not reinstall the palette at
+            # boot, so a restore needs `npm install` in the data directory
+            # before the flows load. That is one command against a pinned lock
+            # file, and `kept_out()` puts these two names in the archive's own
+            # record so the restore says what it left out rather than a person
+            # having to remember. The alternative was re-copying, re-taring,
+            # re-encrypting and re-uploading 20 MB of rebuildable modules
+            # every night for as long as the archive is kept.
+            skip_dirs: [node_modules, .npm]
+        verify:
+          # The runtime's own settings, which answer JSON only once the flows
+          # have loaded. `/` serves the editor's HTML while it is still
+          # starting, so a check on that passes against a Node-RED that has
+          # not read a flow yet.
+          - http: "http://127.0.0.1:{services.nodered.port}/settings"
+            expect: "httpNodeRoot"
+            timeout: 90
+
+  homeassistant:
+    description: The house's devices — lights, sensors, switches, and what they do.
+    role: hub
+    tier: basic
+    icon: "🏠"
+    units:
+      - name: homeassistant
+        dir: deploy/units/homeassistant
+        compose:
+          - docker-compose.yml
+          # The radio, when this machine is the one it is plugged into. A
+          # device that is not present fails `up` outright rather than
+          # degrading, so it cannot live in the file that ships.
+          - { file: docker-compose.zigbee.yml, when: services.homeassistant.zigbee }
+        build: false
+        pull: true
+        env:
+          HOMEASSISTANT_PORT: "{services.homeassistant.port}"
+          # By-id. `ttyUSBn` is handed out in probe order, so anything else
+          # that enumerates as a serial port renumbers it on the next reboot
+          # and ZHA opens the wrong device -- which presents as the entire
+          # Zigbee network having vanished.
+          HOMEASSISTANT_SERIAL: "{services.homeassistant.serial}"
+        state:
+          # All of it. `.storage` holds the device and entity registries and
+          # every integration's tokens; `zigbee.db` holds the network key each
+          # paired device is joined on. Re-pairing a house one bulb at a time
+          # is the thing this row exists to prevent.
+          - path: "{paths.state}/homeassistant"
+            mount: /config
+            env: HOMEASSISTANT_CONFIG_DIR
+            backup: essential
+        verify:
+          # Something with an answer in it. `/` is a 200 carrying the
+          # onboarding shell long before any integration has loaded, which is
+          # exactly the check that passes while the house is dark.
+          - http: "http://127.0.0.1:{services.homeassistant.port}/manifest.json"
+            # manifest.json's `name` is "Home Assistant"; the hyphenated form
+            # appears nowhere in it, so this never matched. Same bug as the
+            # unit's healthcheck.
+            expect: "Home Assistant"
+            timeout: 180
+
+  n8n:
+    description: Workflow automation — what the house does when something happens elsewhere.
+    role: hub
+    tier: advanced
+    icon: "🔁"
+    units:
+      - name: n8n
+        dir: deploy/units/n8n
+        compose: docker-compose.yml
+        build: false
+        pull: true
+        env:
+          N8N_PORT: "{services.n8n.port}"
+          # What n8n stamps into the webhook URLs it hands *out*, so it has to
+          # be something the caller can reach. Both were literals pointing at
+          # a subnet this house no longer uses.
+          N8N_HOST: "{derived.n8n_self_host}"
+          N8N_EDITOR_BASE_URL: "{derived.n8n_self_url}"
+        self_urls:
+          N8N_EDITOR_BASE_URL: >
+            n8n's own address, not somewhere it dials: it goes into the
+            webhook URLs you paste into other systems, and the container
+            gateway name would not resolve for any of them. Loopback here
+            means hosts.hub has no LAN address, and every webhook n8n offers
+            will be unreachable rather than merely inconvenient.
+        state:
+          # The whole directory. `config` in it is 56 bytes and holds the key
+          # every stored credential is sealed with -- without it n8n starts
+          # cleanly, lists every workflow, and decrypts none of them.
+          - path: "{paths.state}/n8n"
+            mount: /home/node/.n8n
+            env: N8N_DATA_DIR
+            backup: essential
+        verify:
+          # n8n's own readiness, which answers only once the database has
+          # migrated and the workflows are registered. The editor's HTML is up
+          # well before that.
+          - http: "http://127.0.0.1:{services.n8n.port}/healthz"
+            expect_json: {status: "ok"}
+            timeout: 120
+
+  browser-use:
+    description: An agent that drives a real browser, for pages with no API.
+    # Off by default, and the only thing here that *acts* on somebody else's
+    # site rather than reading it. It ships Chromium (~1.5 GB) and needs a model
+    # to decide what to click. services/browser-use/README.md is worth reading
+    # before switching it on -- especially about sessions and terms of service.
+    role: compute
+    # No tile, for the same reason crawl4ai and alfred-mcp have none: the only
+    # thing that talks to this is an assistant, over MCP. It was `advanced`,
+    # which drew a square pointing at `http://<compute>:21034` -- dead twice
+    # over. Its compose publishes on `127.0.0.1` on purpose, so that address is
+    # refused from any phone on the house network; and `/` is a 404 even on
+    # this machine, because there is no page here to serve. Both failures read
+    # as the service being down, which is exactly the question somebody opens a
+    # tile to answer -- see the `tile_path:` note in deploy.py's tile builder.
+    tier: none
+    icon: "\U0001F310"
+    units:
+      - name: browser
+        dir: services/browser-use
+        compose: docker-compose.yml
+        image_build: {tag: browser-use:latest, context: .}
+        pre_create_networks: [nanobot-net]
+        env:
+          BROWSER_USE_PORT: "{services.browser-use.port}"
+          # Ollama on the host, reached the way every other container reaches
+          # it. A model here is not optional: without one the agent cannot
+          # decide anything and every task fails on the first step.
+          # `from_container`, not `address`. On the default single-box install
+          # `hosts.compute.address` is 127.0.0.1, and inside this container
+          # that is *this container* -- the agent would ask itself for a model
+          # and every task would fail on its first step. Dormant until the day
+          # somebody switched browser-use on, which is exactly when a wrong
+          # address is hardest to read as a wrong address.
+          OLLAMA_URL: "http://{hosts.compute.from_container}:11434"
+        verify:
+          # The payload, not the status code. A browser that starts but cannot
+          # launch Chromium answers 503 from /healthz on purpose -- the import
+          # is the check -- and a bare `curl -sf` would pass on the redirect a
+          # dead container's port sometimes serves.
+          - http: "http://127.0.0.1:{services.browser-use.port}/healthz"
+            expect_json: {ok: true}
+            fail_message: >
+              browser-use is not answering. It is off by default and only
+              deployed when `services.browser-use.enabled` is true; if you just
+              turned it on, the first build pulls Chromium and takes a while.
+            timeout: 180
+          # The MCP route, which is the only thing an assistant ever talks to
+          # -- and the only part of this service that /healthz cannot see.
+          # `/healthz` is an ordinary FastAPI route and answers 200 whether or
+          # not the streamable-HTTP handler was spliced in, whether or not the
+          # session manager started, and whether or not an `mcp` upgrade moved
+          # the path or turned its host checks on. All of those leave a green
+          # deploy and a failed MCP connect on the path of every message, which
+          # is the 37s-a-message failure this house has already paid once.
+          #
+          # A bare GET is enough to tell the three apart, and the body is what
+          # says which: the live handler refuses the request with a JSON-RPC
+          # error ("Client must accept text/event-stream"), a missing route
+          # answers FastAPI's `{"detail":"Not Found"}`, and a dead container
+          # answers nothing. So this greps for the protocol, not for a status
+          # -- a 406 here is the pass.
+          - http: "http://127.0.0.1:{services.browser-use.port}/mcp"
+            expect: '"jsonrpc"'
+            fail_message: >
+              browser-use is up but its /mcp route is not answering the MCP
+              protocol. The assistants reach this service at that path and
+              nothing else; check that `mcp` is installed in the image and
+              that server.py still splices the streamable-HTTP route into the
+              app.
+            timeout: 30
+
+  crawl4ai:
+    description: Reads a web page and hands back clean Markdown, on your own hardware.
+    # On by default, and the assistant's answer to "read this page". It is the
+    # one thing here that opens arbitrary URLs, so two things are load-bearing
+    # and neither is decoration:
+    #
+    #   - CRAWL4AI_API_TOKEN decides the *socket bind*, not just auth. Without
+    #     it the image serves the container's own loopback and nothing can
+    #     reach it -- which reads as the container being down.
+    #   - Its SSRF guard is what keeps a model-chosen URL off the house
+    #     network. Measured on 0.9.3: 169.254.169.254, 127.0.0.1:21002,
+    #     192.168.0.0/16 and 10.0.0.0/8 are all refused with "URL blocked
+    #     (SSRF protection)", and file:// is rejected outright.
+    #
+    # deploy/units/crawl4ai/test/smoke.py asserts that, and it is run **by
+    # hand** -- `verify:` below does not call it, deliberately: a deploy that
+    # depended on reaching example.com would fail on a house whose internet is
+    # down, which is the wrong thing to make a deploy conditional on. So the
+    # honest statement is that nothing here would catch an upgrade that lost
+    # the guard. Run it after moving the pin:
+    #
+    #   python3 deploy/units/crawl4ai/test/smoke.py \
+    #     --token "$(grep -m1 ^CRAWL4AI_API_TOKEN= \
+    #                /var/lib/home-stack/config/smart-home-bot.env | cut -d= -f2-)"
+    role: compute
+    # No tile: nobody opens this, the assistant does. It has a /playground, but
+    # that is a debugging surface rather than a household page.
+    tier: none
+    icon: "\U0001F577"
+    units:
+      - name: crawl4ai
+        dir: deploy/units/crawl4ai
+        compose: docker-compose.yml
+        build: false
+        pull: true
+        # The assistants' network. They declare this too; whichever of the two
+        # deploys first creates it, and `up` fails outright on a fresh host if
+        # neither does.
+        pre_create_networks: [nanobot-net]
+        env:
+          CRAWL4AI_PORT: "{services.crawl4ai.port}"
+        verify:
+          # /health and not /monitor/health: the monitor routes answer 401
+          # without the Bearer token, so a check on one of those cannot tell
+          # "down" from "the token is wrong". This asserts the payload -- a
+          # port answering something else does not say status: ok.
+          - http: "http://127.0.0.1:{services.crawl4ai.port}/health"
+            expect_json: {status: "ok"}
+            fail_message: >
+              crawl4ai is not answering. If it is running but unreachable, the
+              usual cause is CRAWL4AI_API_TOKEN being empty: the image binds
+              the container's own loopback when it has no credential, and a
+              published port cannot reach that.
+            timeout: 120
+    secrets:
+      # Required, and supplied by `derive_crawl4ai_secret()` rather than by
+      # anything in the credentials file -- so this passes on a household that
+      # has never heard of crawl4ai and never re-ran the installer. Required
+      # rather than optional because an empty token is not "no auth", it is a
+      # container that starts, reports healthy to its own loopback, and cannot
+      # be reached by anything.
+      required: [CRAWL4AI_API_TOKEN, CRAWL4AI_SECRET_KEY]
+
+  home-search:
+    description: The house's own metasearch, and the engine that reads for you.
+    # Off by default: two more images on a stack that already builds twelve
+    # services, and the assistant works without it -- `web_search` falls back to
+    # its own provider. Turn it on in config/home-stack.yml.
+    role: compute
+    # The house's own metasearch.
+    tier: advanced
+    icon: "🔎"
+    units:
+      - name: search
+        dir: services/home-search
+        compose: docker-compose.yml
+        build: false
+        pull: true
+        # Both container names are global and unqualified (`searxng`, `vane`),
+        # so the project name is pinned for the same reason paperless pins one:
+        # without it a second deploy path fails on a name conflict instead of
+        # adopting the running stack.
+        compose_project: home-search
+        # Parses the deployed settings.yml and substitutes the generated secret
+        # into it -- BEFORE compose runs, which is the whole point. The stack
+        # this came from validated by printing the value and installing the file
+        # anyway: a config with `limiter: true` passed, the good host file was
+        # overwritten, the containers were recreated onto it, and only then did
+        # the check fail on 429, with the working config already gone.
+        pre: python3 ./validate-settings.py
+        env:
+          SEARXNG_PORT: "{services.home-search.port}"
+          VANE_PORT: "{services.home-search.vane_port}"
+          # What SearXNG prints about itself. The skills never read it -- they
+          # use SEARXNG_BASE_URL, which the nanobot units export.
+          SEARXNG_SELF_URL: "http://{hosts.compute.address}:{services.home-search.port}/"
+          # Vane's chat and embedding models come from the same Ollama the
+          # assistants use. A second copy of a model on this box earns nothing.
+          OLLAMA_URL: "{derived.ollama_url}"
+        self_urls:
+          SEARXNG_SELF_URL: >
+            SearXNG's own address, not somewhere it dials -- it is what the
+            instance puts in the links it prints about itself.
+        state:
+          # The live settings.yml, seeded once from the example beside it and
+          # state afterwards. Under paths.config and never inside the deploy
+          # tree: the deployer rsyncs that with --delete, and a settings file
+          # that vanished would have SearXNG write the image template in its
+          # place -- which serves HTML only, so every skill call gets 403 while
+          # the container looks healthy.
+          - { path: "{paths.config}/home-search", mount: /etc/searxng,
+              env: SEARCH_CONFIG_DIR,
+              require_file: searxng/settings.yml,
+              seed_from: settings.example.yml }
+        verify:
+          # Not a status code, and not the presence of a `results` key. An
+          # instance with no outbound DNS answers 200 with an empty array, which
+          # passed the check this replaces and left every assistant call
+          # answering "nothing came back". And Vane answers on its port long
+          # before it has a model, with every /api/search returning 400 behind a
+          # healthy container. Both are asked for something a working one can
+          # actually produce.
+          - script: test/check.py
+            # --timeout is per service and the script gets two of them, so the
+            # outer number is the one that has to be larger. Passed rather than
+            # left at the script's own default of 180, which gave up two
+            # minutes before the deployer would have.
+            args: ["--searxng", "http://127.0.0.1:{services.home-search.port}",
+                   "--vane", "http://127.0.0.1:{services.home-search.vane_port}",
+                   "--timeout", "240"]
+            timeout: 600
+    secrets:
+      required: [SEARXNG_SECRET_KEY]
+
+  home-paperless:
+    description: Document archive.
+    role: storage
+    # The document archive.
+    tier: basic
+    icon: "📄"
+    units:
+      - name: paperless
+        dir: services/home-paperless
+        compose: docker-compose.yml
+        build: false
+        pull: true
+        # Compose derives its project name from the directory it runs in, and
+        # this compose file pins explicit container names, which are global.
+        # Without a fixed project name a second deploy path cannot create the
+        # containers at all — it fails on a name conflict rather than adopting
+        # the running stack.
+        compose_project: paperless
+        env:
+          PAPERLESS_PORT: "{services.home-paperless.port}"
+          PAPERLESS_URL: "http://{dns.paperless}:{services.home-paperless.port}"
+          MAIL_PASSWORD: $PAPERLESS_MAIL_PASSWORD
+          # The household's languages, as Tesseract names them (`spa+eng`).
+          # It was a literal `eng` for a Spanish house. See ocr_language().
+          PAPERLESS_OCR_LANGUAGE: "{derived.ocr_language}"
+          # Paperless's own AI, from `assistant.models.documents` on the Models
+          # page. It reads the document's OCR text -- not the scan -- and
+          # suggests a title, tags, a correspondent, a type and a date
+          # (paperless_ai/ai_classifier.py, 3.1.3), so any text model will do.
+          # Blank turns it off. These are the names Paperless reads; the ones
+          # exported until 2026-09-12 (PAPERLESS_AI_MODEL, _ENDPOINT, _API_KEY,
+          # _PROVIDER) were not, so it had never been configured.
+          PAPERLESS_AI_ENABLED: "{derived.paperless_enabled}"
+          PAPERLESS_AI_LLM_BACKEND: "{derived.paperless_backend}"
+          PAPERLESS_AI_LLM_MODEL: "{derived.paperless_model}"
+          PAPERLESS_AI_LLM_ENDPOINT: "{derived.paperless_endpoint}"
+          PAPERLESS_AI_LLM_API_KEY: "{derived.paperless_key}"
+          PAPERLESS_AI_LLM_CONTEXT_SIZE: "{derived.paperless_context}"
+          PAPERLESS_AI_LLM_OUTPUT_LANGUAGE: "{derived.paperless_output_language}"
+          # The index the AI chooses existing tags from, from
+          # `services.home-paperless.embeddings`. Absent, not empty, when none
+          # is set: Paperless refuses to start on an empty backend.
+          PAPERLESS_AI_LLM_EMBEDDING_BACKEND: "{derived.paperless_embedding_backend}"
+          PAPERLESS_AI_LLM_EMBEDDING_MODEL: "{derived.paperless_embedding_model}"
+          PAPERLESS_AI_LLM_EMBEDDING_ENDPOINT: "{derived.paperless_embedding_endpoint}"
+        env_omit_empty: [PAPERLESS_AI_LLM_EMBEDDING_BACKEND,
+                         PAPERLESS_AI_LLM_EMBEDDING_MODEL,
+                         PAPERLESS_AI_LLM_EMBEDDING_ENDPOINT]
+        self_urls:
+          PAPERLESS_URL: >
+            Paperless's own public URL, not somewhere it dials. It is what the
+            application puts in the links it generates, which a person opens
+            from a browser on the host.
+        state:
+          # Paperless's `data/`: the search index, the trained classifier, its
+          # logs and a scheduler cursor. Every one of those is rebuilt from the
+          # database and the media directory below, which are the two entries
+          # that matter -- and restoring an old index over a restored database
+          # is worse than having none, because Paperless then answers searches
+          # from an index that disagrees with its own contents until somebody
+          # runs a reindex.
+          #
+          # It is also the one path on a default install this account cannot
+          # read: the container runs as root and writes `index/*.json` 0600,
+          # so `./home-stack backup` failed here and kept nothing at all.
+          #
+          # `skip` is right *because this stack always runs postgres beside
+          # it*. On a Paperless configured for SQLite the database is
+          # `data/db.sqlite3` and skipping this directory would throw away
+          # every title, tag and correspondent. If that ever becomes an
+          # option here, this line is the one to revisit.
+          - { path: "{paths.state}/paperless", mount: /usr/src/paperless/data,
+              env: PAPERLESS_DATA_DIR, backup: skip }
+          # The scanned documents themselves, and they are `essential` rather
+          # than `bulk` because of the entry above. `{state}/paperless-db` is
+          # captured on every run and holds every title, tag, correspondent and
+          # date -- so an archive that keeps the database and drops the files
+          # restores a complete catalogue pointing at documents that are not
+          # there. That is a worse outcome than keeping neither, because it
+          # looks like a successful restore until somebody opens one.
+          #
+          # `bulk` was inherited from an install where this was hundreds of GB
+          # on a NAS. Here it is 13 MB across 61 files -- household paperwork,
+          # which grows by a few scans a month, not by the gigabyte. It is also
+          # what docs/backups.md has always claimed is in the archive.
+          - { path: "{paths.media}/paperless", mount: /usr/src/paperless/media,
+              env: PAPERLESS_MEDIA_DIR }
+          # The inbox. A file dropped here is consumed and removed, so it is
+          # short-lived -- but it is a real directory on a real disk and it was
+          # hardcoded to /mnt/storage along with the rest.
+          #
+          # `skip`, not `bulk`: this is an input queue, not state. Archiving it
+          # captures whatever was mid-import, and *restoring* it drops those
+          # files back into /consume, where Paperless ingests them a second
+          # time -- re-creating documents that were since deleted or merged.
+          - { path: "{paths.media}/paperless-consume", mount: /consume,
+              env: PAPERLESS_CONSUME_DIR,
+              backup: skip }
+          # Postgres. Not optional state: without it the media directory is a
+          # pile of files with no titles, tags or correspondents.
+          # A live Postgres cluster. A file copy of one is torn across its
+          # relation files and pg_wal and usually refuses to start on restore,
+          # so the backup runs pg_dump and the restore replays it. This file is
+          # what docs/backups.md is derived from, and that document used to
+          # promise a plain rsync of this path would do.
+          - { path: "{paths.state}/paperless-db", mount: /var/lib/postgresql/data,
+              env: PAPERLESS_DB_DIR, backup: postgres,
+              db_container: paperless-postgres, db_user: paperless,
+              db_name: paperless }
+        verify:
+          # Paperless runs migrations and warms its index on boot, so it answers
+          # late rather than never. Poll to a ceiling instead of guessing with a
+          # single sleep, and fail if it never answers — the old `|| echo` here
+          # meant a stack that never came up still reported green.
+          - http: "http://127.0.0.1:{services.home-paperless.port}/"
+            status_only: "Paperless answers its own login page as HTML"
+            timeout: 300
+    secrets:
+      required: [PAPERLESS_SECRET_KEY]
+      optional: [PAPERLESS_MAIL_PASSWORD]
+
+  local-proxy:
+    description: >
+      The proxy, on your own machine. The same public name answers inside the
+      house (your DNS points it here), so a phone that walks in the door stops
+      hairpinning through the cloud without noticing anything changed.
+    role: hub
+    # Plumbing. The names it serves are the tiles.
+    tier: none
+    units:
+      - name: local
+        dir: services/proxy
+        # The base file plus the at-home override: the override alone is a
+        # service with no build and no env.
+        compose: [docker-compose.yml, docker-compose.local.yml]
+        build: true
+        env:
+          LOCAL_PROXY_PORT: "{services.local-proxy.port}"
+          # Where the *phone* subscribes for notifications. This is handed
+          # to the app by /api/ntfy-config and it dials it directly, so it has
+          # to be the address a phone can resolve -- not a container form and
+          # not a name that only exists on the LAN.
+          #
+          # It was never exported, so both proxies fell back to their compose
+          # default of `https://ntfy.home` and every app was told to open
+          # a websocket to a name nothing resolves. The phone logged
+          # "Unable to resolve host" once every ten seconds and the house
+          # looked like it had stopped sending notifications.
+          NTFY_BASE_URL: "{derived.ntfy_url}"
+          HOMECORE_LOCAL_URL: "https://{dns.portal}:{services.home-core.port}"
+          # Both proxy copies sign sessions with the same key on purpose: a
+          # phone crossing from wifi to mobile data keeps its login. Never the
+          # shared trust secret -- half the stack holds that, and any of it
+          # could then forge a session.
+          SESSION_SIGNING_KEY: $PROXY_SESSION_SIGNING_KEY
+          AUTH_MODE: upstream
+          HOUSE_ONLY_APPS: "{derived.house_only_apps}"
+          CHAT_PROXY_DATA_DIR: "{paths.state}/local-proxy"
+        # This was declared one level up, under the service, where the
+        # deployer never looks: `guard_state_paths()` never saw it and the
+        # directory was never created. It survived only because the unit's
+        # `env:` block happens to export the same variable -- without that,
+        # the compose fallback is `./data`, inside the tree push() sends with
+        # --delete.
+        state:
+          - { path: "{paths.state}/local-proxy", mount: /app/data,
+              env: CHAT_PROXY_DATA_DIR }
+        verify:
+          - http: "http://127.0.0.1:{services.local-proxy.port}/ping"
+            expect_json: {ok: true}
+            timeout: 60
+          # And through the name people type, which is what the house's Caddy
+          # serves for this upstream. Verified here rather than beside that
+          # Caddy: the proxy unit is deployed before this one and cannot reach
+          # an upstream that does not exist yet, so asserting it there failed
+          # a whole-stack deploy on the wrong service.
+          #
+          # `--resolve` against the local CA, and a payload: a name whose site
+          # block does not match still completes a TLS handshake -- the local
+          # certificate carries `*.<domain>` -- and answers an empty 200.
+          - https_resolve: "{dns.chat}"
+            port: 443
+            path: /ping
+            expect_json: {ok: true}
+            # Absolute, from the deploy root the deployer already exports.
+            # `../home-core/proxy/certs` would depend on where compose happens
+            # to have put this unit's directory relative to another service's,
+            # which is a relationship nothing states and nothing checks.
+            ca: "{derived.deploy_root}/home-core/proxy/certs/ca.pem"
+            fail_message: "the chat name is served, but not by this proxy behind it"
+            timeout: 60
+    secrets:
+      required: [PROXY_SHARED_SECRET, PROXY_SESSION_SIGNING_KEY]
+
+# ---------------------------------------------------------------------------
+# Optional, off unless cloud.vps.enabled
+# ---------------------------------------------------------------------------
+optional_services:
+  cloud-proxy:
+    description: >
+      The same proxy, on a VPS or VM you own, for reaching the house from
+      outside. It holds no application code and no household data -- every
+      request is forwarded over the reverse tunnel to the machine at home,
+      which is where everything actually runs.
+    role: vps
+    # Plumbing, and not on this machine.
+    tier: none
+    units:
+      - name: vps
+        dir: services/proxy
+        compose: docker-compose.yml
+        build: true
+        env:
+          # Where the *phone* subscribes for notifications. This is handed
+          # to the app by /api/ntfy-config and it dials it directly, so it has
+          # to be the address a phone can resolve -- not a container form and
+          # not a name that only exists on the LAN.
+          #
+          # It was never exported, so both proxies fell back to their compose
+          # default of `https://ntfy.home` and every app was told to open
+          # a websocket to a name nothing resolves. The phone logged
+          # "Unable to resolve host" once every ten seconds and the house
+          # looked like it had stopped sending notifications.
+          NTFY_BASE_URL: "{derived.ntfy_url}"
+          # The home end of the reverse tunnel, on the VPS's own loopback.
+          # https, like its sibling on the hub and like the hand-built
+          # proxy this replaces. The portal serves HTTPS and nothing else, so a
+          # plaintext dial at a TLS port fails every request through here -- and
+          # a tunnel carries bytes, not a protocol, so what arrives on this port
+          # is whatever the portal speaks.
+          #
+          # `VERIFY_UPSTREAM_TLS: "0"` in the compose file is the other half:
+          # the certificate on the far end is the house's own, for the house's
+          # own name, and this dials 127.0.0.1. Nothing it could check would
+          # mean anything -- the tunnel is the identity.
+          HOMECORE_LOCAL_URL: "https://127.0.0.1:{cloud.vps.tunnel_port}"
+          SESSION_SIGNING_KEY: $PROXY_SESSION_SIGNING_KEY
+          # Credentials are checked at home, over the tunnel. The alternative --
+          # syncing a copy of the bcrypt user store onto the VPS -- put the
+          # household's password hashes on a machine the household does not
+          # physically control, for a check the home side can answer anyway.
+          AUTH_MODE: upstream
+          HOUSE_ONLY_APPS: "{derived.house_only_apps}"
+          # Which addresses count as inside the house on the public copy. The
+          # app always arrives here, so the VPN is what distinguishes it; the
+          # household's own public address deliberately does not. Empty falls
+          # through to the compose default rather than meaning "nobody".
+          HOME_NETWORKS: "{derived.home_networks}"
+          PUBLISH_ENTRY_PAGE: "{cloud.vps.serve_entry_page}"
+        # Rendered from cloud.vps.domain. The file in git named an internal
+        # hostname, which is the one thing a public host cannot be called, so
+        # everybody had to hand-edit it.
+        vps_caddyfile: Caddyfile.snippet
+        state:
+          # Only what the proxy itself owns: enrolled device keys and per-user
+          # notification topics. No user store, no application data.
+          - { path: "{paths.state}/cloud-proxy", mount: /app/data,
+              env: CHAT_PROXY_DATA_DIR }
+        verify:
+          # The same payload the local copy of this proxy asserts. Both of
+          # these asserted nothing but "something answered" until the payload
+          # rule started covering optional services -- on the one box in this
+          # stack that faces the public internet, where "something answered"
+          # is the weakest thing you could possibly want to know.
+          # 8080, which is what the compose file's `command:` binds. It
+          # said 8070 -- a port nothing on that machine listens on -- so this
+          # check could only ever spend its whole timeout and fail, on the one
+          # box in this stack that faces the public internet. The local copy
+          # escapes it because docker-compose.local.yml overrides the command
+          # with a configurable port; the cloud one takes the base file as is.
+          - http: "http://127.0.0.1:8080/ping"
+            expect_json: {ok: true}
+            timeout: 60
+          # Prove it is proxying rather than serving: the upstream has to be
+          # reachable for the page to exist at all.
+          - http: "http://127.0.0.1:8080/healthz/upstream"
+            expect_json: {status: ok}
+            fail_message: "the tunnel to the home machine is not up - the VPS has nothing to serve"
+            timeout: 60
+    secrets:
+      required: [PROXY_SHARED_SECRET, PROXY_SESSION_SIGNING_KEY]

@@ -1,0 +1,6 @@
+# Pinned, like every other service here: an agent that clicks things is the
+# last place to accept "whatever resolved today".
+browser-use==0.7.12
+mcp==1.18.0
+fastapi==0.120.4
+uvicorn==0.38.0

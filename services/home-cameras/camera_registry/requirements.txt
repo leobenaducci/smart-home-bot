@@ -1,0 +1,12 @@
+flask==2.3.0
+flask-socketio==5.3.6
+python-socketio==5.10.0
+redis==5.0.0
+# eventlet is deliberately NOT installed. Nothing here imports it, but
+# Flask-SocketIO auto-selects async_mode='eventlet' the moment it is
+# importable, and that leaks an epoll fd per request under the werkzeug
+# threaded server we actually run — see the SocketIO() comment in app.py.
+# app.py pins async_mode='threading'; leaving it uninstalled is the belt to
+# that braces.
+# For RTSP proxy support (optional)
+# pip install requests[socket]

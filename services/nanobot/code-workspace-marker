@@ -1,0 +1,11 @@
+This directory is the code broker's workspace: one checkout per household
+member, under the member's own subdirectory.
+
+The broker refuses to clone into a directory that does not carry this file,
+under the name `.nanobot-code-workspace`. Its absence means CODE_WORKSPACE_DIR
+points somewhere nobody intended -- a home directory, or a mount that did not
+appear -- and cloning into that is worse than refusing.
+
+Upstream's build-multiuser.sh wrote it. This package does not ship that script,
+so nothing wrote it at all and the broker refused every request while reporting
+itself healthy; the deploy seeds it from here now.

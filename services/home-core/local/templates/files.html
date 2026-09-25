@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Files — Home</title>
+  <!-- The house faces, served by this app. See
+       HomeCore/tools/fetch-fonts.sh for where they come from and why they
+       are not fetched from the internet. -->
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    :root {
+      --plaster: #EFE9DC;
+      --paper:   #FBF8F1;
+      --paper-2: #FFFFFF;
+      --ink:     #2B2721;
+      --ink-soft:#6E665A;
+      --wall:    #3C4630;   /* deep olive: the painted rail */
+      --wall-fg: #DAD4C2;
+      --wall-dim:#ABB296;
+      --olive:   #57633F;
+      --olive-2: #7E8A61;
+      --honey:   #C6892B;   /* lamplight: primary + active */
+      --honey-lt:#EBD49B;
+      --clay:    #AC4B36;   /* destructive / errors */
+      --line:    #E3DACA;
+      --radius:  14px;
+      --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { max-width: 100%; overflow-x: hidden; }
+
+    body {
+      min-height: 100vh;
+      background: var(--plaster);
+      background-image:
+        radial-gradient(ellipse at 12% -10%, #F6F1E5 0%, transparent 55%),
+        radial-gradient(ellipse at 100% 0%, #E7DFCC 0%, transparent 45%);
+      font-family: var(--sans);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---------- Only the file list scrolls ----------
+       The rail was `position: sticky` and the page scrolled as a whole, which
+       is two things wrong at once: `overflow-x: hidden` on html/body makes a
+       scroll container, and sticky inside one sticks to *it* rather than to the
+       viewport — so the rail drifted — and the header, the breadcrumb and the
+       Upload button left the screen the moment a folder had more than a
+       screenful in it, which is when they are most wanted.
+
+       So the app is exactly one viewport tall, nothing outside the list
+       scrolls, and the list gets its own scrollbar. `dvh` because a phone's
+       address bar makes `vh` a promise the browser does not keep. */
+    html, body { height: 100%; }
+    body { overflow: hidden; }
+    .app {
+      display: grid;
+      grid-template-columns: 264px minmax(0, 1fr);
+      height: 100vh;
+      height: 100dvh;
+    }
+
+    /* ---------- The room rail (signature) ---------- */
+    .rail {
+      background: var(--wall);
+      color: var(--wall-fg);
+      padding: 26px 20px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 26px;
+      /* No longer sticky: the grid cell is one viewport tall and nothing moves
+         past it. Its own scrollbar for the case of many rooms on a short
+         window — the alternative is rooms that cannot be reached at all. */
+      height: 100%;
+      min-height: 0;
+      overflow-y: auto;
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand .plate {
+      width: 42px; height: 42px;
+      display: grid; place-items: center;
+      /* Light off the top, shadow at the bottom, both translucent: the
+         plate reads as a tile raised off the bar whatever colour the bar
+         is. It used to be literal olive, which on a pink house was a
+         green square sitting in the corner of the header. */
+      background: linear-gradient(160deg, rgba(255,255,255,.15), rgba(0,0,0,.17));
+      border: 1px solid rgba(235,212,155,.25);
+      border-radius: 12px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+    }
+    .brand h1 {
+      font-size: 1.02rem; font-weight: 800; letter-spacing: -.01em; color: #F3EEDF;
+    }
+    .brand p {
+      font-size: .64rem; text-transform: uppercase; letter-spacing: .22em;
+      color: var(--wall-dim); margin-top: 3px;
+    }
+
+    .rooms-label {
+      font-size: .6rem; text-transform: uppercase; letter-spacing: .24em;
+      color: var(--wall-dim); padding-left: 4px;
+    }
+
+    /* rooms are connected by a vertical "wall" line */
+    .rooms { position: relative; display: flex; flex-direction: column; gap: 4px; }
+    .rooms::before {
+      content: ""; position: absolute; left: 22px; top: 14px; bottom: 14px;
+      width: 1.5px; background: rgba(218,212,194,.14);
+    }
+
+    .room {
+      position: relative;
+      display: flex; align-items: center; gap: 13px;
+      width: 100%;
+      background: none; border: none; cursor: pointer;
+      color: var(--wall-fg);
+      padding: 11px 12px 11px 10px;
+      border-radius: 11px;
+      text-align: left;
+      font-family: var(--sans);
+      transition: background .16s, color .16s;
+    }
+    .room:hover { background: rgba(255,255,255,.05); }
+    .room .lamp {
+      position: relative; z-index: 1;
+      width: 26px; height: 26px; flex: none;
+      display: grid; place-items: center;
+      border-radius: 8px;
+      background: rgba(0,0,0,.22);
+      color: var(--wall-dim);
+      border: 1px solid rgba(218,212,194,.12);
+      transition: all .18s;
+    }
+    .room .lamp svg { width: 15px; height: 15px; }
+    .room .txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .room .eyebrow {
+      font-size: .56rem; text-transform: uppercase; letter-spacing: .18em;
+      color: var(--wall-dim);
+    }
+    .room .title {
+      font-size: .92rem; font-weight: 650;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .room .badge {
+      margin-left: auto;
+      font-family: var(--mono); font-size: .68rem;
+      background: rgba(198,137,43,.18); color: var(--honey-lt);
+      border-radius: 999px; padding: 1px 8px;
+    }
+    .room.active { background: rgba(198,137,43,.10); }
+    .room.active .lamp {
+      background: var(--honey); color: #2A2007;
+      border-color: var(--honey);
+      box-shadow: 0 0 0 4px rgba(198,137,43,.18), 0 3px 10px rgba(198,137,43,.35);
+    }
+    .room.active .title { color: #F5EFDF; }
+    .room.active .eyebrow { color: var(--honey-lt); }
+
+    .rail .foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+    .rail .who { font-size: .74rem; color: var(--wall-dim); padding-left: 4px; }
+    .rail .who b { color: var(--wall-fg); font-weight: 650; }
+    .rail .home-link {
+      display: inline-flex; align-items: center; gap: 7px;
+      color: var(--wall-fg); text-decoration: none;
+      font-size: .82rem; font-weight: 600;
+      padding: 9px 12px; border-radius: 10px;
+      border: 1px solid rgba(218,212,194,.16);
+      transition: background .15s;
+    }
+    .rail .home-link:hover { background: rgba(255,255,255,.06); }
+    .rail .admin-link {
+      background: none; cursor: pointer; font-family: inherit; width: 100%; text-align: left;
+      color: var(--honey-lt); border-color: rgba(198,137,43,.4);
+    }
+    .rail .admin-link:hover { background: rgba(198,137,43,.12); }
+    .rail .admin-link.active { background: rgba(198,137,43,.2); color: #fff; border-color: var(--honey); }
+
+    /* ---------- The stage ---------- */
+    /* A column with one growing row: everything above the list keeps its place
+       and the list takes what is left. `min-height: 0` on both, or a grid/flex
+       child refuses to shrink below its content and the whole thing scrolls
+       again — which is the bug this replaces. */
+    .stage {
+      padding: 34px 40px 22px; min-width: 0; overflow: hidden;
+      display: flex; flex-direction: column; min-height: 0;
+    }
+    .stage > .stage-head, .stage > .crumbs, .stage > #progress, .stage > #status { flex: none; }
+
+    .stage-head {
+      display: flex; align-items: flex-end; gap: 20px 24px;
+      flex-wrap: wrap; margin-bottom: 22px;
+    }
+    .stage-head .heading { flex: 1; min-width: 220px; }
+    .stage-head .eyebrow {
+      font-size: .68rem; text-transform: uppercase; letter-spacing: .2em;
+      font-weight: 700; color: var(--olive);
+    }
+    .stage-head h2 {
+      font-size: 1.75rem; font-weight: 800; letter-spacing: -.025em;
+      margin-top: 5px; color: var(--ink);
+    }
+    .stage-head .sub { font-size: .86rem; color: var(--ink-soft); margin-top: 4px; }
+    .readonly-flag {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: .7rem; font-weight: 700; letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--olive); background: rgba(87,99,63,.10);
+      border: 1px solid rgba(87,99,63,.2);
+      padding: 4px 10px; border-radius: 999px; margin-top: 8px;
+    }
+
+    .actions { display: flex; gap: 10px; align-items: center; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--honey); color: #2A2007;
+      border: 1px solid #b67c25;
+      border-radius: 10px; padding: 10px 16px;
+      font-family: var(--sans); font-size: .86rem; font-weight: 700;
+      cursor: pointer; transition: transform .12s, box-shadow .15s, background .15s;
+      box-shadow: 0 2px 8px rgba(198,137,43,.28);
+    }
+    .btn:hover { background: #b97e26; box-shadow: 0 4px 14px rgba(198,137,43,.34); }
+    .btn:active { transform: translateY(1px); }
+    .btn svg { width: 16px; height: 16px; }
+    .btn.ghost {
+      background: var(--paper); color: var(--ink);
+      border: 1px solid var(--line); box-shadow: none;
+    }
+    .btn.ghost:hover { background: var(--paper-2); border-color: #d4c9b2; }
+
+    .crumbs {
+      display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+      font-size: .9rem; margin-bottom: 14px; min-height: 1.3em;
+    }
+    .crumbs a { color: var(--olive); text-decoration: none; font-weight: 650; }
+    .crumbs a:hover { text-decoration: underline; }
+    .crumbs a.here { color: var(--ink-soft); font-weight: 500; pointer-events: none; }
+    .crumbs .sep { color: #c3b79c; }
+
+    .browser {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: 0 1px 0 #fff inset, 0 10px 30px -18px rgba(60,50,30,.4);
+      transition: box-shadow .18s, border-color .18s;
+      /* The one thing on the page that scrolls. */
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+    }
+    /* Which means the column headings have to hold their own: the panel above
+       them is fixed now, and a "Name / Size / Modified" that scrolls away
+       inside it would be the same complaint one level down. */
+    .browser thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--paper);
+      box-shadow: inset 0 -1px 0 var(--line);
+    }
+    .browser.dragover {
+      border-color: var(--honey);
+      box-shadow: 0 0 0 3px rgba(198,137,43,.22);
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      text-align: left;
+      font-size: .64rem; text-transform: uppercase; letter-spacing: .13em;
+      color: var(--ink-soft); font-weight: 700;
+      padding: 13px 18px; background: rgba(227,218,202,.35);
+      border-bottom: 1px solid var(--line);
+    }
+    tbody td {
+      padding: 11px 18px;
+      border-bottom: 1px solid #EFE7D6;
+      font-size: .92rem; vertical-align: middle;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr.entry:hover td { background: rgba(198,137,43,.06); }
+
+    .name-cell { display: flex; align-items: center; gap: 12px; }
+    .name-cell .ficon {
+      width: 30px; height: 30px; flex: none;
+      display: grid; place-items: center; border-radius: 8px;
+      background: rgba(87,99,63,.09); color: var(--olive);
+    }
+    .name-cell .ficon.file { background: rgba(110,102,90,.09); color: var(--ink-soft); }
+    .name-cell .ficon svg { width: 17px; height: 17px; }
+    .name-cell a.nm { color: var(--ink); text-decoration: none; font-weight: 600; word-break: break-all; }
+    .name-cell a.nm:hover { color: var(--honey); }
+    .owner-tag {
+      font-size: .66rem; font-weight: 700; letter-spacing: .02em;
+      color: var(--olive); background: rgba(87,99,63,.12);
+      border-radius: 6px; padding: 2px 8px; white-space: nowrap;
+    }
+    /* "compartido" badge + active share button use the honey accent */
+    .owner-tag.shared-tag { color: #8a5e12; background: rgba(198,137,43,.18); }
+    .iconbtn.shared { color: var(--honey); }
+
+    td.meta { font-family: var(--mono); color: var(--ink-soft); font-size: .78rem; white-space: nowrap; }
+    /* A folder's size arrives after the row does. Dim and slowly pulsing says
+       "still working" without the jitter of a spinner in a table cell. */
+    td.meta.counting { opacity: .45; letter-spacing: .08em; animation: countpulse 1.4s ease-in-out infinite; }
+    @keyframes countpulse { 0%, 100% { opacity: .3; } 50% { opacity: .6; } }
+    @media (prefers-reduced-motion: reduce) { td.meta.counting { animation: none; } }
+
+    td.row-actions { text-align: right; white-space: nowrap; }
+    .iconbtn {
+      background: none; border: 1px solid transparent; cursor: pointer;
+      color: var(--ink-soft); padding: 6px; border-radius: 8px;
+      display: inline-grid; place-items: center; text-decoration: none;
+      transition: background .13s, color .13s, border-color .13s;
+    }
+    .iconbtn svg { width: 17px; height: 17px; display: block; }
+    .iconbtn:hover { background: #fff; border-color: var(--line); color: var(--olive); }
+    .iconbtn.danger:hover { color: var(--clay); border-color: #e6c6bd; }
+
+    .empty {
+      padding: 54px 20px; text-align: center;
+      color: var(--ink-soft); font-size: .9rem;
+    }
+    .empty .big { font-size: 1.6rem; display: block; margin-bottom: 8px; opacity: .8; }
+
+    #progress {
+      display: none; margin-top: 14px; height: 6px;
+      border-radius: 999px; background: #E3DACA; overflow: hidden;
+    }
+    #progress > div { height: 100%; width: 0%; background: var(--honey); transition: width .2s; }
+    #status { margin-top: 12px; font-size: .84rem; color: var(--ink-soft); min-height: 1.2em; }
+    #status.error { color: var(--clay); font-weight: 600; }
+
+    /* ---------- Share dialog ---------- */
+    .overlay {
+      display: none; position: fixed; inset: 0; z-index: 60;
+      background: rgba(43,39,33,.5); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      background: var(--paper); border: 1px solid var(--line);
+      border-radius: 18px; width: 100%; max-width: 400px; padding: 24px 26px;
+      box-shadow: 0 24px 60px -20px rgba(43,39,33,.6);
+      animation: pop .16s ease-out;
+    }
+    @keyframes pop { from { transform: scale(.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .modal .m-eyebrow {
+      font-size: .64rem; text-transform: uppercase; letter-spacing: .2em;
+      font-weight: 700; color: var(--olive);
+    }
+    .modal h3 { font-size: 1.22rem; font-weight: 800; letter-spacing: -.02em; margin-top: 4px; }
+    .modal .sub {
+      font-family: var(--mono); font-size: .78rem; color: var(--ink-soft);
+      margin: 8px 0 16px; word-break: break-all;
+      background: rgba(227,218,202,.4); padding: 8px 11px; border-radius: 9px;
+    }
+    .user-opt {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 8px; border-radius: 10px; cursor: pointer;
+      font-size: .96rem; font-weight: 550;
+      transition: background .12s;
+    }
+    .user-opt:hover { background: rgba(198,137,43,.07); }
+    .user-opt input { width: 18px; height: 18px; accent-color: var(--honey); cursor: pointer; }
+    .user-opt .avatar {
+      width: 30px; height: 30px; border-radius: 50%; flex: none;
+      display: grid; place-items: center; font-weight: 800; font-size: .82rem;
+      color: #fff; background: var(--olive);
+    }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    .modal-empty { font-size: .86rem; color: var(--ink-soft); padding: 8px 0; }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 820px) {
+      /* The rail becomes a bar across the top, so the rows are "as tall as the
+         bar" and "everything else" — and the stage still has to be allowed to
+         shrink, or its list pushes the bar off the screen. */
+      .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+      .rail {
+        position: static; height: auto; flex-direction: row; align-items: center;
+        gap: 16px; padding: 14px 16px; overflow-x: auto; overflow-y: hidden; min-width: 0;
+      }
+      .rail .brand { flex: none; }
+      .brand p, .rooms-label, .room .eyebrow, .rail .foot .who { display: none; }
+      .rooms { flex-direction: row; gap: 8px; flex: 1; }
+      .rooms::before { display: none; }
+      .room { width: auto; padding: 8px 12px; }
+      .room .title { font-size: .84rem; }
+      .rail .foot { margin: 0; flex: none; }
+      .rail .home-link { padding: 8px 10px; }
+      .stage { padding: 22px 16px 16px; }
+      .stage-head h2 { font-size: 1.4rem; }
+      .hide-sm { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
+    }
+    :focus-visible { outline: 2px solid var(--honey, #C6892B); outline-offset: 2px; border-radius: 4px; }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    /* This page has no header — the chrome is the rail down the left — so the
+       edge runs vertically along it instead, same three colours in the same
+       order. The mark belongs to the house, not to a particular layout. */
+    .rail::after {
+      content: ""; position: absolute; top: 0; bottom: 0; right: 0; width: 3px;
+      background: linear-gradient(180deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    .rail { position: relative; }
+    @media (max-width: 820px) {
+      /* Laid across the top with the rail, so it reads as the same edge. */
+      .rail::after {
+        top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 3px;
+        background: linear-gradient(90deg,
+          var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      }
+    }
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    /* Here the h1 is the app's name in the rail and the h2 is the room you are
+       standing in — which is the thing this page is about, so it gets the
+       display face the other pages give their titles. */
+    h1, .hero .hello, .stage-head h2 {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+  </style>
+  <!-- This member's colours, after the house style so it wins by
+       order. Empty when nobody is logged in or nobody has a theme,
+       which leaves The House exactly as it is. -->
+  <link rel="stylesheet" href="/theme.css">
+  <script>
+    /* Pick up a theme Alfred set while this page was open. See /theme/version. */
+    (function () {
+      var link = document.querySelector('link[href^="/theme.css"]');
+      if (!link) return;
+      var seen = null, timer = null;
+      function apply(v) {
+        // Swapping href re-fetches the sheet; the old one stays until the new
+        // one parses, so the page never flashes unstyled.
+        link.href = '/theme.css?v=' + v;
+        link.addEventListener('load', tellTheApp, { once: true });
+      }
+      /* The Android app owns the status bar and the window behind this
+         WebView, and CSS cannot reach either. Read the two colours back out of
+         the computed style so this can never disagree with the sheet, and hand
+         them over; in a browser the bridge is simply absent. */
+      function tellTheApp() {
+        try {
+          if (!window.AndroidTheme || !window.AndroidTheme.apply) return;
+          var css = getComputedStyle(document.documentElement);
+          var wall = css.getPropertyValue('--wall').trim();
+          var plaster = css.getPropertyValue('--plaster').trim();
+          if (wall && plaster) window.AndroidTheme.apply(wall, plaster);
+        } catch (e) {}
+      }
+      async function check() {
+        if (document.hidden) return;
+        try {
+          var r = await fetch('/theme/version', { cache: 'no-store' });
+          if (!r.ok) return;
+          var v = (await r.json()).v;
+          if (seen === null) { seen = v; return; }   // first look: just remember
+          if (v !== seen) { seen = v; apply(v); }
+        } catch (e) { /* offline, or logged out: try again next tick */ }
+      }
+      function start() { clearInterval(timer); timer = setInterval(check, 20000); check(); }
+      tellTheApp();          // whatever theme this page loaded with
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) clearInterval(timer); else start();
+      });
+      start();
+    })();
+  </script>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand">
+        <span class="plate">
+          <svg width="26" height="24" viewBox="0 0 140 130" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="10,72 70,10 130,72" fill="#C6892B"/>
+            <rect x="20" y="70" width="100" height="58" rx="2" fill="#EBE3CE"/>
+            <rect x="54" y="96" width="32" height="32" rx="4" fill="#3C4630"/>
+            <rect x="28" y="82" width="22" height="20" rx="3" fill="#7E8A61"/>
+            <rect x="90" y="82" width="22" height="20" rx="3" fill="#7E8A61"/>
+          </svg>
+        </span>
+        <div>
+          <h1>The House</h1>
+          <p>Files</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="rooms-label" style="margin-bottom:10px">Habitaciones</div>
+        <nav class="rooms" id="rooms"></nav>
+      </div>
+
+      <div class="foot">
+        <div class="who">You're at home as <b>{{ user_label }}</b></div>
+        {% if is_admin %}
+        <button class="home-link admin-link" id="adminBtn" type="button" title="See every household folder (administrator)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-4h6v4"/></svg>
+          Toda la casa (admin)
+        </button>
+        {% endif %}
+        <a class="home-link" href="/chat">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Talk to Alfred
+        </a>
+        <a class="home-link" href="/">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          Back to home
+        </a>
+      </div>
+    </aside>
+
+    <main class="stage">
+      <div class="stage-head">
+        <div class="heading">
+          <div class="eyebrow" id="roomEyebrow"></div>
+          <h2 id="roomTitle"></h2>
+          <div class="sub" id="roomSub"></div>
+          <div class="readonly-flag" id="roFlag" style="display:none">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            Read only
+          </div>
+        </div>
+        <div class="actions" id="actions">
+          <button class="btn ghost" id="mkdirBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v4M10 13h4"/></svg>
+            New folder
+          </button>
+          <button class="btn" id="uploadBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 20h14"/></svg>
+            Upload
+          </button>
+          <input type="file" id="fileInput" multiple hidden>
+        </div>
+      </div>
+
+      <div class="crumbs" id="crumbs"></div>
+
+      <div class="browser" id="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Nombre</th>
+              <th class="hide-sm" style="width:120px">Size</th>
+              <th class="hide-sm" style="width:170px">Modificado</th>
+              <th style="width:120px"></th>
+            </tr>
+          </thead>
+          <tbody id="listing"></tbody>
+        </table>
+        <div class="empty" id="empty" style="display:none"></div>
+      </div>
+      <div id="progress"><div></div></div>
+      <div id="status"></div>
+    </main>
+  </div>
+
+  <!-- Share dialog -->
+  <div class="overlay" id="shareOverlay">
+    <div class="modal">
+      <div class="m-eyebrow">Share · read only</div>
+      <h3>With whom?</h3>
+      <div class="sub" id="shareTarget"></div>
+      <div id="shareUsers"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="shareCancel">Cancel</button>
+        <button class="btn" id="shareSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ROOTS       = {{ roots | tojson }};        // [{label, path}] read/write roots
+    const OWN         = {{ own_folder | tojson }};   // user's own folder ('' for admins w/o one)
+    const START       = {{ start | tojson }};        // initial folder
+    const IS_ADMIN    = {{ is_admin | tojson }};
+    const SHARE_USERS = {{ share_users | tojson }};  // [{username, folder}] other members
+    const FAMILY      = {{ family_folder | tojson }};
+    const CSRF_TOKEN  = document.querySelector('meta[name="csrf-token"]').content;
+
+    const $ = id => document.getElementById(id);
+
+    // What I'm sharing: {path: [targetUsername,...]}, kept in sync for badges.
+    var mySharesMap = {};
+    var USER_FOLDER = {};
+    SHARE_USERS.forEach(function(u) { USER_FOLDER[u.username] = u.folder; });
+    async function refreshMyShares() {
+      try { const r = await fetch('/files/api/shares/mine'); const d = await r.json(); mySharesMap = d.shares || {}; }
+      catch (e) { mySharesMap = {}; }
+    }
+    function shareTargetsLabel(targets) {
+      return targets.map(t => cap(USER_FOLDER[t] || t)).join(', ');
+    }
+
+    // ---- line-art glyphs (currentColor) ----
+    const I = {
+      door:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16"/><path d="M4 21h16"/><circle cx="14.5" cy="12" r="1" fill="currentColor" stroke="none"/></svg>',
+      family: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M2.5 20a5.5 5.5 0 0 1 11 0"/><path d="M14 20a4.5 4.5 0 0 1 7.5-3.3"/></svg>',
+      house:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>',
+      inbox:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M4 13l2-8h12l2 8v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>',
+      folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+      file:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+      download:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 20h14"/></svg>',
+      share:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.2"/><circle cx="17" cy="6" r="2.2"/><circle cx="17" cy="18" r="2.2"/><path d="M8 11l7-4M8 13l7 4"/></svg>',
+      trash:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg>',
+    };
+    const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+    // ---- Build the rooms model from server roots + the shared room ----
+    function buildRooms() {
+      const list = ROOTS.map(r => {
+        if (r.path === '') return {kind: 'files', path: '', glyph: 'house',
+          eyebrow: 'The whole house', title: 'The house', sub: 'Every household folder.'};
+        if (r.path === FAMILY) return {kind: 'files', path: FAMILY, glyph: 'family',
+          eyebrow: 'Shared', title: 'Familia', sub: 'Shared space: everybody can see and edit.'};
+        return {kind: 'files', path: r.path, glyph: 'door',
+          eyebrow: 'Your space', title: cap(r.path), sub: 'Only you come in here.'};
+      });
+      list.push({kind: 'sharing', path: '', glyph: 'share',
+        eyebrow: 'Compartes', title: 'What I share', sub: 'Files and folders you shared with the household.'});
+      list.push({kind: 'shared', path: '', glyph: 'inbox',
+        eyebrow: 'Left for you', title: 'For you', sub: 'Files others shared with you.'});
+      return list;
+    }
+    const ROOMS = buildRooms();
+    // Admins get a dedicated button (not a rail room) that opens the whole share.
+    const ADMIN_ROOM = IS_ADMIN ? {kind: 'files', path: '', glyph: 'house',
+      eyebrow: 'Administrador', title: 'The whole house',
+      sub: 'Access to every household folder.'} : null;
+    let room = ROOMS[0];          // active room
+    let currentPath = START;      // path within a files room
+    let sharedStack = [{label: 'For you', path: ''}];
+
+    // ---- Rail ----
+    function renderRooms() {
+      const el = $('rooms');
+      el.innerHTML = '';
+      ROOMS.forEach(r => {
+        const b = document.createElement('button');
+        b.className = 'room' + (r === room ? ' active' : '');
+        b.innerHTML =
+          `<span class="lamp">${I[r.glyph]}</span>` +
+          `<span class="txt"><span class="eyebrow">${r.eyebrow}</span>` +
+          `<span class="title">${r.title}</span></span>`;
+        if (r.kind === 'shared') {
+          const badge = document.createElement('span');
+          badge.className = 'badge'; badge.id = 'sharedBadge';
+          badge.style.display = 'none';
+          b.appendChild(badge);
+        }
+        b.onclick = () => selectRoom(r);
+        el.appendChild(b);
+      });
+      const ab = $('adminBtn');
+      if (ab) ab.classList.toggle('active', room === ADMIN_ROOM);
+    }
+
+    function selectRoom(r) {
+      room = r;
+      $('roomEyebrow').textContent = r.eyebrow;
+      $('roomTitle').textContent = r.title;
+      $('roomSub').textContent = r.sub;
+      const shared = r.kind === 'shared';
+      const sharing = r.kind === 'sharing';
+      $('roFlag').style.display = shared ? 'inline-flex' : 'none';
+      $('actions').style.display = (shared || sharing) ? 'none' : 'flex';
+      renderRooms();
+      if (shared) {
+        sharedStack = [{label: 'For you', path: ''}];
+        loadShared('');
+      } else if (sharing) {
+        loadSharing();
+      } else {
+        navigate(r.path);
+      }
+    }
+
+    // ---- helpers ----
+    function fmtSize(n) {
+      if (n === 0) return '—';
+      const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+      return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + ' ' + u[i];
+    }
+    function fmtDate(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts * 1000);
+      return d.toLocaleDateString('es') + ' · ' + d.toLocaleTimeString('es', {hour: '2-digit', minute: '2-digit'});
+    }
+    function setStatus(msg, isError) {
+      const el = $('status');
+      el.textContent = msg || '';
+      el.className = isError ? 'error' : '';
+    }
+    function canShare(path) {
+      if (!OWN) return false;
+      const parts = path.split('/');
+      return parts[0] === OWN && parts.length >= 2;
+    }
+
+    // ---- Files room: breadcrumbs + navigation ----
+    function renderCrumbs() {
+      const el = $('crumbs');
+      el.innerHTML = '';
+      const base = room.path ? room.path.split('/').length : 0;
+      const mk = (label, target, here) => {
+        const a = document.createElement('a');
+        a.href = '#'; a.textContent = label;
+        if (here) a.className = 'here';
+        else a.onclick = e => { e.preventDefault(); navigate(target); };
+        return a;
+      };
+      el.appendChild(mk(room.title, room.path, currentPath === room.path));
+      const parts = currentPath ? currentPath.split('/') : [];
+      let acc = [];
+      parts.forEach((p, i) => {
+        acc.push(p);
+        if (i < base) return;
+        const sep = document.createElement('span'); sep.className = 'sep'; sep.textContent = '/';
+        el.appendChild(sep);
+        el.appendChild(mk(p, acc.join('/'), i === parts.length - 1));
+      });
+    }
+
+    async function navigate(path) {
+      currentPath = path;
+      renderCrumbs();
+      setStatus('Loading…');
+      try {
+        const r = await fetch('/files/api/list?path=' + encodeURIComponent(path));
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Error');
+        renderFiles(data.entries);
+        setStatus('');
+      } catch (e) {
+        renderFiles([]);
+        setStatus('Error: ' + e.message, true);
+      }
+    }
+
+    function entryPath(name) { return currentPath ? currentPath + '/' + name : name; }
+
+    function showEmpty(kind) {
+      const el = $('empty');
+      if (kind === 'shared') {
+        el.innerHTML = '<span class="big">📭</span>Nobody has left you any files yet.';
+      } else if (IS_ADMIN && room.path === '' && currentPath === '') {
+        el.innerHTML = '<span class="big">🏠</span>Sin carpetas.';
+      } else {
+        el.innerHTML = '<span class="big">🗂️</span>Empty folder — drag files here to upload them.';
+      }
+    }
+
+    function rowIcon(isDir) {
+      const span = document.createElement('span');
+      span.className = 'ficon' + (isDir ? '' : ' file');
+      span.innerHTML = isDir ? I.folder : I.file;
+      return span;
+    }
+    function iconBtn(glyph, title, danger) {
+      const b = document.createElement('button');
+      b.className = 'iconbtn' + (danger ? ' danger' : '');
+      b.title = title; b.setAttribute('aria-label', title);
+      b.innerHTML = I[glyph];
+      return b;
+    }
+    function iconLink(glyph, title, href) {
+      const a = document.createElement('a');
+      a.className = 'iconbtn'; a.href = href; a.title = title; a.setAttribute('aria-label', title);
+      a.innerHTML = I[glyph];
+      return a;
+    }
+
+    /* Recursive folder sizes.
+       A folder's size needs a walk of the whole subtree, far too slow to block
+       the listing on. Rows render immediately with a dash; these fill in
+       afterwards, two at a time so a folder with thousands of files doesn't
+       monopolise the share. Each navigation cancels the previous batch — nobody
+       is waiting on sizes for a folder they already left. */
+    const DIRSIZE_CONCURRENCY = 2;
+    let dirsizeRun = 0;
+    const dirsizeCache = new Map();
+
+    async function fillDirSizes(jobs) {
+      const run = ++dirsizeRun;
+      const queue = jobs.slice();
+      async function worker() {
+        while (queue.length) {
+          if (run !== dirsizeRun) return;      // navigated away
+          const { path, cell } = queue.shift();
+          let data = dirsizeCache.get(path);
+          if (!data) {
+            try {
+              const r = await fetch('/files/api/dirsize?path=' + encodeURIComponent(path));
+              if (!r.ok) throw new Error('http ' + r.status);
+              data = await r.json();
+              if (data.error) throw new Error(data.error);
+              dirsizeCache.set(path, data);
+            } catch (e) {
+              if (run === dirsizeRun) { cell.textContent = '—'; cell.title = ''; }
+              continue;
+            }
+          }
+          if (run !== dirsizeRun) return;
+          /* "partial" means the walk hit its budget, so the number is a floor.
+             Showing it bare would quietly understate a big folder. */
+          cell.textContent = (data.partial ? '≥ ' : '') + fmtSize(data.bytes);
+          cell.classList.remove('counting');
+          const items = `${data.files} archivo${data.files === 1 ? '' : 's'}`
+                      + (data.dirs ? `, ${data.dirs} folder${data.dirs === 1 ? '' : 's'}` : '');
+          cell.title = data.partial
+            ? `At least ${items} — the folder is very large and counting stopped`
+            : items;
+        }
+      }
+      await Promise.all(Array.from({ length: DIRSIZE_CONCURRENCY }, worker));
+    }
+
+    function renderFiles(entries) {
+      const tbody = $('listing');
+      tbody.innerHTML = '';
+      if (!entries.length) { showEmpty('files'); $('empty').style.display = 'block'; }
+      else $('empty').style.display = 'none';
+
+      const atRoot = IS_ADMIN && currentPath === '';
+      const pendingSizes = [];
+      for (const e of entries) {
+        const tr = document.createElement('tr'); tr.className = 'entry';
+        const p = entryPath(e.name);
+
+        const nameTd = document.createElement('td');
+        const wrap = document.createElement('div'); wrap.className = 'name-cell';
+        const a = document.createElement('a'); a.className = 'nm'; a.textContent = e.name;
+        if (e.is_dir) { a.href = '#'; a.onclick = ev => { ev.preventDefault(); navigate(p); }; }
+        else a.href = '/files/api/download?path=' + encodeURIComponent(p);
+        wrap.append(rowIcon(e.is_dir), a);
+        const myT = mySharesMap[p];
+        if (myT && myT.length) {
+          const stag = document.createElement('span'); stag.className = 'owner-tag shared-tag';
+          stag.textContent = 'compartido';
+          stag.title = 'Shared with ' + shareTargetsLabel(myT);
+          wrap.appendChild(stag);
+        }
+        nameTd.appendChild(wrap);
+
+        const sizeTd = document.createElement('td'); sizeTd.className = 'meta hide-sm';
+        if (e.is_dir) {
+          sizeTd.textContent = '·····';
+          sizeTd.classList.add('counting');
+          sizeTd.title = 'Working out the size…';
+          pendingSizes.push({ path: p, cell: sizeTd });
+        } else {
+          sizeTd.textContent = fmtSize(e.size);
+        }
+        const dateTd = document.createElement('td'); dateTd.className = 'meta hide-sm';
+        dateTd.textContent = fmtDate(e.mtime);
+
+        const actTd = document.createElement('td'); actTd.className = 'row-actions';
+        if (canShare(p)) {
+          const sh = iconBtn('share', (myT && myT.length) ? ('Shared with ' + shareTargetsLabel(myT)) : 'Compartir');
+          if (myT && myT.length) sh.classList.add('shared');
+          sh.onclick = () => openShare(p, e.name);
+          actTd.appendChild(sh);
+        }
+        if (!e.is_dir)
+          actTd.appendChild(iconLink('download', 'Download', '/files/api/download?path=' + encodeURIComponent(p)));
+        if (!atRoot) {
+          const del = iconBtn('trash', 'Delete', true);
+          del.onclick = () => deleteEntry(p, e.name, e.is_dir);
+          actTd.appendChild(del);
+        }
+        tr.append(nameTd, sizeTd, dateTd, actTd);
+        tbody.appendChild(tr);
+      }
+      if (pendingSizes.length) fillDirSizes(pendingSizes);
+      else dirsizeRun++;   // cancel any batch still running for the previous folder
+    }
+
+    async function deleteEntry(path, name, isDir) {
+      const what = isDir ? 'the folder' : 'the file';
+      if (!confirm(`Delete ${what} "${name}"?`)) return;
+      try {
+        const r = await fetch('/files/api/delete', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN},
+          body: JSON.stringify({path}),
+        });
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.error || 'Error');
+        setStatus(`Borrado: ${name}`);
+        navigate(currentPath);
+      } catch (e) {
+        setStatus('Could not delete: ' + e.message + (isDir ? ' (the folder has to be empty)' : ''), true);
+      }
+    }
+
+    $('mkdirBtn').onclick = async () => {
+      if (IS_ADMIN && currentPath === '') { setStatus('Open a folder first to create subfolders.', true); return; }
+      const name = prompt('Name of the new folder:');
+      if (!name) return;
+      try {
+        const r = await fetch('/files/api/mkdir', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN},
+          body: JSON.stringify({path: currentPath, name}),
+        });
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.error || 'Error');
+        navigate(currentPath);
+      } catch (e) { setStatus('Could not create the folder: ' + e.message, true); }
+    };
+
+    $('uploadBtn').onclick = () => $('fileInput').click();
+    $('fileInput').onchange = () => { if ($('fileInput').files.length) uploadFiles($('fileInput').files); };
+
+    function uploadFiles(files) {
+      if (room.kind !== 'files') return;
+      if (IS_ADMIN && currentPath === '') { setStatus('Open a folder first to upload files.', true); return; }
+      const fd = new FormData();
+      fd.append('path', currentPath);
+      for (const f of files) fd.append('files', f);
+      const xhr = new XMLHttpRequest();
+      const bar = $('progress');
+      bar.style.display = 'block';
+      xhr.upload.onprogress = ev => {
+        if (ev.lengthComputable) bar.firstElementChild.style.width = (ev.loaded / ev.total * 100) + '%';
+      };
+      xhr.onload = () => {
+        bar.style.display = 'none'; bar.firstElementChild.style.width = '0%';
+        $('fileInput').value = '';
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (data.errors && data.errors.length) setStatus('Upload errors: ' + data.errors.join(', '), true);
+          else setStatus(`Subido${data.saved.length > 1 ? 's' : ''}: ${data.saved.join(', ')}`);
+        } catch { setStatus('Upload failed', true); }
+        navigate(currentPath);
+      };
+      xhr.onerror = () => { bar.style.display = 'none'; setStatus('Network error while uploading', true); };
+      xhr.open('POST', '/files/api/upload');
+      xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+      xhr.send(fd);
+      setStatus('Subiendo…');
+    }
+
+    // Drag & drop (only for writable rooms)
+    const panel = $('panel');
+    ['dragenter', 'dragover'].forEach(ev => panel.addEventListener(ev, e => {
+      e.preventDefault();
+      if (room.kind === 'files') panel.classList.add('dragover');
+    }));
+    ['dragleave', 'drop'].forEach(ev => panel.addEventListener(ev, e => {
+      e.preventDefault(); panel.classList.remove('dragover');
+    }));
+    panel.addEventListener('drop', e => {
+      if (room.kind === 'files' && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+    });
+
+    // ---- Share dialog ----
+    let sharePath = null;
+    async function openShare(path, name) {
+      sharePath = path;
+      $('shareTarget').textContent = name;
+      let picked = new Set();
+      try {
+        const r = await fetch('/files/api/shares/mine');
+        const data = await r.json();
+        picked = new Set((data.shares && data.shares[path]) || []);
+      } catch {}
+      const box = $('shareUsers');
+      box.innerHTML = '';
+      if (!SHARE_USERS.length) box.innerHTML = '<div class="modal-empty">No hay otros usuarios.</div>';
+      for (const u of SHARE_USERS) {
+        const label = document.createElement('label'); label.className = 'user-opt';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = u.username; cb.checked = picked.has(u.username);
+        const av = document.createElement('span'); av.className = 'avatar'; av.textContent = u.folder.charAt(0).toUpperCase();
+        const nm = document.createElement('span'); nm.textContent = cap(u.folder);
+        label.append(cb, av, nm);
+        box.appendChild(label);
+      }
+      box.dataset.prev = JSON.stringify([...picked]);
+      $('shareOverlay').classList.add('open');
+    }
+    function closeShare() { $('shareOverlay').classList.remove('open'); sharePath = null; }
+    $('shareCancel').onclick = closeShare;
+    $('shareOverlay').onclick = e => { if (e.target === $('shareOverlay')) closeShare(); };
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeShare(); });
+
+    $('shareSave').onclick = async () => {
+      if (!sharePath) return;
+      const box = $('shareUsers');
+      const checked = [...box.querySelectorAll('input:checked')].map(c => c.value);
+      const prev = JSON.parse(box.dataset.prev || '[]');
+      const toRemove = prev.filter(t => !checked.includes(t));
+      try {
+        if (checked.length)
+          await fetch('/files/api/share', {
+            method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN},
+            body: JSON.stringify({path: sharePath, targets: checked}),
+          });
+        for (const t of toRemove)
+          await fetch('/files/api/unshare', {
+            method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN},
+            body: JSON.stringify({path: sharePath, target: t}),
+          });
+        closeShare();
+        setStatus(checked.length ? 'Sharing updated.' : 'You stopped sharing.');
+        await refreshMyShares();
+        if (room.kind === 'sharing') loadSharing();
+        else if (room.kind === 'files') navigate(currentPath);
+      } catch (e) { setStatus('Could not share: ' + e.message, true); }
+    };
+
+    // ---- Shared-with-me room (read-only) ----
+    function renderSharedCrumbs() {
+      const el = $('crumbs');
+      el.innerHTML = '';
+      sharedStack.forEach((node, i) => {
+        if (i > 0) { const sep = document.createElement('span'); sep.className = 'sep'; sep.textContent = '/'; el.appendChild(sep); }
+        const a = document.createElement('a'); a.href = '#'; a.textContent = node.label;
+        if (i === sharedStack.length - 1) a.className = 'here';
+        else a.onclick = e => { e.preventDefault(); sharedStack = sharedStack.slice(0, i + 1); loadShared(node.path); };
+        el.appendChild(a);
+      });
+    }
+
+    async function loadShared(path) {
+      renderSharedCrumbs();
+      setStatus('Loading…');
+      try {
+        const r = await fetch('/files/api/shared/list?path=' + encodeURIComponent(path));
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Error');
+        renderShared(data.entries);
+        if (path === '') updateSharedBadge(data.entries.length);
+        setStatus('');
+      } catch (e) { renderShared([]); setStatus('Error: ' + e.message, true); }
+    }
+
+    function updateSharedBadge(n) {
+      const b = $('sharedBadge');
+      if (!b) return;
+      if (n > 0) { b.textContent = n; b.style.display = ''; }
+      else b.style.display = 'none';
+    }
+
+    function renderShared(entries) {
+      const tbody = $('listing');
+      tbody.innerHTML = '';
+      if (!entries.length) { showEmpty('shared'); $('empty').style.display = 'block'; }
+      else $('empty').style.display = 'none';
+
+      for (const e of entries) {
+        const tr = document.createElement('tr'); tr.className = 'entry';
+        const nameTd = document.createElement('td');
+        const wrap = document.createElement('div'); wrap.className = 'name-cell';
+        const a = document.createElement('a'); a.className = 'nm'; a.textContent = e.name;
+        if (e.is_dir) {
+          a.href = '#';
+          a.onclick = ev => { ev.preventDefault(); sharedStack.push({label: e.name, path: e.path}); loadShared(e.path); };
+        } else a.href = '/files/api/shared/download?path=' + encodeURIComponent(e.path);
+        wrap.append(rowIcon(e.is_dir), a);
+        if (e.owner) {
+          const tag = document.createElement('span'); tag.className = 'owner-tag';
+          tag.textContent = 'de ' + cap(e.owner);
+          wrap.appendChild(tag);
+        }
+        nameTd.appendChild(wrap);
+
+        const sizeTd = document.createElement('td'); sizeTd.className = 'meta hide-sm';
+        sizeTd.textContent = e.is_dir ? '—' : fmtSize(e.size);
+        const dateTd = document.createElement('td'); dateTd.className = 'meta hide-sm';
+        dateTd.textContent = fmtDate(e.mtime);
+
+        const actTd = document.createElement('td'); actTd.className = 'row-actions';
+        if (!e.is_dir)
+          actTd.appendChild(iconLink('download', 'Download', '/files/api/shared/download?path=' + encodeURIComponent(e.path)));
+
+        tr.append(nameTd, sizeTd, dateTd, actTd);
+        tbody.appendChild(tr);
+      }
+    }
+
+    // ---- The "What I share" room ----
+    async function loadSharing() {
+      const cr = $('crumbs'); cr.innerHTML = '';
+      const here = document.createElement('a'); here.className = 'here'; here.textContent = 'What I share';
+      cr.appendChild(here);
+      setStatus('Loading…');
+      try {
+        await refreshMyShares();
+        const r = await fetch('/files/api/sharing');
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Error');
+        renderSharing(data.entries);
+        setStatus('');
+      } catch (e) { renderSharing([]); setStatus('Error: ' + e.message, true); }
+    }
+
+    function renderSharing(entries) {
+      const tbody = $('listing'); tbody.innerHTML = '';
+      if (!entries.length) {
+        $('empty').innerHTML = '<span class="big">🔗</span>You are not sharing anything yet. Use the share button on your files.';
+        $('empty').style.display = 'block';
+        return;
+      }
+      $('empty').style.display = 'none';
+      for (const e of entries) {
+        const tr = document.createElement('tr'); tr.className = 'entry';
+        const nameTd = document.createElement('td');
+        const wrap = document.createElement('div'); wrap.className = 'name-cell';
+        const a = document.createElement('a'); a.className = 'nm'; a.textContent = e.name;
+        if (e.is_dir) { a.href = '#'; a.onclick = ev => { ev.preventDefault(); goToOwnPath(e.path); }; }
+        else a.href = '/files/api/download?path=' + encodeURIComponent(e.path);
+        wrap.append(rowIcon(e.is_dir), a);
+        const tag = document.createElement('span'); tag.className = 'owner-tag';
+        tag.textContent = 'con ' + e.targets.map(cap).join(' · ');
+        wrap.appendChild(tag);
+        nameTd.appendChild(wrap);
+
+        const sizeTd = document.createElement('td'); sizeTd.className = 'meta hide-sm';
+        sizeTd.textContent = e.is_dir ? '—' : fmtSize(e.size);
+        const dateTd = document.createElement('td'); dateTd.className = 'meta hide-sm';
+        dateTd.textContent = fmtDate(e.mtime);
+
+        const actTd = document.createElement('td'); actTd.className = 'row-actions';
+        const sh = iconBtn('share', 'Edit who I share with');
+        sh.classList.add('shared');
+        sh.onclick = () => openShare(e.path, e.name);
+        actTd.appendChild(sh);
+        if (!e.is_dir)
+          actTd.appendChild(iconLink('download', 'Download', '/files/api/download?path=' + encodeURIComponent(e.path)));
+        tr.append(nameTd, sizeTd, dateTd, actTd);
+        tbody.appendChild(tr);
+      }
+    }
+
+    // Jump from the sharing overview into the folder that holds an item.
+    function goToOwnPath(path) {
+      let target = ROOMS.find(r => r.kind === 'files' &&
+        (r.path === '' || path === r.path || path.indexOf(r.path + '/') === 0));
+      if (!target) target = (typeof ADMIN_ROOM !== 'undefined' && ADMIN_ROOM) || ROOMS[0];
+      room = target;
+      $('roomEyebrow').textContent = target.eyebrow;
+      $('roomTitle').textContent = target.title;
+      $('roomSub').textContent = target.sub;
+      $('roFlag').style.display = 'none';
+      $('actions').style.display = 'flex';
+      renderRooms();
+      navigate(path);
+    }
+
+    // ---- boot ----
+    const adminBtn = $('adminBtn');
+    if (adminBtn) adminBtn.onclick = () => selectRoom(ADMIN_ROOM);
+    renderRooms();
+    refreshMyShares().finally(() => selectRoom(ROOMS[0]));
+    // Prime the "shared with me" badge without leaving the current room
+    fetch('/files/api/shared/list?path=')
+      .then(r => r.json()).then(d => updateSharedBadge((d.entries || []).length)).catch(() => {});
+  </script>
+</body>
+</html>

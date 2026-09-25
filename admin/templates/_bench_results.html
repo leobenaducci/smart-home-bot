@@ -1,0 +1,98 @@
+{# The benchmark's results card, on its own so the page can ask for it
+   again as each model finishes (GET /models/bench/results) without
+   reloading -- which would drop the live log and the progress bar of the
+   run still going. models.html includes it; the route renders it alone. #}
+  {% if bench_runs %}
+  <h3 class="bench-results-head">{{ t('admin.models.bench_results') }}</h3>
+  {# Sorting happens in the page: every row carries its place in each kind's
+     order (bench.rank_kinds), so switching is instant and survives the card
+     being swapped in again as a model finishes. #}
+  <div class="bench-sort" role="group" aria-label="{{ t('admin.models.bench_sort') }}">
+    <span class="muted small">{{ t('admin.models.bench_sort') }}</span>
+    {% for kind in bench_kinds %}<button type="button" class="bench-sort-btn" data-bench-sort="{{ kind }}" title="{{ t('admin.models.bench_kind_' ~ kind ~ '_help') }}">{{ t('admin.models.bench_kind_' ~ kind) }}</button>{% endfor %}
+  </div>
+  <div class="bench-runs" data-sort="overall">
+    {% for run in bench_runs %}
+    <div class="bench-run {{ 'grade-' ~ run.grade }}"{% for kind in bench_kinds %} data-rank-{{ kind }}="{{ run.rank.get(kind, 9999) }}"{% endfor %}>
+      <div class="bench-run-main">
+        <div class="bench-run-name">
+          <span class="bench-src {{ 'src-' ~ run.source }}">{{ t('admin.models.bench_src_' ~ run.source) }}</span>
+          {% for kind in run.best_for %}<span class="bench-best" data-kind="{{ kind }}">★ {{ t('admin.models.bench_best_for', kind=t('admin.models.bench_kind_' ~ kind)) }}</span>{% endfor %}
+          {% if run.parts.owner %}<div class="bench-owner muted small">{{ run.parts.owner }}/</div>{% endif %}
+          <b class="bench-name" title="{{ run.model }}">{{ run.parts.name }}</b>{% if run.variant %}<span class="bench-tag">{{ run.variant }}</span>{% endif %}{% if run.params %}<span class="bench-params" title="{{ t('admin.models.bench_params_help') }}">{{ run.params }}</span>{% endif %}
+          <div class="muted small">{{ run.started }} · {{ run.minutes }} min{% if run.repeat > 1 %} · ×{{ run.repeat }}{% endif %}
+            {% if run.merged_from %}<span class="bench-cpu" title="{{ t('admin.models.bench_merged_help', n=run.merged_from|length) }}">{{ t('admin.models.bench_merged') }}</span> · {% endif %}{% if run.stale_cases %}<span class="bench-cpu" title="{{ t('admin.models.bench_stale_cases_help') }}">{{ t('admin.models.bench_stale_cases') }}</span> · {% endif %}{% if run.stale_setup %}<span class="bench-cpu" title="{{ t('admin.models.bench_stale_setup_help') }}">{{ t('admin.models.bench_stale_setup') }}</span> · {% endif %}{% if run.where == 'shared' %}<span class="bench-cpu" title="{{ t('admin.models.bench_shared_help') }}">{{ t('admin.models.bench_shared') }}{% if run.contended %} · {{ t('admin.models.bench_contended') }}{% endif %}</span>{% elif run.where == 'bench' %} · {{ t('admin.models.bench_on_bench') }}{% elif run.where == 'house' %} · <span title="{{ t('admin.models.bench_on_house_help') }}">{{ t('admin.models.bench_on_house') }}</span>{% endif %}</div>
+        </div>
+        <div class="bench-score">
+          {# One per kind; the page shows the one it is sorted by. #}
+          {% for kind in bench_kinds %}{% set k = run.kinds.get(kind) %}
+          <div class="bench-kind-score {{ 'grade-' ~ (k.grade if k else 'none') }}" data-kind="{{ kind }}">
+            {% if k %}<div class="bench-score-num">{{ k.passed }}<span>/{{ k.total }}</span></div>
+            <div class="bench-bar small-bar"><span style="width: {{ k.pct }}%"></span></div>
+            {% if kind != 'overall' %}<div class="muted small">{{ t('admin.models.bench_kind_' ~ kind) }}</div>{% endif %}
+            {% else %}<div class="bench-score-num muted">—</div><div class="muted small">{{ t('admin.models.bench_kind_unmeasured') }}</div>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        <div class="bench-roles">
+          {% for r in run.roles %}
+          <span class="bench-role {{ 'grade-' ~ r.grade }}" data-kind="{{ bench_kind_of.get(r.role, '') }}"{% if r.started %} title="{{ t('admin.models.bench_role_measured', date=r.started) }}"{% endif %}>{{ t('admin.models.bench_role_' ~ r.role) }} <b>{{ r.passed }}/{{ r.total }}</b>{% if run.merged_from and r.started and r.started != run.started[:10] %}<em class="bench-role-date">{{ r.started[5:] }}</em>{% endif %}</span>
+          {% endfor %}
+        </div>
+        <div class="bench-speed small">
+          {% if run.median_s is not none %}<div><b>{{ '%.1f' | format(run.median_s) }}s</b> {{ t('admin.models.bench_median') }}</div>{% endif %}
+          {% if run.median_first_s %}<div><b>{{ '%.1f' | format(run.median_first_s) }}s</b> {{ t('admin.models.bench_first_word') }}</div>{% endif %}
+          <div><b>{{ run.calls }}</b> {{ t('admin.models.bench_calls_per_case') }}</div>
+          {% if run.decode_tok_s %}<div title="{{ t('admin.models.bench_tok_s_probe') if run.decode_measured else t('admin.models.bench_tok_s_calls') }}"><b>{{ '%.0f' | format(run.decode_tok_s) }}</b> tok/s{% if run.prefill_tok_s %} · <b>{{ '%.0f' | format(run.prefill_tok_s) }}</b> {{ t('admin.models.bench_prefill') }}{% endif %}</div>{% endif %}
+          {% if run.vram_gb is not none %}<div><b>{{ '%.1f' | format(run.vram_gb) }} GB</b> VRAM{% if run.context %} · {{ (run.context // 1024) }}k ctx{% endif %}
+            {% if run.on_gpu_pct is not none and run.on_gpu_pct < 100 %}<span class="bench-cpu">{{ t('admin.models.bench_on_cpu', pct=100 - run.on_gpu_pct) }}</span>{% endif %}</div>{% endif %}
+        </div>
+        <div class="bench-actions">
+          <button type="button" class="linkish" data-bench-detail="{{ loop.index }}" aria-expanded="false">{{ t('admin.models.bench_details') }} ▾</button>
+          <form method="post" action="{{ url_for('bench_start') }}" class="bench-rerun">
+            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="model" value="{{ run.model }}">
+            {% for role in bench_roles %}<input type="hidden" name="roles" value="{{ role }}">{% endfor %}
+            <button type="submit" class="linkish">{{ t('admin.models.bench_again') }}</button>
+          </form>
+          <form method="post" action="{{ url_for('bench_delete') }}" data-inplace>
+            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="file" value="{{ run.file }}">
+            <button type="submit" class="linkish">{{ t('admin.models.bench_forget') }}</button>
+          </form>
+          {% if run.removable %}
+          <form method="post" action="{{ url_for('bench_remove_model') }}" data-inplace
+                data-confirm="{{ t('admin.models.bench_remove_confirm', model=run.model) }}">
+            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="model" value="{{ run.model }}">
+            <button type="submit" class="linkish">{{ t('admin.models.bench_remove') }}</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+      <div class="bench-detail" id="bench-detail-{{ loop.index }}" hidden>
+        {% for g in run.groups %}
+        <div class="bench-group">
+          <h4>{{ t('admin.models.bench_role_' ~ g.role) }}</h4>
+          <div class="bench-cases">
+            {% for c in g.cases %}
+            <div class="bench-case {{ 'ok' if c.passed else 'ko' }}">
+              <div class="bench-case-head">
+                <span class="bench-mark">{{ '✓' if c.passed else '✗' }}</span>
+                <b>{{ c.label }}</b>{% if run.repeat > 1 %} <span class="muted">#{{ c.rep }}</span>{% endif %}
+                <span class="muted small bench-case-time">{{ c.seconds }}s · {{ c.calls }} {{ t('admin.models.bench_calls_short') }}{% if c.tok_s %} · {{ '%.0f' | format(c.tok_s) }} tok/s{% endif %}</span>
+              </div>
+              {% if c.tools %}<div class="bench-tools">{% for k in c.tools %}<span class="bench-tool{{ '' if k.ran else ' stub' }}" title="{{ t('admin.models.bench_tool_ran') if k.ran else t('admin.models.bench_tool_stub') }}">{{ k.label | replace('mcp_homeassistant_', 'HA ') }}</span>{% endfor %}</div>{% endif %}
+              {% for f in c.failures %}<div class="bench-why">{{ f }}</div>{% endfor %}
+              {% if c.reply %}<details class="bench-reply"><summary>{{ t('admin.models.bench_reply') }}</summary><div>{{ c.reply }}</div></details>{% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+        <p class="help">{{ t('admin.models.bench_stub_note') }}</p>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}

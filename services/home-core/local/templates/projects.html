@@ -1,0 +1,503 @@
+{% extends "_config_base.html" %}
+{% block title %}Proyectos{% endblock %}
+{% block icon %}📁{% endblock %}
+
+{% block styles %}
+    /* The editor chrome -- the list-first layout, the marked row, the mode
+       header, the field groups -- lives in _config_base.html, because the
+       credentials page has the same shape and the two drifting apart is the
+       thing that file exists to prevent. Only what is particular to projects
+       is below. */
+    #project-editor[hidden] { display:none; }
+    #project-editor { border-color:var(--honey-lt); }
+    /* Shown only when no shared credential is chosen -- the only time it
+       means anything. */
+    #inline-secret[hidden] { display:none; }
+
+    /* ── Who can open this ────────────────────────────────────────────────
+       Selectable people rather than a comma-separated box. The value behind
+       each one is a login id; the label is a name. Nobody should have to know
+       this table is keyed on the number they sign in with — and the box this
+       replaced invited them to guess wrong, in a way that failed silently. */
+    .people { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .person { display: inline-flex; align-items: center; gap: 6px;
+              padding: 4px 10px; border: 1px solid var(--line, #d8d2c4);
+              border-radius: 999px; cursor: pointer; font-size: .92rem;
+              user-select: none; }
+    .person:hover { border-color: var(--ink-soft, #8a8578); }
+    /* :has() so the whole pill reads as chosen, not just its box. Falls back
+       to an ordinary checkbox row where it is unsupported, which is still
+       usable — the checkbox is real and is what the script reads. */
+    .person:has(input:checked) { border-color: var(--honey, #c8952b);
+                                 background: var(--honey-soft, #fdf6e6); }
+    .person input { margin: 0; }
+
+    /* ── The brief ────────────────────────────────────────────────────────
+       Every other field on this form is a value Alfred looks up: a slug, a
+       path, an enum from a list of two. This one is a sentence somebody
+       writes *to* him, and it is the only one on the page that is prose. So
+       it is set like prose — the display face, reading leading, its own field
+       instead of another cell in the grid — and marked down the edge in
+       honey, which is this house's colour for what you can act on. */
+    .brief { border:1px solid var(--line); border-left:3px solid var(--honey);
+             border-radius:var(--r-sm); padding:.85rem .9rem;
+             background:var(--paper-2, var(--paper)); }
+    .brief > label { font-family:var(--display); font-size:.95rem; color:var(--ink);
+                     margin-bottom:.15rem; }
+    .brief > p.note { font-size:.78rem; color:var(--ink-soft); margin-bottom:.6rem; }
+    .brief textarea { font-family:var(--display); font-size:.95rem; line-height:1.55;
+                      min-height:6.5rem; background:var(--paper); }
+    .floor { margin-top:.75rem; padding-top:.6rem; border-top:1px solid var(--line); }
+    .floor h3 { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+                color:var(--ink-soft); font-weight:600; margin-bottom:.4rem; }
+    .floor ul { list-style:none; display:flex; flex-wrap:wrap; gap:.3rem; }
+    .floor li { font-family:var(--mono); font-size:.75rem; padding:.12rem .45rem;
+                border-radius:var(--r-sm); background:var(--honey-lt); color:var(--honey-ink); }
+{% endblock %}
+
+{% block content %}
+
+    {# The inline-secret field below hits the same encryption the credentials
+       page banners about, so it says so here too rather than letting a filled
+       form find out from a 503. #}
+    {% if not projects_ready %}
+    <div class="sheet warn-sheet">
+      <h2>Secretos inline no disponibles</h2>
+      <p>PROJECTS_KEY no está configurado en este servidor. Puedes registrar proyectos públicos, pero no guardar un secreto inline ni usar una credencial compartida hasta que el administrador añada la credencial Jenkins <code>PROJECTS_KEY</code> y vuelva a ejecutar <strong>home-web-deploy</strong>.</p>
+    </div>
+    {% endif %}
+
+    <div class="sheet">
+      <div class="sheet-head">
+        <h2>Proyectos registrados</h2>
+        <button type="button" id="project-new">Nuevo proyecto</button>
+      </div>
+      <p class="note">Los proyectos son los repositorios que Alfred Programador puede clonar, editar y desplegar.
+        Las <a href="/credentials">credenciales</a> se administran en su propia página.</p>
+
+      <table id="projects-table" hidden>
+        <thead><tr><th>Nombre</th><th>Slug</th><th>Host</th><th>Credencial</th><th>Ámbito</th><th>Visibilidad</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty-cta" id="projects-empty">
+        <p>No hay proyectos registrados todavía.</p>
+        <button type="button" id="project-first">Registrar el primero</button>
+      </div>
+    </div>
+
+    {# The editor, closed until somebody asks for it. Its heading says which of
+       the two things is happening, because the old page said so only with the
+       submit button's wording at the far end of a long form. #}
+    <div class="sheet" id="project-editor" hidden>
+      <div class="editor-head">
+        <h2 id="editor-title">Nuevo proyecto</h2>
+        <span class="slug-chip" id="editor-slug" hidden></span>
+        <button type="button" class="secondary" id="project-cancel">Cancelar</button>
+      </div>
+
+      <form id="project-form">
+        <input type="hidden" id="project-old-slug">
+
+        <div class="group">
+          <h3>Identidad</h3>
+          <p class="note">Cómo se llama, y de dónde se clona.</p>
+          <div class="inline">
+            <div>
+              <label for="project-name">Nombre</label>
+              <input type="text" id="project-name" required maxlength="80">
+            </div>
+            <div>
+              <label for="project-slug">Slug</label>
+              <input type="text" id="project-slug" required maxlength="40" pattern="^[a-z0-9][a-z0-9-]{1,39}$">
+              {# Said here rather than discovered: the PUT accepts a new slug,
+                 and the slug is what the checkout directory and every link to
+                 this project are named after. #}
+              <p class="note" id="slug-note" hidden>Cambiarlo renombra el proyecto y su carpeta de trabajo.</p>
+            </div>
+          </div>
+          <div>
+            <label for="project-git-url">URL del repo (https o ssh)</label>
+            <input type="text" id="project-git-url" required placeholder="git@ssh.dev.azure.com:v3/...">
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>Despliegue</h3>
+          <p class="note">Dónde corre, y qué se ejecuta. Las dos rutas son opcionales.</p>
+          <div class="inline">
+            <div>
+              <label for="project-host">Host de despliegue</label>
+              <select id="project-host"></select>
+            </div>
+            <div>
+              <label for="project-deploy-path">Ruta del script de deploy</label>
+              <input type="text" id="project-deploy-path" placeholder="deploy.sh" maxlength="200">
+            </div>
+          </div>
+          <div>
+            <label for="project-verify-path">Ruta de verificación</label>
+            <input type="text" id="project-verify-path" placeholder="tests/test_smoke.py" maxlength="200">
+          </div>
+          {# The script itself, not a path to one inside the repo. It never
+             holds the password: the broker puts it in the environment when it
+             runs this, so the script names the variable and the value is
+             nowhere in the text. #}
+          <div class="brief">
+            <label for="project-deploy-script">Script de despliegue</label>
+            <p class="note">Se ejecuta con <code>sh -e</code> dentro del proyecto
+              cuando pedís desplegar, así que la primera línea que falle lo detiene.
+              Nunca escribas una contraseña acá: la credencial llega como
+              <code>$DEPLOY_USER</code> y <code>$DEPLOY_PASSWORD</code>, y su
+              valor se borra de la salida. <code>$DEPLOY_USER</code> solo tiene
+              valor con una credencial <em>basic</em>; con un token o una clave
+              SSH viene vacío y la credencial entera está en
+              <code>$DEPLOY_PASSWORD</code>. <code>$DEPLOY_KIND</code> dice cuál
+              de las tres es y <code>$DEPLOY_PROJECT</code>, el proyecto. Pasásela a los programas por <em>stdin</em> o por archivo, como en el ejemplo — nunca como argumento, que cualquier proceso del host puede leer.</p>
+            <textarea id="project-deploy-script" maxlength="20000" spellcheck="false"
+              style="font-family:var(--mono); font-size:.82rem; min-height:7rem"
+              placeholder="printf 'user = &quot;%s:%s&quot;\n' &quot;$DEPLOY_USER&quot; &quot;$DEPLOY_PASSWORD&quot; \\&#10;  | curl -K - -T index.html ftp://ejemplo.com/public_html/"></textarea>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>Reglas para Alfred</h3>
+          <p class="note">Qué no puede tocar, y cómo querés que trabaje acá.</p>
+          <div>
+            <label for="project-protected-paths">Rutas protegidas (una por línea)</label>
+            <textarea id="project-protected-paths" placeholder="users.json&#10;.env&#10;*.pem"></textarea>
+          </div>
+          <div class="brief">
+            <label for="project-custom-instructions">Instrucciones para Alfred</label>
+            <p class="note">Las reglas de este proyecto, escritas como se las dirías a una
+              persona. Alfred las lee cada vez que trabaja aquí.</p>
+            <textarea id="project-custom-instructions" maxlength="4000"
+              placeholder="Trabaja solo dentro de services/ y docs/.&#10;No hagas commit si los tests no pasan.&#10;Los mensajes de commit van en inglés."></textarea>
+            <div class="floor">
+              <h3>Siempre rechazado, en todos los proyectos</h3>
+              <ul>{% for path in protected_floor %}<li>{{ path }}</li>{% endfor %}</ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>Acceso</h3>
+          <p class="note">Quién ve el proyecto en su lista. «Solo quienes tengan acceso»
+            usa los nombres marcados abajo.</p>
+          <div class="inline">
+            <div>
+              <label for="project-visibility">Visibilidad</label>
+              <select id="project-visibility">
+                <option value="everyone">Todos los usuarios</option>
+                <option value="listed">Solo quienes tengan acceso</option>
+              </select>
+            </div>
+            <div>
+              <label>Acceso explícito</label>
+              {# People, not ids. The value is each person's login -- what
+                 `project_access.username` holds -- while the label is their
+                 name, so nobody has to know the two are different. The box this
+                 replaced asked for "usernames separados por coma" and suggested
+                 `user1,user2`, which are member ids: following the placeholder
+                 granted access to nobody and said nothing. #}
+              <div class="people" id="project-access">
+                {% for person in people %}
+                <label class="person">
+                  <input type="checkbox" value="{{ person.login }}">
+                  <span>{{ person.name }}</span>
+                </label>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label>
+              <input type="checkbox" id="project-shared" checked>
+              Proyecto compartido (todos lo ven; si no, solo tú y los admins)
+            </label>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>Credencial</h3>
+          <p class="note">Con qué se autentica contra el repo.</p>
+          <div>
+            <label for="project-credential">Credencial del repositorio</label>
+            <p class="note">Para clonar y subir cambios: la llave o el token de
+              Azure DevOps, GitHub, etc.</p>
+            <select id="project-credential"><option value="">— inline / sin credencial —</option></select>
+          </div>
+          {# Two, not one. The repository is opened with a key for the forge;
+             the deploy authenticates to somewhere else entirely. Sharing a
+             field would hand the source-control token to a shell script. #}
+          <div>
+            <label for="project-deploy-credential">Credencial de despliegue</label>
+            <p class="note">La que usa el script de arriba —el FTP, el servidor—
+              y que llega como <code>$DEPLOY_USER</code> y
+              <code>$DEPLOY_PASSWORD</code>. No es la del repositorio.</p>
+            <select id="project-deploy-credential"><option value="">— ninguna —</option></select>
+          </div>
+          {# Shown only when no shared credential is chosen, which is the only
+             time it means anything. It used to be always visible under a
+             warning about a case that usually did not apply. #}
+          <div id="inline-secret" hidden>
+            <label for="project-auth-secret">Secreto inline</label>
+            <p class="note">Sin credencial compartida, el proyecto guarda su propio
+              secreto. Se cifra con <code>PROJECTS_KEY</code>.</p>
+            <textarea id="project-auth-secret" placeholder="token o llave privada" spellcheck="false"></textarea>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="submit" id="project-save">Guardar proyecto</button>
+          <button type="button" class="secondary" id="project-cancel-bottom">Cancelar</button>
+        </div>
+      </form>
+    </div>
+{% endblock %}
+
+{% block aside %}
+      <div class="sheet rail">
+        <h2>Lo que recibe Alfred <span class="what">del broker</span></h2>
+        <p class="note">El proyecto tal como se lo entregan, con el piso de rutas
+          protegidas ya sumado. La credencial no está acá: viaja por otra puerta.</p>
+        <select id="which-project" style="margin-bottom:.6rem"></select>
+        <pre id="broker-view">Elige un proyecto.</pre>
+      </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+
+    /* The stored values are English enums; the page is not. The form already
+       spells both of these out in the option labels, so the table was the only
+       place saying «everyone» to somebody who had just chosen «Todos los
+       usuarios». */
+    const VISIBILITY_LABEL = { everyone: 'Todos los usuarios', listed: 'Solo con acceso' };
+    const KIND_LABEL = { ssh_key: 'Llave SSH', token: 'Token', none: '—' };
+    function label(map, value) { return map[value] || value || '—'; }
+
+    async function loadCredentials() {
+      const data = await api('/projects/api/credentials');
+      /* Both pickers, from one fetch. They offer the same credentials --
+         which one a project uses for what is the project's choice, not the
+         credential's. */
+      const fill = (id, blank) => {
+        const sel = document.getElementById(id);
+        const current = sel.value;
+        sel.innerHTML = `<option value="">${blank}</option>`;
+        (data.credentials || []).forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          const scope = c.shared ? 'compartida' : `solo ${c.created_by}`;
+          opt.textContent = `${c.name} (${c.kind}${c.auth_user ? ' · ' + c.auth_user : ''}, ${scope})`;
+          sel.appendChild(opt);
+        });
+        sel.value = current;
+      };
+      fill('project-credential', '— inline / sin credencial —');
+      fill('project-deploy-credential', '— ninguna —');
+      syncInlineSecret();
+    }
+
+    async function loadProjects() {
+      const data = await api('/projects/api');
+      renderProjects(data.projects || []);
+      fillProjectPicker(data.projects || []);
+      const sel = document.getElementById('project-host');
+      sel.innerHTML = '';
+      (data.hosts || []).forEach(h => {
+        const opt = document.createElement('option'); opt.value = h; opt.textContent = h; sel.appendChild(opt);
+      });
+      await loadCredentials();
+    }
+
+    function renderProjects(projects) {
+      const table = document.getElementById('projects-table');
+      const tbody = table.querySelector('tbody');
+      const empty = document.getElementById('projects-empty');
+      tbody.innerHTML = '';
+      if (!projects.length) { table.hidden = true; empty.hidden = false; return; }
+      table.hidden = false; empty.hidden = true;
+      projects.forEach(p => {
+        const tr = document.createElement('tr');
+        tr.dataset.slug = p.slug;
+        const scope = p.shared ? '<span class="tag">compartido</span>' : `<span class="tag">solo ${escapeHtml(p.created_by)}</span>`;
+        tr.innerHTML = `
+          <td>${escapeHtml(p.name)}</td>
+          <td class="mono">${escapeHtml(p.slug)}</td>
+          <td>${escapeHtml(p.host)}</td>
+          <td>${p.credential_name ? escapeHtml(p.credential_name) : (p.auth_kind === 'none' ? '—' : `<span class="tag">${escapeHtml(label(KIND_LABEL, p.auth_kind))}</span>`)}</td>
+          <td>${scope}</td>
+          <td>${escapeHtml(label(VISIBILITY_LABEL, p.visibility))}</td>
+          <td class="actions">
+            <button class="secondary" data-edit-project="${p.slug}">Editar</button>
+            <button class="danger" data-delete-project="${p.slug}">Borrar</button>
+          </td>`;
+        tbody.appendChild(tr);
+      });
+      markEditedRow(document.getElementById('project-old-slug').value);
+    }
+
+    /* Which row the open editor belongs to. Re-applied after every render
+       because the rows are rebuilt from scratch each time. */
+    function markEditedRow(slug) {
+      document.querySelectorAll('#projects-table tbody tr').forEach(tr => {
+        tr.classList.toggle('being-edited', Boolean(slug) && tr.dataset.slug === slug);
+      });
+    }
+
+    /* The inline secret is a question only when no shared credential is
+       chosen. Hiding it otherwise removes a field that could be filled in and
+       then silently ignored. */
+    function syncInlineSecret() {
+      const chosen = document.getElementById('project-credential').value;
+      document.getElementById('inline-secret').hidden = Boolean(chosen);
+    }
+
+    /* Opening and closing are one function each, so the page cannot end up
+       half in a mode: title, chip, slug warning, button wording, the marked
+       row and the scroll all move together. */
+    function openEditor(project) {
+      const editor = document.getElementById('project-editor');
+      const editing = Boolean(project);
+      document.getElementById('editor-title').textContent =
+        editing ? `Editando «${project.name}»` : 'Nuevo proyecto';
+      const chip = document.getElementById('editor-slug');
+      chip.textContent = editing ? project.slug : '';
+      chip.hidden = !editing;
+      document.getElementById('slug-note').hidden = !editing;
+      document.getElementById('project-save').textContent =
+        editing ? 'Actualizar proyecto' : 'Guardar proyecto';
+      editor.hidden = false;
+      /* Scrolled to, because the complaint this answers is that pressing
+         «Editar» appeared to do nothing: the form it filled in was above the
+         fold and nothing moved. */
+      editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      markEditedRow(editing ? project.slug : '');
+      if (!editing) document.getElementById('project-name').focus();
+    }
+
+    function closeEditor() {
+      document.getElementById('project-form').reset();
+      document.getElementById('project-old-slug').value = '';
+      document.getElementById('project-auth-secret').value = '';
+      document.getElementById('project-custom-instructions').value = '';
+      document.getElementById('project-editor').hidden = true;
+      markEditedRow('');
+      syncInlineSecret();
+    }
+
+    document.getElementById('project-credential').addEventListener('change', syncInlineSecret);
+    document.getElementById('project-new').addEventListener('click', () => { closeEditor(); openEditor(null); });
+    document.getElementById('project-first').addEventListener('click', () => { closeEditor(); openEditor(null); });
+    document.getElementById('project-cancel').addEventListener('click', closeEditor);
+    document.getElementById('project-cancel-bottom').addEventListener('click', closeEditor);
+
+    document.getElementById('project-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const oldSlug = document.getElementById('project-old-slug').value;
+      const payload = {
+        name: document.getElementById('project-name').value,
+        slug: document.getElementById('project-slug').value,
+        git_url: document.getElementById('project-git-url').value,
+        host: document.getElementById('project-host').value,
+        credential_id: document.getElementById('project-credential').value || null,
+        deploy_credential_id: document.getElementById('project-deploy-credential').value || null,
+        deploy_path: document.getElementById('project-deploy-path').value,
+        verify_path: document.getElementById('project-verify-path').value,
+        deploy_script: document.getElementById('project-deploy-script').value,
+        protected_paths: document.getElementById('project-protected-paths').value.split('\n').map(s => s.trim()).filter(Boolean),
+        custom_instructions: document.getElementById('project-custom-instructions').value,
+        visibility: document.getElementById('project-visibility').value,
+        access: Array.from(document.querySelectorAll('#project-access input:checked')).map(el => el.value),
+        shared: document.getElementById('project-shared').checked,
+      };
+      const secret = document.getElementById('project-auth-secret').value.trim();
+      if (!payload.credential_id && secret) payload.auth_secret = secret;
+      try {
+        if (oldSlug) await api(`/projects/api/${oldSlug}`, { method: 'PUT', body: JSON.stringify(payload) });
+        else await api('/projects/api', { method: 'POST', body: JSON.stringify(payload) });
+        closeEditor();
+        await loadProjects();
+        toast('Proyecto guardado');
+      } catch (err) { toast(err.message, true); }
+    });
+
+    document.getElementById('projects-table').addEventListener('click', async e => {
+      const editBtn = e.target.closest('[data-edit-project]');
+      const delBtn = e.target.closest('[data-delete-project]');
+      if (editBtn) {
+        let p;
+        try { p = (await api('/projects/api/' + encodeURIComponent(editBtn.dataset.editProject))).project; }
+        catch (err) { return toast(err.message, true); }
+        if (!p) return;
+        document.getElementById('project-old-slug').value = p.slug;
+        document.getElementById('project-name').value = p.name;
+        document.getElementById('project-slug').value = p.slug;
+        document.getElementById('project-git-url').value = p.git_url;
+        document.getElementById('project-host').value = p.host;
+        document.getElementById('project-credential').value = p.credential_id || '';
+        document.getElementById('project-deploy-credential').value = p.deploy_credential_id || '';
+        document.getElementById('project-deploy-path').value = p.deploy_path || '';
+        document.getElementById('project-verify-path').value = p.verify_path || '';
+        document.getElementById('project-deploy-script').value = p.deploy_script || '';
+        document.getElementById('project-protected-paths').value = (p.own_protected_paths || []).join('\n');
+        document.getElementById('project-custom-instructions').value = p.custom_instructions || '';
+        document.getElementById('project-visibility').value = p.visibility;
+        {
+          const granted = new Set(p.access || []);
+          document.querySelectorAll('#project-access input').forEach(el => {
+            el.checked = granted.has(el.value);
+          });
+        }
+        document.getElementById('project-shared').checked = p.shared;
+        /* Never refilled, and deliberately: the API does not hand a stored
+           secret back, so anything put here would be a guess, and an empty box
+           on an edit means "leave it as it is". */
+        document.getElementById('project-auth-secret').value = '';
+        syncInlineSecret();
+        openEditor(p);
+      }
+      if (delBtn) {
+        if (!confirm('¿Borrar este proyecto?')) return;
+        try {
+          await api(`/projects/api/${delBtn.dataset.deleteProject}`, { method: 'DELETE' });
+          /* If the open editor was this project's, it is now editing something
+             that no longer exists — saving would recreate it. */
+          if (document.getElementById('project-old-slug').value === delBtn.dataset.deleteProject) closeEditor();
+          await loadProjects();
+          toast('Proyecto borrado');
+        } catch (err) { toast(err.message, true); }
+      }
+    });
+
+    (async function init() {
+      try { await loadProjects(); }
+      catch (err) { toast(err.message, true); }
+    })();
+
+    /* The rail: the row as the broker hands it over. `protected_paths` here is
+       the merged list — the house floor plus whatever this project added —
+       which is the number that actually decides whether a commit is refused,
+       and is not the same as the textarea above it. */
+    async function refreshBrokerView() {
+      const sel = document.getElementById('which-project');
+      const pre = document.getElementById('broker-view');
+      if (!sel.value) { pre.textContent = 'Todavía no hay proyectos.'; return; }
+      try {
+        const { project } = await api('/projects/api/' + encodeURIComponent(sel.value));
+        pre.textContent = JSON.stringify(project, null, 2);
+      } catch (e) { pre.textContent = e.message; }
+    }
+
+    function fillProjectPicker(projects) {
+      const sel = document.getElementById('which-project');
+      const keep = sel.value;
+      sel.innerHTML = (projects || []).map(p =>
+        `<option value="${esc(p.slug)}">${esc(p.name)}</option>`).join('');
+      if (keep && (projects || []).some(p => p.slug === keep)) sel.value = keep;
+      refreshBrokerView();
+    }
+    document.getElementById('which-project').addEventListener('change', refreshBrokerView);
+</script>
+{% endblock %}

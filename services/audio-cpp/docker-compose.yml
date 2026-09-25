@@ -1,0 +1,73 @@
+# audio.cpp: TTS and ASR in one runtime, on the CPU or the card.
+#
+# **Off by default and wired to nothing.** `services.audio-cpp.enabled` is what
+# the admin page toggles, but nothing in home-voice points at it: `TTS_ENGINE`
+# stays `piper`, which lives inside the gateway's image and is also the
+# fallback for every other engine. Turning this on adds a server that answers;
+# it does not move the voice the family hears, and it cannot take piper away.
+#
+# It started as a bench -- can one runtime replace *both* whisper and Piper --
+# and it is a service now because the answer needed a config rather than an
+# argument. See README.md for what it measured on the CPU and on the card.
+#
+# **Which model it serves is a list, not a choice.** The packages below decide
+# what is *available*; the caller names one per request (`"model":
+# "supertonic_3_q8_0"`), which is why there is no model picker for this on
+# the admin page. A server that had one would be answering a question its
+# clients are better placed to answer per call.
+#
+# Unlike qwen-tts, this file reserves no GPU, which is the entire point of
+# benching it on the CPU first. The card is measured separately, in
+# docker-compose.gpu.yml, and that overlay is where a GPU reservation lives.
+
+networks:
+  default:
+    name: nanobot-net
+    external: true
+
+services:
+  audio-cpp:
+    build:
+      context: .
+      args:
+        # Pinned. 0.6 -> 0.7 -> 0.7.2 inside a month; a bench on a moving
+        # checkout measures a different engine every time it is rebuilt.
+        AUDIOCPP_REF: ${AUDIOCPP_REF:-v0.7.2}
+    image: audio-cpp:latest
+    container_name: audio-cpp
+    # A deployed service now, so it comes back with the machine. It holds no
+    # VRAM at rest on the CPU build and loads a model lazily on either, so a
+    # container that is up is not a container using the card.
+    restart: unless-stopped
+    environment:
+      - AUDIOCPP_PORT=8080
+      # The box has 8 cores; leaving headroom matters here because whisper and
+      # the assistants are on the same CPU and this is meant to be measured
+      # against them running, not on an idle machine.
+      - AUDIOCPP_THREADS=${AUDIOCPP_THREADS:-4}
+      # Package ids, not HF directory names -- see entrypoint.sh on why the
+      # difference matters. A comma-separated list: the server registers all
+      # of them and `test/profile_tts.py` walks them, which costs nothing
+      # until one is called because `lazy_load` is on.
+      #
+      # These six are the Spanish-capable TTS families that are small enough
+      # for a CPU to have a chance -- of the 33 audio.cpp ships, 12 list `es`
+      # and the rest of those are 2-7 GB packages that lost before they
+      # started. Sizes measured with `model_manager_v2.py sizes`, in the order
+      # below: 122M, 185M, 434M, 1.3G, 1.4G, 1.5G, 1.9G.
+      - AUDIOCPP_TTS_PACKAGES=${AUDIOCPP_TTS_PACKAGES:-pocket_tts_spanish_q8_0,moss_tts_nano_100m_q8_0,supertonic_3_q8_0,omnivoice_q8_0,audio8_tts_preview_0_6b_q8_0,magpie_tts_q8_0,qwen3_tts_0_6b_base_q8_0}
+      - AUDIOCPP_ASR_PACKAGES=${AUDIOCPP_ASR_PACKAGES:-qwen3_asr_0_6b_q8_0}
+    ports:
+      # 127.0.0.1 only. The callers that matter reach it by name on
+      # nanobot-net; the published port is for a person debugging and for the
+      # profile scripts in test/.
+      - "127.0.0.1:${AUDIOCPP_PUBLISH_PORT:-21014}:8080"
+    volumes:
+      # Absolute, and a state path rather than a named volume: 6.9 GB for the
+      # seven default packages (measured), and `deploy.py` rsyncs the pushed
+      # tree with --delete, so anything living inside it is deleted by the next
+      # deploy. Same reason whisper's weights sit next door.
+      - ${AUDIOCPP_MODELS_DIR:-/var/lib/home-stack/state/audio-cpp/models}:/models
+      # A Spanish reference clip for voice cloning goes here, read-only.
+      - ./voices:/voices:ro
+

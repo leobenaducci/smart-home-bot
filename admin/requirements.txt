@@ -1,0 +1,4 @@
+flask>=3.0
+ruamel.yaml>=0.18
+pyyaml>=6.0
+bcrypt>=4.0

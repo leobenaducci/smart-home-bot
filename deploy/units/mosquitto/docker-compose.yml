@@ -1,0 +1,26 @@
+# The broker, from the official image.
+#
+# This stack used to vendor the whole mosquitto source tree -- about 2000 files
+# of upstream C -- and never built it: the pipeline deployed the dashboard
+# container and left the broker alone. The image is what was actually running,
+# so it is what this pins.
+services:
+  broker:
+    image: ${MQTT_BROKER_IMAGE:-eclipse-mosquitto:2.0}
+    container_name: mqtt-broker
+    restart: unless-stopped
+    ports:
+      - "${MQTT_BROKER_PORT:-1883}:1883"
+    volumes:
+      # Both outside the deploy directory: a re-deploy replaces this checkout,
+      # and the broker's password file is not something to regenerate by
+      # accident.
+      - ${MQTT_CONFIG_DIR:-/var/lib/home-stack/config/mosquitto}:/mosquitto/config
+      - ${MQTT_STATE_DIR:-/var/lib/home-stack/state/mosquitto}:/mosquitto/data
+    environment:
+      TZ: ${TZ:-UTC}
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/broker/uptime", "-C", "1", "-W", "3"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

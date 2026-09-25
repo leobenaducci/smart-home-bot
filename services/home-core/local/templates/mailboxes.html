@@ -1,0 +1,505 @@
+{% extends "_config_base.html" %}
+{% block title %}Correos de Alfred{% endblock %}
+{% block icon %}📧{% endblock %}
+
+{% block styles %}
+    /* ── A rule is a sentence, not a form ────────────────────────────────
+       «desde *@empresa.com — leer, responder» reads in one line and takes
+       one to write. Laid out as a form it would be six labelled fields for
+       what is really one statement.
+
+       The line under the rules is the one that matters. Least privilege
+       means a broad rule narrows a specific one, which is the direction
+       nobody expects — so the page says what the rules add up to, instead
+       of leaving somebody to work it out from a reply that never arrived. */
+    .mailbox { border:1px solid var(--line); border-radius:var(--r-sm);
+               padding:.75rem .85rem; margin-bottom:.7rem; }
+    .mailbox > .addr { font-family:var(--mono); font-size:.85rem; }
+    .mailbox .sub { font-size:.75rem; color:var(--ink-soft); margin-top:.1rem; }
+    .badge { font-size:.68rem; text-transform:uppercase; letter-spacing:.04em;
+             padding:.1rem .4rem; border-radius:var(--r-pill);
+             background:var(--honey-lt); color:var(--honey-ink); margin-left:.4rem; }
+    .rule { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem;
+            font-size:.8rem; padding:.35rem 0; border-top:1px solid var(--line); }
+    .rule code { font-family:var(--mono); font-size:.78rem; }
+    .rule .perms { color:var(--ink-soft); }
+    /* Set in the display face because it is the one thing on this page a
+       person wrote in their own words rather than chose from a list. */
+    .rule .instr { flex-basis:100%; font-family:var(--display); font-size:.85rem;
+                   color:var(--ink-soft); padding-left:.2rem; }
+    .effective { margin-top:.5rem; padding:.45rem .6rem; border-radius:var(--r-sm);
+                 background:var(--honey-lt); color:var(--honey-ink); font-size:.78rem; }
+    .effective b { font-weight:600; }
+    .perm-toggles { display:flex; gap:.7rem; align-items:center; font-size:.8rem;
+                    color:var(--ink-soft); }
+    .perm-toggles label { display:inline-flex; align-items:center; gap:.25rem;
+                          margin:0; font-size:.8rem; }
+    /* The result of actually trying the mailbox. Three states and they are
+       not decoration: «no configurado» is a blank field, «no anduvo» is a
+       server saying no, and only the third means Alfred can read anything.
+       The server's own words are kept — «no aceptó la clave» is actionable
+       in a way that «error» is not. */
+    .probe { display:flex; flex-wrap:wrap; gap:.35rem .9rem; margin-top:.5rem;
+             font-size:.78rem; }
+    .probe span { display:inline-flex; align-items:baseline; gap:.35rem; }
+    .probe b { font-weight:600; font-family:var(--mono); font-size:.72rem;
+               text-transform:uppercase; letter-spacing:.03em; }
+    .probe .ok  { color:var(--olive-ink); }
+    .probe .bad { color:var(--clay-ink); }
+    .probe .off { color:var(--ink-soft); }
+{% endblock %}
+
+{% block content %}
+    <div class="sheet">
+      <h2>Los buzones que mira Alfred</h2>
+      <p class="note">Arriba, las direcciones a las que contesta Alfred. Abajo, el correo
+        de cada persona que él puede mirar. Son cosas distintas y por eso están
+        separadas: la suya suele ser un alias de la de alguien, así que lo que decide si
+        un correo es para él es a quién venía dirigido, no en qué casilla cayó.</p>
+      <p class="note"><strong>Privilegio mínimo:</strong> un permiso sobrevive sólo si
+        todas las reglas que coinciden lo dan. Una regla amplia le quita permisos a una
+        específica, nunca al revés. Sin ninguna regla no lee nada, a propósito.</p>
+      <div id="mailboxes"></div>
+    </div>
+{% endblock %}
+
+{% block aside %}
+      <div class="sheet rail">
+        <h2>Su configuración <span class="what">config.userN.json</span></h2>
+        <p class="note">Lo que nanobot recibe para el buzón de esta persona. Las claves
+          viajan en este archivo pero no se muestran acá: saber si una clave es la
+          correcta se responde con «Probar conexión», no leyéndola.</p>
+        <select id="which" style="margin-bottom:.6rem"></select>
+        <pre id="overlay">…</pre>
+      </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    /* What the last check said, per mailbox id. Kept in memory rather than
+       stored: a result from an hour ago describes an hour ago, and showing it
+       as current is worse than showing nothing. Reloading the page clears it,
+       which is honest — «Probar conexión» is right there. */
+    const PROBES = {};
+
+    function renderProbe(test) {
+      if (!test) return '';
+      const one = (label, [ok, why]) => {
+        const cls = ok === true ? 'ok' : ok === false ? 'bad' : 'off';
+        const mark = ok === true ? '✓' : ok === false ? '✗' : '·';
+        return `<span class="${cls}"><b>${label}</b> ${mark} ${esc(why)}</span>`;
+      };
+      return `<div class="probe">${one('imap', test.imap)}${one('smtp', test.smtp)}</div>`;
+    }
+
+    /* What we already know about a domain.
+       Adding the second address at a domain should not mean typing its mail
+       host again — the first address at that domain already said where its
+       mail lives. Built from the accounts on screen, so it is whatever is
+       actually configured rather than a list somebody has to maintain.
+
+       Servers and ports only. The username is usually the address itself and
+       differs per mailbox, and the password never leaves the server — filling
+       either from a neighbour would be a guess dressed as a fact. */
+    const KNOWN_DOMAINS = {};
+
+    function learnDomains(profiles) {
+      profiles.forEach(p => (p.accounts || []).forEach(a => {
+        const at = (a.address || '').lastIndexOf('@');
+        if (at < 0 || !a.imap_host) return;
+        const domain = a.address.slice(at + 1).toLowerCase();
+        // First one wins: the earliest configured mailbox for a domain is the
+        // one somebody got working.
+        if (!KNOWN_DOMAINS[domain]) {
+          KNOWN_DOMAINS[domain] = {
+            imap_host: a.imap_host, imap_port: a.imap_port,
+            smtp_host: a.smtp_host, smtp_port: a.smtp_port,
+            from: a.address,
+          };
+        }
+      }));
+    }
+
+    /* Suggested, not written: the fields are filled only while untouched, and
+       a note says where the values came from so nobody wonders. */
+    function suggestForDomain(instance) {
+      const addr = val('data-acc-address', instance);
+      const at = addr.lastIndexOf('@');
+      const hint = document.querySelector(`[data-acc-hint="${instance}"]`);
+      if (at < 0) { if (hint) hint.textContent = ''; return; }
+      const known = KNOWN_DOMAINS[addr.slice(at + 1).toLowerCase()];
+      if (!known) { if (hint) hint.textContent = ''; return; }
+      const put = (attr, value) => {
+        const el = document.querySelector(`[${attr}="${instance}"]`);
+        if (el && !el.dataset.touched && !el.value) el.value = value || '';
+      };
+      put('data-acc-imap-host', known.imap_host);
+      put('data-acc-smtp-host', known.smtp_host);
+      if (hint) {
+        hint.textContent = `Servidores tomados de ${known.from}. Cámbialos si este `
+          + 'buzón está en otro lado.';
+      }
+    }
+
+    const PERM_LABEL = { read: 'leer', respond: 'responder', resend: 'reenviar' };
+    /* «Responder» is not one thing. Reading a mailbox and speaking for it are
+       different permissions, and the middle one is the useful one: he may
+       answer, and only when somebody asked him to. An email arriving is not
+       somebody asking. */
+    const REPLY_LABEL = {
+      no: 'no contesta',
+      on_request: 'contesta sólo si se lo piden',
+      always: 'contesta solo, sin preguntar',
+    };
+    const MATCH_LABEL = { from: 'desde', to: 'dirigido a', subject: 'asunto', any: 'cualquiera' };
+
+    function renderRule(r) {
+      const bits = [];
+      if (r.can_read) bits.push('leer');
+      if (r.respond_mode && r.respond_mode !== 'no') bits.push(REPLY_LABEL[r.respond_mode]);
+      if (r.can_resend) bits.push('reenviar');
+      if (r.confirm) bits.push('con tu visto bueno antes de enviar');
+      return `<div class="rule">
+        <span>${esc(MATCH_LABEL[r.match_kind] || r.match_kind)}</span>
+        <code>${esc(r.pattern)}</code>
+        <span class="perms">— ${bits.length ? bits.join(', ') : 'nada'}</span>
+        <button class="secondary small" data-del-rule="${r.id}">Quitar</button>
+        ${r.instructions ? `<div class="instr">“${esc(r.instructions)}”</div>` : ''}
+      </div>`;
+    }
+
+    function renderMailbox(acc, whose) {
+      const eff = acc.effective_if_all_match || {};
+      const on = Object.keys(PERM_LABEL).filter(k => eff[k]);
+      return `<div class="mailbox">
+        <div class="addr">${esc(acc.address)}
+          ${whose ? `<span class="badge">de ${esc(whose)}</span>` : ''}
+          ${acc.imap_host ? '' : '<span class="badge">alias</span>'}
+          ${acc.enabled ? '' : '<span class="badge">apagada</span>'}
+          <button class="secondary small" data-edit-account="${acc.id}">Editar</button>
+        </div>
+        <div class="sub">
+          ${acc.imap_host
+            ? `entra como ${esc(acc.imap_username || '—')} en ${esc(acc.imap_host)}
+               ${acc.has_imap_secret ? '· con clave guardada' : '· sin clave'}`
+            : 'Sin buzón propio: es otro nombre del correo de arriba.'}
+        </div>
+        ${renderProbe(PROBES[acc.id])}
+
+        <div class="block" data-editor="${acc.id}" hidden>
+          <h4>Editar este correo</h4>
+          <div class="row">
+            <div><label>Dirección</label>
+              <input type="text" data-ed-address="${acc.id}" value="${esc(acc.address)}"></div>
+            <div><label>Nombre para vos</label>
+              <input type="text" data-ed-label="${acc.id}" value="${esc(acc.label || '')}"></div>
+          </div>
+          <div class="row" style="margin-top:.4rem">
+            <div><label>Servidor IMAP</label>
+              <input type="text" data-ed-imap-host="${acc.id}" value="${esc(acc.imap_host || '')}"
+                     placeholder="vacío = es un alias"></div>
+            <div><label>Usuario IMAP</label>
+              <input type="text" data-ed-imap-user="${acc.id}" value="${esc(acc.imap_username || '')}"></div>
+            <div><label>Clave IMAP</label>
+              <input type="password" data-ed-imap-secret="${acc.id}"
+                     placeholder="${acc.has_imap_secret ? 'guardada — vacío la deja igual' : 'sin clave'}"></div>
+          </div>
+          <div class="row" style="margin-top:.4rem">
+            <div><label>Servidor SMTP</label>
+              <input type="text" data-ed-smtp-host="${acc.id}" value="${esc(acc.smtp_host || '')}"></div>
+            <div><label>Usuario SMTP</label>
+              <input type="text" data-ed-smtp-user="${acc.id}" value="${esc(acc.smtp_username || '')}"></div>
+            <div><label>Clave SMTP</label>
+              <input type="password" data-ed-smtp-secret="${acc.id}"
+                     placeholder="${acc.has_smtp_secret ? 'guardada — vacío la deja igual' : 'sin clave'}"></div>
+          </div>
+          <div class="row" style="margin-top:.5rem">
+            <span class="perm-toggles">
+              <label><input type="checkbox" data-ed-enabled="${acc.id}"
+                     ${acc.enabled ? 'checked' : ''}> activa</label>
+            </span>
+            <button data-save-account="${acc.id}">Guardar cambios</button>
+            <button class="secondary" data-cancel-edit="${acc.id}">Cancelar</button>
+          </div>
+        </div>
+
+        <div class="block">
+          <h4>Reglas</h4>
+          ${(acc.rules || []).map(renderRule).join('') ||
+            '<p class="empty">Ninguna todavía. Sin reglas no lee nada: agrega una abajo.</p>'}
+          <div class="effective">
+            Si todas coinciden a la vez: <b>${on.length ? on.map(k => PERM_LABEL[k]).join(', ') : 'nada'}</b>.
+            ${(acc.rules || []).length > 1
+              ? ' Una regla amplia le quita permisos a una específica: eso es el privilegio mínimo. Pedir permiso va al revés — si una regla lo pide, se pide.'
+              : ''}
+          </div>
+
+          <div class="row" style="margin-top:.6rem">
+            <select data-rule-kind="${acc.id}">
+              ${Object.entries(MATCH_LABEL).map(([k, l]) =>
+                `<option value="${k}">${l}</option>`).join('')}
+            </select>
+            <input type="text" data-rule-pattern="${acc.id}" placeholder="*@empresa.com">
+            <input type="text" data-rule-instr="${acc.id}" placeholder="Instrucciones (opcional)">
+          </div>
+          <div class="row" style="margin-top:.4rem">
+            <span class="perm-toggles">
+              <label><input type="checkbox" data-rule-perm="${acc.id}" value="read"> leer</label>
+              <label><input type="checkbox" data-rule-perm="${acc.id}" value="resend"> reenviar</label>
+              <label><input type="checkbox" data-rule-confirm="${acc.id}"> pedirte permiso antes de enviar</label>
+            </span>
+          </div>
+          <div class="row" style="margin-top:.4rem">
+            <div><label for="rm-${acc.id}">Responder</label>
+              <select id="rm-${acc.id}" data-rule-reply="${acc.id}">
+                ${Object.entries(REPLY_LABEL).map(([k, l]) =>
+                  `<option value="${k}">${l}</option>`).join('')}
+              </select></div>
+            <button class="secondary small" data-add-rule="${acc.id}">Agregar regla</button>
+            <button class="secondary small" data-test-account="${acc.id}">Probar conexión</button>
+            <button class="secondary small" data-del-account="${acc.id}">Quitar buzón</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    /* Alfred's own addresses are shown as his, not as a checkbox on somebody
+       else's mailbox. «Es una dirección suya» was a true statement that
+       explained nothing on a page entirely about him — and his address is set
+       up once, not once per person. Underneath it is still `is_alfred` on a
+       row belonging to that person's instance, because that is what the
+       recipient check reads and this is a change to the page, not the data. */
+
+    /* One card for him, assembled from every instance. The storage is
+       per-instance because each Alfred gets its own config file, so adding an
+       address asks whose Alfred answers to it — which is a real question and
+       the only one the old checkbox was ever trying to ask. */
+    function renderAlfred(profiles) {
+      const mine = [];
+      profiles.forEach(p => p.accounts.filter(a => a.is_alfred)
+        .forEach(a => mine.push({ ...a, whose: p.display_name || p.instance })));
+      return `<details class="group" open>
+        <summary>
+          <h3>Alfred</h3>
+          <span class="meta">${mine.length
+            ? 'contesta a ' + mine.length + ' dirección(es)'
+            : 'todavía no tiene dirección propia'}</span>
+        </summary>
+        <div class="body">
+          <p class="note">Las direcciones a las que contesta él. Un correo que llega al
+            mismo buzón pero iba dirigido a otra persona no es suyo, así que esta lista
+            es la que decide.</p>
+          ${mine.map(a => renderMailbox(a, a.whose)).join('') ||
+            '<p class="empty">Sin una dirección suya, Alfred trata como propio todo lo que caiga en el buzón.</p>'}
+          <div class="block">
+            <h4>Darle una dirección</h4>
+            <p class="note">Si es un alias de un buzón que ya está más abajo, con la
+              dirección basta. Si tiene cuenta propia, complétala como cualquier otra.</p>
+            <div class="row">
+              <div><label for="al-address">Dirección</label>
+                <input type="text" id="al-address" placeholder="alfred@example.com"></div>
+              <div><label for="al-whose">¿Qué Alfred contesta a ésta?</label>
+                <select id="al-whose">${profiles.map(p =>
+                  `<option value="${esc(p.instance)}">${esc(p.display_name || p.instance)}</option>`).join('')}</select></div>
+              <button class="secondary small" data-add-alfred="1">Agregar</button>
+            </div>
+          </div>
+        </div>
+      </details>`;
+    }
+
+    function renderProfileMail(p) {
+      const boxes = p.accounts.filter(a => !a.is_alfred);
+      return `<details class="group" ${boxes.length ? 'open' : ''}>
+        <summary>
+          <h3>${esc(p.display_name || p.instance)}</h3>
+          <span class="meta">${esc(p.instance)} ·
+            ${boxes.length ? boxes.length + ' buzón(es) que lee' : 'sin buzones'}</span>
+        </summary>
+        <div class="body">
+          ${boxes.map(renderMailbox).join('') ||
+            '<p class="empty">Alfred no mira ningún correo de esta persona todavía.</p>'}
+          <div class="block">
+            <h4>Agregar un correo</h4>
+            <p class="note">El correo de esta persona que Alfred puede mirar: servidor,
+              usuario y clave. Las direcciones a las que contesta él se agregan arriba,
+              en su ficha.</p>
+            <p class="note" data-acc-hint="${p.instance}"></p>
+            <div class="row">
+              <input type="text" data-acc-address="${p.instance}" placeholder="alfred@example.com">
+              <input type="text" data-acc-imap-host="${p.instance}" placeholder="imap.example.com (vacío si es alias)">
+              <input type="text" data-acc-imap-user="${p.instance}" placeholder="usuario real de la cuenta">
+              <input type="password" data-acc-imap-secret="${p.instance}" placeholder="clave IMAP">
+            </div>
+            <div class="row" style="margin-top:.4rem">
+              <input type="text" data-acc-smtp-host="${p.instance}" placeholder="smtp.example.com">
+              <input type="text" data-acc-smtp-user="${p.instance}" placeholder="usuario SMTP">
+              <input type="password" data-acc-smtp-secret="${p.instance}" placeholder="clave SMTP">
+              <button class="secondary small" data-add-account="${p.instance}">Agregar</button>
+            </div>
+          </div>
+        </div>
+      </details>`;
+    }
+
+    async function loadMail() {
+      const data = await api('/profiles/api');
+      learnDomains(data.profiles);
+      document.getElementById('mailboxes').innerHTML =
+        renderAlfred(data.profiles) + data.profiles.map(renderProfileMail).join('');
+      const which = document.getElementById('which');
+      const keep = which.value;
+      which.innerHTML = data.profiles.map(p =>
+        `<option value="${esc(p.instance)}">${esc(p.display_name || p.instance)}</option>`).join('');
+      if (keep) which.value = keep;
+      refreshOverlay();
+    }
+
+    /* The rail shows the export for whoever is selected, and there is exactly
+       one export route — it answers for the caller. So an admin looking at
+       somebody else's row sees their own file, which would be a lie. Say so
+       instead of showing the wrong thing. */
+    async function refreshOverlay() {
+      const pre = document.getElementById('overlay');
+      try {
+        const data = await api('/profiles/api/export?redact=1');
+        pre.textContent = JSON.stringify(data, null, 2);
+      } catch (e) { pre.textContent = e.message; }
+    }
+
+
+    /* A save says whether it worked, in the toast, because that is where
+       somebody is already looking. «Buzón agregado» on a mailbox that cannot
+       log in is a true sentence that leaves the wrong impression. */
+    function probeFailed(test) {
+      return !!test && (test.imap[0] === false || test.smtp[0] === false);
+    }
+
+    function probeSummary(test) {
+      if (!test) return '';
+      if (probeFailed(test)) {
+        const bad = test.imap[0] === false ? `IMAP ${test.imap[1]}` : `SMTP ${test.smtp[1]}`;
+        return `Guardado, pero no conecta — ${bad}`;
+      }
+      if (test.imap[0] || test.smtp[0]) return 'Guardado y conecta';
+      return 'Guardado. Falta configurar IMAP o SMTP para poder probarlo.';
+    }
+
+    const val = (attr, key) => {
+      const el = document.querySelector(`[${attr}="${key}"]`);
+      return el ? el.value.trim() : '';
+    };
+
+    document.getElementById('which').addEventListener('change', refreshOverlay);
+
+    document.addEventListener('input', e => {
+      const el = e.target;
+      if (el.dataset && (el.dataset.accImapHost !== undefined
+                         || el.dataset.accSmtpHost !== undefined)) {
+        el.dataset.touched = '1';
+      }
+      if (el.dataset && el.dataset.accAddress !== undefined) {
+        suggestForDomain(el.dataset.accAddress);
+      }
+    });
+
+    document.addEventListener('click', async e => {
+      const t = e.target;
+      try {
+        if (t.dataset.addAccount) {
+          const i = t.dataset.addAccount;
+          const address = val('data-acc-address', i);
+          if (!address) return toast('Escribe la dirección del buzón', true);
+          const r = await api(`/profiles/api/${encodeURIComponent(i)}/accounts`, {
+            method: 'POST', headers: H, body: JSON.stringify({
+              address,
+              is_alfred: false,   // his own live on his card
+              imap_host: val('data-acc-imap-host', i),
+              imap_username: val('data-acc-imap-user', i),
+              imap_secret: val('data-acc-imap-secret', i),
+              smtp_host: val('data-acc-smtp-host', i),
+              smtp_username: val('data-acc-smtp-user', i),
+              smtp_secret: val('data-acc-smtp-secret', i),
+            }),
+          });
+          if (r && r.test) PROBES[r.account_id] = r.test;
+          await loadMail();
+          toast(probeSummary(r && r.test) || 'Buzón agregado',
+                probeFailed(r && r.test));
+        } else if (t.dataset.addAlfred) {
+          const address = document.getElementById('al-address').value.trim();
+          if (!address) return toast('Escribe la dirección', true);
+          const r = await api(
+            `/profiles/api/${encodeURIComponent(document.getElementById('al-whose').value)}/accounts`,
+            { method: 'POST', body: JSON.stringify({ address, is_alfred: true }) });
+          if (r && r.test) PROBES[r.account_id] = r.test;
+          await loadMail();
+          toast('Alfred ya contesta a ' + address);
+        } else if (t.dataset.editAccount) {
+          const box = document.querySelector(`[data-editor="${t.dataset.editAccount}"]`);
+          box.hidden = !box.hidden;
+        } else if (t.dataset.cancelEdit) {
+          document.querySelector(`[data-editor="${t.dataset.cancelEdit}"]`).hidden = true;
+        } else if (t.dataset.saveAccount) {
+          const id = t.dataset.saveAccount;
+          const get = a => document.querySelector(`[${a}="${id}"]`).value.trim();
+          const on = a => document.querySelector(`[${a}="${id}"]`).checked;
+          /* Empty password fields are left out entirely rather than sent as
+             "": the server reads absent as «unchanged» and empty the same way,
+             but saying nothing is the honest description of what happened. */
+          const body = {
+            address: get('data-ed-address'), label: get('data-ed-label'),
+            imap_host: get('data-ed-imap-host'), imap_username: get('data-ed-imap-user'),
+            smtp_host: get('data-ed-smtp-host'), smtp_username: get('data-ed-smtp-user'),
+            enabled: on('data-ed-enabled'),
+          };
+          const im = get('data-ed-imap-secret'); if (im) body.imap_secret = im;
+          const sm = get('data-ed-smtp-secret'); if (sm) body.smtp_secret = sm;
+          const r = await api(`/profiles/api/accounts/${id}`,
+                              { method: 'PUT', body: JSON.stringify(body) });
+          if (r && r.test) PROBES[id] = r.test;
+          await loadMail();
+          toast(r && r.test ? probeSummary(r.test) : 'Cambios guardados',
+                probeFailed(r && r.test));
+        } else if (t.dataset.testAccount) {
+          t.disabled = true; t.textContent = 'Probando…';
+          try {
+            const { test } = await api(`/profiles/api/accounts/${t.dataset.testAccount}/test`,
+                                       { method: 'POST' });
+            PROBES[t.dataset.testAccount] = test;
+            await loadMail();
+            toast(probeFailed(test) ? probeSummary(test).replace('Guardado, pero no conecta', 'No conecta')
+                                    : 'Conecta bien', probeFailed(test));
+          } finally { t.disabled = false; t.textContent = 'Probar conexión'; }
+        } else if (t.dataset.delAccount) {
+          if (!confirm('¿Quitar este buzón y sus reglas?')) return;
+          await api(`/profiles/api/accounts/${t.dataset.delAccount}`,
+                    { method: 'DELETE', headers: H });
+          await loadMail(); toast('Buzón quitado');
+        } else if (t.dataset.addRule) {
+          const id = t.dataset.addRule;
+          const perms = Array.from(
+            document.querySelectorAll(`[data-rule-perm="${id}"]:checked`)).map(c => c.value);
+          await api(`/profiles/api/accounts/${id}/rules`, {
+            method: 'POST', headers: H, body: JSON.stringify({
+              match_kind: document.querySelector(`[data-rule-kind="${id}"]`).value,
+              pattern: val('data-rule-pattern', id) || '*',
+              can_read: perms.includes('read'),
+              can_resend: perms.includes('resend'),
+              respond_mode: document.querySelector(`[data-rule-reply="${id}"]`).value,
+              confirm: document.querySelector(`[data-rule-confirm="${id}"]`).checked,
+              instructions: val('data-rule-instr', id),
+            }),
+          });
+          await loadMail(); toast('Regla agregada');
+        } else if (t.dataset.delRule) {
+          await api(`/profiles/api/rules/${t.dataset.delRule}`,
+                    { method: 'DELETE', headers: H });
+          await loadMail(); toast('Regla quitada');
+        }
+      } catch (err) { toast(err.message, true); }
+    });
+
+    loadMail().catch(err => toast(err.message, true));
+</script>
+{% endblock %}

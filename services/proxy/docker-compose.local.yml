@@ -1,0 +1,29 @@
+# Overrides for the copy of this proxy that runs at home on hub, in front of
+# the LAN answer for chat.home (Pi-hole points that name at hub for
+# anything inside the house; see HomeCore/proxy/).
+#
+# Used as `docker compose -f docker-compose.yml -f docker-compose.local.yml ...`
+# by Jenkinsfile.deploy-local. The VPS deploy copies only docker-compose.yml,
+# so nothing here can reach it.
+#
+# The two instances are meant to be interchangeable from a phone's point of
+# view: same users.json, same SESSION_SIGNING_KEY, same devices.db. Get any of
+# those wrong and crossing between wifi and mobile data logs the family out or,
+# worse, refuses the login outright because the device looks unenrolled.
+services:
+  chat-proxy:
+    # Distinct from the VPS's `home-chat-proxy` so logs, `docker ps` output and
+    # the smoke tests can never be mistaken for one another.
+    container_name: home-chat-proxy-local
+    # Loopback-only: Caddy (host network, same box) is the only thing that
+    # should reach it. The port comes from `services.local-proxy.port` -- it was
+    # a literal here, so moving the config key changed only what the health
+    # check polled. `sh -c` because a JSON-array command is not interpolated by
+    # the shell and `${...}` would reach uvicorn as four literal characters.
+    command: ["sh", "-c", "exec uvicorn main:app --host 127.0.0.1 --port ${LOCAL_PROXY_PORT:-21003}"]
+    environment:
+      # This is the copy inside the house, so it may serve the house-only
+      # prefixes (/camaras, /finanzas). The VPS never sets this — and since the
+      # VPS deploy copies only docker-compose.yml, it cannot pick this up by
+      # accident. Unset means "not the house", which is the safe direction.
+      IS_LAN_COPY: "1"

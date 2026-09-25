@@ -1,0 +1,45 @@
+{# The header + app row shared by the household module pages (tasks, grocery,
+   menu). One copy, so the navigation cannot drift between them: Home is the
+   portal, Alfred is the chat, and the four modules are each other's siblings —
+   the wall is not the only way between them any more.
+
+   The row scrolls sideways when it does not fit and marks the page you are on
+   rather than hiding it. files.html keeps its rail and does not include this;
+   it carries the same two doors in its own foot.
+
+   Expects: app_icon (emoji), app_title, user_name, current (one of
+   tasks/grocery/menu/files — the page's own key, marked in the row). site_name,
+   user_name and t come from the app's context. #}
+<header>
+  <span class="plate">{{ app_icon }}</span>
+  <div>
+    <h1>{{ app_title }}</h1>
+  </div>
+  <a href="/logout" class="hlink">{{ user_name }} ⎋</a>
+</header>
+<nav class="app-nav" aria-label="Apps">
+  <a class="nav-link" href="/">🏠 {{ site_name }}</a>
+  <a class="nav-link" href="/chat">🤵 Alfred</a>
+  <span class="nav-rule" aria-hidden="true"></span>
+  <a class="nav-link{% if current == 'tasks' %} on{% endif %}" href="/tasks">⭐ {{ t('common.tasks') }}</a>
+  <a class="nav-link{% if current == 'grocery' %} on{% endif %}" href="/grocery">🛒 {{ t('common.grocery') }}</a>
+  <a class="nav-link{% if current == 'menu' %} on{% endif %}" href="/menu">🍽️ {{ t('common.menu') }}</a>
+  <a class="nav-link{% if current == 'files' %} on{% endif %}" href="/files">📁 {{ t('common.files') }}</a>
+</nav>
+<style>
+  /* The module navigation row — see _app_header.html. Wall-coloured so it
+     reads as one bar with the page's own header above it; the hand-ruled edge
+     of the house sits under the header and separates the two. */
+  .app-nav { display:flex; gap:6px; align-items:center; overflow-x:auto;
+             background:var(--wall); padding:0 20px 12px; scrollbar-width:none; }
+  .app-nav::-webkit-scrollbar { display:none; }
+  .app-nav .nav-link {
+    flex:none; color:var(--wall-fg); text-decoration:none; white-space:nowrap;
+    font-size:.78rem; font-weight:600; padding:6px 12px; border-radius:999px;
+    border:1px solid rgba(218,212,194,.16);
+  }
+  .app-nav .nav-link:hover { background:rgba(255,255,255,.06); }
+  .app-nav .nav-link.on { background:var(--honey); border-color:var(--honey); color:#FFF8E8; }
+  .app-nav .nav-rule { flex:none; width:1px; height:18px;
+                       background:rgba(218,212,194,.25); margin:0 4px; }
+</style>

@@ -1,0 +1,1373 @@
+# ---------------------------------------------------------------------------
+# home-stack site configuration
+# ---------------------------------------------------------------------------
+# Copy to config/home-stack.yml (install.sh does this) and edit, or edit it
+# through the admin page at http://127.0.0.1:21002/ once the stack is up.
+#
+#
+# THE COPY IN THE CHECKOUT STOPS BEING THE CONFIG
+# -----------------------------------------------
+# `install.sh` seeds `config/home-stack.yml` from this file, and the first
+# deploy copies it to `{paths.config}/home-stack.yml`. From then on the
+# deployed copy is the one everything reads and the one the admin page edits.
+#
+# The seed keeps exactly one job: `paths.config`. The deployer reads that key
+# out of the seed to find where the real config lives, and reads everything
+# else from there -- so the seed must not be deleted, and editing anything
+# else in it does nothing. `./home-stack check` counts what the two disagree
+# on, and the count is normally large and harmless. The one setting where a
+# disagreement is not harmless is `paths.config` itself, because that is the
+# key deciding which file is authoritative; check reports that one separately.
+#
+# Worth stating here rather than only in the tool, because the trap catches
+# people who are reading rather than running: on 2026-09-01 two separate
+# readers -- one of them auditing this stack's backups from another repository
+# -- reached opposite-to-reality conclusions from the leftover and were one
+# step from acting on them. Both had checked carefully. Both had checked the
+# file with the obvious name in the obvious place.
+#
+# And neither file is the last word. A config says what somebody intended;
+# only the container says what took effect:
+#
+#     docker inspect <container> --format '{{range .Config.Env}}{{println .}}{{end}}'
+#
+# Nothing in this file is a secret. Secrets live in secrets/smart-home-bot.env,
+# which is gitignored; this file only ever names the key it needs.
+#
+#
+# IF YOU CHANGE NOTHING ELSE
+# --------------------------
+# The defaults run the whole stack on this one machine, reachable by IP, with
+# no DNS, no domain and nothing exposed to the internet. Four things are worth
+# a minute:
+#
+#   1. `site.name`      what the household is called on every screen
+#   2. `site.timezone`  or every time shown to a person is wrong
+#   3. `locale.default` the language the pages and the assistant use
+#   4. `members`        at the bottom: who lives here
+#
+# Then `./home-stack install` and `./home-stack deploy`.
+#
+#
+# THINGS YOU DO NOT NEED
+# ----------------------
+# Each of these is off, and the stack is complete without it:
+#
+#   * `dns:`        friendly names like house.home. They need something on
+#                   your network answering them -- a Pi-hole, a router that
+#                   does local DNS, or a hosts file on each device. Leave them
+#                   blank and everything is reached by IP instead.
+#   * `cloud.vps:`  reaching the house from outside. Off, nothing leaves your
+#                   network except the assistant's model API key.
+#   * `plugins:`    your own services, alongside the ten shipped here.
+#   * a GPU         `faster-whisper.device` and `home-cameras.gpu` ship off.
+#
+#
+# WHAT NEEDS A SECOND MACHINE
+# ---------------------------
+# Nothing, until you want it. `hosts:` is roles rather than machines, and all
+# three roles point at this box. Give one a real address and only that role
+# moves.
+# ---------------------------------------------------------------------------
+
+site:
+  # One resolver for the portal container to ask directly, instead of whatever
+  # Docker hands it. Leave it blank unless you have the problem it solves: a
+  # shared rate-limit bucket at a house resolver, described in
+  # services/home-core/local/docker-compose.resolver.yml.
+  #
+  # An address that is wrong here is not a slow lookup, it is no lookups at
+  # all -- which is exactly how a redacted placeholder once shipped as an
+  # operational value and every notification the portal sent failed on
+  # "Temporary failure in name resolution".
+  resolver: ""
+  # Shown as the portal title on every screen.
+  name: "Mi Casa"
+  # The internal DNS suffix every host below answers to. The stack never needs
+  # a public domain: see `cloud:` for the two things that optionally do.
+  domain: home
+  # The name the proxy serves the portal under, and the name its certificate is
+  # issued for. Keep it in step with dns.portal below, or leave both blank and
+  # reach the portal by IP -- see the note on `dns:`.
+  host: house.home
+  timezone: Etc/UTC
+  # A Prometheus-format GPU exporter, for the card graph on the usage page.
+  # Blank by default and blank is not a failure: without it the page simply
+  # has no card section, the same way a `dns:` entry nobody set is empty
+  # rather than invented.
+  #
+  # Deliberately not a service this stack ships. A GPU exporter is a
+  # monitoring choice, and packaging one would mean owning a Prometheus this
+  # stack does not otherwise need -- so this points at whatever the household
+  # already runs. Both metric vocabularies are read: DCGM's
+  # (`DCGM_FI_DEV_FB_USED`) and nvidia_gpu_exporter's (`nvidia_smi_*`).
+  #
+  #   gpu_exporter: "http://127.0.0.1:9445/metrics"
+  #
+  # The portal container is on the host network, so a loopback address here
+  # reaches an exporter published on this machine.
+  gpu_exporter: ""
+  # This household's own network, in CIDR — e.g. "192.168.1.0/24".
+  #
+  # The assistants refuse to fetch a private address: that check is what stops
+  # a page or a message steering them into your router's admin panel or a cloud
+  # metadata endpoint. This is the one range it treats as yours rather than as
+  # somewhere it is being sent.
+  #
+  # Empty is the shipped state and means no exemption at all — every private
+  # range stays blocked. Setting it widens what the assistants may fetch, so
+  # set it to your network and nothing wider. It is deliberately not guessed:
+  # a range that is not yours is an exemption granted to somebody else's
+  # network, which is the same mistake as a default that names a host.
+  lan_cidr: ""
+  # What the assistant calls itself, and what people call it. Substituted into
+  # its prompts and the pages that mention it on every deploy, so this is the
+  # one place it changes.
+  #
+  # Only the capitalised word is replaced. Lowercase `alfred` is a path and an
+  # image name (`alfred/documents`, `alfred-nanobot`) and stays as it is —
+  # renaming those would move every file the assistant has ever saved for
+  # somebody.
+  assistant_name: Alfred
+  # Container clocks stay UTC; anything that shows a time to a person converts
+  # using the zone above. Don't normalize the two into one.
+
+locale:
+  # English is the source language and the fallback: a key with no translation
+  # renders the English string, never the key name. Change this to whatever the
+  # household actually speaks — it is what the admin page and the assistant
+  # follow.
+  default: en
+  # EFIGS + Chinese + Japanese. A locale listed here must have a catalogue in
+  # i18n/<code>/ or the admin page refuses to offer it.
+  available: [en, fr, it, de, es, zh, ja]
+
+# ---------------------------------------------------------------------------
+# Hosts, by role rather than by name
+# ---------------------------------------------------------------------------
+# Services below pin to a role, never to a hostname, so a stack can be one box
+# or three. Point several roles at the same address for a single-machine
+# install; the deployer notices and skips the redundant copies.
+
+# ---------------------------------------------------------------------------
+# The household file share
+# ---------------------------------------------------------------------------
+# Where the SMB share lives, when that is not the machine the `storage` role
+# points at.
+#
+# The two are separate questions and were one setting for too long: `storage`
+# says which machine a service is *deployed onto*, and the share is a resource
+# that may live on a box this stack never deploys to -- a NAS, a desktop that
+# is on all day. On the house this package came from they are different
+# machines, and pointing the share at the role sent every consumer to a partial
+# copy: the per-member folders were there, the processed statements were not,
+# and the finance dashboard answered "no months" for everybody instead of
+# failing.
+#
+# Blank means the storage role, which is what a single-PC install means anyway.
+share:
+  host: ""
+
+hosts:
+  # One machine by default. Every role points at this box, the deployer notices
+  # the address is local and skips ssh and rsync entirely, so a single-PC
+  # install needs no keys, no remote user and no network at all.
+  #
+  # To spread the stack over more machines, give a role a real address and a
+  # user you can reach by key. Only the roles you change move.
+  hub:
+    address: 127.0.0.1         # portal, broker, assistant, lights, proxy
+    user: homestack
+  compute:
+    address: 127.0.0.1         # speech-to-text, cameras, voice gateway
+    user: homestack
+  storage:
+    address: 127.0.0.1         # documents and the household share
+    user: homestack
+
+# ---------------------------------------------------------------------------
+# Names
+# ---------------------------------------------------------------------------
+# Names people type  --  OPTIONAL, and they need local DNS
+# ---------------------------------------------------------------------------
+# These are only ever the names a person types into a browser. Nothing inside
+# the stack resolves them: every internal URL is built from `hosts:` above,
+# because a container retrying `getaddrinfo ENOTFOUND` forever looks exactly
+# like the service being down -- which is a failure this stack has already had.
+#
+# One name does appear in internal URLs, and it is not one of these: a
+# container reaching a service on this same machine is given
+# `host.docker.internal`, which Docker itself answers because the compose file
+# declares `extra_hosts: host.docker.internal:host-gateway`. It needs nothing
+# on your network, and `./home-stack check` refuses the
+# combination that would need something.
+#
+# **A name here only works if something on your network answers it.** That
+# means one of:
+#
+#   * a Pi-hole, AdGuard Home or similar, with a local DNS record per name;
+#   * a router that lets you add local DNS entries;
+#   * a `hosts` file entry on every device that will use the name --
+#     workable for one laptop, miserable for a household.
+#
+# If you have none of those, **leave them blank**. Each blank name falls back
+# to the address of the machine it stands in front of, so the links still work
+# and you reach the house by IP. Nothing else changes.
+#
+# Nothing has to end in `.home`; it is a short suffix that is not a public
+# TLD, so it is safe to use on a network you control without owning a
+# domain. Use your own if you prefer -- whatever you put in `domain:` is
+# what the certificate is issued for and what `dns:` is expected to match.
+#
+# ## Using a name you actually own
+#
+# `dns.portal` and `dns.chat` can be real public names on a domain you own --
+# `house.example.com`, `chat.example.com` -- served *inside* the house by the
+# proxy on `hub`. That is the split horizon: your resolver answers those two
+# names with hub's address for anything on the LAN, so they never leave the
+# network; from outside, the public records still point wherever they point,
+# and nothing here is involved.
+#
+# It takes three things, and all three are here or one command away:
+#
+#   1. **These names.** The proxy's Caddyfile takes both site addresses from
+#      `dns.portal` and `dns.chat`. Change them and redeploy `home-core` and
+#      the front door answers to the new ones.
+#   2. **A certificate for them.** Set `cloud.certificates.mode: acme-dns` and
+#      `acme_dns_provider` to your DNS provider's acme.sh plugin, and put the
+#      API token in `ACME_DNS_API_TOKEN`. A wildcard is issued over DNS-01 and
+#      renewed unattended. Without it you get a certificate from a CA generated
+#      on the box, which works everywhere you install that CA.
+#   3. **Your resolver pointing them at hub.** One local DNS record each.
+#
+# There is no fourth thing, and in particular nothing has to be reachable from
+# the internet for any of it: DNS-01 proves the domain through your DNS
+# provider, not through an inbound connection.
+#
+# Reaching the house from *outside* is a different question, and not this one:
+# see `cloud.vps` below.
+dns:
+  portal: house.home       # the household portal
+  chat: chat.home          # the assistant, from outside the house
+  cameras: cameras.home
+  # Where opencode's own interface is served for the Programmer space. Its
+  # assets and its API are absolute from the origin root, and `/api`
+  # collides with the portal's, so it cannot live under a path -- it needs
+  # a name of its own. Empty and the space says it is not configured.
+  code:
+  mqtt: mqtt.home
+  paperless: paperless.home
+  assistant: assistant.home
+  voice: voice.home
+  # The transcription server, named because the portal and the assistants
+  # both reach it and neither should carry an address.
+  whisper: whisper.home
+
+# Absolute paths on the target hosts. Deliberately outside any deploy
+# workspace: live configuration that a re-deploy can wipe has cost this stack
+# four separate outages. The deployer refuses to bind-mount state from inside
+# the checkout.
+#
+# ## When one machine's disks are not the others'
+#
+# These are one set of directories for the whole stack, which is right until a
+# role is a machine with different disks. Put `state` on a second disk on the
+# hub and every other role is told to use that path too -- and a role that has
+# no such disk fails its deploy on `mkdir -p`, which is correct and is not what
+# you meant.
+#
+# `by_host:` is the exception, per role and per path. Anything not named there
+# is the shared value above. `vps` is a role here even though it is not one of
+# the `hosts:` entries, because it is a real machine with its own disk.
+#
+#   by_host:
+#     vps:
+#       state: /var/lib/home-stack/state
+#
+# Editable from the admin page, under Paths -> Per machine, where every box is
+# filled in with what that machine will actually use.
+paths:
+  config: /var/lib/home-stack/config
+  state: /var/lib/home-stack/state
+  media: /var/lib/home-stack/media
+  # Where `plugins:` looks for anything not named by an absolute path. Outside
+  # this package on purpose: a plugin is where a household's own services live,
+  # and keeping them out of this tree is what lets the package stay
+  # redistributable and stay clean under `deploy/sanitize.py --check`.
+  plugins: /var/lib/home-stack/plugins
+  # Where `./home-stack backup` writes. One directory per run, named by the
+  # moment it started, so pointing a backup system at this one path is the
+  # whole configuration it needs -- no per-service list to keep in step.
+  #
+  # Put it on a different disk from `state:` if you can. A backup on the drive
+  # that just died is not one.
+  backups: /var/lib/home-stack/backups
+
+# Services this household brings along, that the package does not ship. Each
+# entry is a directory holding a `plugin.yml`, absolute or relative to
+# `paths.plugins`. Its `services:` block uses the same schema as
+# deploy/manifest.yml, and what it declares is deployed, contract-checked and
+# state-guarded exactly like a service shipped here.
+#
+# Empty is the shipped state and changes nothing.
+plugins: []
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+# `enabled: false` means the deployer skips it and the portal hides its tile.
+# Toggle these from the admin page rather than by hand where you can.
+services:
+  # Every published port lives in 21000-21499, which is empty on a stock
+  # machine and below the ephemeral range (32768+). The old numbers were the
+  # obvious ones -- 3000, 5000, 8000, 8080 -- and those are exactly the ones
+  # something else on the box has already taken. Grouped by what the thing is:
+  # 2100x front doors, 2101x voice, 2102x cameras, 2103x documents and search,
+  # 2104x infrastructure, 2105x the broker's dashboard, 2107x the MCP bridges,
+  # 211xx the VPS side, 212xx-214xx the assistants. The broker itself stays on
+  # 1883; see mqtt below.
+  #
+  # 2107x is one per member, like the three assistant bands -- 21071 for the
+  # first member and so on -- and it is inside 21000-21499 rather than
+  # continuing the 212xx/213xx/214xx pattern into 215xx, which would be outside
+  # the range this whole block is about.
+  home-core:
+    enabled: true
+    host: hub
+    port: 21001
+    # The PHP entry page, on the loopback only -- Caddy is the only thing
+    # that should reach it. It had no key here at all and was a literal
+    # 8081 in the compose file and both of its health checks.
+    entry_port: 21004
+  admin:
+    enabled: true
+    host: hub
+    port: 21002
+    # Which address the port is published on. Every interface, so the page
+    # is reachable from the household's own network -- the sofa, a phone, the
+    # laptop in the other room. That is who it is for.
+    #
+    # What keeps it off the internet is not this line. It is that neither proxy
+    # has a route to it: the proxies are reachable from outside on purpose, so
+    # a `reverse_proxy` to this port would publish the docker socket and the
+    # Deploy button to everyone. `--check-contract` refuses that, and it is the
+    # boundary worth caring about.
+    #
+    # The exception is a machine with a public address -- a VPS, or a host
+    # your router forwards to. There 0.0.0.0 *is* the internet, and this
+    # package cannot tell from the inside. On one of those, use:
+    #
+    #   bind: 127.0.0.1
+    #
+    # and reach it with `ssh -L 21002:127.0.0.1:21002 <host>`.
+    bind: 0.0.0.0
+  nanobot:
+    enabled: true
+    host: hub
+    # compose | kubernetes. Compose needs nothing and is the default; the whole
+    # stack runs on one PC that way. Kubernetes buys two things and it is worth
+    # being narrow about which: a probe that restarts an instance that has
+    # stopped answering, and a scheduler that can place one on a machine with
+    # room. `./home-stack install --runtime` asks and sets this up.
+    runtime: compose
+    # One assistant instance per household member. Ports are allocated from
+    # these bases in listed order; five members means 21201..21205.
+    members: [user1, user2]
+    # Three ports per instance, allocated from these bases in listed order.
+    # Named after what each one serves, which they were not: `api_port_base`
+    # used to be the websocket's — so NANOBOT_URL pointed the portal and
+    # the voice gateway at a port that answers "Not Found" to everything they
+    # ask, and the health check polled it for three minutes on every deploy.
+    #
+    # 98 slots each, and the same last two digits across all three: user1 is
+    # 21201/21301/21401. The house instance sits at ..99 rather than after the
+    # last member, which is what the old layout did -- with 8761 as the base
+    # and the house pinned at 8766, a sixth member would have been handed the
+    # house's own port.
+    websocket_port_base: 21201   # the websocket channel
+    api_port_base: 21301         # the OpenAI-compatible API, and /health
+    gateway_port_base: 21401     # the gateway's own port
+  nanobot-house:
+    # The shared, room-facing assistant. Holds house credentials only, never
+    # per-member ones — the deployer asserts this after every roll.
+    enabled: true
+    host: hub
+    # The top of each member range, not the next number after the last member:
+    # that way adding members never walks into it. Same naming as above -- the
+    # API is what answers /health and /v1/chat/completions.
+    websocket_port: 21299
+    api_port: 21399
+    gateway_port: 21499
+
+  # The bridge that hands Alfred's own capabilities -- projects, commits, the
+  # share, the Designer -- to opencode, for the Programmer profession.
+  #
+  # Off unless `cloud.opencode` is on. It is only reached by `opencode serve`,
+  # and with nothing on the other end it is a container answering nobody.
+  #
+  # **One container serves one person**, and that is what makes the identity
+  # question answerable rather than a scaling choice. A single bridge for the
+  # household would have to decide which person a call is for, and the only
+  # thing that could tell it is the request -- which is composed by a model
+  # reading a prompt, and a prompt is something anybody who gets text in front
+  # of it can write. So: `member:` names whose Programmer space this serves,
+  # and the container holds that person's credentials and no others.
+  #
+  # There is no default. A default here would name somebody, and the person it
+  # named would be whoever this package's author happened to list -- which is
+  # the same reason `dns:` has no defaults. The deploy refuses an empty one.
+  alfred-mcp:
+    enabled: false
+    host: hub
+    # One bridge per member who has the Programmer switched on, published from
+    # this base in the order they appear under `members:`. Who that is lives on
+    # each person's own admin page (`members[].programmer`), not here: "may
+    # Mora use the Programmer" is a fact about Mora, and household members are
+    # managed on that page and nowhere else.
+    port_base: 21071
+  home-cameras:
+    # How many days a KEPT recording stays on disk. 0 is never delete, and 0 is
+    # what ships -- nothing in this package has ever expired the month folders.
+    #
+    # Read the trade before switching it on. Recordings are `backup: bulk` in
+    # the manifest, which `./home-stack backup` leaves out of every archive.
+    # So whatever off-box copy you
+    # keep is the ONLY other copy, and a cutoff here deletes the sole copy of
+    # everything older than it. Set it once you know your mirror works, sized
+    # to what that mirror actually retains.
+    #
+    # This is not the same question as what the clip reviewer bins unwatched
+    # (CLIP_REVIEW_DELETE_KINDS, in the service's compose file): that decides
+    # what was never worth keeping, this expires what was.
+    recording_retention_days: 0
+    # Reachable only from the LAN or over the VPN. On by default: a camera feed
+    # behind a login on a public host is not the boundary most people want.
+    #
+    # The portal refuses `/camaras/` to anything arriving through the public
+    # proxy, and the public copy of the proxy does not route the prefix at all
+    # -- so off the VPN it is not served rather than merely forbidden. Turn it
+    # off only if you have decided you want the cameras reachable from outside.
+    house_only: true
+    # The clip detector runs on an NVIDIA GPU when the machine has one. Leave
+    # this off on a machine that does not: the reservation is a hard
+    # requirement, so `up` fails outright rather than falling back, and the
+    # wall never starts. Off, the detector runs on CPU.
+    # Whether every recorded clip is read by a vision model. On, the wall
+    # describes what a clip contains and bins the ones that are only a bug on
+    # the lens or a clock ticking; that is three frames through the vision
+    # model per clip, and it is the heaviest user of this household's card.
+    #
+    # Off, every clip is kept unreviewed -- the tray stays empty and the purge
+    # has nothing to take. Turn it off to give the card to something else
+    # without giving up the recordings.
+    clip_review: true
+    gpu: false
+    # Which card the detectors run on: an index, a GPU-xxxx uuid, or `all`.
+    gpu_device: all
+    enabled: true
+    host: compute
+    web_port: 21020
+    registry_port: 21021
+  audio-cpp:
+    # One C++/ggml runtime for both halves of the voice path -- speech to text
+    # and text to speech -- as GGUF packages, on the CPU or on an NVIDIA card.
+    #
+    # Off by default, and turning it on changes nothing the family hears:
+    # `TTS_ENGINE` in home-voice still says `piper`. This starts a server that
+    # answers; pointing the voice at it is a separate, deliberate move.
+    #
+    # Measured on this hardware (services/audio-cpp/README.md has the tables):
+    # `supertonic_3_q8_0` speaks a Spanish line in 2.50 s on four CPU threads
+    # and 0.07 s on an RTX 3060, in 637 MiB of VRAM, more intelligibly than
+    # piper on both. The CPU image is 187 MB; the CUDA one is 2.89 GB.
+    # Off by default. Not because it is heavy -- the CPU image is 187 MB and
+    # the packages below are ~1.6 GB -- but because nothing points at it:
+    # `TTS_ENGINE` in home-voice is `piper`, which is baked into the gateway's
+    # own image and is both the default engine and the fallback. A service
+    # that installs, downloads weights and then answers nobody is a cost
+    # without a feature, so this waits until a household wants to try it.
+    #
+    # Turning it on does not switch the voice either. That is `TTS_ENGINE`,
+    # and piper stays underneath whatever replaces it (TTS_FALLBACK_ENGINE)
+    # so a restarting container is never silence in the kitchen.
+    enabled: false
+    host: compute
+    port: 21014
+    # cpu or cuda, and it selects the *image* as well as the runtime flag --
+    # the CUDA build needs nvcc to compile and the CUDA libraries to run. Pair
+    # it with `gpu: true`; a cuda backend without the card reservation starts
+    # and then cannot see a device.
+    backend: cpu
+    # Whether to build the CUDA image and reserve the card. False is not
+    # "slower" in the way it is for the camera wall -- both builds are real and
+    # both were measured -- but on the CPU the fastest usable model is 2.50 s a
+    # line against piper's 0.56 s, and on the card it is 0.07 s.
+    gpu: false
+    # Which card (index or GPU-xxxx uuid) when gpu is on; `count: 1` used to let Docker pick.
+    gpu_device: "0"
+    # CPU worker threads. Four measured; this box has more cores than that and
+    # the point is leaving them for whisper and the assistants, which share the
+    # machine and are what the numbers should be taken against.
+    threads: 4
+    # What the server *offers*, not what it uses. A caller names the model in
+    # each request, so this is the menu -- there is no model picker for this on
+    # the admin page on purpose, because "which voice for this reply" is a
+    # decision the client makes per call and a household setting cannot.
+    #
+    # Package ids, comma separated, and they are not the Hugging Face
+    # directory names. `python3 tools/model_manager_v2.py list` inside the
+    # container is the authority on what exists.
+    #
+    # **One TTS model, not the seven that were auditioned.** The profile in
+    # services/audio-cpp/README.md ran seven Spanish-capable packages and
+    # picked this one: 0.037 WER against piper's 0.098, every accent intact,
+    # 637 MiB of VRAM on a card and 2.50 s a line on four CPU threads. Shipping
+    # the whole field would cost a fresh install 6.9 GB to download six models
+    # nobody chose. These two are ~1.6 GB.
+    #
+    # To re-run the audition, add them back here -- they are
+    # pocket_tts_spanish_q8_0, moss_tts_nano_100m_q8_0, omnivoice_q8_0,
+    # audio8_tts_preview_0_6b_q8_0, magpie_tts_q8_0 and
+    # qwen3_tts_0_6b_base_q8_0 -- and run test/quality_tts.py.
+    tts_packages: "supertonic_3_q8_0"
+    asr_packages: "qwen3_asr_0_6b_q8_0"
+
+  faster-whisper:
+    enabled: true
+    host: compute
+    port: 21010
+    # Speech to text is the one thing here that really wants a GPU, and the
+    # image is built on CUDA. Without an NVIDIA driver the container does not
+    # degrade -- it raises "CUDA driver version is insufficient" at import and
+    # restart-loops, which from the outside looks exactly like a model that is
+    # slow to load.
+    #
+    #   cuda  float16  a machine with an NVIDIA GPU. Pair with a big model.
+    #   cpu   float32  anything else. Several times slower, and correct.
+    #
+    # float32 and not int8 on the CPU, which is the usual advice and is wrong
+    # here. Measured on the voice round trip, same audio and same model, only
+    # this changed: int8 heard "Turn on the kitchen light, please" as "and
+    # don't take it to the place" -- not a near miss, nothing in common.
+    # float32 got the words that matter. A transcription nobody can trust is
+    # worth less than none, because nothing downstream reports it as wrong.
+    #
+    # cpu here, for the same reason `home-cameras.gpu` above is false: most
+    # machines have no GPU, and this file is what a new install starts from.
+    # An upgrade is unaffected -- the deployer's own default is still
+    # cuda/float16, so a config written before these keys existed keeps the
+    # behaviour it had.
+    device: cpu
+    # Which card, when `device` is cuda: an index, a GPU-xxxx uuid, or `all`.
+    # The admin page's Models tab sets this beside the Ollama servers.
+    gpu_device: all
+    compute_type: float32
+    # Switch all three together. large-v3-turbo is near-large accuracy at ~8x
+    # the speed and is the one to use on a GPU; large-v3 for maximum accuracy.
+    # small is the CPU pairing -- large-v3-turbo on cpu is not wrong, only slow
+    # enough that a voice turn stops feeling like a reply. base is faster still.
+    model: small
+  home-voice:    # What Alfred speaks with, chosen on the admin page under "the house's
+    # voice". `piper` is the gateway's own, baked into its image and always
+    # available; `audiocpp` needs services.audio-cpp switched on.
+    #
+    # An empty voice means the engine's default -- for piper the baked house
+    # voice, which is what a fresh install speaks with. Extra piper voices are
+    # dropped into `{paths.config}/home-voice/voices` as an .onnx and its
+    # .onnx.json, and appear on the page once they are there.
+    tts_engine: piper
+    tts_voice: ""
+
+    enabled: true
+    host: compute
+    port: 21011
+    tts_port: 21012
+  mqtt:
+    enabled: true
+    host: hub
+    # 1883 stays. It is the registered MQTT port, and it is the one number
+    # here that is configured into things this stack does not deploy -- every
+    # sensor, every ESP32, Home Assistant. Moving it costs a reflash for no
+    # gain; nothing else on a normal box wants it.
+    broker_port: 1883
+    # The dashboard is a web page and moves into the band with the rest.
+    dashboard_port: 21050
+    # The broker is the official upstream image; this stack does not build it.
+    broker_image: eclipse-mosquitto:2.0
+  # An image registry on your own network. Only needed when a service runs
+  # under Kubernetes across more than one machine -- a node can only start a
+  # pod whose image it can pull, and the assistant image is built here rather
+  # than published anywhere. Turn it on by hand if you run the Kubernetes
+  # renderer across more than one node; leave it off otherwise. Nothing in
+  # `install` or `deploy` pushes to it yet, so on a single node it buys
+  # nothing.
+  registry:
+    enabled: false
+    host: hub
+    port: 21040
+  ntfy:
+    # The notification server for `cloud.notifications.mode: local`. Turn it off
+    # if you point at an external one, or if you want no notifications at all.
+    enabled: true
+    host: hub
+    port: 21031
+
+
+  # The house's devices. Off by default only because this package does not
+  # assume you run one; if you do, it is the service the household notices.
+  #
+  # `zigbee` is about *this machine*, not about the house: a USB coordinator
+  # lives in one box at a time, and Home Assistant deployed onto a machine
+  # that does not have it loads ZHA, shows every Zigbee device, and gets an
+  # answer from none of them. Moving the stick is a physical errand, and there
+  # is no setting that substitutes for it.
+  #
+  # `serial` is by-id on purpose. /dev/ttyUSB0 is assigned in probe order, so
+  # a second serial device present at boot silently renumbers it.
+  homeassistant:
+    enabled: false
+    port: 21062
+    zigbee: false
+    serial: /dev/serial/by-id/usb-0000_0000-if00-port0
+
+  # Workflow automation. Off unless you already have workflows: the whole
+  # value is in the ones somebody built.
+  #
+  # Its data directory holds a 56-byte `config` file with the key every stored
+  # credential is sealed with. It travels with the database or the credentials
+  # are gone, and n8n will not say so -- it starts, lists everything, and
+  # fails at the first call.
+  n8n:
+    enabled: false
+    port: 21061
+
+  # Flows the house runs on a schedule or a trigger. Off unless you already
+  # have some: an empty Node-RED is a web page nobody opens.
+  #
+  # `/data` moves as a whole when you import an existing one -- flows.json,
+  # settings.js and the credentials file that is encrypted with a secret out
+  # of settings.js. Half of it is worse than none of it.
+  nodered:
+    enabled: false
+    port: 21060
+
+  home-search:
+    # SearXNG and Vane: the house's own metasearch, and an engine that reads the
+    # pages and answers with its sources cited. Off by default -- it is two more
+    # images, and the assistant's `web_search` works without it. Turning it on
+    # also points the assistants at it, so ordinary lookups stop leaving the
+    # LAN; see services/home-search/README.md.
+    enabled: false
+    host: compute
+    # In the band with everything else. SearXNG's own 8080 is the number most
+    # likely to already mean something else on a machine you also run a stack
+    # on -- Jenkins, cAdvisor, a dozen others. If you move it, the assistants
+    # follow: they are given the address from here.
+    port: 21032
+    # Vane's own 3000 is Grafana's on a lot of machines, and was the old
+    # gethomepage dashboard's here until this renumbering -- every role is
+    # 127.0.0.1 on the default single-box install, so the second of any two to
+    # come up fails to bind.
+    vane_port: 21033
+
+  crawl4ai:
+    # https://github.com/unclecode/crawl4ai -- URL in, clean Markdown out, on
+    # your own hardware. This is what the assistant reaches for when a page has
+    # to be *read* rather than searched: `web_search` returns snippets, and a
+    # model asked to summarise a recipe or a datasheet from a snippet invents
+    # the rest.
+    #
+    # On by default, and the only thing in this file that opens arbitrary pages
+    # without a credential -- which is the whole point of it: reading a page is
+    # something the household does on its own hardware rather than through
+    # somebody else's servers and a metered key.
+    enabled: true
+    host: compute
+    # crawl4ai's own default, kept: it is outside the 210xx band because the
+    # image bakes it into its healthcheck and docs, and renumbering buys
+    # nothing here -- nothing else in this stack wants 11235.
+    port: 11235
+
+  # ── Optional capabilities, off by default ────────────────────────────────
+  # Everything below reaches something the house does not own -- a paid API, a
+  # browser driving somebody else's site -- or costs enough that it should be a
+  # decision rather than a default. They are switched here and nowhere else:
+  # turning one on wires it into the assistants, and turning it off *removes* it
+  # from their configuration rather than leaving it pointed at nothing.
+  #
+  # That last part is the whole reason these are services and not just secrets.
+  # An MCP server listed in the assistant's config is dialled at startup whether
+  # or not its token is set, and a failed connect sits on the path of every
+  # message -- this house measured 37s a message on exactly that. "No token" is
+  # not the same as "off", and only one of the two is quiet.
+
+  brightdata:
+    # Bright Data's MCP: paid scraping and structured lookups (Amazon, Google
+    # Shopping) that the free `web_search` cannot do. Off by default because it
+    # is metered -- an assistant that can scrape on request will, and the bill
+    # is somebody else's surprise.
+    #
+    # `BRIGHTDATA_API_TOKEN` in the env file is *not* enough on its own, and is
+    # not enough on purpose: the token being present used to be the whole
+    # switch, so a key left over from a trial kept the server in every prompt.
+    # The room assistant never gets it either -- see the `_comment_mcpServers`
+    # note in config/instances/house/config.json.
+    enabled: false
+
+  browser-use:
+    # https://github.com/browser-use/browser-use -- an agent that drives a real
+    # Chromium: opens pages, clicks, fills forms. What `web_search` and
+    # `scrape_as_markdown` cannot do, because the thing is behind a login or a
+    # form rather than in a page's text.
+    #
+    # Off by default and the heaviest thing in this list: it ships a browser, so
+    # the image is ~1.5 GB, Chrome is memory-hungry per tab, and it drives sites
+    # as you. Read services/browser-use/README.md before switching it on --
+    # particularly the part about which sites the household is content for an
+    # assistant to act on.
+    #
+    # It needs a model of its own to decide what to click. It is pointed at the
+    # house's own by default rather than a cloud key, which is slower and keeps
+    # the pages it reads on this machine.
+    enabled: false
+    host: compute
+    port: 21034
+
+  home-paperless:
+    enabled: true
+    host: storage
+    # 21030, clear of speech-to-text on 21010. The two used to be 8010 and
+    # 8000, one digit apart for exactly this reason: pointing every role at one
+    # address on a single-box install made the second of the two fail to bind.
+    port: 21030
+    # The embedding model Paperless indexes documents with, so its AI picks
+    # from your existing tags, types and correspondents instead of inventing
+    # new ones. Only used while `assistant.models.documents` is set. A local
+    # Ollama model (pull it first), or the documents model's own provider.
+    # embeddings: ollama:embeddinggemma
+  local-proxy:
+    # The proxy, answering the public name from inside the house. Its cloud
+    # twin is under `cloud:` and is off by default.
+    enabled: true
+    host: hub
+    port: 21003
+
+# ---------------------------------------------------------------------------
+# Your own additions to the portal
+# ---------------------------------------------------------------------------
+# Anything else you run that deserves a tile: a NAS UI, a media server, a
+# printer page, Home Assistant, Pi-hole. Managed from the admin page
+# (Services -> your services), or by hand here. They appear on the portal under
+# «Extensions», marked as such -- when one of these breaks it is nobody's job
+# in this package to fix it, and the wall should say so before somebody files
+# it against the stack.
+#
+# This is the right place for a service you run *elsewhere* and only want a
+# link to. For one this stack should deploy, build and verify, write a plugin
+# instead: see docs/plugins.md.
+#
+# `lan_only` matters. The portal leaves those tiles out for somebody who
+# reached it from outside the house, rather than drawing a link to a private
+# address that cannot open. This stack knows that about its own services and
+# cannot know it about an address you typed, so say so.
+#
+# `icon` is an emoji, because the dashboard draws it as text. There is
+# deliberately no `health_url`: painting a live status dot means the portal
+# dialling every one of these on every page load, which is the background
+# thread the old dashboard was replaced to be rid of.
+custom_services: []
+#  - name: NAS
+#    url: http://192.168.1.20:5000
+#    description: The big disk
+#    icon: 🗄
+#    lan_only: true
+
+# ---------------------------------------------------------------------------
+# The assistant's models
+# ---------------------------------------------------------------------------
+# Which model answers as which persona. Managed from the admin page
+# (Models), which shows what each one costs and what the house has measured.
+#
+# A value names a model and, by its prefix, where that model runs. Mix them
+# freely -- that is the point of having a row per job:
+#
+#   <name>               OpenCode Zen, billed per token. The recommended one,
+#                        and the only credential this stack calls required.
+#   ollama:<name>        an Ollama on your own hardware. No key, no per-token
+#                        cost, and nothing leaves the house. Address in
+#                        `cloud.ollama.local`.
+#   ollama-cloud:<name>  ollama.com. A key, and what you send it leaves.
+#   openrouter:<name>    openrouter.ai. One key, most models, per token.
+#   together:<name>      together.ai.
+#   freetoken:<name>     a FreeToken server on your own hardware.
+#
+# **Not the OpenCode Go plan, and this matters.** Go is the flat $10/month
+# subscription on the same account and the same sign-in, and it is the wrong
+# product for this stack. Its documentation says traffic is "monitored for
+# abusive traffic that degrades the experience for other users" and that a
+# client has to be one that "properly identifies itself". What this stack
+# sends is not an interactive coding session: it is five containers on one key
+# running unattended around the clock -- notification triage every few
+# minutes, cron reminders, memory consolidation, a morning summary -- roughly
+# 1,800 runs a month with nobody at a keyboard. That is the traffic shape a
+# flat plan flags, and **the account can be blocked for it**. Zen is the same
+# key and an overlapping roster, billed per token, and it is what every model
+# named below points at: `https://opencode.ai/zen/v1`, never `/zen/go/v1`.
+#
+# Go is not unused -- it is the Programmer's, and only the Programmer's. There
+# `opencode serve` spends it: OpenCode's own client, answering a person at a
+# keyboard, which is the case the flat plan is sold for. Nothing configured in
+# this file reaches it.
+#
+# So a household can put notification triage on the GPU in the cupboard, run
+# everyday chat on a hosted model, and send one profession to whatever is
+# actually best at it:
+#
+#   notifications: ollama:qwen3:4b        the highest-volume, smallest turn
+#   everyday:      gpt-5.6-luna           somebody is waiting
+#   programmer:    openrouter:kimi-k3     worth paying per token for
+#
+# Keys live together on the admin page under "Where the assistant thinks".
+#
+# The deployer renders these into the assistant's own config on every deploy,
+# so this file is the one place a model changes.
+assistant:
+  models:
+    everyday: gpt-5.6-luna          # ordinary chat
+    powerful: deepseek-v4-pro       # background work the assistant starts itself
+    programmer: kimi-k3             # code review and diagnosis
+    teacher: gpt-5.6-luna           # guides, tests, mark schemes
+    designer: gpt-5.6-luna          # posters, pages, anything looked at
+    notifications: gpt-5.6-luna     # the highest-volume, smallest turn
+    # The house talking to itself: a chore falling due, somebody arriving home.
+    # Bounded -- measured at 32k tokens at the largest -- which is what makes
+    # it the one household job a model on your own hardware can hold end to
+    # end. Point it at `ollama:` or `freetoken:` and it costs nothing per turn.
+    events: gpt-5.6-luna            # chores and location, always short
+    # Every thirty minutes, in every assistant: "is there anything active?"
+    # against a file a few hundred bytes long. Left blank it inherits the
+    # everyday model, which is what it did before it had a key -- and which
+    # means ordinary chat's model answering a 250-token question 48 times a
+    # day per container. `ollama:<name>` puts it on your own hardware.
+    heartbeat: gpt-5.6-luna         # the "anything to do?" check
+    # The turn classifier: before every chat turn and every unmarked sub-agent
+    # task, one short local question -- chat, action or complex -- and a
+    # `complex` starts the turn on `powerful`. See docs/routing.md.
+    classifier: ollama:gemma4:e4b
+    doctor: gpt-5.6-luna            # health questions
+    legal: gpt-5.6-luna             # contracts and paperwork
+    # What the assistant hands work to rather than doing in the turn: a
+    # background task, a memory consolidation, the morning summary. These were
+    # missing from this list for a while, and the gap only showed when a
+    # household moved provider: everything here went with them and the
+    # sub-agents kept the shipped default, so every background task went on
+    # calling the provider they had just left.
+    # Leave it blank and it follows `everyday`. That is the default
+    # worth having -- these keys exist because a household moved provider,
+    # every role above went with them, and the sub-agents kept the shipped
+    # default, so every background task went on calling the provider they had
+    # just left. Inheriting means the next move cannot do that again.
+    #
+    # Name one only to say something the parent does not: a local model for
+    # background work, say. There is one sub-agent model: hard work somebody
+    # is waiting on is `powerful`'s, in the chat, and work of hours is this.
+    subagent: ""                    # blank = same as `everyday`
+    # Work of several steps done in the chat: the planner writes the steps,
+    # reads each result and answers; each step runs on `plan_steps` -- a local
+    # model spends nothing per token there. A step it cannot finish is done
+    # again by the planner.
+    planner: ""                     # blank = same as `everyday`
+    plan_steps: ""                  # blank = same as `subagent`
+    vision: ollama:qwen3-vl:8b      # camera frames and photos, on your own box
+    # Two models the assistant never reads, on the same page because they are
+    # models the house runs. Blank keeps each service's own default.
+    titles: ""                      # the portal's chat titler; blank = the model on OLLAMA_URL
+    documents: ""                   # Paperless's AI (reads OCR text, suggests tags); blank = off
+    # The model every hosted role above falls back to when the one it asked for
+    # keeps erroring -- a model that is down, not one that is busy. On
+    # 2026-08-23 the everyday model returned a hard 500 on every call at the
+    # gateway while other models answered on the same key, and because one name
+    # is used by several roles at once, that single outage was every assistant
+    # in the house at the same moment. Leave it empty for no fallback.
+    #
+    # It may name ANY provider, and on a house with one provider it probably
+    # should name a different one. A fallback on the same provider as the roles
+    # rescues one dead model behind a healthy gateway -- real, and worth having
+    # -- but it cannot survive that provider going down, because then every
+    # model on it is gone, the rescue included. `ollama:` or `freetoken:` here,
+    # with the roles on a hosted provider, is the version that keeps answering
+    # when the internet does not.
+    #
+    # It still has to differ from every model above: a fallback already in use
+    # is a second attempt at what just failed. The deploy refuses that, and
+    # warns when the fallback shares its provider with every role.
+    fallback: deepseek-v4-flash      # slower, and a slow reply beats no reply
+
+  # How often the admin page refreshes OpenCode Zen's prices from models.dev.
+  # Prices move: the set this stack shipped with had gpt-5.6-luna at half what
+  # it costs now, and a recommendation that cannot see that is a recommendation
+  # about last quarter. `off` keeps whatever was last fetched.
+  # Routing -- see docs/routing.md. `shadow` records what the classifier would
+  # do and changes nothing; `active` routes on it and continues a failed
+  # cheap attempt on `powerful`; `off` asks nothing.
+  routing:
+    mode: shadow
+    timeout_s: 3.0
+    long_message_chars: 600
+    sticky_turns: 3
+    max_escalations_per_turn: 1
+    escalate_on: [bad_invocation, error, empty_final_response, repeated_tool_calls, max_iterations]
+    subagents: true
+    complex_iterations: 80
+    everyday_iterations: 40   # a cheap turn still calling tools after this escalates
+
+  price_check: daily                # daily | weekly | off
+
+  # Thinking, per role. Off by default because nothing here needs it: every
+  # role above names a hosted model, and nanobot's own `reasoning_effort` is
+  # per *provider*, so setting it would reach the professions too.
+  #
+  # Set it when a role runs on a local reasoning model. Those spend the whole
+  # completion budget thinking, stop at the cap, and return an EMPTY answer
+  # with finish_reason "length" -- which is not an error, so it reaches the
+  # family as the assistant simply not replying. Measured on Qwen3.6-35B-A3B:
+  # unset and "low" both produced nothing; only "none" produced an answer.
+  # "low" is worse than unset, not better.
+  #
+  # A role named here must be `powerful` or a profession the assistant's
+  # config declares, or the setting reaches no turn -- the deploy says so.
+  #
+  # reasoning_effort:
+  #   notifications: none
+  #   events: none
+
+  # What this household wants to spend, per trailing window, in dollars. Drawn
+  # on the portal's /stats page as a bar beside what each window has actually
+  # cost.
+  #
+  # Empty by default and empty means no ceiling, which is the honest default:
+  # every provider this stack talks to is billed per token and none of them
+  # publishes an allowance. The page used to draw against $12 / $30 / $60 --
+  # the flat OpenCode Go plan's ceilings -- and those stopped describing
+  # anything the day this stack left that plan. A number here is your budget
+  # or it is nobody's, the same argument this file makes about `dns:`.
+  spend_budget:
+    per_5h: ""
+    per_week: ""
+    per_month: ""
+
+# ---------------------------------------------------------------------------
+# Everything that leaves the house. All of it optional but one.
+# ---------------------------------------------------------------------------
+cloud:
+  # The only required external credential in the stack. Alfred's model.
+  # Key: OPENCODE_API_KEY in secrets/smart-home-bot.env. It is a Zen key
+  # used against the Zen endpoint -- see the warning by `assistant.models`
+  # about the flat Go plan, which the same key also opens and which this
+  # stack's traffic can get an account blocked on.
+  model_api:
+    required: true
+
+  # The one part of this stack that is not meant to run on your machine.
+  # Everything else -- portal, assistant, cameras, voice, lights, broker,
+  # documents, notifications -- runs on the PC you deploy from, on one host, by
+  # default. This publishes the chat proxy through a VPS or VM you own, so the
+  # assistant is reachable from outside the house.
+  #
+  # Off by default, and the stack is fully usable without it.
+  vps:
+    enabled: false
+    # Where the machine is, for ssh and rsync. An address or a name this
+    # machine can resolve; it is not what anybody types in a browser.
+    #
+    # If you run the split horizon -- the house resolver answering `domain`
+    # below with hub's address, so the Alfred app reaches the LAN copy -- then
+    # this must NOT be that name. From inside the house it stops pointing at the
+    # VPS, and a deploy ssh's to hub instead. That fails on the host key rather
+    # than doing something to the wrong machine, but an address here avoids
+    # finding out how reliably.
+    host: ""                 # e.g. 203.0.113.10, vps.example.com, or a LAN VM
+    user: ""
+
+    # Does *this stack* deploy that machine?
+    #
+    # A separate question from `enabled:`, and collapsing the two is a mistake
+    # worth not repeating. Deploying it means rsyncing a tree there and running
+    # docker compose, which needs an account with a shell and access to the
+    # docker socket. A VPS provisioned by hand often has neither -- the common
+    # case is one account that exists only to hold a reverse tunnel open, with
+    # `nologin` as its shell, which authenticates and then refuses to run
+    # anything.
+    #
+    # Set this false and the proxy stays configured, the name still means
+    # something, and `./home-stack deploy` stops trying and says so once per
+    # run instead. That last part is the point: a deploy that is red for a
+    # reason you have accepted teaches you to ignore red, which is the same
+    # disease as a green deploy that hides a wiped config.
+    managed: true
+    # Trust: PROXY_SHARED_SECRET (shared with the portal; nothing separate)
+
+    # The name people type. Your own domain, pointed at the VPS -- the proxy
+    # serves this name and Caddy gets a certificate for it.
+    #
+    # Separate from `host:` on purpose. The two are usually different (an IP
+    # you ssh to, a name you browse to), and only this one ends up in a
+    # certificate, in a link somebody clicks, or in an app's saved server
+    # address. Left empty, the proxy serves whatever reaches it and issues no
+    # certificate, which is right for a VM on your own LAN and wrong for
+    # anything on the public internet.
+    domain: ""               # e.g. chat.example.com
+
+    # The address Let's Encrypt writes to about expiring certificates. Only
+    # used when `domain:` is set.
+    acme_email: ""
+
+    # Publish the entry page through the proxy as well as the chat. Off by
+    # default.
+    #
+    # "Through", not "on": the VPS runs no application code and stores no
+    # household data. It terminates the public connection and forwards every
+    # request down the reverse tunnel to this machine, which serves the page,
+    # holds the user store and checks the passwords. Turning this on decides
+    # what the proxy is willing to forward, nothing else.
+    serve_entry_page: false
+    # Which addresses count as being inside the house, for the copy on the VPS.
+    # The LAN is already answered by the copy on hub, which is only reachable
+    # from there; this is about the VPN, and about the Android app, which
+    # hard-codes the public URL and so always arrives at the VPS no matter
+    # where the phone is.
+    #
+    # Empty falls through to the proxy's own default, Tailscale's range. Add a
+    # CIDR to widen it. Deliberately not a place for your public address: that
+    # would show house-only links to anyone on your home wifi with no VPN at
+    # all, break silently when your ISP changes it, and behind CGNAT would not
+    # even be your household.
+    home_networks: []
+
+    # Where the home end of the reverse tunnel lands on the VPS loopback. The
+    # proxy has no other route to your machine, and nothing on the VPS listens
+    # publicly except the proxy itself.
+    #
+    # 211xx is the VPS's own slot in the band. This is a port on *that* machine
+    # and shares nothing with the numbers above -- it was 8443 for as long as
+    # the portal was, which read as a rule that the two must match. They do not.
+    tunnel_port: 21100
+
+  # `local` runs an ntfy container on the hub and notifies on the LAN only.
+  # `external` points at a server you host elsewhere.
+  notifications:
+    mode: local              # local | external | off
+    external_url: ""
+    # Key (external only): NTFY_CREDENTIALS
+
+  # Ollama, which is where a model can run on hardware you own rather than
+  # somebody else's. Both kinds can be on at once, and a model names which one
+  # it wants — see `assistant.models`.
+  #
+  #   <name>               an OpenCode Zen model, billed per token
+  #   ollama:<name>        your own Ollama, below
+  #   ollama-cloud:<name>  ollama.com
+  #
+  # So the assistant can answer on OpenCode Zen while the cameras are read by a
+  # model on your own GPU, or the other way round.
+  ollama:
+    # An Ollama on your own network. **This stack does not deploy it**: you run
+    # it, this only says where it is. `host` is a role, so it moves with
+    # `hosts:` like everything else and a single-box install needs no change.
+    local:
+      enabled: true
+      host: compute
+      port: 11434
+      # The OLLAMA_CONTEXT_LENGTH that server runs, if you set one. Optional,
+      # and only read by consumers that must name a window of their own
+      # (Paperless's AI): Ollama reloads a model whenever a request asks for a
+      # different window than the one it is holding, so they send this one.
+      # A second, vision-only Ollama under `vision:` takes the same key.
+      # context: 65536
+    # ollama.com. Off by default, and the second credential that would leave
+    # the house — what goes to it is camera frames and any photo somebody sends
+    # the assistant.
+    # ollama.com. On when OLLAMA_API_KEY is set and off when it is not --
+    # there is no `enabled:` here, because a switch beside a credential is two
+    # things to get wrong and they used to disagree in the expensive
+    # direction: `enabled: true` with an empty key failed the whole deploy over
+    # a provider nobody was using. Same rule as OPENROUTER_API_KEY,
+    # TOGETHER_API_KEY and OPENAI_API_KEY.
+    #
+    # What goes to it is camera frames and any photo somebody sends the
+    # assistant, so the key is also the thing that decides whether they leave.
+    cloud:
+      url: https://ollama.com
+      # Key: OLLAMA_API_KEY
+
+  # Anything else that speaks the OpenAI API, at an address you give it.
+  #
+  # One block rather than one per vendor, because the only thing that varies is
+  # the address: a vLLM or llama.cpp server on your own LAN, LM Studio, LocalAI,
+  # or a hosted provider this package has never heard of. Models from it are
+  # named `openai-compatible:<id>` in `assistant.models` above.
+  #
+  # `url` is the server's base -- with or without a trailing `/v1`, which the
+  # deploy strips. Both forms appear in providers' own documentation and the
+  # doubled `/v1/v1/chat/completions` is a 404 on every turn.
+  #
+  # The key is optional and genuinely so: a llama.cpp or vLLM instance on the
+  # LAN usually takes none, and requiring one would make the ordinary local
+  # setup impossible to express.
+  openai_compatible:
+    enabled: false
+    url: ""                  # e.g. http://192.168.1.50:8000
+    label: ""                # what to call it on the admin page
+    # Key (optional): OPENAI_COMPATIBLE_API_KEY
+
+  # FreeToken — a MoE serving engine you run on your own hardware. Pointed at,
+  # never deployed by this stack: the same relationship it has with Ollama.
+  #
+  # It has a slot of its own rather than using `openai_compatible` above,
+  # because there is exactly one of those and it is meant to stay free for
+  # whatever you are trying this week. Both can be live at once.
+  #
+  # Roles name it as `freetoken:<model>` in assistant.models. The key is
+  # optional and usually empty — a server on your own desk takes none.
+  # FreeToken: a local MoE engine (Qwen3.6-35B-A3B), pointed at rather than
+  # deployed. **Off, and think before switching it on.** Tried here on
+  # 2026-09-02 and switched off the same day, for reasons that are about the
+  # shape of the thing rather than a bug in it:
+  #
+  #   * It is slow for household work. A triage turn took ~35s against 0.6-4s
+  #     on a hosted model, and the roles it suits are the highest-volume,
+  #     smallest turns in the house.
+  #   * It wants the whole card. ~6-8 GB depending on the context ceiling, on
+  #     a 12 GB card that also runs the camera VLM and whisper, so the two
+  #     evict each other and both get slower.
+  #   * Its context ceiling is bought with VRAM. 48k would not allocate at all
+  #     beside a resident vision model, and the household's own event prompts
+  #     run 25.8k on average and 32.4k at the largest -- so the ceiling has to
+  #     be high, which makes the contention worse.
+  #   * It needs `reasoning_effort: none` on every role that uses it, or it
+  #     spends the whole budget reasoning and returns an empty answer.
+  #
+  # None of that makes it a bad engine; it makes it the wrong engine for
+  # short, frequent, latency-sensitive turns on a shared card. If you switch
+  # it on, set `assistant.reasoning_effort` for every role you point at it.
+  freetoken:
+    enabled: false
+    url: ""                  # e.g. http://desktop.home:8000
+    label: ""                # what to call it on the admin page
+    # Key (optional): FREETOKEN_API_KEY
+
+  # OpenCode, which is what the Programmer profession runs on. Pointed at,
+  # never deployed by this stack -- the same relationship it has with Ollama
+  # and the FreeToken slot above: you install it, you sign it in, and this only
+  # says where its server is listening.
+  #
+  # It is **not** an OpenAI-compatible endpoint and does not belong in
+  # `openai_compatible` above. `opencode serve` speaks its own session API:
+  # there is no /v1/chat/completions, and its `tools:` field switches
+  # opencode's own tools on and off rather than accepting ours. So the
+  # Programmer moves onto it whole -- agent, tools and all -- instead of
+  # borrowing it as a model behind the assistant. docs/opencode-programmer.md
+  # is the long version.
+  #
+  # The credential is opencode's own, written by `opencode auth login` into
+  # ~/.local/share/opencode/auth.json. This stack never reads it, never copies
+  # it into a container and never puts it in an archive; there is no key for it
+  # in secrets/.
+  #
+  # Every server binds loopback, and that is the security boundary rather than
+  # a default worth tidying: it is an agent with a shell, and anything that can
+  # reach the port can run commands as whoever started it.
+  # deploy/host/opencode-serve@.service does that, and
+  # `./home-stack install --opencode` puts one instance in place per member.
+  opencode:
+    enabled: false
+    # One `opencode serve` per member with the Programmer switched on, counting
+    # up from here in the same order as their bridges. A base rather than a
+    # single url: this stack installs and runs these now (one systemd user unit
+    # each), where it used to be pointed at one somebody else had started.
+    #
+    # Each server holds **one** member's MCP token, which is why there is one
+    # per person rather than one shared: the profession spaces are open to the
+    # whole household, and a shared server would authenticate everybody's tools
+    # as whoever it was configured for -- their projects, their folder on the
+    # share, with nothing failing.
+    port_base: 4096
+    # Which model the Programmer *starts* on, as "<providerID>/<modelID>".
+    #
+    # A default, not a restriction. Every provider this household has a
+    # credential for is handed to opencode -- together.ai, OpenRouter, OpenAI,
+    # Anthropic, Gemini, ollama.com, whichever are filled in on the Secrets
+    # page -- on top of the OpenCode Zen and Go models opencode is signed in to
+    # itself. So the Programmer can answer on any of them, and whoever is
+    # working can switch in opencode without touching this file.
+    #
+    # Written into the agent's own front matter, which is opencode's way of
+    # pinning a model to an agent. Nothing here calls it: opencode owns the
+    # provider, the credential and the routing.
+    #
+    # Deliberately not a role in `assistant.models`: that list is the models
+    # *nanobot* calls, and every entry in it is one this deployer builds a
+    # provider for. opencode is neither.
+    #
+    # Empty is allowed and means opencode chooses. On an account with OpenCode
+    # Zen that lands on a free model, and the free tier's own documentation
+    # says collected data may be used to improve it -- worth knowing, since
+    # what the Programmer reads is this house's code.
+    model: opencode-go/kimi-k3
+    # Which of opencode's two HTTP surfaces HomeCore drives. One process
+    # serves both; they are not a rename of each other.
+    #
+    # `v2` here means the `/api/*` routes on the OpenCode **1** binary -- it is
+    # NOT OpenCode 2, which is a different program (`@opencode-ai/cli`, binary
+    # `opencode2`, beta, installs alongside) that this stack has never run.
+    #
+    # Leave this on v1. On 1.18.27 an `/api` session resolves opencode's own
+    # thirteen tools and **none of the MCP ones** -- while `GET /mcp` still
+    # reports the bridge connected -- so the Programmer loses the broker, the
+    # share and delegation, and keeps `bash`, which is git without the broker.
+    # Those prompts are also sometimes admitted and then never run at all. The
+    # same agent and model on v1 answers in under two seconds, with the tools
+    # and word by word.
+    #
+    # The client for it is written and tested and this key is all that stands
+    # between; docs/opencode-programmer.md has the measurements, and says what
+    # would have to be redone to point any of it at a real OpenCode 2.
+    api: v1
+
+  # `local-ca` generates a CA and issues for the names above — no registrar, no
+  # ACME, no outbound anything. `acme-dns` needs a real domain and a DNS API
+  # token, and is the only way to get certificates a phone trusts out of the box.
+  certificates:
+    mode: local-ca           # local-ca | acme-dns
+    acme_dns_provider: ""    # e.g. dns_hostinger, dns_cf
+    # Key (acme-dns only): ACME_DNS_API_TOKEN
+
+  # Optional assistant extras. Each is skipped silently when its key is absent
+  # rather than failing the deploy — an unset key is a feature that is off, not
+  # a broken install.
+  optional_integrations:
+    home_assistant: false    # HOMEASSISTANT_TOKEN, local instance
+    paperless: true          # PAPERLESS_API_TOKEN_*, local instance
+    web_search: false        # one of TAVILY/BRAVE/KAGI/JINA_API_KEY
+    n8n: false               # NANOBOT_N8N_API_KEY, local instance
+
+# ---------------------------------------------------------------------------
+# Backups
+# ---------------------------------------------------------------------------
+backups:
+  # A backup has to contain secrets/smart-home-bot.env and the user store, or
+  # it cannot restore anything -- which means every backup is a copy of every
+  # credential in the house and every password hash. Encrypt it if it leaves
+  # this machine, and it should leave this machine.
+  #
+  # AES-256 through openssl, which is already a prerequisite. The key is
+  # BACKUP_ENCRYPTION_KEY: generate it on the admin page's Credentials screen.
+  #
+  # **Keep a copy of that key somewhere the house burning down does not
+  # affect.** An encrypted backup without its key is noise; nothing here or
+  # anywhere else can recover it.
+  encrypt: false
+
+  # Retention, in three tiers. An archive survives if any tier claims it, and
+  # the tiers overlap on purpose -- the newest run is usually this week's and
+  # this month's as well, and that is one file, not three.
+  #
+  # Nothing is ever removed until a new archive has completed *and verified*,
+  # so a failed run cannot make room by deleting the last good one.
+  #
+  # A flat count is the wrong shape once `export:` below is set. The mirror is
+  # what answers "yesterday was fine and today is not"; an archive is for the
+  # damage nobody noticed for a while -- a table quietly keyed on the wrong id,
+  # somebody removed in March. Seven dailies answer the first question twice
+  # and the second one not at all, at the same cost every night.
+  keep: 7
+  # The newest run in each of the last N ISO weeks, and each of the last N
+  # calendar months. Both 0 keeps the old flat behaviour exactly.
+  keep_weekly: 0
+  keep_monthly: 0
+
+  # How often `--auto` writes a full archive. The mirror runs every time and
+  # costs only what changed; a full costs the same every time, so it gets its
+  # own clock. 0 means every run, which is what this did before there was a
+  # mirror -- an install that upgrades and sets nothing new keeps its cadence.
+  full_every_days: 0
+
+  # An always-current copy of the same inventory, written to the same paths
+  # every run instead of into a new dated tarball. This is what to point an
+  # external backup tool at: a tarball is a different 60-odd MB file every
+  # night even when nothing changed, so an uploader mirroring a directory of
+  # them ships all of it, forever. Measured here: two back-to-back mirror runs
+  # differed in 7 files out of 5654.
+  #
+  # **The mirror is PLAINTEXT.** It holds smart-home-bot.env, users.json and
+  # every bcrypt hash, exactly as an archive does, and nothing here encrypts
+  # it -- per-file encryption is what keeps an upload incremental, and that
+  # belongs to whatever does the uploading. So this is a local staging area,
+  # 0700, and NOT the directory to hand to a cloud sync as-is. Encrypt per
+  # file, upload the ciphertext.
+  #
+  # Unset means no mirror, which is the shipped state. It must be an absolute
+  # path of its own: the refresh runs `rsync --delete`, and a directory that
+  # contains `paths.state` or `paths.media` would be emptied on the first run.
+  # That is checked and refused rather than trusted.
+  #
+  # `bulk` paths are NOT mirrored -- {media}/cameras is hundreds of GB and
+  # {media}/paperless is already a directory of finished files. Point the
+  # uploader at those two directly; this tree is the part with no directory of
+  # its own. The mirror names them in its own `backup.json` so nothing has to
+  # remember.
+  # export:
+  #   path: /var/lib/home-stack/export
+
+  # Recordings and scanned documents are never archived: hundreds of gigabytes
+  # in a real house, unchanged between runs, and there is no setting that turns
+  # them on. They are large, static and already sitting in directories of their
+  # own, so point whatever uploads your backups at those directly -- each
+  # archive names them under `not_archived` and the mirror under
+  # `not_mirrored`, so nothing has to remember which ones they were. The state
+  # that cannot be recreated -- the user store, assistant memory, the camera
+  # registry, enrolled devices -- is in every run either way.
+
+# ---------------------------------------------------------------------------
+# Household members
+# ---------------------------------------------------------------------------
+# Login ids and display names. Never real national id numbers — the installer
+# generates opaque ids and the admin page is where you name people. Password
+# hashes live in state, not here and not in git.
+#
+# What a member is written here decides what their assistant is: one container
+# per entry in `services.nanobot.members`, rendered from that person's id by
+# deploy/compose_members.py. `admin` gives them every folder on the file share;
+# `folder` is where their files live on it, and defaults to the slugified
+# display name because that is what a share carried over from an older setup
+# already has. `whatsapp` gives them a linked phone -- their own bridge
+# container, their own session -- and `active: false` keeps the person and
+# drops their assistant.
+#
+# All of it is edited on the admin page. Members are managed there and nowhere
+# else, because ids are monotonic and never reused: filling a freed slot hands
+# a new person the departed member's derived tokens, assistant state and
+# backups.
+members:
+  - id: user1
+    display_name: "Member 1"
+    admin: true
+    locale: en
+  - id: user2
+    display_name: "Member 2"
+    admin: false
+    locale: en
+    # A linked phone for this person only. Off, and no bridge is rendered and
+    # the assistant is not offered a channel it cannot use.
+    whatsapp: false
+    # Whether this person's Programmer runs on opencode -- a coding agent with
+    # real file and git tools, working in their own checkouts -- rather than on
+    # the assistant. Set it on the admin page; it is here because that is where
+    # the deployer reads it.
+    #
+    # Off by default, and off is not a lesser Programmer: it is the same
+    # profession answered by the assistant instead. On, it costs a bridge
+    # container and an `opencode serve` process for this person alone, because
+    # each holds one member's credentials and nothing lets a tool call choose
+    # somebody else's.
+    programmer: false

@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "The panel registry: which device token belongs to which room.",
+    "",
+    "THE LIVE COPY OF THIS FILE DOES NOT BELONG IN THE REPO. It holds device",
+    "tokens, and a Jenkins checkout would overwrite it — this house has lost",
+    "live config that way four times. Put it at",
+    "/home/homestack/home-lab/configs/home-voice/devices.json on compute,",
+    "which is what docker-compose.yml mounts read-only at /config.",
+    "",
+    "The gateway re-reads it on every request, so adding a panel is editing",
+    "this file. No deploy, no restart.",
+    "",
+    "`room` becomes the chat_id Alfred House sees, so it is also the name he",
+    "uses when he talks about the place. Keep them lowercase and unaccented:",
+    "cocina, living, pieza-noa.",
+    "",
+    "Generate a token with: python3 -c \"import secrets; print(secrets.token_hex(16))\""
+  ],
+  "devices": [
+    {
+      "room": "cocina",
+      "token": "REPLACE-ME-kitchen",
+      "note": "CrowPanel 7\" on the kitchen wall"
+    },
+    {
+      "room": "living",
+      "token": "REPLACE-ME-living",
+      "note": "not built yet"
+    }
+  ]
+}

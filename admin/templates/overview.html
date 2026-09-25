@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# The landing page. It used to be a service count and a table of hosts --
+   both true, and neither any help on a fresh install, where the three things
+   that stop the house working are a missing API key, nobody in the household,
+   and settings that were saved but never deployed. That last one is the
+   failure this whole page is written against: saving is not deploying. #}
+
+<div class="card">
+  <h2>{{ t('admin.overview.heading') }}</h2>
+  {% if todo %}
+    <p class="intro">{{ t('admin.overview.todo_intro') }}</p>
+    <ul class="todo">
+      {% for item in todo %}
+        <li class="{{ item.level }}">
+          <span class="mark" aria-hidden="true">{{ '!' if item.level == 'warn' else '*' }}</span>
+          <span class="what">{{ t(item.key, **item.params) }}</span>
+          <a class="go" href="{{ url_for(item.endpoint) }}">{{ t(item.action) }} &rarr;</a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="settled">
+      <span class="mark" aria-hidden="true">&check;</span>
+      <span>{{ t('admin.overview.settled') }}</span>
+    </p>
+  {% endif %}
+  <p class="note">{{ t('admin.overview.cloud_note') }}</p>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.overview.at_a_glance') }}</h2>
+  <table>
+    <tr>
+      <th>{{ t('admin.nav.services') }}</th>
+      <td>{{ t('admin.overview.services_enabled', n=enabled_count, total=total_count) }}</td>
+      <td><a class="go" href="{{ url_for('services') }}">{{ t('admin.overview.change') }} &rarr;</a></td>
+    </tr>
+    <tr>
+      <th>{{ t('admin.nav.members') }}</th>
+      <td>{{ t('admin.overview.members_count', n=member_count) }}</td>
+      <td><a class="go" href="{{ url_for('members') }}">{{ t('admin.overview.change') }} &rarr;</a></td>
+    </tr>
+  </table>
+</div>
+
+{# Only when a role has actually moved. On the shipped single-box install all
+   three point at this machine, so this card was three identical rows of
+   127.0.0.1 -- the exact "true, and no help" the note at the top of this file
+   objects to, still on the page it objects on. When something *has* moved it
+   is the first thing worth knowing, so it stays for that case. #}
+{% if hosts_split %}
+<div class="card">
+  <h2>{{ t('admin.overview.hosts') }}</h2>
+  <p class="intro">{{ t('admin.overview.hosts_intro') }}</p>
+  <table>
+    <tr>
+      <th>{{ t('admin.overview.role') }}</th>
+      <th>{{ t('admin.overview.address') }}</th>
+      <th>{{ t('common.username') }}</th>
+    </tr>
+    {% for role, host in hosts.items() %}
+    <tr>
+      <td><strong>{{ role }}</strong></td>
+      <td class="mono">{{ host.address }}</td>
+      <td class="mono">{{ host.user }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

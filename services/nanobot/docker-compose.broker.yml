@@ -1,0 +1,83 @@
+# The code broker, on its own.
+#
+# It is a separate compose project from the assistants for one reason: its image
+# carries the coding harness binary, which is fetched from a GitHub release at
+# build time. In one unit, a failed download aborted the whole thing *after*
+# `alfred-nanobot:latest` was built and *before* the containers rolled -- so the
+# family's assistants did not deploy because a coding harness nobody had asked
+# for yet could not reach github.com. Units run in order and a failure stops the
+# ones after it, so the assistants go first and this follows.
+#
+# The cost of the split is that compose gives each project its own network, and
+# the assistants dial `http://code-broker:8910` by name. So both projects join
+# one external network instead of each making a default -- the same arrangement
+# the two home-cameras units use, declared here by *renaming the default* rather
+# than by adding `networks:` to each service, which keeps the rendered member
+# blocks out of it entirely.
+
+services:
+  code-broker:
+    # Not `alfred-nanobot:latest`. This is the same image plus the coding
+    # harness binary, and the split is the security argument: omp ships a shell,
+    # and the assistants must not contain one. See the `code` stage in the
+    # Dockerfile.
+    image: alfred-nanobot:latest
+    container_name: code-broker
+    restart: unless-stopped
+    # `entrypoint:`, not `command:`. The image's ENTRYPOINT is entrypoint.sh
+    # and it ends in `exec nanobot "$@"`, so a `command:` of
+    # `["python", "-m", "nanobot.code_broker"]` became
+    # `nanobot python -m nanobot.code_broker` -- "No such command 'python'",
+    # 73 restarts, and a deploy that reported success because the only thing it
+    # verified was an agent's port. The broker is not an agent: it has no
+    # workspace to seed, no SOUL.md, no gateway, and the five warnings that
+    # bootstrap printed on the way past were the visible half of the mistake.
+    entrypoint: ["python", "-m", "nanobot.code_broker"]
+    # HOMECORE_CONTAINER_URL is host.docker.internal on a single-box install --
+    # the same way every other container here reaches the host. Without the
+    # mapping the name resolves nowhere and the broker comes up unable to read
+    # the project registry, with nothing in its log saying why.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CODE_WORKSPACE_DIR=/nanobot-code-workspace
+      # The portal's registry of projects. An address, not a `dns:` name -- a
+      # container retrying getaddrinfo forever is indistinguishable from the
+      # service being down.
+      - HOMECORE_URL=${HOMECORE_CONTAINER_URL:-}
+      # Opens the registry's credential door, and nothing else in the stack.
+      - PROJECTS_BROKER_TOKEN=${PROJECTS_BROKER_TOKEN:-}
+      # Derives the per-member tokens the agents present. Unset, every request
+      # is refused -- the right way round for a service that hands out other
+      # people's code.
+      - CODE_BROKER_SECRET=${CODE_BROKER_SECRET:-}
+      # instance -> portal username. The checkout directory is `user2` and the
+      # access list is keyed on the portal's id, so the mapping has to be
+      # stated. An instance missing from it is refused before any registry call.
+      - CODE_BROKER_USERS=${CODE_BROKER_USERS:-}
+      # The name on the co-author line. Defaulted rather than required: a bare
+      # `docker compose up` still produces a sensible commit.
+      - CODE_COMMIT_NAME=${CODE_COMMIT_NAME:-Alfred (nanobot)}
+    volumes:
+      # The whole workspace, because it serves every member; each agent below
+      # mounts only its own subdirectory.
+      - ${CODE_WORKSPACE_DIR:-/var/lib/home-stack/state/nanobot-code-workspace}:/nanobot-code-workspace
+    healthcheck:
+      # The payload, not the status. This endpoint answers 200 while saying
+      # `"ok": false` -- which is what it does when the workspace has no
+      # `.nanobot-code-workspace` marker, and the broker then refuses every
+      # request it is given. A status check called that healthy.
+      test: ["CMD", "python", "-c",
+             "import json,urllib.request,sys;sys.exit(0 if json.load(urllib.request.urlopen('http://localhost:8910/health',timeout=5)).get('ok') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+
+networks:
+  # Not created here. `pre_create_networks:` in the manifest makes it, because
+  # `docker compose config` does not check that an external network exists and
+  # `up` simply aborts on a fresh host with no hint of what was missing.
+  default:
+    name: nanobot-net
+    external: true

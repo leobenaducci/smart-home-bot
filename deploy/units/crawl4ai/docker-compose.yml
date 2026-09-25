@@ -1,0 +1,58 @@
+# crawl4ai: URL in, LLM-ready Markdown out, on the house's own hardware.
+#
+# The upstream image serves its own MCP endpoint at /mcp/sse, so nothing here
+# builds or bridges anything -- the assistants dial it directly. The pin, the
+# network and the SSRF guard are explained in this service's block in
+# deploy/manifest.yml; read that before changing any of them.
+
+networks:
+  default:
+    name: nanobot-net
+    external: true
+
+services:
+  crawl4ai:
+    # Pinned, and not to `:latest`. GHSA-365w-hqf6-vxfg is CVSS 9.8 against
+    # <= 0.8.6 -- arbitrary file write, SSRF into private ranges and cloud
+    # metadata, auth bypass on the /monitor routes, and a JWT signing key
+    # hardcoded to "mysecret" in the public source. 0.8.7 is the fix; this is
+    # well past it. A floating tag on a container that fetches URLs an LLM
+    # chose is the wrong place to find out what changed.
+    image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.3}
+    container_name: crawl4ai
+    restart: unless-stopped
+    environment:
+      # Not optional, and not merely a credential: the image's entrypoint uses
+      # its presence to decide the *socket bind*. With no token it serves the
+      # container's own loopback -- published ports are refused and the
+      # assistants cannot reach it, which looks exactly like the container
+      # being down. With one it binds [::] and enforces Bearer auth on every
+      # route except /health. `./home-stack check` requires it for that reason.
+      - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN}
+      # Signs the JWTs the /token route issues. Upstream generates an ephemeral
+      # one and says so in the log; ephemeral means every restart invalidates
+      # tokens already handed out.
+      - SECRET_KEY=${CRAWL4AI_SECRET_KEY}
+    ports:
+      # 127.0.0.1: this fetches any URL it is handed. Nothing outside this
+      # machine has business asking it to, and the assistants reach it over the
+      # container network rather than through the published port. The published
+      # port exists for the smoke test and for a person debugging.
+      - "127.0.0.1:${CRAWL4AI_PORT:-11235}:11235"
+    # Chromium wants more shared memory than Docker's 64 MB default. Without
+    # this it crashes on ordinary pages, and the crash reads like the site
+    # being broken rather than the container being starved -- the same reason
+    # services/browser-use/docker-compose.yml sets it.
+    shm_size: "1gb"
+    healthcheck:
+      # /health, not /monitor/health: the monitor routes require the Bearer
+      # token (measured -- they answer 401 without it), and a health check that
+      # needs a credential fails as "unhealthy" when the credential is what is
+      # actually wrong. /health is deliberately open and reports the version.
+      test: ["CMD-SHELL",
+             "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:11235/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      # Chromium and the browser pool take a while on a cold start.
+      start_period: 90s
+      retries: 3

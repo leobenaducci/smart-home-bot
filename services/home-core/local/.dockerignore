@@ -1,0 +1,4 @@
+# The map tile cache lives in the backup_data volume and can reach thousands of
+# files. It is mounted at runtime, so copying it into the image would only slow
+# every build down for a copy that gets shadowed anyway.
+backup_data/tiles/

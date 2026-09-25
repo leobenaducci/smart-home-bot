@@ -1,0 +1,145 @@
+services:
+  homecameras:
+    build: .
+    ports:
+      # Driven from `services.home-cameras.web_port`. It was a literal, so the
+      # config key only ever fed the health check -- move the port and the
+      # deploy polled somewhere nothing published.
+      - "0.0.0.0:${CAMERAS_WEB_PORT:-21020}:5000"
+    environment:
+      # A literal `Etc/UTC` until now, which nothing could override -- and this
+      # is the clock `is_recording_enabled()` compares the recording window
+      # against. A house that set 23:00-06:00 got 23:00-06:00 *UTC*: four hours
+      # off its own evening, on a page that shows the hours back correctly.
+      - TZ=${CAMERAS_TZ:-Etc/UTC}
+      - CAMERA_REGISTRY_URL=http://camera-registry:5001
+      - MQTT_BROKER_HOST=${MQTT_BROKER_HOST:-mqtt.home}
+      - MQTT_BROKER_PORT=${MQTT_BROKER_PORT:-1883}
+      - MQTT_USERNAME=${MQTT_USERNAME:-}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
+      # The clip reviewer's vision model (clip_review.py reads both). The
+      # deployer has always exported these; nothing here listed them, so the
+      # container never saw either and every review used the module's own
+      # 127.0.0.1 default -- which inside this container is this container.
+      # The default is a real endpoint, not an empty string: `os.environ.get`
+      # falls back only when the name is *absent*, so `${OLLAMA_URL:-}` would
+      # hand the container an empty value that beats clip_review.py's own
+      # default and builds the URL `/api/generate`, which urllib rejects
+      # outright. Empty is not hypothetical -- the deployer exports "" whenever
+      # cloud.ollama.local is off.
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      # Which card the detectors run on. The default runtime on this host is
+      # nvidia, so this is honoured with or without the gpu overlay; `all`
+      # keeps the old behaviour (the first card CUDA lists).
+      - NVIDIA_VISIBLE_DEVICES=${CAMERAS_GPU_DEVICE:-all}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-ollama}
+      # Which VLM reviews a clip. Unwired until 2026-09-02, so clip_review.py's
+      # own `qwen3-vl:8b` default always won and a household that chose the 4b
+      # in assistant.models.vision was ignored here -- the camera wall went on
+      # loading an 8 GB model that cannot fit beside FreeToken on a 12 GB card
+      # and ran ~60% on the CPU. The default stays the 8b so a box with the
+      # room keeps what it had; `:-` fills in only when the name is absent.
+      - CLIP_REVIEW_MODEL=${CLIP_REVIEW_MODEL:-qwen3-vl:8b}
+      # Review at all, or keep every clip unreviewed. Default on, so a
+      # household that never sets it keeps the wall it had. Off is a state and
+      # not a failure: the reviewer records "review disabled" and keeps the
+      # clip, rather than sending it to the tray the purge empties.
+      - CLIP_REVIEW_ENABLED=${CLIP_REVIEW_ENABLED:-1}
+      # Where to report what the vision model did, and which container is
+      # reporting. The clip reviewer is the heaviest user of the household's
+      # card and appeared nowhere on the usage page, because it costs no
+      # money. Both empty is "do not report".
+      - HOMECORE_URL=${HOMECORE_URL:-}
+      - USAGE_SERVICE_TOKEN=${USAGE_SERVICE_TOKEN:-}
+      # Lets HomeCore say who is looking. It proxies this app at /camaras/ and
+      # forwards the member's name with sha256("<this>:<member>"); without the
+      # secret those headers are ignored - correctly, since unsigned they are
+      # just a claim - and every page falls back to the shared admin password,
+      # which for a proxied page means a login form nobody can get past.
+      # Same credential as HomeCore, finance_helper and Alfred: Jenkins
+      # HOME_CHAT_PROXY_SECRET -> PROXY_SHARED_SECRET.
+      - PROXY_SHARED_SECRET=${PROXY_SHARED_SECRET:-}
+      # The one thing in this app that deletes a recording, so it is written
+      # down here rather than living only as a default in the code: a clip the
+      # reviewer calls `estatico` — the scene identical at both ends, which is
+      # about a third of what these cameras record — is binned instead of
+      # filling the review tray for fifteen days first. Set to 0 and every
+      # discard goes to to_review/ as it did before.
+      - CLIP_REVIEW_DELETE_STATIC=${CLIP_REVIEW_DELETE_STATIC:-1}
+      # Which reviewer verdicts get binned unwatched. The default is every
+      # kind that is the camera noticing its own scene -- nothing moved, the
+      # burned-in clock, a light switching, weather, an insect on the lens.
+      # Narrowing it is allowed; widening past those five is not, whatever
+      # this says: `person`, `animal`, `vehicle`, `object` and `other` are
+      # floored in clip_review.py and `other` most of all -- it is the model
+      # saying it saw something it could not name.
+      - CLIP_REVIEW_DELETE_KINDS=${CLIP_REVIEW_DELETE_KINDS:-bug,clock,light,static,weather}
+      # Kinds trusted over the model's own hedge. The prompt tells it to lean
+      # toward keeping when unsure, so a hedge on a *specific* claim -- "the
+      # only thing that changed is the clock" -- is noise rather than a
+      # second opinion. `static` stays hedged on purpose: "nothing moved" is
+      # a judgement about the whole scene and `keep` is a real check on it.
+      - CLIP_REVIEW_TRUST_OVER_HEDGE=${CLIP_REVIEW_TRUST_OVER_HEDGE:-clock}
+      # Reviewing a clip is the lowest-priority inference in the house, so it
+      # waits for a quiet card before asking the vision model anything. Busy
+      # is above BUSY_PCT; free is that many consecutive samples below it,
+      # GAP seconds apart. MAX_WAIT is the backstop -- after it the clip is
+      # reviewed anyway, because `to_review/` is purged on age and a clip
+      # nobody looked at is worse than a slow one. 0 switches the wait off,
+      # which is what a house whose detectors never leave the card idle wants.
+      - CLIP_REVIEW_GPU_BUSY_PCT=${CLIP_REVIEW_GPU_BUSY_PCT:-25}
+      - CLIP_REVIEW_GPU_SAMPLES=${CLIP_REVIEW_GPU_SAMPLES:-3}
+      - CLIP_REVIEW_GPU_GAP=${CLIP_REVIEW_GPU_GAP:-2}
+      - CLIP_REVIEW_GPU_MAX_WAIT=${CLIP_REVIEW_GPU_MAX_WAIT:-900}
+      # How long a KEPT recording stays on this disk. 0 is never delete and is
+      # what ships. These clips are `backup: bulk` in the manifest, which
+      # `home-stack backup` always skips, and nothing else schedules
+      # that -- so an off-box mirror is the only other copy, and switching
+      # this on before that mirror is known to work deletes the sole copy of
+      # everything past the cutoff.
+      - CLIP_RECORDING_MAX_AGE_DAYS=${CLIP_RECORDING_MAX_AGE_DAYS:-0}
+      # Burn the camera name, the clock and the detector's boxes into the
+      # recorded video. Off: clips are reviewed by a vision model reading
+      # frames back out of them, and the overlay was handing it the answer —
+      # the clock changes every frame, so every clip contained something that
+      # moved, and a red box round an unknown class came back as "un objeto
+      # rojo en el césped". Snapshots keep the overlay. Set to 1 to burn a
+      # timestamp into the footage again, at that cost.
+      - RECORDING_OVERLAY=${RECORDING_OVERLAY:-0}
+    # A container reaching a service on the host. On the default one-PC install
+    # every role is 127.0.0.1, which inside a bridge-networked container is the
+    # container itself -- so the deployer hands out `host.docker.internal` and
+    # this is what makes it resolve. Harmless when the roles have real
+    # addresses: nothing looks the name up.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Absolute path on the /mnt/data disk, NOT ../config: a relative bind mount
+      # puts the live config inside the Jenkins workspace, and a fresh clone there
+      # (build 104, 2026-07-27) restores tracked files only — cameras.json is
+      # gitignored, so every camera was silently wiped on deploy.
+      - ${CAMERAS_CONFIG_DIR:-/var/lib/home-stack/config/home-cameras}:/app/config
+      - homecameras_logs:/app/logs
+      # Bind mount, not a named volume: recordings are the one thing here that
+      # grows without bound, so this has to be a real host path an operator can
+      # point at a large disk and back up with ordinary tools. Set
+      # `paths.media` in config/home-stack.yml to move it.
+      - ${CAMERAS_RECORDINGS_DIR:-/var/lib/home-stack/media/cameras}:/app/data/recordings
+      # Model weights are not in the repo (deleted in cc0ab21) — they are fetched
+      # into ./models by download_models.sh before `docker compose up`. The mount
+      # target must be /app/web_server/models, because the code loads
+      # "models/yolo26x.pt" relative to /app/web_server. When the weights were
+      # committed, `COPY . .` happened to place them there and this mismatch was
+      # invisible; with the directory gone from the repo it would be fatal.
+      # Downloaded by download_models.sh, not shipped in the repo, so this
+      # must outlive the deploy that replaces the checkout.
+      - ${CAMERAS_MODELS_DIR:-/var/lib/home-stack/state/home-cameras/models}:/app/web_server/models
+    restart: unless-stopped
+
+volumes:
+  homecameras_logs:
+
+networks:
+  default:
+    name: homecameras-net
+    external: true

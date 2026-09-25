@@ -1,0 +1,11 @@
+# What the in-image logic tests need, and nothing the service needs.
+#
+# Pinned and baked rather than `pip install`ed by the Jenkins stage on every
+# build: that stage's own comment says the point is testing the versions that
+# actually shipped, and two unpinned packages resolved fresh from PyPI on each
+# run were the one thing in it that was neither. It also means the tests run on
+# a box whose internet is down, which is the same rule the piper voice follows.
+#
+# ~6 MB in a layer Docker caches. httpx is what fastapi.testclient drives.
+pytest==8.3.4
+httpx==0.28.1

@@ -1,0 +1,242 @@
+{% extends "_config_base.html" %}
+{% block title %}Directorio familiar{% endblock %}
+{% block icon %}👪{% endblock %}
+
+{% block styles %}
+    /* Facts and notes are short strings somebody added one at a time, so
+       they are chips: a list would give each its own line and make six of
+       them look like a document. */
+    .fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));
+              gap:.6rem; margin:.8rem 0; }
+    .chips { display:flex; flex-wrap:wrap; gap:.35rem; margin-bottom:.6rem; }
+    .chip { display:inline-flex; align-items:center; gap:.35rem; font-size:.78rem;
+            padding:.2rem .5rem .2rem .6rem; border-radius:var(--r-pill);
+            background:var(--honey-lt); color:var(--honey-ink); }
+    .chip button { background:none; border:none; color:inherit; cursor:pointer;
+                   font-size:.9rem; line-height:1; padding:0 .1rem; opacity:.7; }
+    .chip button:hover { opacity:1; }
+    /* A relationship nobody stored on this person — the other end of an edge
+       stored on somebody else. Shown because it is true of them, drawn open
+       because this is not where it can be removed. */
+    .chip.derived { background:transparent; color:var(--ink-soft);
+                    border:1px dashed var(--line); }
+{% endblock %}
+
+{% block content %}
+    <datalist id="dato-sugerencias">
+      <option value="Colegio"><option value="Curso"><option value="Trabajo">
+      <option value="Dirección"><option value="Teléfono"><option value="Correo">
+      <option value="Alergias"><option value="Talla de ropa"><option value="Talla de zapatos">
+      <option value="Médico"><option value="Deporte"><option value="Instrumento">
+      <option value="Comida favorita"><option value="Mascota"><option value="Documento">
+    </datalist>
+    <div class="sheet">
+      <h2>Las personas de la casa</h2>
+      <p class="note">Lo que cada Alfred de la casa sabe sobre cada uno. Se guarda al
+        salir de cada campo.</p>
+      <p class="note">El parentesco se escribe una vez y se lee desde los dos lados: si
+        Alex es padre de Robin, la ficha de Robin dice «hija de Alex» sin que nadie lo
+        escriba ahí. Por eso ésos aparecen con borde punteado y sin botón: se quitan
+        desde la ficha donde se escribieron.</p>
+      <div id="people"></div>
+    </div>
+{% endblock %}
+
+{% block aside %}
+      <div class="sheet rail">
+        <h2>Lo que leen <span class="what">FAMILY.md</span></h2>
+        <p class="note">El archivo que cada Alfred carga. Esto es lo que van a leer, no
+          un resumen de ello.</p>
+        <pre id="familymd">…</pre>
+      </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const GENDERS = [['', '—'], ['m', 'Masculino'], ['f', 'Femenino'], ['x', 'Sin especificar']];
+
+    function field(person, name, label, value, placeholder) {
+      return `<div><label for="f-${person}-${name}">${label}</label>
+        <input type="text" id="f-${person}-${name}" data-person="${person}" data-field="${name}"
+               value="${esc(value)}" placeholder="${esc(placeholder || '')}"></div>`;
+    }
+
+    function renderPerson(p) {
+      const rels = p.relations.map(r => `
+        <span class="chip ${r.stored ? '' : 'derived'}" title="${r.stored
+            ? 'Guardado en esta ficha' : 'Se lee desde la ficha de ' + esc(r.other)}">
+          ${esc(r.label)} ${esc(r.other)}
+          ${r.stored ? `<button data-del-rel="${esc(p.person)}" data-kind="${esc(r.kind)}"
+                                 data-other="${esc(r.other)}" title="Quitar">×</button>` : ''}
+        </span>`).join('');
+
+      return `<details class="group" ${p.person === 'user1' ? 'open' : ''}>
+        <summary>
+          <h3>${esc(p.display_name)}</h3>
+          <span class="meta">${esc(p.parentesco || 'sin parentesco cargado')}</span>
+        </summary>
+        <div class="body">
+          <div class="fields">
+            ${field(p.person, 'display_name', 'Nombre', p.display_name)}
+            ${field(p.person, 'full_name', 'Nombre completo', p.full_name)}
+            ${field(p.person, 'relationship', 'Rol en la casa', p.relationship, 'Papá, Hija…')}
+            ${field(p.person, 'birthdate', 'Cumpleaños', p.birthdate, '1984-03-22')}
+            ${field(p.person, 'timezone', 'Zona horaria', p.timezone, 'Etc/UTC')}
+            <div>
+              <label for="g-${p.person}">Género (para «padre» o «madre»)</label>
+              <select id="g-${p.person}" data-person="${p.person}" data-field="gender">
+                ${GENDERS.map(([v, l]) =>
+                  `<option value="${v}" ${p.gender === v ? 'selected' : ''}>${l}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+
+          <div class="block">
+            <h4>Parentesco</h4>
+            <div class="chips">${rels || '<span class="empty">Todavía nadie.</span>'}</div>
+            <div class="row">
+              <select data-rel-kind="${p.person}">
+                ${KINDS.map(k => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join('')}
+              </select>
+              <select data-rel-other="${p.person}">
+                ${KNOWN.filter(k => k.person !== p.person).map(k =>
+                  `<option value="${esc(k.person)}">${esc(k.display)}</option>`).join('')}
+              </select>
+              <button class="secondary small" data-add-rel="${p.person}">Agregar</button>
+            </div>
+          </div>
+
+          <div class="block">
+            <h4>Datos</h4>
+            <p class="note">Cualquier cosa que sirva para reconocer o ayudar a esta
+              persona. La etiqueta la escribes tú — las sugerencias son sólo eso.</p>
+            <div class="chips">${(p.facts || []).map(f => `
+              <span class="chip">${esc(f.label)}: ${esc(f.value)}
+                <button data-del-fact="${esc(p.person)}" data-key="${esc(f.label)}" title="Quitar">×</button>
+              </span>`).join('') || '<span class="empty">Ninguno.</span>'}</div>
+            <div class="row">
+              <div><label for="fl-${p.person}">Qué dato</label>
+                <input type="text" id="fl-${p.person}" data-fact-label="${p.person}"
+                       list="dato-sugerencias" placeholder="Colegio, alergias, talla…"></div>
+              <div><label for="fv-${p.person}">Cuál es</label>
+                <input type="text" id="fv-${p.person}" data-fact-value="${p.person}"
+                       placeholder="Saint George"></div>
+              <button class="secondary small" data-add-fact="${p.person}">Agregar</button>
+            </div>
+          </div>
+
+          <div class="block">
+            <h4>Notas</h4>
+            <div class="chips">${(p.notes || []).map(n => `
+              <span class="chip">${esc(n.note)}
+                <button data-del-note="${esc(p.person)}" data-id="${n.id}" title="Quitar">×</button>
+              </span>`).join('') || '<span class="empty">Ninguna.</span>'}</div>
+            <div class="row">
+              <input type="text" data-note="${p.person}" placeholder="Le tiene miedo a los truenos">
+              <button class="secondary small" data-add-note="${p.person}">Agregar</button>
+            </div>
+          </div>
+        </div>
+      </details>`;
+    }
+
+    async function load() {
+      const open = new Set(Array.from(document.querySelectorAll('.group[open] h3'))
+        .map(h => h.textContent));
+      const data = await api('/family/api/admin');
+      KINDS = data.kinds; KNOWN = data.known;
+      document.getElementById('people').innerHTML = data.people.map(renderPerson).join('');
+      if (open.size) {
+        document.querySelectorAll('.group').forEach(d => {
+          d.open = open.has(d.querySelector('h3').textContent);
+        });
+      }
+      refreshPreview();
+    }
+
+    async function refreshPreview() {
+      try {
+        const { markdown } = await api('/family/api/admin/preview');
+        document.getElementById('familymd').textContent = markdown;
+      } catch (e) { document.getElementById('familymd').textContent = e.message; }
+    }
+
+    /* Saved when the field is left rather than behind a button: this is a form
+       somebody corrects one cell at a time — a birthday, a timezone — and a
+       page-wide Guardar makes them wonder which of six edits it took. */
+    async function saveProfile(person) {
+      const get = f => {
+        const el = document.querySelector(`[data-person="${person}"][data-field="${f}"]`);
+        return el ? el.value : '';
+      };
+      await api(`/family/api/admin/${encodeURIComponent(person)}`, {
+        method: 'PUT', headers: H,
+        body: JSON.stringify({
+          display_name: get('display_name'), full_name: get('full_name'),
+          relationship: get('relationship'), birthdate: get('birthdate'),
+          timezone: get('timezone'), gender: get('gender'),
+        }),
+      });
+    }
+
+    document.addEventListener('change', async e => {
+      const el = e.target.closest('[data-person][data-field]');
+      if (!el) return;
+      try {
+        await saveProfile(el.dataset.person);
+        toast('Guardado');
+        if (el.dataset.field === 'gender' || el.dataset.field === 'display_name') await load();
+        else refreshPreview();
+      } catch (err) { toast(err.message, true); }
+    });
+
+    document.addEventListener('click', async e => {
+      const t = e.target;
+      try {
+        if (t.dataset.addRel) {
+          const person = t.dataset.addRel;
+          await api(`/family/api/admin/${encodeURIComponent(person)}/relations`, {
+            method: 'POST', headers: H,
+            body: JSON.stringify({
+              kind: document.querySelector(`[data-rel-kind="${person}"]`).value,
+              other: document.querySelector(`[data-rel-other="${person}"]`).value,
+            }),
+          });
+          await load(); toast('Parentesco agregado');
+        } else if (t.dataset.delRel) {
+          await api(`/family/api/admin/${encodeURIComponent(t.dataset.delRel)}/relations`, {
+            method: 'DELETE', headers: H,
+            body: JSON.stringify({ kind: t.dataset.kind, other: t.dataset.other }),
+          });
+          await load(); toast('Parentesco quitado');
+        } else if (t.dataset.addFact) {
+          const person = t.dataset.addFact;
+          const label = document.querySelector(`[data-fact-label="${person}"]`).value.trim();
+          const value = document.querySelector(`[data-fact-value="${person}"]`).value.trim();
+          if (!label || !value) return toast('Falta la etiqueta o el valor', true);
+          await api('/family/api/set-fact', { method: 'POST', headers: H,
+            body: JSON.stringify({ person, label, value }) });
+          await load(); toast('Dato guardado');
+        } else if (t.dataset.delFact) {
+          await api('/family/api/remove-fact', { method: 'POST', headers: H,
+            body: JSON.stringify({ person: t.dataset.delFact, label: t.dataset.key }) });
+          await load(); toast('Dato quitado');
+        } else if (t.dataset.addNote) {
+          const person = t.dataset.addNote;
+          const input = document.querySelector(`[data-note="${person}"]`);
+          if (!input.value.trim()) return toast('La nota está vacía', true);
+          await api('/family/api/add-note', { method: 'POST', headers: H,
+            body: JSON.stringify({ person, note: input.value.trim() }) });
+          await load(); toast('Nota agregada');
+        } else if (t.dataset.delNote) {
+          await api('/family/api/remove-note', { method: 'POST', headers: H,
+            body: JSON.stringify({ person: t.dataset.delNote, id: Number(t.dataset.id) }) });
+          await load(); toast('Nota quitada');
+        }
+      } catch (err) { toast(err.message, true); }
+    });
+
+    load().catch(err => toast(err.message, true));
+
+</script>
+{% endblock %}

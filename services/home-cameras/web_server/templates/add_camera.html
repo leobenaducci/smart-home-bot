@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Camera - ONVIF System</title>
+    <!-- The house faces, served by this app. See
+         HomeCore/tools/fetch-fonts.sh for where they come from and why they
+         are not fetched from the internet. -->
+    <link rel="stylesheet" href="{{ base }}/static/fonts/house.css">
+    <style>
+        /* ---- "The House", after dark ----------------------------------------
+           The same tokens HomeCore, finance_helper, the MQTT dashboard and the
+           SmartButton page use, in the palette's night values. The house has a
+           night mode and this is the room that lives in it: reviewing footage
+           on a lit cream page is worse, not more consistent, so the kinship is
+           carried by the palette, the type and the shapes rather than by making
+           a camera wall bright.
+
+           Names are the ones this app already used, so nothing downstream had
+           to be renamed to adopt them. `--accent` and `--warning` are both
+           honey on purpose: the house has three semantic hues — honey for
+           attention, olive for good, clay for bad — and inventing a fourth to
+           fill a slot would be the opposite of normalising. */
+        :root {
+            --bg: #16180F;
+            --surface: #1E2117;
+            --surface-2: #242819;
+            --border: #333823;
+            --text: #EBE4D2;
+            --text-muted: #9D9781;
+            --accent: #DFAA54;
+            --accent-quiet: #5C4A25;
+            --accent-hot: #EDBE71;
+            --danger: #D2705A;
+            --success: #93A46E;
+            --warning: #DFAA54;
+            --radius: 12px;
+            --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+        }
+        body {
+            font-family: var(--sans);
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg);
+            color: var(--text);
+        }
+        .header {
+            background-color: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 15px;
+            text-align: center;
+            border-radius: var(--radius);
+            margin-bottom: 20px;
+        }
+        .settings-container {
+            background-color: var(--surface);
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            box-shadow: 0 18px 40px -28px #000;
+            padding: 20px;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 8px;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--sans);
+            box-sizing: border-box;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn-primary {
+            background-color: var(--accent);
+            color: var(--bg);
+        }
+        .btn-secondary {
+            background-color: var(--surface-2);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+    </style>
+    <!-- HomeCore's CSRF token on every request of ours that changes something.
+         Empty `base` means the LAN, where there is no HomeCore session to
+         protect and the file does nothing. What it covers and what it cannot
+         (socket.io, which is XHR) is written down in the file itself. -->
+    <script src="{{ base }}/static/js/csrf.js" data-base="{{ base }}"></script>
+    <!-- This member's theme, in the night register this page is written in.
+         Only reachable when the page is served through HomeCore (/camaras/),
+         which is also the only time the app knows who is looking; opened
+         straight off the LAN it 404s and the page keeps its own colours,
+         which is exactly the wanted behaviour and needs no branch. -->
+    <link rel="stylesheet" href="/theme/night.css">
+    <script>
+      /* Repaint when somebody changes their theme while this is open, the
+         same twenty seconds the house pages use. Only swaps the href, so a
+         camera feed is never reloaded by a colour change. */
+      (function () {
+        var link = document.querySelector('link[href$="/theme/night.css"]');
+        if (!link || !"{{ base }}") return;
+        var seen = null;
+        setInterval(async function () {
+          try {
+            var r = await fetch("/theme/version", { cache: 'no-store' });
+            if (!r.ok) return;
+            var v = (await r.json()).v;
+            if (seen === null) { seen = v; return; }
+            if (v !== seen) { seen = v; link.href = "/theme/night.css?v=" + v; }
+          } catch (e) { /* offline or logged out; try again next tick */ }
+        }, 20000);
+      })();
+    </script>
+</head>
+<body>
+    <div class="header">
+        <h1>Add New Camera</h1>
+    </div>
+
+    <div class="settings-container">
+        <form id="add-camera-form">
+            <div class="form-group">
+                <label for="name">Camera Name (optional):</label>
+                <input type="text" id="name" name="name" placeholder="e.g., Front Door, Backyard">
+            </div>
+            <div class="form-group">
+                <label for="device_ip">Device IP:</label>
+                <input type="text" id="device_ip" name="device_ip" required>
+            </div>
+            <div class="form-group">
+                <label for="username">Username:</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password:</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            <div class="form-group">
+                <label for="port">Port:</label>
+                <input type="number" id="port" name="port" value="80" required>
+            </div>
+            <div class="form-group">
+                <label for="stream_type">Stream Type:</label>
+                <select id="stream_type" name="stream_type">
+                    <option value="rtsp">RTSP (H.264)</option>
+                    <option value="mjpeg">MJPEG (HTTP)</option>
+                </select>
+                <small style="color: var(--text-muted); font-size: 12px;">Select the stream type for this camera</small>
+            </div>
+            <div class="form-group">
+                <label for="stream_path">Stream Path:</label>
+                <input type="text" id="stream_path" name="stream_path" value="/stream" placeholder="/stream">
+                <small style="color: var(--text-muted); font-size: 12px;">Enter the stream path (RTSP: /stream, /Streaming/Channels/101 | MJPEG: /mjpeg, /video)</small>
+            </div>
+            <div class="form-group">
+                <label for="rotation">Rotation:</label>
+                <select id="rotation" name="rotation">
+                    <option value="0">No Rotation (0°)</option>
+                    <option value="90">Rotate 90° Clockwise</option>
+                    <option value="180">Rotate 180°</option>
+                    <option value="270">Rotate 270° Clockwise</option>
+                </select>
+                <small style="color: var(--text-muted); font-size: 12px;">Rotate the camera image if it's upside down or sideways</small>
+            </div>
+            <button type="submit" class="btn btn-primary">Add Camera</button>
+            <button type="button" class="btn btn-secondary" onclick="window.location.href='{{ base }}/settings'">Back to Settings</button>
+        </form>
+    </div>
+
+    <!-- Served from this app, not a CDN. Same reason the fonts are:
+         a house that cannot reach the internet must still get its
+         pages, and this one is load-bearing - see the guard below. -->
+    <script src="{{ base }}/static/js/socket.io.js"></script>
+    <script>
+        /* Adding a camera is the one thing here that really is done over the
+           socket, and behind HomeCore's proxy at /camaras/ there is no socket
+           to have — it speaks HTTP and cannot upgrade. Say so plainly rather
+           than letting Add do nothing at all. */
+        const socket = (typeof io === 'function') ? io() : null;
+        function socketReady() {
+            if (socket && socket.connected) return true;
+            const box = document.getElementById('error-message') || document.body;
+            box.textContent = 'To add a camera you have to come in directly on '
+                + "the camera server's own address — from the house this page cannot.";
+            box.style.display = 'block';
+            return false;
+        }
+
+        // Handle add camera form submission
+        document.getElementById('add-camera-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const data = {};
+            formData.forEach((value, key) => {
+                data[key] = value;
+            });
+            
+            // Ensure name is included (can be empty string)
+            if (!data.name) data.name = '';
+            
+            if (!socketReady()) return;
+            socket.emit('add_camera', data);
+            
+            // Reset form
+            this.reset();
+        });
+
+        // Handle camera added event
+        if (socket) socket.on('camera_added', function(data) {
+            if (data.status === 'success') {
+                alert('Camera added successfully!');
+                // Redirect to settings page after successful addition
+                window.location.href = '{{ base }}/settings';
+            } else {
+                alert('Failed to add camera: ' + data.message);
+            }
+        });
+
+        // Handle errors
+        if (socket) socket.on('error', function(data) {
+            alert('Error: ' + data.message);
+        });
+    </script>
+</body>
+</html>

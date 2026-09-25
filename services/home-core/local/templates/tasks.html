@@ -1,0 +1,1653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{{ t('tasks.page_title') }}</title>
+  <!-- The house faces, served by this app. See
+       HomeCore/tools/fetch-fonts.sh for where they come from and why they
+       are not fetched from the internet. -->
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --paper-2:#fff;
+      --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2;
+      --olive:#57633F; --olive-2:#7E8A61;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* …and the same hues as *words*, which is a different job. The `-deep`
+         ones are grounds that white sits on, so they darken blindly; a word has
+         to stay readable against whatever it is painted on, and on a dark house
+         those two point opposite ways. `/theme.css` derives these per theme and
+         holds each to 4.5:1 — these are the untouched house's. */
+      --honey-ink: #7C561B; --clay-ink: #8A3C2B; --olive-ink: #3D452C;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: var(--plaster);
+      background-image:
+        radial-gradient(ellipse at 12% -10%, #F6F1E5 0%, transparent 55%),
+        radial-gradient(ellipse at 100% 0%, #E7DFCC 0%, transparent 45%);
+      font-family: var(--sans);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    header {
+      background: var(--wall); color: var(--wall-fg);
+      padding: 14px 20px; display: flex; align-items: center; gap: 13px;
+    }
+    header .plate {
+      width: 40px; height: 40px; flex: none; display: grid; place-items: center;
+      /* Light off the top, shadow at the bottom, both translucent: the
+         plate reads as a tile raised off the bar whatever colour the bar
+         is. It used to be literal olive, which on a pink house was a
+         green square sitting in the corner of the header. */
+      background: linear-gradient(160deg, rgba(255,255,255,.15), rgba(0,0,0,.17));
+      border: 1px solid rgba(235,212,155,.25); border-radius: 12px;
+      font-size: 1.3rem;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 800; letter-spacing: -.01em; color: #F3EEDF; }
+    header p { font-size: .6rem; text-transform: uppercase; letter-spacing: .22em; color: #8E937C; margin-top: 2px; }
+    header .hlink {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--wall-fg); text-decoration: none; font-size: .8rem; font-weight: 600;
+      padding: 7px 11px; border-radius: 10px; border: 1px solid rgba(218,212,194,.16);
+    }
+    header .hlink:first-of-type { margin-left: auto; }
+    header .hlink:hover { background: rgba(255,255,255,.06); }
+
+    main { max-width: 860px; margin: 22px auto 60px; padding: 0 16px; }
+
+    .section-title {
+      display: flex; align-items: center; gap: 12px;
+      font-size: .7rem; color: var(--olive); text-transform: uppercase;
+      letter-spacing: .18em; font-weight: 700; margin: 28px 0 14px;
+    }
+    .section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+    /* ------- hero / points badge ------- */
+    .hero {
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+      background: var(--paper); border: 1px solid var(--line); border-radius: 18px;
+      padding: 18px 20px; box-shadow: 0 1px 0 #fff inset, 0 8px 22px -16px rgba(60,50,30,.5);
+    }
+    .hero .hello { font-size: 1.25rem; font-weight: 800; letter-spacing: -.01em; }
+    .hero .sub { font-size: .8rem; color: var(--ink-soft); margin-top: 3px; }
+    .points-badge {
+      display: inline-flex; align-items: center; gap: 8px; flex: none;
+      background: linear-gradient(160deg, var(--honey), #a86f1e);
+      color: #FFF8E8; font-weight: 800; font-size: 1.3rem;
+      padding: 10px 18px; border-radius: 999px;
+      box-shadow: 0 6px 16px -8px rgba(198,137,43,.8);
+    }
+    .points-badge .star { font-size: 1.1rem; }
+
+    /* ------- tabs (admin) ------- */
+    .tabs { display: flex; gap: 8px; margin-top: 20px; overflow-x: auto; }
+    .tab {
+      flex: none; border: 1px solid var(--line); background: var(--paper);
+      border-radius: 999px; padding: 9px 16px; font-size: .85rem; font-weight: 700;
+      color: var(--ink-soft); cursor: pointer; font-family: var(--sans);
+    }
+    .tab.active { background: var(--wall); color: #F3EEDF; border-color: var(--wall); }
+    .tab .bubble {
+      display: inline-grid; place-items: center; min-width: 19px; height: 19px;
+      margin-left: 5px; padding: 0 5px; border-radius: 999px;
+      background: var(--clay); color: #fff; font-size: .7rem;
+    }
+
+    /* ------- task cards ------- */
+    .task-list { display: flex; flex-direction: column; gap: 12px; }
+    .task-card {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
+      padding: 15px 16px;
+      box-shadow: 0 1px 0 #fff inset, 0 8px 22px -16px rgba(60,50,30,.5);
+    }
+    .task-card.approved { opacity: .72; }
+    /* Recessed, not faded. `opacity` dims the writing along with the ground,
+       and this card is one an adult has to read a name, a date and an excuse
+       off before deciding. `--plaster` is the page's own ground, so the card
+       reads as sunk into it rather than floating on it -- and it is the one
+       surface `_theme_css` already holds `--ink` legible against, which a
+       literal pale hex is not: it stays pale under a dark theme while the
+       writing on it turns light. */
+    .task-card.excused { background: var(--plaster); box-shadow: none; }
+    .task-icon {
+      width: 52px; height: 52px; flex: none; display: grid; place-items: center;
+      font-size: 1.7rem; background: rgba(87,99,63,.09); border-radius: 14px;
+    }
+    .task-body { flex: 1; min-width: 0; }
+    .task-title { font-size: 1.02rem; font-weight: 700; letter-spacing: -.01em; }
+    .task-desc { font-size: .8rem; color: var(--ink-soft); margin-top: 2px; }
+    .task-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    /* An excuse, in the words it was written in. No ground of its own: the
+       card already has one, and a second pale block is what made this list hard
+       to read. The rule at the head does the marking instead. */
+    .note {
+      font-size: .82rem; line-height: 1.45; color: var(--ink); margin-top: 7px;
+      padding-left: 9px; border-left: 2px solid var(--line);
+    }
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: .72rem; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+      background: rgba(87,99,63,.1); color: var(--olive);
+    }
+    .chip.points { background: var(--honey-lt); color: var(--honey-ink); }
+    .chip.late { background: rgba(172,75,54,.12); color: var(--clay-ink); }
+    .chip.review { background: rgba(198,137,43,.14); color: var(--honey-ink); }
+    .chip.ok { background: rgba(87,99,63,.14); color: var(--olive-ink); }
+    .chip.excused { background: rgba(110,102,90,.14); color: var(--ink); }
+    /* The week at a glance: one chip per day, with how many chores wait. */
+    .week-strip { display: flex; gap: 6px; margin: 18px 0 2px; overflow-x: auto; padding-bottom: 2px; }
+    .week-day {
+      flex: 1 0 52px; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      border: 1px solid var(--line); background: var(--paper-2); border-radius: 12px;
+      padding: 8px 4px; font-family: var(--sans);
+    }
+    .week-day .wd { font-size: .62rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); }
+    .week-day .n { font-size: .95rem; font-weight: 800; color: #c3b8a4; }
+    .week-day.has { border-color: var(--honey-lt); }
+    .week-day.has .n { color: var(--honey); }
+    .week-day.today { border-color: var(--honey); background: rgba(198,137,43,.08); }
+    .week-day.today .wd { color: var(--honey-deep); }
+    .week-day.late { border-color: var(--clay); background: rgba(172,75,54,.07); }
+    .week-day.late .n { color: var(--clay); }
+    /* The stakes of an excuse decision, on their own line under the card. */
+    .stake {
+      font-size: .72rem; line-height: 1.5; color: var(--clay);
+      background: rgba(172,75,54,.08); border-radius: 8px; padding: 6px 10px; margin-top: 8px;
+    }
+
+    .btn {
+      border: none; border-radius: 12px; cursor: pointer; font-family: var(--sans);
+      font-weight: 800; font-size: .9rem; padding: 11px 16px;
+      transition: transform .1s;
+    }
+    .btn:active { transform: scale(.96); }
+    .btn.done { background: var(--olive); color: #F3EEDF; box-shadow: 0 6px 14px -8px rgba(87,99,63,.9); }
+    .btn.ghost { background: transparent; color: var(--ink-soft); font-weight: 600; font-size: .78rem; padding: 5px 8px; text-decoration: underline; }
+    .btn.small { font-size: .8rem; padding: 8px 12px; }
+    .btn.approve { background: var(--olive); color: #F3EEDF; }
+    .btn.rejectb { background: transparent; border: 1px solid var(--line); color: var(--clay); font-weight: 700; }
+    .adjust-delta { display: flex; gap: 8px; align-items: center; }
+    .adjust-delta .sign-btn {
+      cursor: pointer; font-family: var(--sans); font-size: 1.15rem; font-weight: 800;
+      line-height: 1; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px;
+      color: var(--ink); background: var(--paper);
+    }
+    .adjust-delta .sign-btn[aria-pressed="true"] {
+      background: var(--olive); border-color: var(--olive); color: #F3EEDF;
+    }
+    .f-hint { font-size: .72rem; color: var(--ink-soft); margin-top: 5px; }
+    .btn.honey { background: var(--honey); color: #FFF8E8; }
+    .btn.danger { background: transparent; border: 1px solid var(--line); color: var(--clay); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    .empty {
+      text-align: center; color: var(--ink-soft); font-size: .9rem;
+      background: var(--paper); border: 1px dashed var(--line); border-radius: 16px;
+      padding: 26px 16px;
+    }
+    .empty .big { font-size: 2rem; display: block; margin-bottom: 6px; }
+
+    /* ------- prizes ------- */
+    .prize-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+    .prize-card {
+      background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
+      padding: 16px 14px; display: flex; flex-direction: column; align-items: center; gap: 8px;
+      text-align: center;
+      box-shadow: 0 1px 0 #fff inset, 0 8px 22px -16px rgba(60,50,30,.5);
+    }
+    .prize-card .picon { font-size: 2.2rem; }
+    .prize-card .pname { font-weight: 700; font-size: .92rem; }
+    .prize-card .pdesc { font-size: .75rem; color: var(--ink-soft); }
+    .prize-card .pcost { font-weight: 800; color: var(--honey-ink); background: var(--honey-lt); border-radius: 999px; padding: 3px 11px; font-size: .8rem; }
+
+    /* ------- history / lists ------- */
+    .ledger { display: flex; flex-direction: column; gap: 6px; }
+    .ledger-row {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+      padding: 10px 14px; font-size: .85rem;
+    }
+    .ledger-row .reason { flex: 1; min-width: 0; }
+    .ledger-row .when { color: var(--ink-soft); font-size: .72rem; }
+    .ledger-row .delta { font-weight: 800; flex: none; }
+    .delta.pos { color: var(--olive); }
+    .delta.neg { color: var(--clay); }
+
+    /* ------- admin forms ------- */
+    .panel {
+      background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
+      padding: 18px; box-shadow: 0 1px 0 #fff inset, 0 8px 22px -16px rgba(60,50,30,.5);
+    }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .form-grid .full { grid-column: 1 / -1; }
+    /* The `hidden` attribute must win over the display rules above (a .form-grid
+       element sets display:grid, which would otherwise override [hidden]). */
+    [hidden] { display: none !important; }
+    label.f { display: block; font-size: .72rem; font-weight: 700; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+    input[type=text], input[type=number], input[type=date], input[type=time], select, textarea {
+      width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-2);
+      font-family: var(--sans); font-size: .92rem; color: var(--ink); padding: 9px 11px;
+    }
+    textarea { resize: vertical; min-height: 60px; }
+    .weekday-toggles { display: flex; gap: 5px; flex-wrap: wrap; }
+    .weekday-toggles label {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 38px; height: 34px; border: 1px solid var(--line); border-radius: 9px;
+      font-size: .78rem; font-weight: 700; color: var(--ink-soft); cursor: pointer; background: var(--paper-2);
+    }
+    .weekday-toggles input { display: none; }
+    .weekday-toggles input:checked + span { color: #F3EEDF; }
+    /* The colour goes with the ground, the way the assignee toggles below
+       already do -- without it a checked day kept `--ink-soft` lettering on
+       a dark olive pill and the day you picked was the one you could not
+       read. */
+    .weekday-toggles label:has(input:checked) { background: var(--olive); border-color: var(--olive); color: #F3EEDF; }
+    .assignee-toggles { display: flex; gap: 6px; flex-wrap: wrap; }
+    .assignee-toggles label {
+      display: inline-flex; align-items: center; gap: 5px; padding: 7px 12px;
+      border: 1px solid var(--line); border-radius: 999px; font-size: .82rem; font-weight: 700;
+      color: var(--ink-soft); cursor: pointer; background: var(--paper-2);
+    }
+    .assignee-toggles input { display: none; }
+    .assignee-toggles label:has(input:checked) { background: var(--olive); border-color: var(--olive); color: #F3EEDF; }
+    .check-inline { display: inline-flex; align-items: center; gap: 7px; font-size: .85rem; font-weight: 600; color: var(--ink); cursor: pointer; }
+    .icon-row { display: flex; gap: 6px; align-items: stretch; }
+    .icon-row input { flex: 1; min-width: 0; }
+    .icon-gen { padding: 0 12px; font-size: 1.1rem; line-height: 1; flex: 0 0 auto; }
+    .inner-grid { border: 1px dashed var(--line); border-radius: 12px; padding: 12px; background: var(--paper); }
+    .recurrent-switch { padding: 4px 2px; }
+    .inner-grid .hint { font-size: .74rem; color: var(--ink-soft); line-height: 1.5; margin-top: 2px; }
+    .who-hint { font-weight: 500; font-size: .72rem; color: var(--ink-soft); }
+
+    .summary-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+    .sum-card { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+    .sum-card .name { font-weight: 800; font-size: .92rem; }
+    .sum-card .nums { font-size: .75rem; color: var(--ink-soft); margin-top: 4px; line-height: 1.5; }
+
+    .mini-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+    .mini-row {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      border: 1px solid var(--line); border-radius: 12px; background: var(--paper-2);
+      padding: 9px 12px; font-size: .85rem;
+    }
+    .mini-row .grow { flex: 1; min-width: 140px; }
+    .mini-row.inactive { opacity: .55; }
+
+    /* ------- modal ------- */
+    .modal-back {
+      position: fixed; inset: 0; background: rgba(43,39,33,.45); z-index: 50;
+      display: none; align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-back.open { display: flex; }
+    .modal {
+      background: var(--paper); border-radius: 18px; padding: 20px;
+      width: 100%; max-width: 380px; box-shadow: 0 24px 60px -20px rgba(0,0,0,.5);
+    }
+    .modal h3 { font-size: 1.02rem; margin-bottom: 12px; letter-spacing: -.01em; }
+    .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
+    /* ------- toast ------- */
+    #toast {
+      position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(20px);
+      background: var(--ink); color: #F3EEDF; font-size: .85rem; font-weight: 600;
+      padding: 11px 18px; border-radius: 12px; opacity: 0; pointer-events: none;
+      transition: opacity .2s, transform .2s; z-index: 60; max-width: 90vw; text-align: center;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ------- confetti ------- */
+    #confetti { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 55; }
+    .conf {
+      position: absolute; top: -40px; font-size: 1.5rem;
+      animation: conf-fall linear forwards;
+    }
+    @keyframes conf-fall {
+      0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+      85%  { opacity: 1; }
+      100% { transform: translateY(105vh) rotate(540deg); opacity: 0; }
+    }
+    .pop { animation: pop .35s ease; }
+    @keyframes pop { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
+
+    :focus-visible { outline: 2px solid var(--honey, #C6892B); outline-offset: 2px; border-radius: 6px; }
+
+    @media (max-width: 560px) {
+      .task-card { flex-wrap: wrap; }
+      .task-actions { flex-direction: row; width: 100%; }
+      .task-actions .btn.done { flex: 1; }
+      .hero .hello { font-size: 1.1rem; }
+    }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+  </style>
+  <!-- This member's colours, after the house style so it wins by
+       order. Empty when nobody is logged in or nobody has a theme,
+       which leaves The House exactly as it is. -->
+  <link rel="stylesheet" href="/theme.css">
+  <script>
+    /* Pick up a theme Alfred set while this page was open. See /theme/version. */
+    (function () {
+      var link = document.querySelector('link[href^="/theme.css"]');
+      if (!link) return;
+      var seen = null, timer = null;
+      function apply(v) {
+        // Swapping href re-fetches the sheet; the old one stays until the new
+        // one parses, so the page never flashes unstyled.
+        link.href = '/theme.css?v=' + v;
+        link.addEventListener('load', tellTheApp, { once: true });
+      }
+      /* The Android app owns the status bar and the window behind this
+         WebView, and CSS cannot reach either. Read the two colours back out of
+         the computed style so this can never disagree with the sheet, and hand
+         them over; in a browser the bridge is simply absent. */
+      function tellTheApp() {
+        try {
+          if (!window.AndroidTheme || !window.AndroidTheme.apply) return;
+          var css = getComputedStyle(document.documentElement);
+          var wall = css.getPropertyValue('--wall').trim();
+          var plaster = css.getPropertyValue('--plaster').trim();
+          if (wall && plaster) window.AndroidTheme.apply(wall, plaster);
+        } catch (e) {}
+      }
+      async function check() {
+        if (document.hidden) return;
+        try {
+          var r = await fetch('/theme/version', { cache: 'no-store' });
+          if (!r.ok) return;
+          var v = (await r.json()).v;
+          if (seen === null) { seen = v; return; }   // first look: just remember
+          if (v !== seen) { seen = v; apply(v); }
+        } catch (e) { /* offline, or logged out: try again next tick */ }
+      }
+      function start() { clearInterval(timer); timer = setInterval(check, 20000); check(); }
+      tellTheApp();          // whatever theme this page loaded with
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) clearInterval(timer); else start();
+      });
+      start();
+    })();
+  </script>
+</head>
+<body>
+  {% set app_icon = '⭐' %}
+  {% set app_title = t('common.tasks') %}
+  {% set current = 'tasks' %}
+  {% include '_app_header.html' %}
+
+  <main>
+    <div class="hero">
+      <div>
+        <div class="hello">{{ t('tasks.hello', name=user_name) }}</div>
+        <div class="sub" id="hero-sub">{{ t('tasks.hero_sub') }}</div>
+      </div>
+      <div class="points-badge"><span class="star">⭐</span><span id="balance">0</span></div>
+    </div>
+
+    {% if is_admin %}
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="mine">{{ t('tasks.tab_mine') }}</button>
+      <button class="tab" data-tab="review">{{ t('tasks.tab_review') }} <span class="bubble" id="review-count" hidden>0</span></button>
+      <button class="tab" data-tab="manage">{{ t('tasks.tab_manage') }}</button>
+      <button class="tab" data-tab="redeems">{{ t('tasks.tab_redeems') }} <span class="bubble" id="redeem-count" hidden>0</span></button>
+    </div>
+    {% endif %}
+
+    <!-- ============ MIS TAREAS (everyone) ============ -->
+    <section id="tab-mine">
+      <div class="week-strip" id="week-strip"></div>
+      <div id="tasks-by-day"></div>
+
+      <div class="section-title">{{ t('tasks.history') }}</div>
+      <div class="mini-list" id="done-tasks">
+        <button class="btn ghost" id="done-toggle" type="button">{{ t('tasks.done_show') }}</button>
+        <div id="done-list" hidden></div>
+      </div>
+
+      <div class="section-title">{{ t('tasks.prizes') }}</div>
+      <div class="prize-grid" id="prizes"></div>
+      <div class="mini-list" id="my-redemptions"></div>
+
+      <div class="section-title">{{ t('tasks.points_history') }}</div>
+      <div class="ledger" id="ledger"></div>
+    </section>
+
+    {% if is_admin %}
+    <!-- ============ REVISAR (admin) ============ -->
+    <section id="tab-review" hidden>
+      <div class="section-title">{{ t('tasks.to_review') }}</div>
+      <div class="task-list" id="review-list"></div>
+    </section>
+
+    <!-- ============ ADMINISTRAR (admin) ============ -->
+    <section id="tab-manage" hidden>
+      <div class="section-title">{{ t('tasks.summary') }}</div>
+      <div class="summary-strip" id="summary"></div>
+
+      <div class="section-title">{{ t('tasks.new_chore') }}</div>
+      <div class="panel">
+        <form id="task-form" class="form-grid">
+          <input type="hidden" id="f-id">
+          <input type="hidden" id="f-kind">
+          <div class="full">
+            <label class="f" for="f-title">{{ t('tasks.field_title') }}</label>
+            <input type="text" id="f-title" required maxlength="200" placeholder="{{ t('tasks.ph_title') }}">
+          </div>
+          <div>
+            <label class="f" for="f-icon">{{ t('tasks.field_emoji') }}</label>
+            <div class="icon-row">
+              <input type="text" id="f-icon" maxlength="8" placeholder="🛏️">
+              <button type="button" class="btn ghost icon-gen" id="f-icon-gen" title="Suggest an emoji from the title">🎲</button>
+            </div>
+          </div>
+          <div>
+            <label class="f" for="f-points">{{ t('tasks.field_points') }}</label>
+            <input type="number" id="f-points" min="0" max="10000" value="10" required>
+          </div>
+
+          <!-- Recurrencia -->
+          <div class="full recurrent-switch">
+            <label class="check-inline"><input type="checkbox" id="f-recurrent" checked> {{ t('tasks.recurring') }}</label>
+          </div>
+
+          <!-- For (shared: one or several people) -->
+          <div class="full">
+            <label class="f">{{ t('tasks.for') }} <span id="f-who-hint" class="who-hint"></span></label>
+            <div class="assignee-toggles" id="f-assignees">
+              {% for u in users %}
+              <label><input type="checkbox" value="{{ u.id }}"><span>{{ u.name }}</span></label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <!-- Campos de tarea puntual (una sola fecha) -->
+          <div id="oneoff-fields" class="full form-grid inner-grid" hidden>
+            <div>
+              <label class="f" for="f-due">{{ t('tasks.due_date') }}</label>
+              <input type="date" id="f-due">
+            </div>
+          </div>
+
+          <!-- Recurring-chore fields (days of the week) -->
+          <div id="recurrent-fields" class="full form-grid inner-grid">
+            <div class="full">
+              <label class="f">{{ t('tasks.days') }}</label>
+              <div class="weekday-toggles" id="f-weekdays">
+                <label><input type="checkbox" value="0"><span>{{ t('tasks.day_mon') }}</span></label>
+                <label><input type="checkbox" value="1"><span>{{ t('tasks.day_tue') }}</span></label>
+                <label><input type="checkbox" value="2"><span>{{ t('tasks.day_wed') }}</span></label>
+                <label><input type="checkbox" value="3"><span>{{ t('tasks.day_thu') }}</span></label>
+                <label><input type="checkbox" value="4"><span>{{ t('tasks.day_fri') }}</span></label>
+                <label><input type="checkbox" value="5"><span>{{ t('tasks.day_sat') }}</span></label>
+                <label><input type="checkbox" value="6"><span>{{ t('tasks.day_sun') }}</span></label>
+              </div>
+            </div>
+            <div class="full">
+              <label class="check-inline"><input type="checkbox" id="f-rotate"> {{ t('tasks.rotate') }}</label>
+            </div>
+          </div>
+
+          <!-- Recordatorios -->
+          <div class="full recurrent-switch">
+            <label class="check-inline"><input type="checkbox" id="f-remind-on" checked> {{ t('tasks.remind_on') }}</label>
+          </div>
+          <div id="remind-fields" class="full form-grid inner-grid">
+            <div>
+              <label class="f" for="f-start">{{ t('tasks.time_start') }}</label>
+              <input type="time" id="f-start" value="17:00">
+            </div>
+            <div>
+              <label class="f" for="f-remind-before">{{ t('tasks.remind_before') }}</label>
+              <select id="f-remind-before">
+                <option value="0">{{ t('tasks.rb_0') }}</option>
+                <option value="5">{{ t('tasks.rb_5') }}</option>
+                <option value="10">{{ t('tasks.rb_10') }}</option>
+                <option value="15">{{ t('tasks.rb_15') }}</option>
+                <option value="30">{{ t('tasks.rb_30') }}</option>
+                <option value="60">{{ t('tasks.rb_60') }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="f" for="f-remind">{{ t('tasks.remind_every') }}</label>
+              <select id="f-remind">
+                <option value="">{{ t('tasks.re_def') }}</option>
+                <option value="15">{{ t('tasks.re_15') }}</option>
+                <option value="20">{{ t('tasks.re_20') }}</option>
+                <option value="45">{{ t('tasks.re_45') }}</option>
+                <option value="60">{{ t('tasks.re_60') }}</option>
+                <option value="120">{{ t('tasks.re_120') }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="f" for="f-end">{{ t('tasks.until') }}</label>
+              <input type="time" id="f-end">
+            </div>
+            <div class="full hint">{{ t('tasks.remind_hint') }}</div>
+          </div>
+          <div class="full">
+            <label class="f" for="f-desc">{{ t('tasks.description') }}</label>
+            <input type="text" id="f-desc" maxlength="1000">
+          </div>
+          <div class="full" style="display:flex;gap:8px;">
+            <button type="submit" class="btn honey" id="f-submit">{{ t('tasks.create') }}</button>
+            <button type="button" class="btn ghost" id="f-cancel" hidden>{{ t('tasks.cancel_edit') }}</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="section-title">{{ t('tasks.recurring_title') }}</div>
+      <div class="mini-list" id="tpl-list"></div>
+
+      <div class="section-title">{{ t('tasks.oneoff_title') }}</div>
+      <div class="mini-list" id="oneoff-list"></div>
+
+      <div class="section-title">{{ t('tasks.prizes') }}</div>
+      <div class="panel">
+        <form id="prize-form" class="form-grid">
+          <div class="full">
+            <label class="f" for="z-name">{{ t('tasks.prize_name') }}</label>
+            <input type="text" id="z-name" required maxlength="200" placeholder="{{ t('tasks.ph_prize') }}">
+          </div>
+          <div>
+            <label class="f" for="z-icon">{{ t('tasks.field_emoji') }}</label>
+            <input type="text" id="z-icon" maxlength="8" placeholder="🎮">
+          </div>
+          <div>
+            <label class="f" for="z-cost">{{ t('tasks.prize_cost') }}</label>
+            <input type="number" id="z-cost" min="1" max="10000" value="50" required>
+          </div>
+          <div class="full">
+            <label class="f" for="z-desc">{{ t('tasks.description') }}</label>
+            <input type="text" id="z-desc" maxlength="1000">
+          </div>
+          <div class="full">
+            <button type="submit" class="btn honey">{{ t('tasks.prize_create') }}</button>
+          </div>
+        </form>
+      </div>
+      <div class="mini-list" id="prize-admin-list"></div>
+
+      <div class="section-title">{{ t('tasks.adjust_title') }}</div>
+      <div class="panel">
+        <form id="adjust-form" class="form-grid">
+          <div>
+            <label class="f" for="a-user">{{ t('tasks.for') }}</label>
+            <select id="a-user">
+              {% for u in users %}<option value="{{ u.id }}">{{ u.name }}</option>{% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="f" for="a-delta">{{ t('tasks.field_points') }}</label>
+            <div class="adjust-delta">
+              <button type="button" class="sign-btn" id="a-sign-minus"
+                      aria-pressed="false">−</button>
+              <input type="number" id="a-delta" min="0" max="10000" value="10"
+                     required inputmode="numeric">
+              <button type="button" class="sign-btn" id="a-sign-plus"
+                      aria-pressed="true">+</button>
+            </div>
+            <div class="f-hint" id="a-delta-hint">{{ t('tasks.adjust_plus', n=10) }}</div>
+          </div>
+          <div class="full">
+            <label class="f" for="a-reason">{{ t('tasks.adjust_reason') }}</label>
+            <input type="text" id="a-reason" required maxlength="200" placeholder="{{ t('tasks.ph_reason') }}">
+          </div>
+          <div class="full">
+            <button type="submit" class="btn honey">{{ t('tasks.adjust_apply') }}</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============ CANJES (admin) ============ -->
+    <section id="tab-redeems" hidden>
+      <div class="section-title">{{ t('tasks.redeems_pending') }}</div>
+      <div class="mini-list" id="redeem-pending"></div>
+      <div class="section-title">{{ t('tasks.redeems_history') }}</div>
+      <div class="mini-list" id="redeem-history"></div>
+    </section>
+    {% endif %}
+  </main>
+
+  <div class="modal-back" id="modal-back">
+    <div class="modal">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="actions">
+        <button class="btn ghost" id="modal-cancel">{{ t('common.cancel') }}</button>
+        <button class="btn honey" id="modal-ok">{{ t('common.accept') }}</button>
+      </div>
+    </div>
+  </div>
+  <div id="confetti"></div>
+  <div id="toast"></div>
+
+  <script>
+    'use strict';
+    const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+    const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+    const USERS = {{ users | tojson }};
+    const ME = {{ user | tojson }};
+    // The household's language, for every date this page formats. It was the
+    // literal 'es' in three places, on a page whose whole copy now comes from
+    // the catalogue -- so an English house read English chores under Spanish
+    // weekday names.
+    const LOCALE = {{ locale | tojson }};
+    let TODAY = null;
+
+    // ---------- helpers ----------
+    async function api(path, method = 'GET', body = null) {
+      const opts = { method, headers: {} };
+      if (body !== null) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      if (method !== 'GET') opts.headers['X-CSRF-Token'] = CSRF;
+      const r = await fetch(path, opts);
+      let j = {};
+      try { j = await r.json(); } catch (e) {}
+      if (!r.ok) throw new Error(j.error || {{ t('tasks.err_generic') | tojson }});
+      return j;
+    }
+
+    function el(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    }
+
+    let toastTimer = null;
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+    }
+
+    function fmtDate(iso) {
+      try {
+        return new Date(iso + 'T00:00:00').toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
+      } catch (e) { return iso; }
+    }
+    function fmtWhen(ts) {
+      return new Date(ts * 1000).toLocaleDateString(LOCALE, { day: 'numeric', month: 'short' });
+    }
+    function timeLabel(t) {
+      if (!t.time_start) return null;
+      return t.time_end ? `🕐 ${t.time_start}–${t.time_end}` : `🕐 ${t.time_start}`;
+    }
+    function userName(id) {
+      const u = USERS.find(u => u.id === id);
+      return u ? u.name : id;
+    }
+
+    // ---------- modal ----------
+    function askModal({ title, withText, placeholder, okLabel }) {
+      return new Promise(resolve => {
+        const back = document.getElementById('modal-back');
+        const body = document.getElementById('modal-body');
+        document.getElementById('modal-title').textContent = title;
+        document.getElementById('modal-ok').textContent = okLabel || 'Accept';
+        body.textContent = '';
+        let ta = null;
+        if (withText) {
+          ta = document.createElement('textarea');
+          ta.placeholder = placeholder || '';
+          ta.maxLength = 500;
+          body.appendChild(ta);
+        }
+        back.classList.add('open');
+        if (ta) ta.focus();
+        const done = val => { back.classList.remove('open'); cleanup(); resolve(val); };
+        const okFn = () => {
+          if (withText) {
+            const v = ta.value.trim();
+            if (!v) { ta.focus(); return; }
+            done(v);
+          } else done(true);
+        };
+        const cancelFn = () => done(null);
+        const okBtn = document.getElementById('modal-ok');
+        const cBtn = document.getElementById('modal-cancel');
+        okBtn.addEventListener('click', okFn);
+        cBtn.addEventListener('click', cancelFn);
+        function cleanup() {
+          okBtn.removeEventListener('click', okFn);
+          cBtn.removeEventListener('click', cancelFn);
+        }
+      });
+    }
+
+    // ---------- confetti ----------
+    const CONF_EMOJI = ['🎉', '⭐', '✨', '🌟', '🎈', '💛'];
+    function confetti(n) {
+      const box = document.getElementById('confetti');
+      for (let i = 0; i < (n || 34); i++) {
+        const s = el('span', 'conf', CONF_EMOJI[i % CONF_EMOJI.length]);
+        s.style.left = (Math.random() * 100) + 'vw';
+        s.style.animationDuration = (1.6 + Math.random() * 1.6) + 's';
+        s.style.animationDelay = (Math.random() * 0.4) + 's';
+        s.style.fontSize = (1 + Math.random() * 1.2) + 'rem';
+        box.appendChild(s);
+        setTimeout(() => s.remove(), 4000);
+      }
+    }
+
+    // ---------- balance ----------
+    let shownBalance = 0;
+    function setBalance(target, animate) {
+      const node = document.getElementById('balance');
+      if (!animate) { shownBalance = target; node.textContent = target; return; }
+      const start = shownBalance, diff = target - start, t0 = performance.now();
+      if (!diff) return;
+      node.parentElement.classList.add('pop');
+      setTimeout(() => node.parentElement.classList.remove('pop'), 400);
+      (function step(t) {
+        const p = Math.min(1, (t - t0) / 700);
+        node.textContent = Math.round(start + diff * (1 - Math.pow(1 - p, 3)));
+        if (p < 1) requestAnimationFrame(step); else shownBalance = target;
+      })(t0);
+    }
+
+    // ---------- my tasks ----------
+    function taskCard(t) {
+      const card = el('div', 'task-card ' + t.status);
+      card.appendChild(el('div', 'task-icon', t.icon || (t.status === 'approved' ? '🏆' : '📝')));
+      const body = el('div', 'task-body');
+      body.appendChild(el('div', 'task-title', t.title));
+      if (t.description) body.appendChild(el('div', 'task-desc', t.description));
+      const meta = el('div', 'task-meta');
+      meta.appendChild(el('span', 'chip points', `+${t.points} ⭐`));
+      const tl = timeLabel(t);
+      if (tl) meta.appendChild(el('span', 'chip', tl));
+      if (t.due_date < TODAY && t.status === 'pending') meta.appendChild(el('span', 'chip late', '⏰ ' + fmtDate(t.due_date)));
+      // What leaving it unfinished costs, shown while there is still time to
+      // avoid it. Only on tasks that are still open: once one is approved or
+      // justified the number is history and would read as a threat.
+      if (t.penalty && (t.status === 'pending' || t.status === 'review'))
+        meta.appendChild(el('span', 'chip late', `{{ t('tasks.penalty', n='${t.penalty}') }}`));
+      if (t.status === 'review') meta.appendChild(el('span', 'chip review', {{ t('tasks.in_review') | tojson }}));
+      if (t.status === 'approved') meta.appendChild(el('span', 'chip ok', {{ t('tasks.approved') | tojson }}));
+      if (t.status === 'excused') meta.appendChild(el('span', 'chip excused', {{ t('tasks.excused') | tojson }}));
+      if (t.status === 'pending' && t.review_note) meta.appendChild(el('span', 'chip late', '↩ ' + t.review_note));
+      if (t.status === 'excused' && t.excuse_note) meta.appendChild(el('span', 'chip excused', '“' + t.excuse_note + '”'));
+      // An excuse is not "off the hook": accepted it costs nothing, granted it
+      // pays, and one nobody decides on charges the penalty in a couple of
+      // days. The row says which, or "justificada" reads as settled.
+      if (t.status === 'excused' && t.penalty)
+        meta.appendChild(el('span', 'chip late', `{{ t('tasks.penalty_unaccepted', n='${t.penalty}') }}`));
+      body.appendChild(meta);
+      card.appendChild(body);
+
+      const actions = el('div', 'task-actions');
+      if (t.status === 'pending') {
+        const done = el('button', 'btn done', {{ t('tasks.done_btn') | tojson }});
+        done.onclick = () => completeTask(t);
+        actions.appendChild(done);
+        const cant = el('button', 'btn ghost', {{ t('tasks.cant_btn') | tojson }});
+        cant.onclick = () => excuseTask(t);
+        actions.appendChild(cant);
+        if (t.time_start) {
+          const later = el('button', 'btn ghost', {{ t('tasks.later_btn') | tojson }});
+          later.onclick = () => postponeTask(t);
+          actions.appendChild(later);
+        }
+      } else if (t.status === 'review' || t.status === 'excused') {
+        const undo = el('button', 'btn ghost', {{ t('tasks.undo_btn') | tojson }});
+        undo.onclick = () => revertTask(t);
+        actions.appendChild(undo);
+      }
+      card.appendChild(actions);
+      return card;
+    }
+
+    async function completeTask(t) {
+      try {
+        await api('/tasks/api/complete', 'POST', { task_id: t.id });
+        confetti();
+        toast({{ t('tasks.done_toast') | tojson }});
+        doneLoaded = false;
+        loadMine();
+        if (IS_ADMIN) refreshBubbles();
+      } catch (e) { toast(e.message); }
+    }
+    async function excuseTask(t) {
+      const note = await askModal({
+        title: {{ t('tasks.excuse_q') | tojson }},
+        withText: true, placeholder: {{ t('tasks.excuse_ph') | tojson }},
+        okLabel: {{ t('common.send') | tojson }},
+      });
+      if (!note) return;
+      try {
+        await api('/tasks/api/excuse', 'POST', { task_id: t.id, note });
+        toast({{ t('tasks.excuse_done') | tojson }});
+        doneLoaded = false;
+        loadMine();
+      } catch (e) { toast(e.message); }
+    }
+    async function revertTask(t) {
+      try {
+        await api('/tasks/api/revert', 'POST', { task_id: t.id });
+        doneLoaded = false;
+        loadMine();
+      } catch (e) { toast(e.message); }
+    }
+    async function postponeTask(t) {
+      try {
+        await api('/tasks/api/postpone', 'POST', { task_id: t.id, minutes: 60 });
+        toast({{ t('tasks.postpone_done') | tojson }});
+      } catch (e) { toast(e.message); }
+    }
+
+    function dayLabel(iso) {
+      if (iso === TODAY) return {{ t('tasks.today') | tojson }};
+      try {
+        const d = new Date(TODAY + 'T00:00:00'); d.setDate(d.getDate() - 1);
+        const y = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        if (iso === y) return {{ t('tasks.yesterday') | tojson }};
+      } catch (e) { /* ignore */ }
+      return fmtDate(iso);
+    }
+
+    function sortTasks(a, b) {
+      return (a.time_start || '99:99').localeCompare(b.time_start || '99:99') || a.id - b.id;
+    }
+
+    // ---------- this week, at a glance ----------
+    function weekStrip(tasks, today) {
+      const box = document.getElementById('week-strip');
+      box.textContent = '';
+      let late = 0;
+      const counts = {};
+      tasks.forEach(t => {
+        if (t.status !== 'pending' && t.status !== 'review') return;
+        if (t.due_date < today) late++;
+        else counts[t.due_date] = (counts[t.due_date] || 0) + 1;
+      });
+      if (late) {
+        const chip = el('div', 'week-day late');
+        chip.innerHTML = '<span class="wd">' + {{ t('tasks.overdue') | tojson }} + '</span><span class="n">' + late + '</span>';
+        chip.title = {{ t('tasks.overdue_title') | tojson }};
+        box.appendChild(chip);
+      }
+      const d = new Date(today + 'T00:00:00');
+      for (let i = 0; i < 7; i++) {
+        const iso = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        const n = counts[iso] || 0;
+        const chip = el('div', 'week-day' + (iso === today ? ' today' : '') + (n ? ' has' : ''));
+        chip.innerHTML = '<span class="wd">' + d.toLocaleDateString(LOCALE, { weekday: 'short' }) + '</span><span class="n">' + (n ? n : '·') + '</span>';
+        chip.title = iso === today ? {{ t('tasks.today') | tojson }} : fmtDate(iso);
+        box.appendChild(chip);
+        d.setDate(d.getDate() + 1);
+      }
+    }
+
+    async function loadMine() {
+      try {
+        // The actionable list — today, the coming week, and anything overdue.
+        // Finished chores are history and load lazily under their own toggle,
+        // so the page opens on what there is to do, not on what was done.
+        const data = await api('/tasks/api/list?scope=week');
+        TODAY = data.today;
+        setBalance(data.balance, true);
+        weekStrip(data.tasks || [], TODAY);
+        const box = document.getElementById('tasks-by-day');
+        const scrollY = window.scrollY;  // completing a task re-renders the list
+        box.textContent = '';
+        const open = (data.tasks || []).filter(t => t.status === 'pending' || t.status === 'review');
+        if (!open.length) {
+          const e = el('div', 'empty');
+          e.appendChild(el('span', 'big', '🎈'));
+          e.appendChild(document.createTextNode({{ t('tasks.empty_mine') | tojson }}));
+          box.appendChild(e);
+        } else {
+          const late = open.filter(t => t.due_date < TODAY);
+          const upcoming = open.filter(t => t.due_date >= TODAY);
+          if (late.length) {
+            box.appendChild(el('div', 'section-title', {{ t('tasks.overdue') | tojson }}));
+            const list = el('div', 'task-list');
+            late.sort(sortTasks).forEach(t => list.appendChild(taskCard(t)));
+            box.appendChild(list);
+          }
+          const byDay = {};
+          upcoming.forEach(t => { (byDay[t.due_date] = byDay[t.due_date] || []).push(t); });
+          Object.keys(byDay).sort().forEach(day => {
+            box.appendChild(el('div', 'section-title', dayLabel(day)));
+            const list = el('div', 'task-list');
+            byDay[day].sort(sortTasks).forEach(t => list.appendChild(taskCard(t)));
+            box.appendChild(list);
+          });
+        }
+        const pend = open.filter(t => t.due_date <= TODAY).length;
+        document.getElementById('hero-sub').textContent = pend
+          ? (pend === 1 ? `{{ t('tasks.pending_one', n='${pend}') }}` : `{{ t('tasks.pending_many', n='${pend}') }}`)
+          : {{ t('tasks.all_done') | tojson }};
+        requestAnimationFrame(() => window.scrollTo(0, scrollY));
+      } catch (e) { toast(e.message); }
+    }
+
+    // Finished chores: collapsed, and fetched once — the page opens on what
+    // there is to do, and history is a glance for when someone wants it. Any
+    // action that changes a status invalidates the cache (see the handlers).
+    let doneLoaded = false;
+    const doneToggle = document.getElementById('done-toggle');
+    const doneList = document.getElementById('done-list');
+    doneToggle.addEventListener('click', async () => {
+      if (!doneList.hidden) { doneList.hidden = true; doneToggle.textContent = {{ t('tasks.done_show') | tojson }}; return; }
+      if (!doneLoaded) {
+        doneToggle.disabled = true;
+        doneToggle.textContent = {{ t('tasks.loading') | tojson }};
+        try {
+          const data = await api('/tasks/api/list?scope=all');
+          doneList.textContent = '';
+          const done = (data.tasks || []).filter(t => t.status === 'approved' || t.status === 'excused');
+          if (!done.length) {
+            const e = el('div', 'empty');
+            e.appendChild(el('span', 'big', '🏆'));
+            e.appendChild(document.createTextNode({{ t('tasks.empty_done') | tojson }}));
+            doneList.appendChild(e);
+          } else {
+            const byDay = {};
+            done.forEach(t => { (byDay[t.due_date] = byDay[t.due_date] || []).push(t); });
+            Object.keys(byDay).sort().reverse().forEach(day => {
+              doneList.appendChild(el('div', 'section-title', dayLabel(day)));
+              const list = el('div', 'task-list');
+              byDay[day].sort(sortTasks).forEach(t => list.appendChild(taskCard(t)));
+              doneList.appendChild(list);
+            });
+          }
+          doneLoaded = true;
+        } catch (e) { toast(e.message); }
+        doneToggle.disabled = false;
+      }
+      doneList.hidden = false;
+      doneToggle.textContent = {{ t('tasks.done_hide') | tojson }};
+    });
+
+    // ---------- prizes (kid side) ----------
+    async function loadPrizes() {
+      try {
+        const data = await api('/tasks/api/prizes');
+        const grid = document.getElementById('prizes');
+        grid.textContent = '';
+        if (!data.prizes.length) {
+          const e = el('div', 'empty', {{ t('tasks.no_prizes') | tojson }});
+          e.style.gridColumn = '1 / -1';
+          grid.appendChild(e);
+        }
+        data.prizes.forEach(p => {
+          const card = el('div', 'prize-card');
+          card.appendChild(el('div', 'picon', p.icon || '🎁'));
+          card.appendChild(el('div', 'pname', p.name));
+          if (p.description) card.appendChild(el('div', 'pdesc', p.description));
+          card.appendChild(el('div', 'pcost', `${p.cost_points} ⭐`));
+          const btn = el('button', 'btn honey small', {{ t('tasks.redeem_btn') | tojson }});
+          btn.disabled = data.balance < p.cost_points;
+          btn.onclick = async () => {
+            // The icon needs its own variable: the empty-string fallback has
+            // quotes, and Jinja's autoescape would mangle them inside a script.
+            const icon = p.icon || '';
+            const ok = await askModal({
+              title: `{{ t('tasks.redeem_q', icon='${icon}', name='${p.name}', cost='${p.cost_points}') }}`,
+              okLabel: {{ t('tasks.redeem_yes') | tojson }},
+            });
+            if (!ok) return;
+            try {
+              const r = await api('/tasks/api/redeem', 'POST', { prize_id: p.id });
+              confetti(20);
+              toast({{ t('tasks.redeem_done') | tojson }});
+              setBalance(r.balance, true);
+              loadPrizes(); loadMyRedemptions(); loadLedger();
+              if (IS_ADMIN) refreshBubbles();
+            } catch (e) { toast(e.message); }
+          };
+          card.appendChild(btn);
+          grid.appendChild(card);
+        });
+      } catch (e) { toast(e.message); }
+    }
+
+    const RSTATUS = {
+      requested: {{ t('tasks.redeem_requested') | tojson }},
+      fulfilled: {{ t('tasks.redeem_fulfilled') | tojson }},
+      cancelled: {{ t('tasks.redeem_cancelled') | tojson }},
+    };
+    async function loadMyRedemptions() {
+      try {
+        const data = await api('/tasks/api/redemptions');
+        const box = document.getElementById('my-redemptions');
+        box.textContent = '';
+        data.redemptions.filter(r => r.user === ME).slice(0, 8).forEach(r => {
+          const row = el('div', 'mini-row');
+          row.appendChild(el('span', null, r.icon || '🎁'));
+          row.appendChild(el('span', 'grow', r.prize_name));
+          row.appendChild(el('span', 'when', fmtWhen(r.requested_at)));
+          row.appendChild(el('span', null, RSTATUS[r.status] || r.status));
+          box.appendChild(row);
+        });
+      } catch (e) { /* silent */ }
+    }
+
+    // ---------- ledger ----------
+    async function loadLedger() {
+      try {
+        const data = await api('/tasks/api/points');
+        const box = document.getElementById('ledger');
+        box.textContent = '';
+        if (!data.history.length) {
+          box.appendChild(el('div', 'empty', {{ t('tasks.ledger_empty') | tojson }}));
+          return;
+        }
+        data.history.forEach(h => {
+          const row = el('div', 'ledger-row');
+          row.appendChild(el('span', 'reason', h.reason));
+          row.appendChild(el('span', 'when', fmtWhen(h.created_at)));
+          row.appendChild(el('span', 'delta ' + (h.delta >= 0 ? 'pos' : 'neg'), (h.delta >= 0 ? '+' : '') + h.delta + ' ⭐'));
+          box.appendChild(row);
+        });
+      } catch (e) { toast(e.message); }
+    }
+
+    // ============================================================
+    // Admin
+    // ============================================================
+    if (IS_ADMIN) {
+      // ---------- tabs ----------
+      document.getElementById('tabs').addEventListener('click', e => {
+        const btn = e.target.closest('.tab');
+        if (!btn) return;
+        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === btn));
+        ['mine', 'review', 'manage', 'redeems'].forEach(name => {
+          document.getElementById('tab-' + name).hidden = name !== btn.dataset.tab;
+        });
+        if (btn.dataset.tab === 'review') loadReview();
+        if (btn.dataset.tab === 'manage') { loadSummary(); loadOneoffs(); loadTemplates(); loadPrizeAdmin(); }
+        if (btn.dataset.tab === 'redeems') loadRedeemAdmin();
+      });
+
+      window.refreshBubbles = async function () {
+        try {
+          const s = await api('/tasks/api/summary');
+          const reviewN = s.users.reduce((a, u) => a + u.review, 0);
+          const rc = document.getElementById('review-count');
+          rc.hidden = !reviewN; rc.textContent = reviewN;
+          const dc = document.getElementById('redeem-count');
+          dc.hidden = !s.redemptions_requested; dc.textContent = s.redemptions_requested;
+        } catch (e) { /* silent */ }
+      };
+
+      // ---------- review queue ----------
+      window.loadReview = async function () {
+        try {
+          const data = await api('/tasks/api/review-queue');
+          const box = document.getElementById('review-list');
+          // Approving re-renders the queue; without this the page snaps back to
+          // the top each time, which reads as a full reload.
+          const scrollY = window.scrollY;
+          box.textContent = '';
+          if (!data.tasks.length) {
+            const e = el('div', 'empty');
+            e.appendChild(el('span', 'big', '✨'));
+            e.appendChild(document.createTextNode({{ t('tasks.review_empty') | tojson }}));
+            box.appendChild(e);
+          }
+          // Grouped by the day the task was due, oldest first: what's been
+          // waiting longest to be reviewed comes up first.
+          const byDay = {};
+          data.tasks.forEach(t => { (byDay[t.due_date] = byDay[t.due_date] || []).push(t); });
+          const days = Object.keys(byDay).sort();
+          days.forEach(day => {
+          box.appendChild(el('div', 'section-title', dayLabel(day)));
+          byDay[day].sort((a, b) => (a.time_start || '99:99').localeCompare(b.time_start || '99:99') || a.id - b.id)
+                    .forEach(t => {
+            const card = el('div', 'task-card');
+            card.appendChild(el('div', 'task-icon', t.icon || (t.status === 'excused' ? '💤' : '📝')));
+            const body = el('div', 'task-body');
+            body.appendChild(el('div', 'task-title', t.title));
+            const meta = el('div', 'task-meta');
+            meta.appendChild(el('span', 'chip', '👤 ' + t.assignee_name));
+            meta.appendChild(el('span', 'chip points', `+${t.points} ⭐`));
+            meta.appendChild(el('span', 'chip', '📅 ' + fmtDate(t.due_date)));
+            if (t.status === 'excused') {
+              meta.appendChild(el('span', 'chip excused', {{ t('tasks.excused') | tojson }}));
+            }
+            body.appendChild(meta);
+            // The excuse is a sentence a person wrote, not a tag. In a pill it
+            // came out as a second pale slab across the card, set bold at
+            // .72rem -- the one thing the reviewer is actually deciding on, in
+            // the least readable thing on the card. On its own line it is read.
+            if (t.excuse_note) body.appendChild(el('div', 'note', '“' + t.excuse_note + '”'));
+            // The stakes of an excuse decision, on their own line under the
+            // card: accepting is what spares this, granting pays the points,
+            // and not deciding charges it in a couple of days. Without it an
+            // admin is choosing between buttons whose difference is invisible.
+            if (t.status === 'excused' && t.penalty) body.appendChild(el('div', 'stake',
+              `{{ t('tasks.stake', points='${t.points}', penalty='${t.penalty}') }}`));
+            card.appendChild(body);
+            const actions = el('div', 'task-actions');
+            const grantPoints = async () => {
+              try {
+                await api('/tasks/api/approve', 'POST', { task_id: t.id });
+                toast(`{{ t('tasks.approved_toast', points='${t.points}', name='${t.assignee_name}') }}`);
+                loadReview(); refreshBubbles(); loadMine(); loadLedger();
+              } catch (e) { toast(e.message); }
+            };
+            if (t.status === 'review') {
+              const ap = el('button', 'btn approve small', {{ t('tasks.approve_btn') | tojson }});
+              ap.onclick = grantPoints;
+              actions.appendChild(ap);
+            } else if (t.status === 'excused') {
+              const acc = el('button', 'btn approve small', {{ t('tasks.accept_btn') | tojson }});
+              acc.onclick = async () => {
+                try {
+                  const r = await api('/tasks/api/accept-excuse', 'POST', { task_id: t.id });
+                  toast(`{{ t('tasks.excuse_accepted', title='${t.title}') }}` +
+                        (r.refunded ? `{{ t('tasks.excuse_refund', n='${r.refunded}') }}` : ''));
+                  loadReview(); refreshBubbles(); loadSummary(); loadLedger();
+                } catch (e) { toast(e.message); }
+              };
+              actions.appendChild(acc);
+              const gp = el('button', 'btn ghost small', {{ t('tasks.grant_btn') | tojson }});
+              gp.onclick = grantPoints;
+              actions.appendChild(gp);
+            }
+            const rj = el('button', 'btn rejectb small', t.status === 'excused' ? {{ t('tasks.back_pending') | tojson }} : {{ t('tasks.reject_btn') | tojson }});
+            rj.onclick = async () => {
+              const note = t.status === 'excused' ? '' : await askModal({
+                title: {{ t('tasks.reject_q') | tojson }}, withText: true,
+                placeholder: {{ t('tasks.reject_ph') | tojson }}, okLabel: {{ t('tasks.reject_btn') | tojson }},
+              });
+              if (t.status !== 'excused' && note === null) return;
+              try {
+                await api('/tasks/api/reject', 'POST', { task_id: t.id, note: note || '' });
+                loadReview(); refreshBubbles();
+              } catch (e) { toast(e.message); }
+            };
+            actions.appendChild(rj);
+            card.appendChild(actions);
+            box.appendChild(card);
+          });
+          });
+          requestAnimationFrame(() => window.scrollTo(0, scrollY));
+        } catch (e) { toast(e.message); }
+      };
+
+      // ---------- summary ----------
+      window.loadSummary = async function () {
+        try {
+          const s = await api('/tasks/api/summary');
+          const box = document.getElementById('summary');
+          box.textContent = '';
+          s.users.forEach(u => {
+            const c = el('div', 'sum-card');
+            c.appendChild(el('div', 'name', u.name));
+            const n = el('div', 'nums');
+            n.textContent = `{{ t('tasks.summary_line', balance='${u.balance}', pending='${u.pending}', review='${u.review}') }}`;
+            c.appendChild(n);
+            box.appendChild(c);
+          });
+        } catch (e) { toast(e.message); }
+      };
+
+      // ---------- unified task / recurring form ----------
+      const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+      // Emoji auto-suggestion from the task title (Spanish keywords).
+      const ICON_RULES = [
+        /* Keywords in both languages, deliberately: this matches the title a
+           person typed, so dropping the Spanish would leave every chore a
+           Spanish-speaking house writes without its emoji. */
+        [['bed', 'sleep', 'nap', 'cama', 'dormir', 'siesta', 'acostar'], '🛏️'],
+        [['teeth', 'tooth', 'brush', 'diente', 'cepill'], '🪥'],
+        [['shower', 'bath', 'wash', 'ducha', 'duchar', 'bañ', 'higiene'], '🚿'],
+        [['bin', 'rubbish', 'trash', 'recycl', 'basura', 'recicl'], '🗑️'],
+        [['table', 'mesa', 'comedor'], '🍽️'],
+        [['dish', 'dishes', 'washing up', 'plato', 'loza', 'lavaloza', 'lavar la', 'cocina'], '🧽'],
+        [['homework', 'study', 'school', 'maths', 'math', 'test', 'exam',
+          'tarea', 'estudiar', 'deber', 'colegio', 'escuela', 'matem', 'prueba', 'examen'], '📚'],
+        [['read', 'book', 'leer', 'lectura', 'libro'], '📖'],
+        [['dog', 'walk', 'pet', 'cat', 'perro', 'pasear', 'mascota', 'gato'], '🐶'],
+        [['plant', 'water the', 'garden', 'planta', 'regar', 'jardin', 'jardín'], '🪴'],
+        [['laundry', 'clothes', 'fold', 'ropa', 'lavander', 'doblar', 'colada'], '🧺'],
+        [['tidy', 'clean', 'room', 'sweep', 'orden', 'ordenar', 'limpiar', 'pieza',
+          'habitaci', 'aseo', 'barrer'], '🧹'],
+        [['exercise', 'sport', 'run', 'football', 'training', 'gym', 'swim',
+          'ejercicio', 'deporte', 'correr', 'futbol', 'fútbol', 'entren', 'gimnasi', 'nadar'], '⚽'],
+        [['music', 'piano', 'guitar', 'practise', 'practice',
+          'musica', 'música', 'guitarra', 'practicar'], '🎵'],
+        [['water', 'hydrat', 'agua', 'hidrat'], '💧'],
+        [['eat', 'breakfast', 'lunch', 'dinner', 'fruit', 'snack',
+          'comer', 'desayun', 'almor', 'cenar', 'once', 'fruta', 'colación', 'colacion'], '🍎'],
+        [['shopping', 'supermarket', 'errand', 'compra', 'supermercado', 'mandado', 'feria'], '🛒'],
+        [['draw', 'paint', 'art', 'craft', 'dibujar', 'pintar', 'arte', 'manualidad'], '🎨'],
+        [['computer', 'screen', 'tablet', 'phone', 'video',
+          'computador', 'pantalla', 'celular'], '💻'],
+        [['pray', 'church', 'rezar', 'oración', 'oracion', 'iglesia'], '🙏'],
+        [['money', 'save', 'savings', 'dinero', 'ahorr', 'alcancía', 'alcancia'], '💰'],
+        [['medic', 'medicine', 'pill', 'vitamin', 'remedio', 'pastilla'], '💊'],
+      ];
+      function suggestIcon(title) {
+        const t = (title || '').toLowerCase();
+        for (const [kws, emo] of ICON_RULES) if (kws.some(k => t.includes(k))) return emo;
+        return '⭐';
+      }
+
+      const ff = {
+        id: document.getElementById('f-id'), kind: document.getElementById('f-kind'),
+        title: document.getElementById('f-title'), icon: document.getElementById('f-icon'),
+        iconGen: document.getElementById('f-icon-gen'), points: document.getElementById('f-points'),
+        recurrent: document.getElementById('f-recurrent'),
+        due: document.getElementById('f-due'), rotate: document.getElementById('f-rotate'),
+        whoHint: document.getElementById('f-who-hint'),
+        start: document.getElementById('f-start'), end: document.getElementById('f-end'),
+        remind: document.getElementById('f-remind'), desc: document.getElementById('f-desc'),
+        remindBefore: document.getElementById('f-remind-before'),
+        remindOn: document.getElementById('f-remind-on'),
+        remindBox: document.getElementById('remind-fields'),
+        submit: document.getElementById('f-submit'), cancel: document.getElementById('f-cancel'),
+        oneoffBox: document.getElementById('oneoff-fields'),
+        recurrentBox: document.getElementById('recurrent-fields'),
+      };
+      // Whether the user manually chose an emoji (so we stop auto-suggesting).
+      let iconTouched = false;
+
+      const ffWeekdays = () => [...document.querySelectorAll('#f-weekdays input:checked')].map(i => parseInt(i.value, 10));
+      const ffAssignees = () => [...document.querySelectorAll('#f-assignees input:checked')].map(i => i.value);
+
+      // Editing a one-off targets exactly one person — the server takes the
+      // first checked name and drops the rest. Make the toggles radio-like in
+      // that state, so the form cannot offer what the API would ignore: the
+      // person just tapped becomes the selection.
+      document.getElementById('f-assignees').addEventListener('change', (e) => {
+        if (ff.kind.value !== 'task') return;
+        document.querySelectorAll('#f-assignees input').forEach(i => {
+          if (i !== e.target) i.checked = false;
+        });
+      });
+
+      function syncRecurrentUI() {
+        const rec = ff.recurrent.checked;
+        const editing = !!ff.id.value;
+        ff.recurrentBox.hidden = !rec;
+        ff.oneoffBox.hidden = rec;
+        ff.submit.textContent = editing ? {{ t('tasks.save_changes') | tojson }}
+          : (rec ? {{ t('tasks.create_recurring') | tojson }} : {{ t('tasks.create') | tojson }});
+        // Editing a one-off touches a single row; creating can fan out to many.
+        ff.whoHint.textContent = editing
+          ? (ff.kind.value === 'task' ? {{ t('tasks.who_hint_one') | tojson }} : '')
+          : (rec ? {{ t('tasks.who_hint_several') | tojson }} : {{ t('tasks.who_hint_many') | tojson }});
+      }
+      ff.recurrent.addEventListener('change', syncRecurrentUI);
+
+      function syncRemindUI() {
+        const on = ff.remindOn.checked;
+        ff.remindBox.hidden = !on;
+        // A start time is required for Alfred to have a moment to nag from.
+        if (on && !ff.start.value) ff.start.value = '17:00';
+      }
+      ff.remindOn.addEventListener('change', syncRemindUI);
+
+      // Icon auto-suggest: follows the title until the user edits the emoji.
+      ff.title.addEventListener('input', () => { if (!iconTouched) ff.icon.value = suggestIcon(ff.title.value); });
+      ff.icon.addEventListener('input', () => { iconTouched = ff.icon.value.trim() !== ''; });
+      ff.iconGen.addEventListener('click', () => { ff.icon.value = suggestIcon(ff.title.value); iconTouched = false; });
+
+      function resetTaskForm() {
+        ff.id.value = ''; ff.kind.value = '';
+        ff.title.value = ''; ff.icon.value = ''; ff.points.value = '10';
+        ff.recurrent.checked = true;
+        ff.due.value = TODAY || '';
+        ff.rotate.checked = false;
+        ff.start.value = '17:00'; ff.end.value = ''; ff.remind.value = ''; ff.desc.value = '';
+        ff.remindBefore.value = '0';
+        ff.remindOn.checked = true;
+        document.querySelectorAll('#f-weekdays input, #f-assignees input').forEach(i => { i.checked = false; });
+        iconTouched = false; ff.cancel.hidden = true;
+        syncRecurrentUI(); syncRemindUI();
+      }
+      ff.cancel.onclick = resetTaskForm;
+
+      document.getElementById('task-form').addEventListener('submit', async e => {
+        e.preventDefault();
+        const remindOn = ff.remindOn.checked;
+        if (remindOn && !ff.start.value) { toast({{ t('tasks.remind_time_required') | tojson }}); return; }
+        const shared = {
+          title: ff.title.value.trim(), icon: ff.icon.value.trim(),
+          points: parseInt(ff.points.value, 10) || 0,
+          time_start: remindOn ? ff.start.value : '',
+          time_end: remindOn ? (ff.end.value || '') : '',
+          remind_every: remindOn && ff.remind.value ? parseInt(ff.remind.value, 10) : null,
+          remind_before: remindOn ? (parseInt(ff.remindBefore.value, 10) || 0) : null,
+          description: ff.desc.value.trim(),
+        };
+        const who = ffAssignees();
+        if (!who.length) { toast({{ t('tasks.who_required') | tojson }}); return; }
+        try {
+          if (ff.recurrent.checked) {
+            const body = { ...shared, weekdays: ffWeekdays(), assignees: who, rotate: ff.rotate.checked };
+            if (!body.weekdays.length) { toast({{ t('tasks.days_required') | tojson }}); return; }
+            if (ff.id.value && ff.kind.value === 'template') {
+              await api('/tasks/api/templates/' + ff.id.value, 'PUT', body); toast({{ t('tasks.template_updated') | tojson }});
+            } else {
+              await api('/tasks/api/templates', 'POST', body); toast({{ t('tasks.template_created') | tojson }});
+            }
+          } else if (ff.id.value && ff.kind.value === 'task') {
+            // Editing a single existing task: reassign to the one selected person.
+            const body = { ...shared, assignee: who[0], due_date: ff.due.value || TODAY };
+            await api('/tasks/api/tasks/' + ff.id.value, 'PUT', body); toast({{ t('tasks.updated') | tojson }});
+          } else {
+            // Creating: one task per selected person.
+            const body = { ...shared, assignees: who, due_date: ff.due.value || TODAY };
+            await api('/tasks/api/tasks', 'POST', body);
+            toast(who.length > 1 ? `{{ t('tasks.created_many', n='${who.length}') }}` : {{ t('tasks.created') | tojson }});
+          }
+          resetTaskForm(); loadOneoffs(); loadTemplates(); loadSummary(); loadMine();
+        } catch (err) { toast(err.message); }
+      });
+
+      function editOneoff(t) {
+        resetTaskForm();
+        ff.id.value = t.id; ff.kind.value = 'task'; ff.recurrent.checked = false;
+        ff.title.value = t.title; ff.icon.value = t.icon || '';
+        ff.points.value = t.points; ff.due.value = t.due_date;
+        document.querySelectorAll('#f-assignees input').forEach(i => { i.checked = i.value === t.assignee; });
+        ff.remindOn.checked = !!t.time_start;
+        ff.start.value = t.time_start || ''; ff.end.value = t.time_end || '';
+        ff.remind.value = t.remind_every || ''; ff.desc.value = t.description || '';
+        ff.remindBefore.value = String(t.remind_before || 0);
+        iconTouched = true; ff.cancel.hidden = false; syncRecurrentUI(); syncRemindUI();
+        ff.title.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      function editTemplate(t) {
+        resetTaskForm();
+        ff.id.value = t.id; ff.kind.value = 'template'; ff.recurrent.checked = true;
+        ff.title.value = t.title; ff.icon.value = t.icon || '';
+        ff.points.value = t.points;
+        ff.remindOn.checked = !!t.time_start;
+        ff.start.value = t.time_start || ''; ff.end.value = t.time_end || '';
+        ff.remind.value = t.remind_every || ''; ff.rotate.checked = t.rotate;
+        ff.remindBefore.value = String(t.remind_before || 0);
+        document.querySelectorAll('#f-weekdays input').forEach(i => { i.checked = t.weekdays.includes(parseInt(i.value, 10)); });
+        document.querySelectorAll('#f-assignees input').forEach(i => { i.checked = t.assignees.includes(i.value); });
+        iconTouched = true; ff.cancel.hidden = false; syncRecurrentUI(); syncRemindUI();
+        ff.title.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      // Duplicate: prefill the form like an edit, but clear the id/kind so
+      // submitting creates a NEW task/template instead of updating.
+      function duplicateTemplate(t) {
+        editTemplate(t);
+        ff.id.value = ''; ff.kind.value = '';
+        ff.cancel.hidden = false; syncRecurrentUI();
+        toast({{ t('tasks.copy_ready') | tojson }});
+      }
+      function duplicateOneoff(t) {
+        editOneoff(t);
+        ff.id.value = ''; ff.kind.value = ''; ff.due.value = TODAY || t.due_date;
+        ff.cancel.hidden = false; syncRecurrentUI();
+        toast({{ t('tasks.copy_ready') | tojson }});
+      }
+
+      window.loadOneoffs = async function () {
+        const box = document.getElementById('oneoff-list');
+        box.textContent = '';
+        for (const u of USERS) {
+          try {
+            const data = await api(`/tasks/api/list?user=${encodeURIComponent(u.id)}&scope=week`);
+            data.tasks.filter(t => !t.template_id).forEach(t => {
+              const row = el('div', 'mini-row');
+              row.appendChild(el('span', null, t.icon || '📝'));
+              const g = el('span', 'grow');
+              g.textContent = `${t.title} · ${u.name} · ${fmtDate(t.due_date)} · +${t.points} ⭐`;
+              row.appendChild(g);
+              const STATUS = {
+                pending: {{ t('tasks.st_pending') | tojson }},
+                review: {{ t('tasks.st_review') | tojson }},
+                approved: {{ t('tasks.st_approved') | tojson }},
+                excused: {{ t('tasks.st_excused') | tojson }},
+              };
+              row.appendChild(el('span', 'chip ' + (t.status === 'review' ? 'review' : t.status === 'approved' ? 'ok' : ''),
+                STATUS[t.status]));
+              if (t.status !== 'approved') {
+                const ed = el('button', 'btn ghost', {{ t('common.edit') | tojson }});
+                ed.onclick = () => editOneoff(t);
+                row.appendChild(ed);
+                const del = el('button', 'btn ghost', {{ t('common.delete') | tojson }});
+                del.onclick = async () => {
+                  const ok = await askModal({ title: `{{ t('tasks.delete_q', title='${t.title}') }}`, okLabel: {{ t('common.delete') | tojson }} });
+                  if (!ok) return;
+                  try { await api('/tasks/api/tasks/' + t.id + '?confirm=1', 'DELETE'); loadOneoffs(); loadSummary(); loadMine(); }
+                  catch (e) { toast(e.message); }
+                };
+                row.appendChild(del);
+              }
+              const dup = el('button', 'btn ghost', {{ t('tasks.duplicate') | tojson }});
+              dup.onclick = () => duplicateOneoff(t);
+              row.appendChild(dup);
+              box.appendChild(row);
+            });
+          } catch (e) { /* per-user fetch: skip on error */ }
+        }
+      };
+
+      window.loadTemplates = async function () {
+        try {
+          const data = await api('/tasks/api/templates');
+          const box = document.getElementById('tpl-list');
+          box.textContent = '';
+          data.templates.forEach(t => {
+            const row = el('div', 'mini-row' + (t.active ? '' : ' inactive'));
+            row.appendChild(el('span', null, t.icon || '🔁'));
+            const g = el('span', 'grow');
+            const days = t.weekdays.map(w => WD[w]).join(' ');
+            const who = t.assignee_names.join(', ') + (t.rotate ? {{ t('tasks.rotating') | tojson }} : '');
+            g.textContent = `${t.title} · ${days} · ${who} · +${t.points} ⭐` + (t.time_start ? ` · ${t.time_start}${t.time_end ? '–' + t.time_end : ''}` : '');
+            row.appendChild(g);
+            if (!t.active) row.appendChild(el('span', 'chip excused', {{ t('tasks.inactive') | tojson }}));
+            const ed = el('button', 'btn ghost', {{ t('common.edit') | tojson }});
+            ed.onclick = () => editTemplate(t);
+            row.appendChild(ed);
+            const dup = el('button', 'btn ghost', {{ t('tasks.duplicate') | tojson }});
+            dup.onclick = () => duplicateTemplate(t);
+            row.appendChild(dup);
+            const tg = el('button', 'btn ghost', t.active ? {{ t('tasks.deactivate') | tojson }} : {{ t('tasks.activate') | tojson }});
+            tg.onclick = async () => {
+              try { await api('/tasks/api/templates/' + t.id, 'PUT', { active: !t.active }); loadTemplates(); }
+              catch (e) { toast(e.message); }
+            };
+            row.appendChild(tg);
+            box.appendChild(row);
+          });
+        } catch (e) { toast(e.message); }
+      };
+
+      resetTaskForm();
+
+      // ---------- prizes admin ----------
+      document.getElementById('prize-form').addEventListener('submit', async e => {
+        e.preventDefault();
+        try {
+          await api('/tasks/api/prizes', 'POST', {
+            name: document.getElementById('z-name').value.trim(),
+            icon: document.getElementById('z-icon').value.trim(),
+            cost_points: parseInt(document.getElementById('z-cost').value, 10) || 0,
+            description: document.getElementById('z-desc').value.trim(),
+          });
+          toast({{ t('tasks.prize_created') | tojson }});
+          document.getElementById('prize-form').reset();
+          document.getElementById('z-cost').value = '50';
+          loadPrizeAdmin(); loadPrizes();
+        } catch (err) { toast(err.message); }
+      });
+
+      window.loadPrizeAdmin = async function () {
+        try {
+          const data = await api('/tasks/api/prizes?all=1');
+          const box = document.getElementById('prize-admin-list');
+          box.textContent = '';
+          data.prizes.forEach(p => {
+            const row = el('div', 'mini-row' + (p.active ? '' : ' inactive'));
+            row.appendChild(el('span', null, p.icon || '🎁'));
+            row.appendChild(el('span', 'grow', `${p.name} · ${p.cost_points} ⭐`));
+            if (!p.active) row.appendChild(el('span', 'chip excused', {{ t('tasks.inactive_prize') | tojson }}));
+            const tg = el('button', 'btn ghost', p.active ? {{ t('tasks.deactivate') | tojson }} : {{ t('tasks.activate') | tojson }});
+            tg.onclick = async () => {
+              try { await api('/tasks/api/prizes/' + p.id, 'PUT', { active: !p.active }); loadPrizeAdmin(); loadPrizes(); }
+              catch (e) { toast(e.message); }
+            };
+            row.appendChild(tg);
+            box.appendChild(row);
+          });
+        } catch (e) { toast(e.message); }
+      };
+
+      // ---------- adjust ----------
+      // A mobile keypad for a number input has no minus sign, so the sign is
+      // chosen with the buttons rather than typed: tap −, then the amount.
+      let adjustSign = 1;
+      const aDelta = document.getElementById('a-delta');
+      const aSignMinus = document.getElementById('a-sign-minus');
+      const aSignPlus = document.getElementById('a-sign-plus');
+      const aDeltaHint = document.getElementById('a-delta-hint');
+      function setAdjustSign(s) {
+        adjustSign = s;
+        aSignMinus.setAttribute('aria-pressed', String(s < 0));
+        aSignPlus.setAttribute('aria-pressed', String(s > 0));
+        updateAdjustHint();
+      }
+      function updateAdjustHint() {
+        const v = parseInt(aDelta.value, 10) || 0;
+        aDeltaHint.textContent = (adjustSign < 0
+          ? `{{ t('tasks.adjust_minus', n='${v}') }}`
+          : `{{ t('tasks.adjust_plus', n='${v}') }}`);
+      }
+      aSignMinus.onclick = () => setAdjustSign(-1);
+      aSignPlus.onclick = () => setAdjustSign(1);
+      aDelta.addEventListener('input', updateAdjustHint);
+      document.getElementById('adjust-form').addEventListener('submit', async e => {
+        e.preventDefault();
+        try {
+          const delta = adjustSign * parseInt(aDelta.value, 10);
+          const r = await api('/tasks/api/adjust', 'POST', {
+            user: document.getElementById('a-user').value,
+            delta: delta,
+            reason: document.getElementById('a-reason').value.trim(),
+          });
+          toast(delta < 0
+            ? `{{ t('tasks.adjust_done_neg', n='${Math.abs(delta)}', m='${r.balance}') }}`
+            : `{{ t('tasks.adjust_done_pos', n='${Math.abs(delta)}', m='${r.balance}') }}`);
+          document.getElementById('adjust-form').reset();
+          updateAdjustHint();
+          loadSummary(); if (document.getElementById('a-user').value === ME) { loadLedger(); loadMine(); }
+        } catch (err) { toast(err.message); }
+      });
+
+      // ---------- redemptions admin ----------
+      window.loadRedeemAdmin = async function () {
+        try {
+          const data = await api('/tasks/api/redemptions');
+          const pend = document.getElementById('redeem-pending');
+          const hist = document.getElementById('redeem-history');
+          pend.textContent = ''; hist.textContent = '';
+          const reqs = data.redemptions.filter(r => r.status === 'requested');
+          if (!reqs.length) pend.appendChild(el('div', 'empty', {{ t('tasks.no_redeems') | tojson }}));
+          reqs.forEach(r => {
+            const row = el('div', 'mini-row');
+            row.appendChild(el('span', null, r.icon || '🎁'));
+            row.appendChild(el('span', 'grow', `{{ t('tasks.redeem_wants', user='${r.user_name}', prize='${r.prize_name}', cost='${r.cost_points}') }}`));
+            const ok = el('button', 'btn approve small', {{ t('tasks.fulfill_btn') | tojson }});
+            ok.onclick = async () => {
+              try { await api(`/tasks/api/redemptions/${r.id}/fulfill`, 'POST', {}); loadRedeemAdmin(); refreshBubbles(); }
+              catch (e) { toast(e.message); }
+            };
+            row.appendChild(ok);
+            const cx = el('button', 'btn rejectb small', {{ t('common.cancel') | tojson }});
+            cx.onclick = async () => {
+              const yes = await askModal({
+                title: `{{ t('tasks.redeem_cancel_q', user='${r.user_name}', cost='${r.cost_points}') }}`,
+                okLabel: {{ t('tasks.redeem_cancel_yes') | tojson }},
+              });
+              if (!yes) return;
+              try { await api(`/tasks/api/redemptions/${r.id}/cancel`, 'POST', {}); loadRedeemAdmin(); refreshBubbles(); }
+              catch (e) { toast(e.message); }
+            };
+            row.appendChild(cx);
+            pend.appendChild(row);
+          });
+          data.redemptions.filter(r => r.status !== 'requested').slice(0, 20).forEach(r => {
+            const row = el('div', 'mini-row');
+            row.appendChild(el('span', null, r.icon || '🎁'));
+            row.appendChild(el('span', 'grow', `${r.user_name} · ${r.prize_name} (${r.cost_points} ⭐)`));
+            row.appendChild(el('span', 'when', fmtWhen(r.requested_at)));
+            row.appendChild(el('span', null, RSTATUS[r.status] || r.status));
+            hist.appendChild(row);
+          });
+        } catch (e) { toast(e.message); }
+      };
+
+      refreshBubbles();
+    }
+
+    // ---------- boot ----------
+    (async function () {
+      await loadMine();
+      loadPrizes(); loadMyRedemptions(); loadLedger();
+    })();
+  </script>
+</body>
+</html>

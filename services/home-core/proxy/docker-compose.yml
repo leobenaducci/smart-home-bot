@@ -1,0 +1,97 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: home-proxy-caddy
+    restart: unless-stopped
+    # Host networking for two reasons: it needs 80 and 443 on the box itself,
+    # and every upstream it proxies to is published on this host's loopback
+    # (8070 home-chat, 8081 cloud). A bridge network would reach neither
+    # without punching the ports back out onto the LAN, which is exactly what
+    # binding them to 127.0.0.1 was meant to prevent.
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Written by the acme container, read here. Read-only on purpose: if a
+      # renewal ever fails, the old certificate stays put and the site keeps
+      # serving it until it expires, rather than the file being truncated.
+      #
+      # These three sat under `environment:` below. Compose took them as
+      # variables literally named `proxy-certs:/certs:ro`, `config -q` exited
+      # 0, the deploy reported "compose file valid" and "containers up" -- and
+      # Caddy crash-looped on `open /certs/fullchain.pem: no such file`, with
+      # a certificate sitting in the volume it was never given.
+      - proxy-certs:/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      # Read by the Caddyfile's `{$VAR:default}` substitutions. Both were
+      # literals in that file, which is mounted verbatim and never rendered,
+      # so the renumbering left the house's front door pointing at two closed
+      # ports and every phone got a 502.
+      - LOCAL_PROXY_PORT=${LOCAL_PROXY_PORT:-21003}
+      - ENTRY_PAGE_PORT=${ENTRY_PAGE_PORT:-21004}
+      # The names the two site blocks answer to, from `dns:`. Literals in that
+      # same file until now, so a household whose names are not the example's
+      # had a proxy that matched nothing anybody typed -- and an unmatched Host
+      # gets an empty 200 from Caddy, which looks like a working front door
+      # from every direction except a browser.
+      # No fallback names. The deployer exports both from `dns:`, and the
+      # paragraph above is what happens when it does not: a literal here
+      # answers to a name nobody types and looks like a working front door.
+      # Empty makes Caddy fail to load, which is visible.
+      - PORTAL_NAME=${PORTAL_NAME:-}
+      - CHAT_NAME=${CHAT_NAME:-}
+      - CODE_NAME=${CODE_NAME:-}
+      - HOMECORE_PORT=${HOMECORE_PORT:-21001}
+    healthcheck:
+      # Answers on the admin endpoint, which exists whatever the site config
+      # does — a 000 here means Caddy failed to load the Caddyfile, most likely
+      # because /certs is empty (run issue-cert.sh first).
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  acme:
+    image: neilpang/acme.sh
+    container_name: home-proxy-acme
+    restart: unless-stopped
+    # The image's daemon mode: a crond that runs `acme.sh --cron` daily and
+    # renews anything inside 30 days of expiry, re-running the reloadcmd that
+    # issue-cert.sh recorded.
+    command: daemon
+    environment:
+      # Hostinger panel → API, arriving from the Jenkins credential named
+      # HOSTINGER_API_TOKEN.
+      #
+      # The name changes on the way in, and it has to: acme.sh's dnsapi plugin
+      # reads `HOSTINGER_Token` and nothing else. Handed HOSTINGER_API_TOKEN it
+      # does not complain about an unknown variable — it reports "You didn't
+      # specify a Hostinger API Key yet", which reads like a missing credential
+      # and sends you to look in Jenkins, where the credential is present and
+      # correct. Check `grep -o 'HOSTINGER_[A-Za-z_]*' /acmebin/dnsapi/dns_hostinger.sh`
+      # in the image before believing any variable name here, including this one.
+      #
+      # Deliberately not a required variable: when it is missing the proxy
+      # still has to come up on whatever certificate ensure-cert.sh managed to
+      # produce. Making compose refuse to run without it would turn "we cannot
+      # renew today" into "the house has no chat today", which is the wrong
+      # failure. The cron in here simply has nothing to renew until it is set.
+      HOSTINGER_Token: ${HOSTINGER_API_TOKEN:-}
+    volumes:
+      - acme-data:/acme.sh
+      - proxy-certs:/certs
+      # The renewal has to make Caddy re-read the files it just replaced, and
+      # Caddy only reads certificates when it loads a config. Restarting it
+      # through the Docker API is the whole reason this socket is here — a
+      # ~1s outage once every 60 days. It is real privilege to hand a
+      # container, and it is the same trade the acme.sh on compute already
+      # makes with its `docker` deploy hook.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  proxy-certs:
+  acme-data:
+  caddy-data:
+  caddy-config:

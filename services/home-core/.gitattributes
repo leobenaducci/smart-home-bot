@@ -1,0 +1,29 @@
+# Line endings: store text as LF in the repo (Docker/Linux builds stay LF),
+# auto-detect binary. Keeps the working tree git-clean regardless of CRLF/LF
+# on disk. See the session that added this for context.
+* text=auto
+
+# Windows scripts keep CRLF
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary files — never touch line endings
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.otf  binary
+*.db   binary
+*.sqlite binary
+*.apk  binary
+*.jar  binary
+*.keystore binary
+*.zip  binary
+*.gz   binary

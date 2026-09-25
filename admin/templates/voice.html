@@ -1,0 +1,504 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# Alfred's voice and the files behind it. Separate from the Models page
+   because these are not the same kind of thing: that one lists LLMs priced per
+   token and enumerated from an account, this one lists gigabytes on this
+   machine. The questions here are what is installed, what is served, and what
+   can be deleted to get the disk back. #}
+
+<h1>{{ t('admin.voice.heading') }}</h1>
+<p class="intro">{{ t('admin.voice.intro') }}</p>
+
+<form method="post">
+<input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="save">
+
+<div class="card">
+  <h2>{{ t('admin.site.voice_heading') }}</h2>
+  <p class="intro">{{ t('admin.site.voice_intro') }}</p>
+  <div class="row">
+    <div class="field">
+      <label for="tts_engine">{{ t('admin.site.voice_engine') }}</label>
+      <select id="tts_engine" name="tts_engine">
+        {% for e in tts_engines %}
+          <option value="{{ e.id }}" {% if e.id == tts_engine %}selected{% endif %}
+                  {% if not e.available %}disabled{% endif %}>
+            {{ e.label }}{% if not e.available %} — {{ t('admin.site.voice_off') }}{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    {# Which audio.cpp file speaks. Only meaningful for that engine, so it is
+       hidden when piper is chosen -- piper's voices are the .onnx files and it
+       has no package to pick. #}
+    <div class="field" id="model-field">
+      <label for="tts_model">{{ t('admin.voice.model') }}</label>
+      <select id="tts_model" name="tts_model">
+        {% for e in tts_engines %}{% if e.id == 'audiocpp' %}
+          {% for pkg in e.packages %}
+            <option value="{{ pkg }}" {% if pkg == e.model %}selected{% endif %}>{{ pkg }}</option>
+          {% endfor %}
+        {% endif %}{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="tts_voice">{{ t('admin.site.voice_voice') }}</label>
+      <select id="tts_voice" name="tts_voice">
+        {% for e in tts_engines %}
+          {% for v in e.voices %}
+            <option value="{{ v.id }}" data-engine="{{ e.id }}"
+                    {% if e.id == tts_engine and v.id == tts_voice %}selected{% endif %}>
+              {{ v.label }}
+            </option>
+          {% endfor %}
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <button type="button" id="preview" class="ghost">▶ {{ t('admin.voice.preview') }}</button>
+    <span id="preview-note" class="help tiny"></span>
+  </div>
+  {# Not autoplay: a page that makes noise when it loads is a page nobody
+     opens twice. #}
+  <audio id="preview-audio" controls hidden style="width:100%;margin-top:8px"></audio>
+  <p class="help">{{ t('admin.voice.model_help') }}</p>
+  <p class="help">{{ t('admin.site.voice_help') }}</p>
+  <p class="help mono tiny">{{ voices_dir }}</p>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.voice.runtime_heading') }}</h2>
+  <p class="intro">{{ t('admin.voice.runtime_intro') }}</p>
+  <div class="row">
+    <div class="field">
+      <label for="backend">{{ t('admin.voice.backend') }}</label>
+      <select id="backend" name="backend">
+        <option value="cpu" {% if audio.get('backend','cpu') == 'cpu' %}selected{% endif %}>cpu</option>
+        <option value="cuda" {% if audio.get('backend') == 'cuda' %}selected{% endif %}>cuda</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="threads">{{ t('admin.voice.threads') }}</label>
+      <input type="number" id="threads" name="threads" min="1" max="64"
+             value="{{ audio.get('threads', 4) }}" class="w-num mono">
+    </div>
+  </div>
+  <label class="check-row">
+    <input type="checkbox" name="gpu" {% if audio.get('gpu') %}checked{% endif %}>
+    <span>{{ t('admin.voice.gpu') }}</span>
+  </label>
+  {% if running_backend and running_backend != audio.get('backend', 'cpu') %}
+    <p class="help">{{ t('admin.voice.backend_pending',
+                          chosen=audio.get('backend', 'cpu'),
+                          running=running_backend) }}</p>
+  {% endif %}
+  <p class="help">{{ t('admin.voice.runtime_help') }}</p>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.voice.models_heading') }}</h2>
+  <p class="intro">{{ t('admin.voice.models_intro') }}</p>
+
+  {% if catalogue_error %}
+    {# The container is what holds the catalogue, so with it down this page can
+       still show and save every setting above and simply cannot list files. #}
+    <p class="help">{{ t('admin.voice.catalogue_error', detail=catalogue_error) }}</p>
+  {% else %}
+    <div class="row">
+      <div class="field">
+        <label for="filter">{{ t('admin.voice.filter') }}</label>
+        <input type="text" id="filter" class="w-name mono" autocomplete="off"
+               placeholder="{{ t('admin.voice.filter_hint') }}">
+      </div>
+      <div class="field">
+        <label for="f-task">{{ t('admin.voice.task') }}</label>
+        <select id="f-task">
+          <option value="">{{ t('admin.voice.any') }}</option>
+          <option value="tts">tts</option>
+          <option value="asr">asr</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-state">{{ t('admin.voice.on_disk') }}</label>
+        <select id="f-state">
+          <option value="">{{ t('admin.voice.any') }}</option>
+          <option value="installed">{{ t('admin.voice.installed_only') }}</option>
+          <option value="serving">{{ t('admin.voice.serving_only') }}</option>
+          <option value="missing">{{ t('admin.voice.not_installed') }}</option>
+        </select>
+      </div>
+      <label class="check-row" style="align-self:end">
+        <input type="checkbox" id="f-es" checked>
+        <span>{{ t('admin.voice.spanish_only') }}</span>
+      </label>
+    </div>
+    <table class="settings" id="models">
+      <thead>
+        {# Click a heading to sort by it. Ascending first, then descending on
+           a second click -- and the numeric columns sort as numbers, which is
+           the whole reason this is not a CSS trick: "9 MB" before "10 MB" is
+           the wrong answer and looks like a right one. #}
+        <tr>
+          <th>{{ t('admin.voice.serve') }}</th>
+          <th class="sortable" data-key="id">{{ t('admin.voice.package') }}</th>
+          <th class="sortable" data-key="task">{{ t('admin.voice.task') }}</th>
+          <th class="num sortable" data-key="bytes" data-num="1">{{ t('admin.voice.size') }}</th>
+          <th class="num sortable" data-key="synth" data-num="1">{{ t('admin.voice.warm') }}</th>
+          <th class="num sortable" data-key="cold" data-num="1">{{ t('admin.voice.cold') }}</th>
+          <th class="num sortable" data-key="vram" data-num="1">{{ t('admin.voice.vram') }}</th>
+          <th class="num sortable" data-key="heard" data-num="1"
+              title="{{ t('admin.voice.heard_help') }}">{{ t('admin.voice.heard') }}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for m in models %}
+        <tr data-hay="{{ m.id }} {{ m.family }} {{ m.task }} {{ m.languages|join(' ') }}"
+            data-id="{{ m.id }}" data-family="{{ m.family }}" data-task="{{ m.task }}"
+            data-bytes="{{ m.bytes }}" data-es="{{ 1 if m.spanish else 0 }}"
+            data-installed="{{ 1 if m.installed else 0 }}"
+            data-serving="{{ 1 if m.id in serving else 0 }}"
+            {# -1 sorts unmeasured rows together at one end rather than
+               scattering them as zeroes among the fast ones. #}
+            data-synth="{{ m.timing.synth_s if m.timing and m.timing.synth_s else -1 }}"
+            data-cold="{{ m.timing.cold_s if m.timing and m.timing.cold_s else -1 }}"
+            data-vram="{{ m.timing.vram_mib if m.timing and m.timing.vram_mib else -1 }}"
+            data-heard="{{ (m.timing.mid[0]|int) if m.timing and m.timing.mid else -1 }}">
+          <td>
+            <input type="checkbox" name="{{ m.task }}_packages" value="{{ m.id }}"
+                   {% if m.id in serving %}checked{% endif %}>
+          </td>
+          {# Family and languages under the name rather than in columns of
+             their own: nine columns wrapped, and the two nobody sorts by are
+             the two that can share a line. #}
+          <td class="mono">{{ m.id }}<br>
+            <span class="muted tiny">{{ m.family }}{% if m.spanish %} · es{% endif %}</span>
+          </td>
+          <td class="mono tiny">{{ m.task }}</td>
+          {# Greyed once the files are gone, but still there: the measurement
+             is a fact about the package, not about a copy of it. #}
+          <td class="num tiny">
+            {% if m.installed %}{{ (m.bytes / 1024 / 1024) | round | int }} MB
+            {% elif m.timing and m.timing.disk_mib %}
+              <span class="muted">{{ m.timing.disk_mib }} MB</span>
+            {% else %}—{% endif %}
+          </td>
+          {# What Listen measured, warm or cold as it happened -- it is the
+             last press and not an average, and the voice it was measured with
+             is named because supertonic's ten are not all the same speed. #}
+          {# The whole measurement, not just a number. Which backend produced
+             it matters most: one package is twenty times slower on the CPU
+             than on the card, and a column showing both without saying which
+             is worse than an empty one. #}
+          <td class="num tiny">
+            {% if m.timing and m.timing.failed %}
+              <span class="muted">{{ t('admin.voice.did_not_run') }}</span>
+            {% elif m.timing and m.timing.synth_s %}
+              {{ m.timing.synth_s }}s<br>
+              <span class="muted">×{{ m.timing.rtf }}{% if m.timing.backend %}
+                {{ m.timing.backend }}{% endif %}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td class="num tiny">
+            {% if m.timing and m.timing.cold_s %}{{ m.timing.cold_s }}s
+            {% else %}—{% endif %}
+          </td>
+          <td class="num tiny">
+            {% if m.timing and m.timing.vram_mib %}{{ m.timing.vram_mib }}M
+            {% else %}—{% endif %}
+          </td>
+          {# Whether the words survived a round trip through the house's own
+             whisper. Two models here are mid-table on speed and unusable. #}
+          <td class="num tiny">
+            {% if m.timing and m.timing.failed %}
+              <span title="{{ m.timing.failed }}">⚠</span>
+            {% elif m.timing and m.timing.mid %}
+              {{ m.timing.mid }} <span class="muted">{{ m.timing.onset }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if m.installed %}
+              {# Posts on its own rather than submitting: reloading here threw
+                 away the filter, the sort and the scroll position, so removing
+                 three models meant finding your place three times. The hidden
+                 form below is the fallback for a browser that will not fetch. #}
+              {% if m.task == 'tts' %}
+                <button type="button" class="ghost tiny" data-profile="{{ m.id }}">
+                  {{ t('admin.voice.profile') }}
+                </button>
+              {% endif %}
+              <button type="submit" form="rm-{{ m.id }}" class="ghost tiny"
+                      data-remove="{{ m.id }}">
+                {{ t('admin.voice.remove') }}
+              </button>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="help">{{ t('admin.voice.models_help') }}</p>
+  {% endif %}
+</div>
+
+<button type="submit">{{ t('common.save') }}</button>
+</form>
+
+{# Outside the settings form, one per removable package: a form cannot nest. #}
+{% for m in models %}
+  {% if m.installed %}
+    <form method="post" id="rm-{{ m.id }}" hidden>
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="remove">
+      <input type="hidden" name="package" value="{{ m.id }}">
+    </form>
+  {% endif %}
+{% endfor %}
+
+<script>
+var CSRF = {{ csrf_token() | tojson }};
+var PREVIEW_WAIT = {{ t('admin.voice.preview_wait') | tojson }};
+var PREVIEW_FAILED = {{ t('admin.voice.preview_failed') | tojson }};
+var PREVIEW_FELL_BACK = {{ t('admin.voice.preview_fell_back') | tojson }};
+var PREVIEW_TOOK = {{ t('admin.voice.preview_took') | tojson }};
+var PREVIEW_COLD = {{ t('admin.voice.preview_cold') | tojson }};
+var RM_FAILED = {{ t('admin.voice.remove_error', detail='') | tojson }};
+var RM_CONFIRM = {{ t('admin.voice.remove_confirm', id='@ID@') | tojson }};
+var PROFILING = {{ t('admin.voice.profiling') | tojson }};
+var PROFILE_FAILED = {{ t('admin.voice.profile_failed') | tojson }};
+// Voices belong to one engine; showing another engine's would offer a choice
+// that 404s when taken.
+(function () {
+  var engine = document.getElementById("tts_engine");
+  var voice = document.getElementById("tts_voice");
+  // Looked up here and not further down: `var` hoists the declaration but not
+  // the assignment, so a second `var model = ...` below left this one
+  // undefined at the point the package listener is attached -- and the
+  // listener was silently never attached at all.
+  var model = document.getElementById("tts_model");
+  if (engine && voice) {
+    var sync = function (keep) {
+      var want = engine.value, first = null, kept = false;
+      Array.prototype.forEach.call(voice.options, function (o) {
+        var mine = o.dataset.engine === want;
+        o.hidden = !mine; o.disabled = !mine;
+        if (mine) { if (first === null) { first = o; }
+                    if (keep && o.selected) { kept = true; } }
+      });
+      if (!kept && first) { first.selected = true; }
+    };
+    // The package belongs to audio.cpp alone; piper picks a voice file and
+    // has nothing to choose here.
+    var modelField = document.getElementById("model-field");
+    var syncAll = function (keep) {
+      sync(keep);
+      if (modelField) { modelField.hidden = engine.value !== "audiocpp"; }
+    };
+    engine.addEventListener("change", function () { syncAll(false); });
+    syncAll(true);
+
+    // The voices live inside the package, so changing the package has to
+    // change them. Rendered for the saved one, fetched for any other.
+    if (model) {
+      model.addEventListener("change", function () {
+        var pkg = model.value;
+        fetch("/voice/styles?package=" + encodeURIComponent(pkg))
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            // Drop this engine's old options and rebuild. `default` stays
+            // first and always: a package with no styles still has a voice.
+            Array.prototype.slice.call(voice.options).forEach(function (o) {
+              if (o.dataset.engine === "audiocpp") { o.remove(); }
+            });
+            var mk = function (id, label) {
+              var o = document.createElement("option");
+              o.value = id; o.textContent = label; o.dataset.engine = "audiocpp";
+              voice.appendChild(o);
+            };
+            mk("", "default");
+            (d.styles || []).forEach(function (v) { mk(v, v); });
+            syncAll(false);
+          });
+      });
+    }
+  }
+  // Listen before choosing. It asks the gateway rather than the engine, so
+  // what plays is what the house would say -- including the fallback if the
+  // chosen engine is down, which the note below the button reports.
+  var preview = document.getElementById("preview");
+  var player = document.getElementById("preview-audio");
+  var note = document.getElementById("preview-note");
+  if (preview && player && engine && voice) {
+    preview.addEventListener("click", function () {
+      preview.disabled = true;
+      note.textContent = PREVIEW_WAIT;
+      var data = new FormData();
+      data.append("_csrf", CSRF);
+      data.append("engine", engine.value);
+      data.append("voice", voice.value);
+      // The package selected right now, not the one saved -- listening before
+      // choosing is the whole point of the button.
+      if (model && engine.value === "audiocpp") { data.append("model", model.value); }
+      fetch("/voice/preview", {method: "POST", body: data})
+        .then(function (r) {
+          if (!r.ok) { return r.json().then(function (j) { throw new Error(j.error || r.status); }); }
+          // What actually spoke, which is not always what was asked for,
+          // and how long it took -- the number that decides whether a voice
+          // is usable on a panel somebody is standing in front of.
+          var spoke = r.headers.get("X-Engine") || "";
+          var synth = parseFloat(r.headers.get("X-Synth-Seconds") || "0");
+          var audio = parseFloat(r.headers.get("X-Audio-Seconds") || "0");
+          var parts = [];
+          var cold = parseFloat(r.headers.get("X-Cold-Seconds") || "0");
+          if (cold) { parts.push(PREVIEW_COLD.replace("{cold}", cold.toFixed(2))); }
+          if (synth) {
+            parts.push(PREVIEW_TOOK
+              .replace("{synth}", synth.toFixed(2))
+              .replace("{audio}", audio.toFixed(2))
+              // Under 1 it speaks faster than a person listens, which is the
+              // line between "instant" and "waiting".
+              .replace("{rtf}", audio ? (synth / audio).toFixed(2) : "?"));
+          }
+          if (spoke && spoke !== engine.value) {
+            parts.push(PREVIEW_FELL_BACK.replace("{engine}", spoke));
+          }
+          note.textContent = parts.join("  ·  ");
+          return r.blob();
+        })
+        .then(function (blob) {
+          player.src = URL.createObjectURL(blob);
+          player.hidden = false;
+          player.play();
+        })
+        .catch(function (e) { note.textContent = PREVIEW_FAILED + " " + e.message; })
+        .then(function () { preview.disabled = false; });
+    });
+  }
+  // 138 packages is a scroll, not a list. Filtered and sorted in the browser
+  // because the rows are already here: a round trip per keystroke buys
+  // nothing, and the page has to work with the container down anyway.
+  var table = document.getElementById("models");
+  var filter = document.getElementById("filter");
+  var fTask = document.getElementById("f-task");
+  var fState = document.getElementById("f-state");
+  var fEs = document.getElementById("f-es");
+  if (table) {
+    var rows = function () {
+      return Array.prototype.slice.call(table.tBodies[0].rows);
+    };
+    var apply = function () {
+      var q = (filter && filter.value || "").toLowerCase().trim();
+      var task = fTask && fTask.value || "";
+      var state = fState && fState.value || "";
+      rows().forEach(function (row) {
+        var d = row.dataset, show = true;
+        if (q && (d.hay || "").toLowerCase().indexOf(q) < 0) { show = false; }
+        if (task && d.task !== task) { show = false; }
+        if (state === "installed" && d.installed !== "1") { show = false; }
+        if (state === "serving" && d.serving !== "1") { show = false; }
+        if (state === "missing" && d.installed === "1") { show = false; }
+        // Spanish on by default: it is the only filter whose right answer is
+        // the same for this household every time.
+        if (fEs && fEs.checked && d.es !== "1") { show = false; }
+        row.hidden = !show;
+      });
+    };
+    [filter, fTask, fState, fEs].forEach(function (el) {
+      if (el) { el.addEventListener(el.tagName === "INPUT" && el.type === "text"
+                                    ? "input" : "change", apply); }
+    });
+    apply();
+
+    // Remove without redrawing. The button still belongs to its own form, so
+    // a browser that cannot fetch posts it the old way and reloads -- the row
+    // disappearing is the enhancement, not the mechanism.
+    table.addEventListener("click", function (e) {
+      var btn = e.target.closest && e.target.closest("[data-remove]");
+      if (!btn) { return; }
+      var pkg = btn.dataset.remove;
+      if (!confirm(RM_CONFIRM.replace("@ID@", pkg))) { e.preventDefault(); return; }
+      e.preventDefault();
+      btn.disabled = true;
+      var data = new FormData();
+      data.append("_csrf", CSRF);
+      data.append("package", pkg);
+      fetch("/voice/remove", {method: "POST", body: data})
+        .then(function (r) {
+          if (!r.ok) {
+            return r.json().then(function (j) { throw new Error(j.error || r.status); });
+          }
+          var row = btn.closest("tr");
+          if (row) { row.remove(); }
+          // The tick that says "serve this" goes with it, so a save right
+          // after a removal cannot re-list what was just deleted.
+        })
+        .catch(function (err) {
+          btn.disabled = false;
+          alert(RM_FAILED + " " + err.message);
+        });
+    });
+
+    // Measure one model on demand. Two calls inside the container -- the
+    // first loads it, the second is the number worth keeping -- so this takes
+    // as long as the model does and the button says so while it waits.
+    table.addEventListener("click", function (e) {
+      var btn = e.target.closest && e.target.closest("[data-profile]");
+      if (!btn) { return; }
+      var pkg = btn.dataset.profile, was = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = PROFILING;
+      var data = new FormData();
+      data.append("_csrf", CSRF);
+      data.append("package", pkg);
+      fetch("/voice/profile", {method: "POST", body: data})
+        .then(function (r) {
+          if (!r.ok) {
+            return r.json().then(function (j) { throw new Error(j.error || r.status); });
+          }
+          return r.json();
+        })
+        .then(function (d) {
+          var row = btn.closest("tr");
+          var cells = row.querySelectorAll("td");
+          // Warm, cold, VRAM: the three measurement columns, in order.
+          cells[4].innerHTML = d.synth_s + "s<br><span class=\"muted\">\u00d7" +
+            d.rtf + " " + (d.backend || "") + "</span>";
+          cells[5].textContent = d.cold_s ? d.cold_s + "s" : "\u2014";
+          cells[6].textContent = d.vram_mib ? d.vram_mib + "M" : "\u2014";
+          row.dataset.synth = d.synth_s;
+          row.dataset.cold = d.cold_s || -1;
+          row.dataset.vram = d.vram_mib || -1;
+        })
+        .catch(function (err) { alert(PROFILE_FAILED + " " + err.message); })
+        .then(function () { btn.disabled = false; btn.textContent = was; });
+    });
+
+    var dir = {};
+    Array.prototype.forEach.call(table.tHead.querySelectorAll(".sortable"),
+      function (th) {
+        th.style.cursor = "pointer";
+        th.addEventListener("click", function () {
+          var key = th.dataset.key, num = th.dataset.num === "1";
+          dir[key] = dir[key] === "asc" ? "desc" : "asc";
+          var sign = dir[key] === "asc" ? 1 : -1;
+          var body = table.tBodies[0];
+          rows().sort(function (a, b) {
+            var x = a.dataset[key], y = b.dataset[key];
+            // Numbers as numbers. Sorted as text, "9" lands after "1024" and
+            // the column looks sorted while being wrong.
+            if (num) { return (parseFloat(x) - parseFloat(y)) * sign; }
+            return String(x).localeCompare(String(y)) * sign;
+          }).forEach(function (row) { body.appendChild(row); });
+          Array.prototype.forEach.call(table.tHead.querySelectorAll(".sortable"),
+            function (o) { o.removeAttribute("aria-sort"); });
+          th.setAttribute("aria-sort",
+                          dir[key] === "asc" ? "ascending" : "descending");
+        });
+      });
+  }
+})();
+</script>
+
+{% endblock %}

@@ -1,0 +1,15 @@
+[Unit]
+Description=Stop preview servers the Programmer left behind
+Documentation=file:%E/home-stack/opencode-preview-reaper.sh
+
+[Service]
+Type=oneshot
+
+# The checkout root, written by the deployer beside the per-member files. `-`
+# because a household that has never deployed the Programmer has no such file,
+# and the script itself exits quietly when the root is empty: a timer that fails
+# every quarter of an hour on a machine with nothing to reap is noise somebody
+# learns to ignore, and then does not notice when it means something.
+EnvironmentFile=-%h/.config/home-stack/opencode-workspace.env
+
+ExecStart=%E/home-stack/opencode-preview-reaper.sh

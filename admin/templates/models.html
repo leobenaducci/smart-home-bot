@@ -1,0 +1,2150 @@
+{% extends "base.html" %}
+{% block content %}
+{# ─────────────────────────────────────────────────────────────────────────
+   Fourteen jobs, fourteen switches.
+
+   This card was a stack of nine blocks per role -- name, what the job is,
+   where it belongs, what it inherits, the picker, "show all", a Test button,
+   a four-column table of alternatives, and a paragraph of evidence -- times
+   fourteen roles. On a phone that is roughly nine screens of scrolling to
+   change one model, and the control somebody came for is the third thing in
+   each block rather than the first.
+
+   So the row is now the panel it always described: the job's name and its two
+   tags, the picker as the switch, Test beside it, and every word of
+   explanation folded into one disclosure per role. Nothing is deleted --
+   this is the page where a wrong model stops the house answering, so the
+   reasoning stays a click away rather than gone.
+
+   The picker keeps its own wrapper because the search box is inserted with
+   `select.parentNode.insertBefore`: give the select a flex parent shared with
+   the Test button and the box lands in the middle of the row.
+   ───────────────────────────────────────────────────────────────────────── #}
+<style>
+  /* One job per row, separated by the hairline this console already uses for
+     rows of equipment. A card border per role would be fourteen boxes; a rule
+     is the panel's own way of saying "next position". */
+  .role { border-top: 1px solid var(--edge); padding: 14px 0 16px; margin: 0; }
+  /* The rule separates one job from the next, so it has no business under a
+     group heading -- and `.role:first-of-type` never matched anyway: the
+     first `div` in the form is the heading's own. */
+  .group-head + .role { border-top: 0; padding-top: 6px; }
+
+  .role-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 10px; }
+  .role-top label { margin: 0; font-weight: 600; }
+
+  /* Picker and Test on one line while there is room for both. The picker
+     takes what is left rather than the 420px cap every other control here
+     wants: a model id with a price and a note is a long string, and truncating
+     it is how the wrong one gets chosen. */
+  /* `end`, not `start`. With JavaScript on, the script inserts a search box
+     as the picker's first child, so top-aligning put Test level with the
+     search box and left the picker hanging below it -- which reads as
+     "search, then Test" and not as the row this is meant to be. Bottom-
+     aligned, Test sits with the picker whether or not the box is there. */
+  .role-controls {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px; align-items: end; margin-top: 9px;
+  }
+  .role-controls .pick { min-width: 0; }
+  .role-controls .pick select { width: 100%; max-width: none; }
+  .role-controls .probe { margin: 0; }
+  /* The Models page's two tabs: settings, and the catalog. */
+  .subtabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--edge); }
+  .subtabs a { padding: 7px 12px; text-decoration: none; color: var(--ink-soft);
+               border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .subtabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--live); font-weight: 600; }
+  /* Provider, then model: two pickers drawn over the one the form submits
+     (hidden, kept), so saving, "show all" and the filter box are unchanged. */
+  .pick-pair { display: grid; grid-template-columns: minmax(0, 15em) minmax(0, 1fr); gap: 6px; }
+  .pick-pair select { width: 100%; max-width: none; }
+  .chain-slot .pick-pair { flex: 1; min-width: 0; }
+  @media (max-width: 560px) { .pick-pair { grid-template-columns: minmax(0, 1fr); } }
+  .role .js-more { margin-top: 7px; }
+  .role .verdict { display: block; margin-top: 7px; }
+
+  /* The reasoning, one disclosure instead of three. Quieter than
+     `summary.reveal`, which is a button: this is a footnote you open, not an
+     action, and fourteen buttons down the card would read as fourteen things
+     to do. */
+  .role-more { margin-top: 9px; }
+  .role-more > summary {
+    display: inline-block; cursor: pointer; list-style: none;
+    font-size: .8rem; color: var(--ink-soft);
+    border-bottom: 1px dotted var(--edge); padding-bottom: 1px;
+  }
+  .role-more > summary::-webkit-details-marker { display: none; }
+  .role-more > summary:hover { color: var(--ink); }
+  .role-more[open] > summary { margin-bottom: 9px; }
+  .role-more .help, .role-more .gauge { max-width: 68ch; }
+
+  /* The group's own paragraph is read once and then never again, so it folds
+     into the heading rather than sitting above every group forever. */
+  .group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+  .group-head h3 { margin: 0; }
+  .group-why > summary {
+    display: inline-block; cursor: pointer; list-style: none;
+    font-size: .74rem; color: var(--ink-soft);
+    border-bottom: 1px dotted var(--edge);
+  }
+  .group-why > summary::-webkit-details-marker { display: none; }
+  .group-why > summary:hover { color: var(--ink); }
+  .group-why .help { margin-top: 6px; max-width: 68ch; }
+
+  @media (max-width: 700px) {
+    /* Stacked, and tighter. Test under the picker rather than beside it: at
+       this width the two side by side leave the picker too narrow to read a
+       model id in, which is the one thing this row exists to show. */
+    .role { padding: 11px 0 13px; }
+    .role-controls { grid-template-columns: 1fr; gap: 8px; margin-top: 7px; }
+    .role-controls .probe { justify-content: flex-start; }
+    .role-top { gap: 4px 8px; }
+    .role-top .pill { font-size: .62rem; padding: 1px 6px; }
+    /* Card padding either side of a 360px screen is chrome, not content.
+       Every child, not just the form: the heading strip and the intro sit
+       on the same left edge as the pickers or the card reads as crooked. */
+    .card.roles > h2, .card.roles > *:not(h2) {
+      padding-left: 14px; padding-right: 14px;
+    }
+  }
+</style>
+
+
+{% if errors %}
+<div class="notice attn">
+  {% for e in errors %}<div class="mono">{{ e }}</div>{% endfor %}
+  <p class="help">{{ t('admin.models.stale_note') }}</p>
+</div>
+{% endif %}
+
+{# Two pages over one route: the settings, and the catalog -- the benchmark
+   and every model with its price. They were one page fifteen screens long;
+   the catalog is what somebody reads before changing a setting, not what they
+   change, so it has its own page and a tab back. Same context for both, so
+   the two can never disagree about a model. #}
+<nav class="subtabs" aria-label="{{ t('admin.nav.models') }}">
+  <a href="{{ url_for('models_page') }}"{% if view != 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_settings') }}</a>
+  <a href="{{ url_for('models_catalog') }}"{% if view == 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_catalog') }}</a>
+</nav>
+
+{# Both tabs: the Ollama card's cards and rows live here too (moved out of the
+   catalog-only part, where the split into tabs had left them). #}
+<style>
+  #bench .bench-setup { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; }
+  @media (max-width: 760px) { #bench .bench-setup { grid-template-columns: 1fr; } }
+  #bench .bench-models textarea { width: 100%; font-size: .82rem; resize: vertical; }
+  #bench .bench-options .label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .bench-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .bench-chip input { position: absolute; opacity: 0; pointer-events: none; }
+  .bench-chip span { display: inline-block; padding: 4px 10px; border: 1px solid var(--edge); border-radius: 999px;
+                     font-size: .78rem; cursor: pointer; color: var(--ink-soft); background: var(--plate-2); }
+  .bench-chip span em { font-style: normal; opacity: .6; font-size: .7rem; }
+  .bench-chip input:checked + span { background: var(--row-on); border-color: var(--live); color: var(--ink); }
+  .bench-chip input:focus-visible + span { outline: 2px solid var(--attn); }
+  .bench-selects { display: flex; flex-wrap: wrap; gap: 10px; }
+  .bench-selects label { display: flex; flex-direction: column; font-size: .74rem; color: var(--ink-soft); gap: 3px; }
+  .bench-selects select { font-size: .82rem; }
+  .bench-buttons { display: flex; align-items: center; gap: 12px; margin: 12px 0 0; }
+  #bench button.danger { background: var(--tag); color: #fff; border-color: var(--tag); }
+  .bench-live { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--edge); border-radius: var(--r); background: var(--plate-2); }
+  .bench-live-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .bench-bar { height: 8px; background: var(--row-alt); border-radius: 999px; overflow: hidden; }
+  .bench-bar span { display: block; height: 100%; width: 0; background: var(--live); transition: width .4s; }
+  .bench-bar.small-bar { height: 5px; margin-top: 4px; }
+  .bench-live-cases { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+  .bench-live-cases span { font-size: .72rem; padding: 2px 7px; border-radius: 999px; font-family: var(--mono); }
+  .bench-live-cases .ok { background: var(--row-on); color: var(--live-ink); }
+  .bench-live-cases .ko { background: var(--tag-wash); color: var(--tag-ink); }
+  .bench-log { margin-top: 10px; }
+  .bench-log summary { cursor: pointer; font-size: .78rem; color: var(--ink-soft); }
+  .bench-log .joblog { max-height: 280px; overflow-y: auto; margin-top: 6px; white-space: pre-wrap; }
+  /* The house's Ollama servers (#ollama): a bar per card, a fieldset per
+     instance, and the "runs on" picker beside a role's local model. */
+  .gpu-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 10px 0; }
+  .gpu-card { border: 1px solid var(--edge); border-radius: var(--r); padding: 10px 12px; background: var(--plate-2); }
+  .gpu-card.over { border-color: var(--tag); }
+  .gpu-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .gpu-free { margin-left: auto; font-family: var(--mono); }
+  .gpu-bar { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--row-alt); margin: 8px 0 6px; }
+  .gpu-bar .seg { display: block; height: 100%; }
+  .seg.other, .dot.other { background: var(--ink-soft); opacity: .45; }
+  .inst[data-i="0"] { background: var(--live); }
+  .inst[data-i="1"] { background: var(--attn); }
+  .inst[data-i="2"] { background: var(--panel-3); }
+  .inst[data-i="3"] { background: var(--door-dim); }
+  .gpu-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .gpu-use { margin-top: 2px; }
+  .more-sources { margin: 10px 0; }
+  .bench-live { list-style: none; margin: 4px 0 0; padding: 0; font-size: .8rem; }
+  .bench-live li.good { color: var(--live-ink); }
+  .bench-live li.bad { color: var(--attn-ink); }
+  .more-sources > summary { cursor: pointer; color: var(--ink-soft); }
+  .library { margin: 14px 0; border: 1px solid var(--edge); border-radius: var(--r); padding: 8px 12px; }
+  .library > summary { cursor: pointer; }
+  .lib-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .lib-table th, .lib-table td { text-align: left; padding: 5px 8px 5px 0; vertical-align: top; }
+  .lib-table td.num, .lib-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .lib-table tbody tr + tr td { border-top: 1px solid var(--edge); }
+  .lib-engine { white-space: nowrap; margin-right: 12px; }
+  .lib-engine[data-state="untested"] { color: var(--ink-soft); }
+  .lib-engine[data-state="fail"] .lib-mark { color: var(--attn-ink); font-weight: 700; }
+  .small-btn { padding: 3px 9px; font-size: .78rem; }
+  .lib-engine[data-state="ok"] .lib-mark { color: var(--live); font-weight: 700; }
+  .lib-actions { white-space: nowrap; }
+  .lib-actions form { display: inline; }
+  .lib-add { display: grid; gap: 10px; margin-top: 12px; }
+  .lib-add-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+  .lib-add-form label { display: flex; flex-direction: column; gap: 3px; font-size: .78rem; color: var(--ink-soft); min-width: 220px; flex: 1; }
+  .model-filter { margin-bottom: 6px; font-size: .82rem; padding: 5px 9px; }
+  .gpu-rows { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  .gpu-rows td { padding: 2px 6px 2px 0; vertical-align: baseline; }
+  .gpu-rows td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .gpu-rows tr + tr td { border-top: 1px solid var(--edge); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .oi-list { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+  .oi { border: 1px solid var(--edge); border-radius: var(--r); padding: 8px 12px 10px; min-width: 0; }
+  .oi legend { padding: 0 6px; }
+  .oi-new summary { cursor: pointer; font-weight: 600; }
+  .oi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 12px; margin-top: 6px; }
+  .oi-grid label { display: flex; flex-direction: column; gap: 3px; font-size: .78rem; color: var(--ink-soft); }
+  .oi-grid input, .oi-grid select { width: 100%; }
+  /* The model is the long field -- hf.co/owner/repo:TAG, a GGUF's name. */
+  .oi-grid .wide { grid-column: span 2; }
+  .oi-gpus { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-top: 8px; }
+  .oi-uses { margin: 8px 0 0; }
+  .oi-state { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--row-alt); color: var(--ink-soft); }
+  .oi-state[data-state="applied"] { background: var(--row-on); color: var(--live-ink); }
+  .oi-state[data-state="pending"] { background: var(--attn-wash); color: var(--attn-ink); }
+  .oi-apply { margin-top: 12px; }
+  .chain-slot { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .chain-slot select { flex: 1; min-width: 0; }
+  .oi-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+  .oi-advanced { margin-top: 18px; }
+  .oi-advanced summary { cursor: pointer; color: var(--ink-soft); }
+  .oi-tasks-head { margin-top: 18px; }
+  .oi-tasks { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px 16px; }
+  .oi-task { display: flex; flex-direction: column; gap: 3px; font-size: .82rem; color: var(--ink-soft); }
+  .oi-task select { width: 100%; }
+  .bench-results-head { margin-top: 22px; }
+  .bench-runs { display: flex; flex-direction: column; gap: 10px; }
+  .bench-run { border: 1px solid var(--edge); border-left: 5px solid var(--edge); border-radius: var(--r); background: var(--plate-2); }
+  .bench-run.grade-good { border-left-color: var(--live); }
+  .bench-run.grade-part { border-left-color: var(--attn); }
+  .bench-run.grade-bad  { border-left-color: var(--tag); }
+  .bench-run-main { display: grid; grid-template-columns: minmax(180px, 2.2fr) 90px minmax(200px, 3fr) 175px auto;
+                    gap: 14px; align-items: center; padding: 10px 14px; }
+  .bench-run-main > * { min-width: 0; }
+  @media (max-width: 980px) {
+    .bench-run-main { grid-template-columns: minmax(0, 1fr) auto; }
+    .bench-roles, .bench-speed { grid-column: 1 / -1; }
+    .bench-actions { grid-column: 1 / -1; flex-direction: row; justify-content: flex-start; gap: 14px; }
+    .bench-speed { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  }
+  #bench .bench-models textarea, #bench .bench-selects select { max-width: 100%; }
+  .bench-cases { grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
+  .bench-run-name { min-width: 0; }
+  .bench-name { font-family: var(--mono); font-size: .88rem; overflow-wrap: anywhere; }
+  .bench-owner { font-family: var(--mono); margin-top: 3px; }
+  .bench-tag { font-family: var(--mono); font-size: .72rem; font-weight: 600; margin-left: 6px;
+               padding: 1px 6px; border: 1px solid var(--ink); border-radius: 2px;
+               background: var(--ink); color: var(--plate); white-space: nowrap; }
+  /* Two pills after the name. The tag the model is pulled by (`12b`, `e4b`,
+     `Q4_K_M`) is the one a person reads first -- it is the model's name --
+     so it is the solid one; the parameter count Ollama measured (`11.9B`) is
+     supporting detail, a light outline beside it. Different weights so the
+     two never read as one word ("qwen3.59b9.7B"). */
+  .bench-params { font-family: var(--mono); font-size: .66rem; margin-left: 5px; padding: 1px 5px;
+                  border: 1px solid var(--edge); border-radius: 2px;
+                  color: var(--ink-soft); white-space: nowrap; }
+  /* On a merged row, the date a role was measured when it differs from the
+     row's own. Without it a two-week-old role reads as fresh. */
+  .bench-role-date { font-style: normal; opacity: .55; margin-left: 5px; font-size: .62rem; }
+  .bench-src { font-size: .62rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+               padding: 1px 6px; border-radius: 2px; margin-right: 4px; vertical-align: 2px; }
+  .src-hf { background: var(--attn-wash); color: var(--attn-ink); }
+  .src-local { background: var(--row-on); color: var(--live-ink); }
+  .src-hosted { background: var(--row-alt); color: var(--ink-soft); }
+  .bench-best { font-size: .7rem; color: var(--attn-ink); font-weight: 700; margin-left: 6px; white-space: nowrap; }
+  /* Sort by kind (bench.KINDS): one score per kind is rendered, the one the
+     list is sorted by is shown, and the role chips outside it step back. */
+  .bench-sort { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 10px; }
+  .bench-sort-btn { font: inherit; font-size: .75rem; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+                    border: 1px solid var(--edge); background: transparent; color: var(--ink-soft); }
+  .bench-sort-btn[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--panel); }
+  .bench-kind-score { display: none; }
+  .bench-runs[data-sort="overall"] .bench-kind-score[data-kind="overall"],
+  .bench-runs[data-sort="everyday"] .bench-kind-score[data-kind="everyday"],
+  .bench-runs[data-sort="background"] .bench-kind-score[data-kind="background"],
+  .bench-runs[data-sort="longtask"] .bench-kind-score[data-kind="longtask"],
+  .bench-runs[data-sort="steps"] .bench-kind-score[data-kind="steps"],
+  .bench-runs[data-sort="planner"] .bench-kind-score[data-kind="planner"] { display: block; }
+  .bench-kind-score.grade-good .bench-score-num { color: var(--live-ink); }
+  .bench-kind-score.grade-part .bench-score-num { color: var(--attn-ink); }
+  .bench-kind-score.grade-bad  .bench-score-num { color: var(--tag-ink); }
+  .bench-kind-score.grade-part .bench-bar span { background: var(--attn); }
+  .bench-runs[data-sort="everyday"] .bench-role:not([data-kind="everyday"]),
+  .bench-runs[data-sort="background"] .bench-role:not([data-kind="background"]),
+  .bench-runs[data-sort="longtask"] .bench-role:not([data-kind="longtask"]),
+  .bench-runs[data-sort="steps"] .bench-role:not([data-kind="steps"]),
+  .bench-runs[data-sort="planner"] .bench-role:not([data-kind="planner"]) { opacity: .4; }
+  .bench-note { margin: 6px 0; }
+  .bench-note-warn { color: var(--attn-ink); }
+  .bench-note-error { color: var(--tag-ink); }
+  .bench-score { min-width: 0; }
+  .bench-score-num { font-size: 1.35rem; font-weight: 700; font-family: var(--mono); line-height: 1; }
+  .bench-score-num span { font-size: .8rem; color: var(--ink-soft); font-weight: 400; }
+  .bench-run.grade-good .bench-score-num { color: var(--live-ink); }
+  .bench-run.grade-part .bench-score-num { color: var(--attn-ink); }
+  .bench-run.grade-bad  .bench-score-num { color: var(--tag-ink); }
+  .bench-run.grade-part .bench-bar span { background: var(--attn); }
+  .bench-run.grade-bad  .bench-bar span { background: var(--tag); }
+  .bench-roles { display: flex; flex-wrap: wrap; gap: 5px; }
+  .bench-role { font-size: .72rem; padding: 3px 8px; border-radius: 999px; background: var(--row-alt); color: var(--ink-soft); white-space: nowrap; }
+  .bench-role b { font-family: var(--mono); }
+  .bench-role.grade-good { background: var(--row-on); color: var(--live-ink); }
+  .bench-role.grade-part { background: var(--attn-wash); color: var(--attn-ink); }
+  .bench-role.grade-bad  { background: var(--tag-wash); color: var(--tag-ink); }
+  .bench-speed { color: var(--ink-soft); line-height: 1.5; }
+  .bench-speed b { color: var(--ink); font-family: var(--mono); }
+  .bench-cpu { display: inline-block; margin-left: 4px; font-size: .68rem; font-weight: 700; color: var(--tag-ink); }
+  .bench-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .bench-actions form { margin: 0; }
+  .bench-rerun button { color: var(--live-ink); }
+  button.linkish { background: none; border: 0; padding: 0; color: var(--ink-soft); text-decoration: underline;
+                   cursor: pointer; font: inherit; font-size: .76rem; }
+  .bench-detail { border-top: 1px solid var(--edge); padding: 10px 14px 12px; background: var(--plate); }
+  .bench-group h4 { margin: 8px 0 6px; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); }
+  .bench-cases { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+  .bench-case { background: var(--plate-2); border: 1px solid var(--edge); border-left: 3px solid var(--live); border-radius: var(--r); padding: 7px 9px; font-size: .8rem; }
+  .bench-case.ko { border-left-color: var(--tag); }
+  .bench-case-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .bench-case-time { margin-left: auto; }
+  .bench-mark { font-weight: 700; }
+  .bench-case.ok .bench-mark { color: var(--live-ink); }
+  .bench-case.ko .bench-mark { color: var(--tag-ink); }
+  .bench-tools { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+  .bench-tool { font-family: var(--mono); font-size: .66rem; padding: 1px 5px; border-radius: 2px; background: var(--row-alt); border: 1px solid var(--edge); }
+  .bench-tool.stub { border-style: dashed; color: var(--ink-soft); }
+  .bench-why { color: var(--tag-ink); font-size: .74rem; margin-top: 4px; }
+  .bench-reply summary { cursor: pointer; font-size: .72rem; color: var(--ink-soft); margin-top: 4px; }
+  .bench-reply div { font-size: .76rem; white-space: pre-wrap; margin-top: 3px; }
+  .small { font-size: .74rem; }
+</style>
+{% if view == 'catalog' %}
+{# The benchmark. Models through a real assistant's agent loop, on the house's
+   own work, so a choice on this page is made on evidence rather than a price
+   and a context window. Anything that could change the house is recorded and
+   stubbed by the benchmark itself (bench/model_bench.py), so a run is safe to
+   start at any time -- it does share the GPU with the family's own model
+   while it runs, which the intro says. #}
+<div class="card wide" id="bench">
+  <h2>{{ t('admin.models.bench_heading') }}</h2>
+  <p class="intro">{{ t('admin.models.bench_intro') }}</p>
+
+  <form id="bench-form" method="post" action="{{ url_for('bench_start') }}"
+        data-counts='{{ bench_counts | tojson }}'>
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="bench-setup">
+      <div class="bench-models">
+        <label for="bench-model">{{ t('admin.models.bench_model') }}</label>
+        <textarea id="bench-model" name="model" class="mono" rows="3" required spellcheck="false"
+                  placeholder="ollama:lfm2.5:8b&#10;ollama:granite4.2:8b&#10;https://huggingface.co/owner/repo-GGUF"></textarea>
+        <p class="help">{{ t('admin.models.bench_model_help') }}</p>
+      </div>
+      <div class="bench-options">
+        <span class="label">{{ t('admin.models.bench_roles') }}</span>
+        <div class="bench-chips">
+          {% for role in bench_roles %}
+          <label class="bench-chip"><input type="checkbox" name="roles" value="{{ role }}" checked>
+            <span>{{ t('admin.models.bench_role_' ~ role) }}{% if bench_counts.get(role) %} <em>{{ bench_counts[role] }}</em>{% endif %}</span></label>
+          {% endfor %}
+        </div>
+        <div class="bench-selects">
+          <label>{{ t('admin.models.bench_container') }}
+            <select name="container">{% for c in bench_containers %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select></label>
+          <label>{{ t('admin.models.bench_effort') }}
+            <select name="effort">{% for e in bench_efforts %}<option value="{{ e }}">{{ e or t('admin.models.bench_effort_house') }}</option>{% endfor %}</select></label>
+          <label>{{ t('admin.models.bench_repeat') }}
+            <select name="repeat"><option>1</option><option>2</option><option>3</option></select></label>
+        </div>
+      </div>
+    </div>
+    <p class="bench-buttons">
+      <button type="submit" id="bench-go">{{ t('admin.models.bench_run') }}</button>
+      <button type="button" id="bench-stop" class="danger" hidden>{{ t('admin.models.bench_stop') }}</button>
+      <span id="bench-status" class="muted"></span>
+    </p>
+  </form>
+
+  {# While a run goes: which model of how many, a bar of cases done, the last
+     few verdicts as they land. The raw log is still there, folded, for when
+     the verdicts are not enough. #}
+  <div id="bench-live" class="bench-live" {% if not bench_queue %}hidden{% endif %}>
+    <div class="bench-live-head">
+      <b id="bench-live-model"></b>
+      <span id="bench-live-meta" class="muted"></span>
+    </div>
+    <div class="bench-bar"><span id="bench-bar-fill"></span></div>
+    <div id="bench-live-phase" class="muted small"></div>
+    <div id="bench-live-queue" class="muted small" {% if not bench_queue %}hidden{% endif %}>{{ t('admin.models.bench_queue') }}: <span>{{ bench_queue | join(', ') }}</span></div>
+    <div id="bench-live-cases" class="bench-live-cases"></div>
+    <details class="bench-log"><summary>{{ t('admin.models.bench_log') }}</summary>
+      <div id="bench-log" class="joblog"></div></details>
+  </div>
+
+  <p id="bench-note" class="bench-note small" role="status" hidden></p>
+  <div id="bench-results">
+  {% include "_bench_results.html" %}
+  </div>
+</div>
+
+<script>
+(function () {
+  var form = document.getElementById('bench-form');
+  if (!form) return;
+  var LOG_URL = {{ url_for('bench_log') | tojson }};
+  var RESULTS_URL = {{ url_for('bench_results') | tojson }};
+  var STOP_URL = {{ url_for('bench_stop') | tojson }};
+  var T = {running: {{ t('admin.models.bench_running') | tojson }},
+           done: {{ t('admin.models.bench_done') | tojson }},
+           failed: {{ t('admin.models.bench_failed') | tojson }},
+           stopped: {{ t('admin.models.bench_stopped') | tojson }},
+           stopping: {{ t('admin.models.bench_stopping') | tojson }},
+           busy: {{ t('admin.models.bench_busy') | tojson }},
+           pulling: {{ t('admin.models.bench_pulling') | tojson }},
+           queued: {{ t('admin.models.bench_queued') | tojson }},
+           model: {{ t('admin.models.bench_model_n') | tojson }}};
+  var counts = JSON.parse(form.getAttribute('data-counts') || '{}');
+  var live = document.getElementById('bench-live'), logEl = document.getElementById('bench-log');
+  var statusEl = document.getElementById('bench-status'), goBtn = document.getElementById('bench-go');
+  var stopBtn = document.getElementById('bench-stop');
+  var fill = document.getElementById('bench-bar-fill'), phase = document.getElementById('bench-live-phase');
+  var casesEl = document.getElementById('bench-live-cases');
+  var modelEl = document.getElementById('bench-live-model'), metaEl = document.getElementById('bench-live-meta');
+  var queueEl = document.getElementById('bench-live-queue');
+  function showQueue(q) { queueEl.hidden = !(q && q.length); if (q && q.length) queueEl.querySelector('span').textContent = q.join(', '); }
+  var offset = 0, perModel = 0, doneCases = 0, currentModel = '';
+
+  function planned() {
+    var n = 0;
+    form.querySelectorAll('input[name=roles]:checked').forEach(function (c) { n += counts[c.value] || 0; });
+    return n * (parseInt(form.querySelector('[name=repeat]').value, 10) || 1);
+  }
+  function fmt(s) { var m = Math.floor(s / 60); return m + ':' + ('0' + Math.floor(s % 60)).slice(-2); }
+  function busy(on) { goBtn.disabled = on; stopBtn.hidden = !on; stopBtn.disabled = false; live.hidden = false; }
+  function eat(lines) {
+    lines.forEach(function (ln) {
+      var m;
+      if ((m = ln.match(/^━━ (.+)$/))) { doneCases = 0; casesEl.textContent = ''; }
+      else if ((m = ln.match(/downloading: (\d+)% of ([\d.]+ GB)/))) {
+        phase.textContent = T.pulling + ' ' + m[1] + '% · ' + m[2]; fill.style.width = m[1] + '%';
+      } else if ((m = ln.match(/^\s*(PASS|FAIL) (\S+)\s+([\d.]+)s/))) {
+        doneCases += 1; phase.textContent = '';
+        var chip = document.createElement('span');
+        chip.className = m[1] === 'PASS' ? 'ok' : 'ko';
+        chip.textContent = (m[1] === 'PASS' ? '✓ ' : '✗ ') + m[2] + ' ' + m[3] + 's';
+        casesEl.appendChild(chip);
+        if (perModel) fill.style.width = Math.min(100, doneCases * 100 / perModel) + '%';
+      } else if ((m = ln.match(/^== (\w+)$/))) { phase.textContent = m[1]; }
+    });
+    if (lines.length) { logEl.textContent += lines.join('\n') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+  }
+  // The results card is swapped in as each model finishes, not when the whole
+  // job is: a queue of three used to show nothing until the third was done.
+  // The log reply names every result saved so far; a new name means a new card.
+  var resultsEl = document.getElementById('bench-results'), shownResults = '';
+  function refreshResults() {
+    fetch(RESULTS_URL, {headers: {'X-Requested-With': 'fetch'}}).then(function (r) { return r.text(); })
+      .then(function (html) { resultsEl.innerHTML = html; bindResults(); }).catch(function () {});
+  }
+  function poll() {
+    fetch(LOG_URL + '?offset=' + offset).then(function (r) { return r.json(); }).then(function (d) {
+      offset = d.offset; eat(d.lines); showQueue(d.queue);
+      if (d.model !== currentModel) { currentModel = d.model; doneCases = 0; }
+      modelEl.textContent = d.model || '';
+      metaEl.textContent = (d.count > 1 ? T.model.replace('{n}', d.index).replace('{of}', d.count) + ' · ' : '')
+        + fmt(d.elapsed || 0) + (perModel ? ' · ' + doneCases + '/' + perModel : '');
+      var results = (d.results || []).join('\n');
+      if (results !== shownResults) { shownResults = results; if (results) refreshResults(); }
+      if (d.running) { setTimeout(poll, 1500); return; }
+      busy(false); stopBtn.hidden = true;
+      statusEl.textContent = d.stopped ? T.stopped : (d.failed ? T.failed : T.done);
+    }).catch(function () { setTimeout(poll, 3000); });
+  }
+  function start(f) {
+    var wasBusy = goBtn.disabled;
+    if (!wasBusy) { busy(true); logEl.textContent = ''; casesEl.textContent = ''; offset = 0; doneCases = 0; fill.style.width = '0'; }
+    perModel = planned(); statusEl.textContent = T.running;
+    fetch(f.action, {method: 'POST', body: new FormData(f), headers: {'X-Requested-With': 'fetch'}})
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { if (!wasBusy) { busy(false); stopBtn.hidden = true; } statusEl.textContent = d.reason; return; }
+        if (d.queued) { statusEl.textContent = T.queued; if (!wasBusy) poll(); return; }
+        eat((d.notes || []).map(function (n) { return '→ ' + n; }));
+        setTimeout(poll, 800);
+      }).catch(function () { if (!wasBusy) { busy(false); stopBtn.hidden = true; } });
+  }
+  form.addEventListener('submit', function (ev) { ev.preventDefault(); start(form); });
+  // The result rows' own controls, bound again every time the card is swapped in.
+  function bindResults() {
+    // "Again" on a result row: the same run, queued if one is going.
+    resultsEl.querySelectorAll('form.bench-rerun').forEach(function (f) {
+      f.addEventListener('submit', function (ev) { ev.preventDefault(); start(f); });
+    });
+    // Forget and remove: done in place, then the card is fetched again. A
+    // reload used to drop the live log and the progress of a run going.
+    resultsEl.querySelectorAll('form[data-inplace]').forEach(function (f) {
+      f.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        if (f.hasAttribute('data-confirm') && !confirm(f.getAttribute('data-confirm'))) return;
+        f.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+        fetch(f.action, {method: 'POST', body: new FormData(f), headers: {'X-Requested-With': 'fetch'}})
+          .then(function (r) { return r.json(); })
+          .then(function (d) { note(d.message, d.level); refreshResults(); })
+          .catch(function () { f.querySelectorAll('button').forEach(function (b) { b.disabled = false; }); });
+      });
+    });
+    // Sort by kind, remembered per browser.
+    resultsEl.querySelectorAll('[data-bench-sort]').forEach(function (b) {
+      b.addEventListener('click', function () { sortBy(b.getAttribute('data-bench-sort')); });
+    });
+    sortBy(savedSort());
+    resultsEl.querySelectorAll('[data-bench-detail]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var el = document.getElementById('bench-detail-' + b.getAttribute('data-bench-detail'));
+        el.hidden = !el.hidden; b.setAttribute('aria-expanded', String(!el.hidden));
+      });
+    });
+  }
+  function note(text, level) {
+    var el = document.getElementById('bench-note');
+    el.hidden = !text; el.textContent = text || '';
+    el.className = 'bench-note small ' + (level === 'ok' ? 'muted' : 'bench-note-' + level);
+  }
+  function savedSort() {
+    try { return localStorage.getItem('bench-sort') || 'overall'; } catch (e) { return 'overall'; }
+  }
+  function sortBy(kind) {
+    var list = resultsEl.querySelector('.bench-runs');
+    if (!list) return;
+    if (!resultsEl.querySelector('[data-bench-sort="' + kind + '"]')) kind = 'overall';
+    try { localStorage.setItem('bench-sort', kind); } catch (e) {}
+    list.setAttribute('data-sort', kind);
+    resultsEl.querySelectorAll('[data-bench-sort]').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-bench-sort') === kind));
+    });
+    var rank = function (el) { return parseInt(el.getAttribute('data-rank-' + kind), 10); };
+    Array.prototype.slice.call(list.children)
+      .sort(function (a, b) { return rank(a) - rank(b); })
+      .forEach(function (el) { list.appendChild(el); });
+  }
+  bindResults();
+  stopBtn.addEventListener('click', function () {
+    stopBtn.disabled = true; statusEl.textContent = T.stopping;
+    fetch(STOP_URL, {method: 'POST', headers: {'X-Requested-With': 'fetch'},
+                     body: new URLSearchParams({_csrf: form.querySelector('[name=_csrf]').value})});
+  });
+  // A run already going when the page loads: follow it instead of offering a
+  // second. The card just rendered already holds its results, so they are
+  // taken as shown and only a later one fetches it again.
+  fetch(LOG_URL + '?offset=0').then(function (r) { return r.json(); }).then(function (d) {
+    if (d.running) { shownResults = (d.results || []).join('\n'); busy(true); perModel = 0; poll(); }
+  });
+})();
+</script>
+{% endif %}
+
+{% if view != 'catalog' %}
+<div class="card roles">
+  <h2>{{ t('admin.models.heading') }}</h2>
+  <p class="intro">{{ t('admin.models.intro') }}</p>
+
+  <form method="post" style="margin-bottom:18px">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="refresh">
+    <p class="help">
+      {% if checked_at %}{{ t('admin.models.checked_at', when=checked_at) }}
+      {% else %}{{ t('admin.models.never_checked') }}{% endif %}
+      <button type="submit" class="ghost">{{ t('admin.models.refresh') }}</button>
+    </p>
+  </form>
+
+  {# Said once, because it describes the last price check rather than any one
+     role. Until the first check runs it is true of all thirteen, and thirteen
+     copies of it was most of what the card had to say. #}
+  {% if not any_priced %}
+  <p class="help note">{{ t('admin.models.not_priced_yet') }}</p>
+  {% endif %}
+
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+    {# A heading each time the group changes. The list answers four different
+       questions -- what kind of work, who runs it, what modality, what happens
+       on failure -- and read flat, two of them described each other. #}
+    {% set ns = namespace(group='') %}
+    {% for row in rows %}
+    {% if row.group != ns.group %}
+    {% set ns.group = row.group %}
+    <div class="group-head stack">
+      <h3>{{ t('admin.models.group_' ~ row.group) }}</h3>
+      <details class="group-why">
+        <summary>{{ t('admin.models.why_this_group') }}</summary>
+        <p class="help">{{ t('admin.models.group_' ~ row.group ~ '_why') }}</p>
+      </details>
+    </div>
+    {% endif %}
+    <div class="role">
+      <div class="role-top">
+        <label for="m-{{ row.id }}">{{ row.label }}</label>
+        {# What shape of model this job wants, said beside the name rather
+           than left to be inferred from a price ranking and a context floor. #}
+        {% if row.model_type %}<span class="pill">{{ t('admin.models.type_' ~ row.model_type) }}</span>{% endif %}
+        {% if row.prefer_local %}<span class="pill on">{{ t('admin.models.local_preferred') }}</span>{% endif %}
+      </div>
+
+      {# A blank sub-agent is not unset, it is inherited -- so say what it will
+         actually run and whose setting decides it. Beside the picker rather
+         than inside it: selecting the inherited model would turn "follows
+         Everyday" into a pin, and a household that later changed the parent
+         would find the child had quietly stopped following it. #}
+      {% if row.inherited %}
+      <p class="muted">{{ t('admin.models.inherits', parent=row.inherits_from,
+                            model=row.inherited) }}</p>
+      {% elif row.inheriting and row.current %}
+      {# Set on a role whose default is to follow its parent. Said out loud so
+         the override reads as a decision somebody made rather than as an
+         ordinary choice -- and so clearing it is an obvious thing to do. #}
+      <p class="muted">{{ t('admin.models.overrides', parent=row.inherits_from) }}</p>
+      {% endif %}
+      <div class="role-controls">
+      <div class="pick">
+      {# An ordered chain, which this picker cannot edit. Shown in order and
+         the select below is disabled, so no save can collapse it. Editing one
+         means editing the config. #}
+      {% macro model_options(row, cur, is_local, known, blank=False, local_sid='') %}
+        {% if blank %}<option value="" {% if not cur and not is_local %}selected{% endif %}>—</option>{% endif %}
+        {# Whatever is configured stays selectable even when the roster no
+           longer offers it — a hand-edited config must never be silently
+           rewritten by opening this page. #}
+        {% set go_row = harness.allow_go and row.id in ('subagent', 'subagent_powerful') %}
+        {% if cur and not known
+              and not (go_row and cur.startswith('opencode-go/')) %}
+          <optgroup label="{{ t('admin.models.not_on_offer') }}">
+            <option value="{{ cur }}" selected>{{ cur }}</option>
+          </optgroup>
+        {% endif %}
+        {# One group per source, and empty groups are not rendered. The two
+           Ollamas were one group called "Ollama": they speak the same API and
+           mean opposite things about where the data goes, so a household
+           picking from a merged list could not tell which it had chosen.
+
+           Filtered to what this role can actually run, and priced against what
+           this house measured the role spending in a month -- so the choice is
+           made with the bill in view rather than after it. Cheapest first;
+           anything whose price is not published sorts last, because a model
+           with no price is not a free one. #}
+        {# The house's own models are one choice here: which model, at what
+           window and on which card, is the Ollama card's (#ollama). Kept
+           whenever the role is local now, even with no server to list: without
+           it nothing is selected and a save moves the role to the first
+           hosted model. #}
+        {# The house's own models: every setup on the Ollama card, by name,
+           with its engine, window and card -- Ollama and llama.cpp alike.
+           Picking one is what starts it. A role on a general server (not a
+           setup) keeps it as the one generic choice until a setup is picked. #}
+        {% set setup_ids = local_setups | map(attribute='id') | list %}
+        {% if local_setups or local_instances or is_local %}
+          <optgroup label="{{ t('admin.models.source_ollama_local') }}">
+            {% for s in local_setups %}{% if not row.needs_vision or s.vision %}
+              <option value="__local__:{{ s.id }}" {% if is_local and local_sid == s.id %}selected{% endif %}>{{ s.label }}</option>
+            {% endif %}{% endfor %}
+            {% if (is_local and local_sid not in setup_ids) or not local_setups %}
+              <option value="__local__" {% if is_local and local_sid not in setup_ids %}selected{% endif %}>{{ t('admin.models.local_choice') }}</option>
+            {% endif %}
+          </optgroup>
+        {% endif %}
+        {% for group in row.shortlist %}
+          <optgroup label="{{ group.label }}">
+            {% for m in group.models %}
+              {# `m.note` is what this house has measured about a model -- that it
+                 needs another endpoint, that it 500s on both. It is a note and
+                 not a filter on purpose (see _ZEN_NOTES): hiding those models
+                 left the household unable to find ones it had deliberately
+                 enabled. Shown here so the choice is made with the knowledge
+                 rather than against it. #}
+              <option value="{{ m.id }}" {% if m.id == cur %}selected{% endif %}>{{ m.id }}{% if m.cost is not none %} ({{ t('admin.models.per_month', cost='%.2f'|format(m.cost)) }}){% endif %}{% if m.note %} — {{ m.note }}{% endif %}</option>
+            {% endfor %}
+          </optgroup>
+        {% endfor %}
+        {# OpenCode Go, for the sub-agent roles only and only when the household
+           allowed it: pi runs these, nanobot's own loop never does. #}
+        {% if go_row %}
+          {% for group in code_choices if group.key == 'go' %}
+          <optgroup label="{{ t('admin.models.harness_go_group') }}">
+            {% for m in group.models %}
+              <option value="{{ m.id }}" {% if m.id == cur %}selected{% endif %}>{{ m.id }}</option>
+            {% endfor %}
+          </optgroup>
+          {% endfor %}
+        {% endif %}
+      {% endmacro %}
+      {# The rescue chain: one picker per place, in order, each with every
+         choice a role has -- "Local Ollama" included, its setup then picked
+         on the Ollama card. A blank place drops out of the chain. #}
+      {% if row.slots %}
+        {% for sl in row.slots %}
+        <label class="chain-slot"><span class="small">{{ loop.index }}.</span>
+          <select name="model:{{ row.id }}:{{ loop.index0 }}"{% if loop.first %} id="m-{{ row.id }}"{% endif %}>
+            {{ model_options(row, sl.current, sl.is_local, sl.known, blank=not loop.first, local_sid=sl.local_sid) }}
+          </select></label>
+        {% endfor %}
+        <p class="help">{{ t('admin.models.chain_edit_note') }}</p>
+      {% else %}
+      <select id="m-{{ row.id }}" name="model:{{ row.id }}">
+        {{ model_options(row, row.current, row.is_local, row.current_known, local_sid=row.local_sid) }}
+      </select>
+      {% endif %}
+      {% if row.local_setup and row.local_sid not in (local_setups | map(attribute='id') | list) %}<p class="small muted">{{ t('admin.models.local_runs', setup=row.local_setup) }}</p>{% endif %}
+      {# The rest of what this role can run, on request. Without JavaScript the
+         button never appears and the picker is the shortlist -- which is what
+         this page recommends anyway, so the fallback is usable rather than
+         merely present. #}
+      {% if row.deferred_count %}
+      <button type="button" class="js-more" data-role="{{ row.id }}" hidden>
+        {{ t('admin.models.show_all', n=row.deferred_count) }}
+      </button>
+      {% endif %}
+      </div>
+
+      {# Ask this role's model a real question, right now. The page could
+         only ever say what a model costs; it could not say whether it works,
+         and on 2026-09-02 three separate faults each broke a role while this
+         card looked entirely healthy. `data-role` rather than a rendered URL:
+         the script reads it from the button, so nothing is interpolated into
+         JavaScript. #}
+      <p class="probe">
+        <button type="button" class="ghost js-probe" data-role="{{ row.id }}">{{ t('admin.models.test') }}</button>
+        {# What the last run measured for the model this role points at now.
+           Rendered from the store rather than remembered in the browser: the
+           question "is this good enough for this role" outlives the tab it
+           was asked in. A role whose model has changed since shows nothing,
+           because the score belonged to the old one. #}
+        {% if row.score %}
+          <span class="scored {% if row.score.ok %}good{% elif row.score.score %}part{% else %}bad{% endif %}">
+            {{ t('admin.models.test_standing', score=row.score.score, max=row.score.max) }}{% if row.score.tok_s %} · {{ row.score.tok_s }} tok/s{% endif %}
+          </span>
+        {% endif %}
+      </p>
+      </div>
+      <span class="verdict" data-for="{{ row.id }}"></span>
+
+      {# One disclosure per role, holding everything that explains the choice:
+         what the job is, where it belongs, what else would fit and what this
+         house has measured. These were four separate blocks above and around
+         the picker, and together they were most of the page's height -- read
+         once when somebody sets a role up, and scrolled past every time
+         after. #}
+      <details class="role-more">
+        <summary>{{ t('admin.models.about_role') }}</summary>
+        <p class="help">{{ row.why }}</p>
+        {# Where this job belongs, and why. The tag beside the name says which
+           way the list is ranked; this says the reason, which is the part
+           somebody acting on it needs. #}
+        {% if row.placement %}
+        <p class="help note">{{ t('admin.models.placement_' ~ row.placement) }}</p>
+        {% endif %}
+
+      {% if row.suggestions %}
+      <div class="stack-s">
+        <p class="help">{% if row.assumed %}{{ t('admin.models.suggest_intro_assumed') }}{% else %}{{ t('admin.models.suggest_intro') }}{% endif %}</p>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>{{ t('admin.models.col_model') }}</th>
+                <th class="num">{{ t('admin.models.col_cost') }}</th>
+                <th>{{ t('admin.models.col_for') }}</th>
+                <th>{{ t('admin.models.col_against') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for s in row.suggestions %}
+              <tr>
+                <td class="mono">{{ s.id }}{% if s.id == row.current %}<span class="here">{{ t('admin.models.in_use') }}</span>{% endif %}</td>
+                <td class="num mono">{% if s.cost is not none %}{{ t('admin.models.cost_bare', cost='%.2f'|format(s.cost)) }}{% else %}—{% endif %}</td>
+                <td class="why"><ul class="tally pro">{% for key, args in s.pros %}<li>{{ t('admin.models.' ~ key, **args) }}</li>{% endfor %}</ul></td>
+                <td class="why"><ul class="tally con">{% for key, args in s.cons %}<li>{{ t('admin.models.' ~ key, **args) }}</li>{% endfor %}</ul></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {# One line of evidence for the choice above, rather than the four
+         separate grey paragraphs this was: what the role actually spent, what
+         the ranking would have reached for, and -- where nothing has run yet
+         -- that the prices are a basis for comparison and not a forecast. The
+         long form of that last one is in the disclosure above, next to the
+         figures it qualifies. #}
+      {# The third answer, marked off from the first two. Above this line the
+         card says what the job is and what it runs; below it, what this page
+         would do about it. Run together they read as one paragraph of prose
+         and the part somebody acts on is the part they skim. #}
+      {% if row.measured or row.recommended or row.assumed or row.by_provider|length > 1 %}
+      <div class="suggests">
+      <p class="cap">{{ t('admin.models.suggests') }}</p>
+      {% endif %}
+      {% if row.measured or row.recommended or row.assumed %}
+      <p class="gauge">
+        {% if row.measured %}{{ t('admin.models.measured') }} {{ row.measured }}{% endif %}
+        {% if row.recommended %}{{ t('admin.models.cheapest_that_fits') }} <b>{{ row.recommended.id }}</b>{% for key, args in row.recommended.reason %}{{ ', ' if loop.first else '; ' }}{{ t('admin.models.' ~ key, **args) }}{% endfor %}.{% endif %}
+        {% if row.assumed %}{{ t('admin.models.assumed_short') }}{% endif %}
+      </p>
+      {% endif %}
+      {# What each provider would put here, rather than only the cheapest
+         across all of them. With one provider the two were the same list; with
+         four they are not, and the flat one can be three models from a single
+         provider -- which reads as "these are the options" when it is "these
+         are the cheapest". Two each: one is a pick, three is a list nobody
+         reads. #}
+      {% if row.by_provider|length > 1 %}
+      <details class="fits">
+        <summary>{{ t('admin.models.fits_by_provider') }}</summary>
+        <ul class="tally">
+          {% for group in row.by_provider %}
+          <li><b>{{ group.label }}</b>:
+            {% for m in group.models %}<code>{{ m.id }}</code>
+              <span class="muted">{{ t('admin.models.pick_' ~ m.pick) }}</span>{{ ', ' if not loop.last }}{% endfor %}
+            {# Said rather than left looking like a missing second entry:
+               together.ai and Ollama Cloud publish neither a reasoning flag
+               nor a release date, so price is the only ordering their data
+               supports and the second-cheapest is not a recommendation. #}
+            {% if not group.ranked %}<span class="muted">{{ t('admin.models.price_only') }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+      {% if row.measured or row.recommended or row.assumed or row.by_provider|length > 1 %}
+      </div>
+      {% endif %}
+      </details>
+    </div>
+    {% if row.id == 'subagent' %}
+    {# Beside the model it runs: pi takes the sub-agent's model. In this form,
+       so saving the models saves these with them. #}
+    <input type="hidden" name="scope:harness" value="1">
+    <div class="role">
+      <label class="row-tight">
+        <input type="checkbox" name="harness_enabled" {% if harness.enabled %}checked{% endif %}>
+        {{ t('admin.models.harness_enabled') }}
+      </label>
+      <p class="help">{{ t('admin.models.harness_intro') }}</p>
+      <label class="row-tight">
+        <input type="checkbox" name="harness_allow_go" {% if harness.allow_go %}checked{% endif %}>
+        {{ t('admin.models.harness_allow_go') }}
+      </label>
+      <p class="help">{{ t('admin.models.harness_allow_go_help') }}</p>
+
+      {# This box is in the middle of the long roles form, whose own Save is at
+         the very bottom; the next Save on screen belongs to another card and
+         does not carry these two boxes. A save here submits the roles form --
+         these switches and the models above them together. #}
+      <p><button type="submit">{{ t('common.save') }}</button></p>
+    </div>
+    {% endif %}
+    {% endfor %}
+
+    <div class="field">
+      <label for="price_check">{{ t('admin.models.price_check') }}</label>
+      <select id="price_check" name="price_check">
+        <option value="daily"  {% if price_check == 'daily'  %}selected{% endif %}>{{ t('admin.models.daily') }}</option>
+        <option value="weekly" {% if price_check == 'weekly' %}selected{% endif %}>{{ t('admin.models.weekly') }}</option>
+        <option value="off"    {% if price_check == 'off'    %}selected{% endif %}>{{ t('common.off') }}</option>
+      </select>
+      <p class="help">{{ t('admin.models.price_check_help') }}</p>
+    </div>
+
+    <p><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+</div>
+
+<div class="card" id="ollama" data-measure="{{ url_for('ollama_measure') }}" data-reload="{{ url_for('ollama_reload') }}">
+  <h2>{{ t('admin.models.ollama_heading') }}</h2>
+  <p class="intro">{{ t('admin.models.ollama_intro') }}</p>
+  {% if ollama.error %}
+    <p class="notice error">{{ ollama.error }}</p>
+  {% else %}
+
+  {# Each card: what else is on it, each instance's share, what is left. The
+     cards and their other tenants are the host's last look (gpus.json, from
+     ./home-stack ollama); the instances' shares are this page's estimate, or a
+     measurement when one matches the settings. #}
+  {% if ollama.gpu_view %}
+  {% with gpu_view = ollama.gpu_view %}{% include "_gpu_cards.html" %}{% endwith %}
+  <p class="help">{{ t('admin.models.ollama_gpu_help', at=ollama.gpus_at) }}</p>
+  {% else %}
+  <p class="help">{{ t('admin.models.ollama_no_gpus') }}</p>
+  {% endif %}
+  {% if ollama.unpinned %}<p class="help">{{ t('admin.models.ollama_unpinned', ids=ollama.unpinned|join(', ')) }}</p>{% endif %}
+
+  {# The library: every model on this machine, and whether each engine that
+     could run it actually does -- tested on the CPU right after it arrives.
+     The setups below may only use what passed on their engine. #}
+  {% set lib = ollama.library %}
+  <details class="library" id="library"{% if lib.queued or not lib.models %} open{% endif %}>
+    <summary><b>{{ t('admin.models.library_heading') }}</b>
+      <span class="muted small">{{ t('admin.models.library_summary', n=lib.models|length) }}{% if lib.disk_free_gib is not none %} · {{ t('admin.models.library_disk', gib=lib.disk_free_gib) }}{% endif %}</span></summary>
+    <p class="help">{{ t('admin.models.library_help') }}</p>
+    {% if lib.queued %}<p class="small warn">{{ t('admin.models.library_queued', n=lib.queued|length) }}</p>{% endif %}
+    {% if lib.models %}
+    <div class="scroll">
+    <table class="lib-table small">
+      <thead><tr><th>{{ t('admin.models.ollama_model') }}</th><th class="num">GiB</th>
+        <th>{{ t('admin.models.library_engines') }}</th><th>{{ t('admin.models.library_used') }}</th><th></th></tr></thead>
+      <tbody>
+      {% for m in lib.models %}
+      <tr>
+        <td><b>{{ m.short }}</b>{% if m.store == 'file' %} <span class="muted">({{ t('admin.models.library_file') }})</span>{% endif %}
+          {% if m.quant or m.params %}<div class="muted">{{ m.params }} {{ m.quant }}</div>{% endif %}</td>
+        <td class="num">{{ m.gib }}</td>
+        <td>{% for e in m.engines %}<span class="lib-engine" data-state="{{ e.state }}"
+              title="{{ e.label }}: {{ t('admin.models.library_state_' ~ e.state) }}{% if e.seconds %} ({{ e.seconds }} s){% endif %}{% if e.error %} -- {{ e.error }}{% endif %}">{{ e.label | replace('llama.cpp (PrismML)', 'PrismML') }} <span class="lib-mark">{% if e.state == 'ok' %}✓{% elif e.state == 'fail' %}✗{% else %}?{% endif %}</span></span>{% endfor %}
+          {% for e in m.engines if e.state == 'fail' and e.error %}<div class="muted">{{ e.label | replace('llama.cpp (PrismML)', 'PrismML') }}: {{ e.error|truncate(90) }}</div>{% endfor %}</td>
+        <td>{{ m.used_by|join(', ') if m.used_by else '—' }}</td>
+        <td class="lib-actions">
+          <form method="post" action="{{ url_for('library_queue') }}">
+            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="op" value="test"><input type="hidden" name="model" value="{{ m.id }}">
+            <button type="submit" class="ghost small-btn">{{ t('admin.models.library_test') if m.engines|selectattr('state', 'ne', 'untested')|list else t('admin.models.library_test_first') }}</button></form>
+          <form method="post" action="{{ url_for('library_queue') }}" class="js-confirm" data-confirm="{{ t('admin.models.library_delete_confirm', model=m.short) }}">
+            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="op" value="delete"><input type="hidden" name="model" value="{{ m.id }}">
+            <button type="submit" class="ghost small-btn"{% if m.used_by %} disabled title="{{ t('admin.models.library_in_use_short') }}"{% endif %}>{{ t('admin.models.library_delete') }}</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+    <div class="lib-add">
+      <form method="post" action="{{ url_for('library_queue') }}" class="lib-add-form">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="op" value="pull">
+        <label>{{ t('admin.models.library_pull') }}
+          <input type="text" name="model" placeholder="qwen3.5:4b · hf.co/owner/repo:Q4_K_M" maxlength="200" required></label>
+        <button type="submit">{{ t('admin.models.library_pull_button') }}</button>
+      </form>
+      <form method="post" action="{{ url_for('library_queue') }}" class="lib-add-form" id="lib-hf" data-files="{{ url_for('library_hf_files') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="op" value="download">
+        <label>{{ t('admin.models.library_hf') }}
+          <input type="text" id="lib-hf-repo" placeholder="prism-ml/Ternary-Bonsai-2-27B-gguf" maxlength="200"></label>
+        <button type="button" class="ghost" id="lib-hf-list">{{ t('admin.models.library_hf_list') }}</button>
+        <label>{{ t('admin.models.library_hf_file') }}
+          <select name="model" id="lib-hf-file" required disabled><option value="">—</option></select></label>
+        <button type="submit" id="lib-hf-go" disabled>{{ t('admin.models.library_download') }}</button>
+        <p class="small" id="lib-hf-note" role="status"></p>
+      </form>
+    </div>
+  </details>
+
+  <form method="post" action="{{ url_for('ollama_save') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="oi-count" value="{{ ollama.instances|length }}">
+    {# Model setups: what the household configures -- a model at a window, a
+       cache type and a number of slots, with a name and optionally a card.
+       Only the setups a task uses run (one server each, kept loaded, placed on
+       a card by this page when Card is Auto); the rest cost nothing. #}
+    {% macro su_row(n, st, new=False) %}
+      <div class="oi-grid">
+        <label>{{ t('admin.models.ollama_label') }}<input type="text" name="su-{{ n }}-name" value="{{ st.name }}" maxlength="40" placeholder="{{ t('admin.models.setup_name_placeholder') }}"></label>
+        <label>{{ t('admin.models.setup_engine') }}
+          <select name="su-{{ n }}-engine">
+            {% for e, label in ollama.engines %}<option value="{{ e }}" {% if e == (st.engine or 'ollama') %}selected{% endif %}{% if e != 'ollama' and e not in ollama.engines_built %} disabled{% endif %}>{{ label }}{% if e != 'ollama' and e not in ollama.engines_built %} ({{ t('admin.models.setup_engine_not_built') }}){% endif %}</option>{% endfor %}
+          </select></label>
+        {# The library's models, each marked by how it tested on the engine
+           picked beside it (the script re-marks them when the engine
+           changes), and "Other" for a name the library does not hold yet --
+           an hf:owner/repo/file.gguf a llama.cpp setup will download. #}
+        {% set lib_ids = ollama.library.models | map(attribute='id') | list %}
+        <label class="wide">{{ t('admin.models.ollama_model') }}
+          <select name="su-{{ n }}-model" data-other="su-{{ n }}-model-other"
+                  data-l-ok="{{ t('admin.models.setup_model_works') }}" data-l-untested="{{ t('admin.models.setup_model_untested') }}"
+                  data-l-fail="{{ t('admin.models.setup_model_fails') }}" data-l-none="{{ t('admin.models.setup_model_other_engine') }}"{% if not new %} required{% endif %}>
+            {% if new %}<option value="">{{ t('admin.models.setup_model_pick') }}</option>{% endif %}
+            {% for m in ollama.library.models %}
+            <option value="{{ m.id }}" data-short="{{ m.short }}" data-gib="{{ m.gib }}"
+                    {% for e in m.engines %} data-state-{{ e.id }}="{{ e.state }}"{% endfor %}
+                    {% if m.id == st.model %}selected{% endif %}>{{ m.short }} · {{ m.gib }} GiB</option>
+            {% endfor %}
+            {% if st.model and st.model not in lib_ids %}<option value="{{ st.model }}" selected data-short="{{ st.model }}">{{ st.model }} ({{ t('admin.models.setup_model_not_in_library') }})</option>{% endif %}
+            <option value="__other__">{{ t('admin.models.setup_model_other') }}</option>
+          </select>
+          <input type="text" name="su-{{ n }}-model-other" id="su-{{ n }}-model-other" maxlength="300" hidden
+                 placeholder="{{ t('admin.models.setup_model_placeholder') }}"></label>
+        <label>{{ t('admin.models.ollama_context') }}
+          <select name="su-{{ n }}-context">
+            {% for c in ollama.contexts %}<option value="{{ c }}" {% if c == st.context %}selected{% endif %}>{{ c // 1024 }}k</option>{% endfor %}
+            {% if st.context not in ollama.contexts %}<option value="{{ st.context }}" selected>{{ st.context }}</option>{% endif %}
+          </select></label>
+        <label>{{ t('admin.models.ollama_kv') }}
+          <select name="su-{{ n }}-kv_cache">{% for k in ollama.kv_types %}<option value="{{ k }}" {% if k == st.kv_cache %}selected{% endif %}>{{ k }}</option>{% endfor %}</select></label>
+        <label>{{ t('admin.models.ollama_parallel') }}<input type="number" name="su-{{ n }}-parallel" value="{{ st.parallel }}" min="1" max="16"></label>
+        <label>{{ t('admin.models.setup_thinking') }}
+          <select name="su-{{ n }}-thinking">
+            <option value="on" {% if st.thinking is not defined or st.thinking %}selected{% endif %}>{{ t('admin.models.setup_thinking_on') }}</option>
+            <option value="off" {% if st.thinking is defined and not st.thinking %}selected{% endif %}>{{ t('admin.models.setup_thinking_off') }}</option>
+          </select></label>
+        <label>{{ t('admin.models.ollama_gpu') }}
+          <select name="su-{{ n }}-gpu">
+            <option value="auto" {% if st.gpu == 'auto' %}selected{% endif %}>{{ t('admin.models.ollama_gpu_auto') }}</option>
+            {% for g in ollama.gpus %}<option value="{{ g.index }}" {% if st.gpu not in ('auto', 'cpu') and st.gpu == [g.index] %}selected{% endif %}>GPU{{ g.index }}</option>{% endfor %}
+            <option value="cpu" {% if st.gpu == 'cpu' %}selected{% endif %}>{{ t('admin.models.ollama_gpu_cpu') }}</option>
+            {% if not ollama.gpus and st.gpu not in ('auto', 'cpu') %}<option value="{{ st.gpu|join(',') }}" selected>GPU{{ st.gpu|join('+') }}</option>{% endif %}
+          </select></label>
+      </div>
+    {% endmacro %}
+    {% if ollama.engines_built %}<p class="help">{{ t('admin.models.setup_engine_help') }}</p>{% endif %}
+    <input type="hidden" name="su-count" value="{{ ollama.setups|length }}">
+    <div class="oi-list">
+    {% for st in ollama.setups %}{% set n = loop.index0 %}
+      <fieldset class="oi">
+        <input type="hidden" name="su-{{ n }}-id" value="{{ st.id }}">
+        <legend><b>{{ st.name or st.model }}</b>
+          <span class="oi-state small" data-state="{{ st.state }}">{{ t('admin.models.ollama_state_' ~ st.state) }}</span></legend>
+        {{ su_row(n, st) }}
+        <p class="small oi-uses">
+          {% if st.used %}{{ t('admin.models.ollama_used_by') }} {{ st.used_by|join(', ') }}
+            {% if st.gpu == 'cpu' %}· CPU{% elif st.placed %}· {{ t('admin.models.ollama_on_cards', cards='+'.join(st.placed|map('string'))) }}{% endif %}
+            · <b>≈ {{ st.need_gib }} GiB</b> {{ t('admin.models.ollama_how_' ~ st.need.how) }}{% if st.measured_at %} · {{ t('admin.models.ollama_measured_at', at=st.measured_at) }}{% endif %}
+            <button type="button" class="linkish" data-ollama-measure="{{ st.id }}">{{ t('admin.models.ollama_measure') }}</button>
+            {% if st.cpu_mib %}<br><b class="warn">{{ t('admin.models.ollama_cpu_spill', gib=(st.cpu_mib / 1024)|round(1)) }}</b>
+              <button type="button" class="linkish" data-ollama-reload="{{ st.id }}">{{ t('admin.models.ollama_reload') }}</button>{% endif %}
+          {% else %}{{ t('admin.models.setup_unused', gib=st.need_gib) }}
+            <label class="row-tight"><input type="checkbox" name="su-{{ n }}-remove"> {{ t('admin.models.ollama_remove') }}</label>
+          {% endif %}
+        </p>
+        {% if st.changes %}<p class="small warn">{{ t('admin.models.ollama_pending') }} {{ st.changes|join(' · ') }}</p>{% endif %}
+      </fieldset>
+    {% endfor %}
+      {% if not ollama.setups %}<p class="help">{{ t('admin.models.setups_none') }}</p>{% endif %}
+      <details class="oi oi-new"{% if not ollama.setups %} open{% endif %}>
+        <summary>{{ t('admin.models.ollama_add') }}</summary>
+        {{ su_row(ollama.setups|length, ollama.setup_blank, True) }}
+      </details>
+    </div>
+
+    {# The other things that live on the cards. Beside the Ollama servers
+       because they share the memory; saving one asks for that service's
+       deploy, which is what moves it. #}
+    {% if ollama.tenants %}
+    <h3 class="oi-tasks-head">{{ t('admin.models.tenants_heading') }}</h3>
+    <div class="oi-tasks">
+      {% for tn in ollama.tenants %}
+      <label class="oi-task"><span>{{ tn.label }}</span>
+        <select name="gpu-{{ tn.svc }}">
+          {% for g in ollama.gpus %}<option value="{{ g.index }}" {% if tn.choice == g.index|string %}selected{% endif %}>GPU{{ g.index }}</option>{% endfor %}
+          {% if tn.choice == 'all' or ollama.gpus|length > 1 %}<option value="all" {% if tn.choice == 'all' %}selected{% endif %}>{{ t('admin.models.tenant_any_card') }}</option>{% endif %}
+          {% if not ollama.gpus and tn.choice not in ('cpu', 'all') %}<option value="{{ tn.choice }}" selected>GPU{{ tn.choice }}</option>{% endif %}
+          {% if tn.cpu %}<option value="cpu" {% if tn.choice == 'cpu' %}selected{% endif %}>{{ t('admin.models.ollama_gpu_cpu') }}</option>{% endif %}
+        </select></label>
+      {% endfor %}
+    </div>
+    <p class="help">{{ t('admin.models.tenants_help') }}</p>
+    {% endif %}
+
+    {# The servers that are not setups: the installer's own (pulls, Paperless's
+       embeddings, anything still on it) and the benchmark's. Rarely touched. #}
+    <details class="oi-advanced">
+      <summary>{{ t('admin.models.ollama_advanced') }}</summary>
+      <p class="help">{{ t('admin.models.ollama_advanced_help') }}</p>
+      <input type="hidden" name="oi-count" value="{{ ollama.instances|length }}">
+      {% for i in ollama.instances %}{% set n = loop.index0 %}
+      <fieldset class="oi">
+        <input type="hidden" name="oi-{{ n }}-id" value="{{ i.id }}">
+        <legend><b>{{ i.label or i.id }}</b> <span class="mono muted small">{{ i.unit }}.service</span>
+          <span class="oi-state small" data-state="{{ i.state }}">{{ t('admin.models.ollama_state_' ~ i.state) }}</span></legend>
+        <div class="oi-grid">
+          <label>{{ t('admin.models.ollama_context') }}
+            <select name="oi-{{ n }}-context">
+              {% for c in ollama.contexts %}<option value="{{ c }}" {% if c == i.context %}selected{% endif %}>{{ c // 1024 }}k</option>{% endfor %}
+              {% if i.context not in ollama.contexts %}<option value="{{ i.context }}" selected>{{ i.context }}</option>{% endif %}
+            </select></label>
+          <label>{{ t('admin.models.ollama_kv') }}
+            <select name="oi-{{ n }}-kv_cache">{% for k in ollama.kv_types %}<option value="{{ k }}" {% if k == i.kv_cache %}selected{% endif %}>{{ k }}</option>{% endfor %}</select></label>
+          <label>{{ t('admin.models.ollama_parallel') }}<input type="number" name="oi-{{ n }}-parallel" value="{{ i.parallel }}" min="1" max="16"></label>
+          <label>{{ t('admin.models.ollama_max_models') }}<input type="number" name="oi-{{ n }}-max_models" value="{{ i.max_models }}" min="1" max="8"></label>
+          <label>{{ t('admin.models.ollama_gpu') }}
+            <select name="oi-{{ n }}-gpu">
+              <option value="auto" {% if i.gpu_mode == 'auto' %}selected{% endif %}>{{ t('admin.models.ollama_gpu_auto') }}</option>
+              {% for g in ollama.gpus %}<option value="{{ g.index }}" {% if i.gpu_mode != 'auto' and i.gpus == [g.index] %}selected{% endif %}>GPU{{ g.index }}</option>{% endfor %}
+              {% if not ollama.gpus and i.gpus and i.gpu_mode != 'auto' %}<option value="{{ i.gpus|join(',') }}" selected>GPU{{ i.gpus|join('+') }}</option>{% endif %}
+            </select></label>
+          <label>{{ t('admin.models.ollama_port') }}<input type="number" name="oi-{{ n }}-port" value="{{ i.port }}" min="1" max="65535"></label>
+          <label>{{ t('admin.models.ollama_keep_alive') }}<input type="text" name="oi-{{ n }}-keep_alive" value="{{ i.keep_alive }}" placeholder="5m" maxlength="12"></label>
+        </div>
+        <input type="hidden" name="oi-{{ n }}-label" value="{{ i.label }}">
+        {% if i.managed %}<input type="hidden" name="oi-{{ n }}-managed" value="on">{% endif %}
+        <p class="small oi-uses">{% if i.purpose == 'bench' %}{{ t('admin.models.ollama_bench') }}{% elif i.used_by %}{{ t('admin.models.ollama_used_by') }} {% for r, m in i.used_by %}<span class="mono">{{ r }}</span> ({{ m }}){% if not loop.last %}, {% endif %}{% endfor %}{% else %}{{ t('admin.models.ollama_unused') }}{% endif %}</p>
+        {% if i.changes %}<p class="small warn">{{ t('admin.models.ollama_pending') }} {{ i.changes|join(' · ') }}</p>{% endif %}
+      </fieldset>
+      {% endfor %}
+    </details>
+    {% if ollama.removed %}<p class="small warn">{{ t('admin.models.ollama_removed', units=ollama.removed|join(', ')) }}</p>{% endif %}
+    <p class="help">{{ t('admin.models.ollama_save_help') }}</p>
+    {# Apply is a submit of this same form: it saves what is on screen and
+       then asks the host. A separate Apply applied the *saved* list, and new
+       rows typed but not saved were silently left out. #}
+    {# What saving would do to the cards, before anything is saved: the
+       page's own placement run on the form as it stands. #}
+    <div id="ollama-preview" hidden></div>
+    <p id="ollama-preview-note" class="small" role="status" hidden></p>
+    <p class="oi-buttons"><button type="button" class="ghost" id="ollama-preview-btn">{{ t('admin.models.ollama_preview') }}</button>
+      <button type="submit">{{ t('common.save') }}</button>
+      {% if ollama.trigger == 'ok' %}<button type="submit" name="apply" value="1"{% if ollama.requested %} disabled{% endif %}>{{ t('admin.models.ollama_save_apply') }}</button>{% endif %}</p>
+  </form>
+
+  {# Applying is the host's: this page cannot reach systemd. #}
+  <div class="oi-apply">
+    {% if ollama.trigger == 'ok' %}
+      <span id="ollama-apply-note" class="small muted" role="status" data-status="{{ url_for('ollama_status') }}"
+            {% if ollama.requested %}data-waiting="1"{% endif %}>{% if ollama.requested %}{{ t('admin.models.ollama_apply_sent') }}{% endif %}</span>
+    {% else %}
+      <p class="help">{{ t('admin.models.ollama_trigger_' ~ ollama.trigger) }}</p>
+      <pre class="mono small">sudo ./home-stack ollama --install-trigger</pre>
+    {% endif %}
+    {% if ollama.plan_at %}<p class="help">{{ t('admin.models.ollama_plan_at', at=ollama.plan_at) }}</p>{% endif %}
+    <details class="bench-log"{% if ollama.requested %} open{% endif %}><summary>{{ t('admin.models.ollama_log') }}</summary>
+      <pre id="ollama-log" class="joblog">{{ ollama.log }}</pre></details>
+  </div>
+  {% endif %}
+</div>
+
+{# The page's order is its jobs' order: which model does each job (above),
+   where the house's own models run (the card before this), then the models
+   that are not chat -- voice, images, code -- and last where models come from. #}
+{# Speech. Neither is a chat model and neither has a price, so they cannot go
+   through the ranking above either -- but both are models the house runs, and
+   this page is where somebody looks for those. whisper's choice is a size,
+   audio.cpp's is a package the service was deployed with. #}
+<div class="card">
+  <h2>{{ t('admin.models.speech_heading') }}</h2>
+  <p class="intro">{{ t('admin.models.speech_intro') }}</p>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    {# Says this card was on screen -- see scope:images below. #}
+    <input type="hidden" name="scope:speech" value="1">
+    <div class="fields">
+      <div class="field">
+        <label for="whisper-model">{{ t('admin.models.speech_whisper') }}</label>
+        <select id="whisper-model" name="whisper_model">
+          {% if speech.whisper and speech.whisper not in speech.whisper_choices %}
+          <option value="{{ speech.whisper }}" selected>{{ speech.whisper }}</option>
+          {% endif %}
+          {% for m in speech.whisper_choices %}
+          <option value="{{ m }}" {% if m == speech.whisper %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+        <p class="help">{{ t('admin.models.speech_whisper_help') }}</p>
+      </div>
+      <div class="field">
+        <label for="tts-model">{{ t('admin.models.speech_tts') }}</label>
+        {% if speech.tts_choices %}
+        <select id="tts-model" name="tts_model">
+          {% for m in speech.tts_choices %}
+          <option value="{{ m }}" {% if m == speech.tts %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <p class="muted">{{ t('admin.models.speech_tts_none') }}</p>
+        {% endif %}
+        <p class="help">{{ t('admin.models.speech_tts_help') }}</p>
+      </div>
+    </div>
+    <p class="stack"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+</div>
+
+{# Two slots, both cloud. An image endpoint reports no context window and no
+   price per token, so these cannot go through the same ranking as the chat
+   personas -- they get their own list, filtered by model family rather than by
+   the zeros the catalogue happens to carry for them. #}
+<div class="card">
+  <h2>{{ t('admin.models.images_heading') }}</h2>
+  <p class="intro">{{ t('admin.models.images_intro') }}</p>
+  {% if image_choices %}
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    {# Says this card was on screen. An unselected <select> still posts, but an
+       empty one means "no image model" only when this form sent it -- the
+       persona card and the sources card carry none of these fields, so without
+       the marker saving either of them read as "both slots cleared". #}
+    <input type="hidden" name="scope:images" value="1">
+    <div class="fields">
+      {% for slot in image_slots %}
+      <div class="field wide">
+        <label for="img-{{ slot.key }}">{{ slot.label }}</label>
+        <select id="img-{{ slot.key }}" name="model:{{ slot.key }}">
+          <option value="">{{ t('admin.models.images_none') }}</option>
+          {% for m in image_choices %}
+          <option value="{{ m.id }}" {% if m.id == slot.current %}selected{% endif %}>
+            {{ m.name }} — {{ provider_labels.get(m.provider, m.provider) }}
+          </option>
+          {% endfor %}
+        </select>
+        <p class="help">{{ slot.why }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="stack"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+  {% else %}
+  <p class="help">{{ t('admin.models.images_none_available') }}</p>
+  {% endif %}
+</div>
+
+
+{# The Code space's model, and the only picker on this page that may offer a
+   flat-plan model. Go is not in models.SOURCES, so no role picker can reach
+   one; this card reads its own roster. The reason for the split is in
+   CLAUDE.md: the flat plan expects a person at a keyboard, and every other
+   role here is unattended traffic on the same key. #}
+<div class="card">
+  <h2>{{ t('admin.models.code_heading') }}</h2>
+  <p class="intro">{{ t('admin.models.code_intro') }}</p>
+  {% if not code_enabled %}
+  <p class="help note">{{ t('admin.models.code_off') }}</p>
+  {% endif %}
+  {% if code_choices %}
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="scope:code" value="1">
+    <div class="field wide">
+      <label for="code-model">{{ t('admin.models.code_label') }}</label>
+      <select id="code-model" name="code_model">
+        <option value="">{{ t('admin.models.code_unset') }}</option>
+        {% if code_model and code_model not in code_choices
+              |map(attribute='models')|sum(start=[])|map(attribute='id')|list %}
+        <optgroup label="{{ t('admin.models.not_on_offer') }}">
+          <option value="{{ code_model }}" selected>{{ code_model }}</option>
+        </optgroup>
+        {% endif %}
+        {% for group in code_choices %}
+        <optgroup label="{{ t('admin.models.code_group_' ~ group.key) }}">
+          {% for m in group.models %}
+          <option value="{{ m.id }}" {% if m.id == code_model %}selected{% endif %}>{{ m.label }}{% if m.context %} · {{ '{:,}'.format(m.context) }}{% endif %}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+      <p class="help">{{ t('admin.models.code_help') }}</p>
+    </div>
+    <p class="stack"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+  {% else %}
+  <p class="help">{{ t('admin.models.code_no_roster') }}</p>
+  {% endif %}
+</div>
+
+
+<div class="card">
+  <h2>{{ t('admin.models.sources_heading') }}</h2>
+  <p class="intro">{{ t('admin.models.sources_intro') }}</p>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    {# Same marker, same reason: an unchecked box sends nothing, so a save of
+       either card above would otherwise read as "local Ollama off, no
+       OpenAI-compatible endpoint" and blank the URL somebody typed. #}
+    <input type="hidden" name="scope:sources" value="1">
+
+    {# The house's own Ollama servers have a card of their own below
+       ("#ollama"): how many, on which card, with what window. #}
+    <div class="field">
+      {# No checkbox: the key decides, the same as OpenRouter, Together and
+         OpenAI below. What is shown is whether the key is there. #}
+      <label style="display:flex;gap:8px;align-items:baseline">
+        {{ t('admin.models.source_ollama_cloud') }}
+        {% if sources.ollama_cloud.enabled %}
+          <span class="mono" style="font-size:.78rem;font-weight:400;color:var(--live-ink)">{{ t('admin.models.key_set') }}</span>
+        {% else %}
+          <span class="mono" style="font-size:.78rem;font-weight:400;color:var(--ink-soft)">{{ t('admin.models.key_unset') }}</span>
+        {% endif %}
+      </label>
+      <p class="help">{{ t('admin.models.ollama_cloud_help') }}</p>
+      <input type="text" name="ollama_cloud_url" class="mono" style="max-width:340px"
+             value="{{ sources.ollama_cloud.url }}">
+    </div>
+
+    {# A source switched off folds away with the others that are: the card
+       shows what the house uses, and what it could turn on is one click away.
+       The fields stay in this form, so saving keeps their addresses. #}
+    {% macro compat_field() %}
+    <div class="field">
+      <label class="row-tight">
+        <input type="checkbox" name="compat" {% if sources.compat.enabled %}checked{% endif %}>
+        {{ t('admin.models.source_openai_compatible') }}
+      </label>
+      <p class="help">{{ t('admin.models.compat_help') }}</p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+        <input type="text" name="compat_url" class="mono" style="max-width:340px"
+               placeholder="http://192.168.1.50:8000"
+               value="{{ sources.compat.url }}">
+        <input type="text" name="compat_label" style="max-width:200px"
+               placeholder="{{ t('admin.models.compat_label_placeholder') }}"
+               value="{{ sources.compat.label }}">
+      </div>
+      <p class="help">{{ t('admin.models.compat_key_note') }}</p>
+    </div>
+
+    {% endmacro %}
+    {% macro freetoken_field() %}
+    {# Its own row, not a second use of the one above. There is exactly one
+       generic slot and it is meant to stay free for whatever is being tried
+       this week; a household running FreeToken should not have to give that
+       up. Same shape, because it is the same question asked twice. #}
+    <div class="field">
+      <label class="row-tight">
+        <input type="checkbox" name="freetoken" {% if sources.freetoken.enabled %}checked{% endif %}>
+        {{ t('admin.models.source_freetoken') }}
+      </label>
+      <p class="help">{{ t('admin.models.freetoken_help') }}</p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+        <input type="text" name="freetoken_url" class="mono" style="max-width:340px"
+               placeholder="http://desktop.home:8000"
+               value="{{ sources.freetoken.url }}">
+        <input type="text" name="freetoken_label" style="max-width:200px"
+               placeholder="{{ t('admin.models.compat_label_placeholder') }}"
+               value="{{ sources.freetoken.label }}">
+      </div>
+      <p class="help">{{ t('admin.models.freetoken_key_note') }}</p>
+    </div>
+
+    {% endmacro %}
+    {% if sources.compat.enabled %}{{ compat_field() }}{% endif %}
+    {% if sources.freetoken.enabled %}{{ freetoken_field() }}{% endif %}
+    {% set off = [] %}
+    {% if not sources.compat.enabled %}{% set _ = off.append(t('admin.models.source_openai_compatible')) %}{% endif %}
+    {% if not sources.freetoken.enabled %}{% set _ = off.append(t('admin.models.source_freetoken')) %}{% endif %}
+    {% if off %}
+    <details class="more-sources">
+      <summary>{{ t('admin.models.sources_off', names=off|join(', ')) }}</summary>
+      {% if not sources.compat.enabled %}{{ compat_field() }}{% endif %}
+      {% if not sources.freetoken.enabled %}{{ freetoken_field() }}{% endif %}
+    </details>
+    {% endif %}
+
+    <p class="note">{{ t('admin.models.keyed_sources_note') }}</p>
+
+    <p class="stack-l"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+</div>
+{% endif %}
+
+{% if view == 'catalog' %}
+{# `wide` lets the plate widen for this one card -- see base.html. The roster
+   is the only table on the admin that is genuinely wider than prose, and it
+   was being scrolled sideways inside a 1000px plate while a PC screen had
+   400px spare on either side. Prose keeps its own 68ch cap regardless. #}
+<div class="card wide">
+  <h2>{{ t('admin.models.roster') }}</h2>
+  <p class="intro">{{ t('admin.models.roster_intro') }}</p>
+
+  {# Filters and sorting are done in the browser over rows already on the page.
+     No request, because the whole roster is already here: with OpenRouter on
+     it is four hundred rows, and a round trip to hide some of them would be
+     slower than reading them. Every control degrades to "everything, in the
+     order the server sent" with JavaScript off. #}
+  <div class="roster-controls">
+    <label>
+      {{ t('admin.models.filter_provider') }}
+      <select id="f-provider">
+        <option value="">{{ t('admin.models.filter_all') }}</option>
+        {% for group in model_groups %}
+          {% if options | selectattr('provider', 'equalto', group.provider) | list %}
+            <option value="{{ group.provider }}">{{ group.label }}</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="f-vision"> {{ t('admin.models.filter_images') }}
+    </label>
+    <label class="check">
+      <input type="checkbox" id="f-audio"> {{ t('admin.models.filter_audio') }}
+    </label>
+    {# Grouping, not sorting. The note on the rows below says a model in use is
+       marked rather than moved, because hoisting them would fight whichever
+       column the reader just clicked -- so this is theirs to switch on, it
+       composes with a column sort rather than replacing one, and it is off
+       until asked for. #}
+    <label class="check">
+      <input type="checkbox" id="f-grouped"> {{ t('admin.models.group_in_use') }}
+    </label>
+    <label>
+      {{ t('admin.models.filter_search') }}
+      <input type="text" id="f-text" class="mono" placeholder="qwen, gpt…">
+    </label>
+    <span id="f-count" class="mono"></span>
+  </div>
+
+  {# The roster is wider than a phone. `.scroll` is what keeps that from
+     taking the whole settings page sideways with it -- base.html's note on
+     the class names this very table, but nothing here had ever wrapped it,
+     so every card on the page rendered at the roster's width and each one
+     was clipped at the right edge on a narrow screen. #}
+  <div class="scroll">
+  <table id="roster">
+    <thead>
+      <tr>
+        {# `data-sort` is the type, so the script does not have to guess whether
+           a column is money, a count or a name. `—` is not zero and must sort
+           to the end either way, which is what a text sort of "—" would not
+           do. #}
+        <th data-sort="text">{{ t('admin.models.model') }}</th>
+        <th data-sort="text">{{ t('admin.models.where') }}</th>
+        <th data-sort="num" class="num">{{ t('admin.models.in') }}
+          <span class="unit">{{ t('admin.models.per_million') }}</span></th>
+        <th data-sort="num" class="num">{{ t('admin.models.cached') }}
+          <span class="unit">{{ t('admin.models.per_million') }}</span></th>
+        <th data-sort="num" class="num">{{ t('admin.models.out') }}
+          <span class="unit">{{ t('admin.models.per_million') }}</span></th>
+        <th data-sort="num" class="num">{{ t('admin.models.context') }}
+          <span class="unit">{{ t('admin.models.tokens') }}</span></th>
+        {# What one reply may be. The roles on a reasoning model are capped by
+           this and not by the context window, and a cap below the thinking
+           budget returns an EMPTY answer rather than a short one -- see
+           FREETOKEN.md in home-stack. Worth reading next to the flag. #}
+        <th data-sort="num" class="num">{{ t('admin.models.max_output') }}
+          <span class="unit">{{ t('admin.models.tokens') }}</span></th>
+        <th data-sort="flag">{{ t('admin.models.reasoning') }}</th>
+        <th data-sort="flag">{{ t('admin.models.images') }}</th>
+        <th data-sort="flag">{{ t('admin.models.audio') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for m in options %}
+    {# A row this house is on is marked rather than moved: the sort order is
+       the reader's, and hoisting the twelve models in use to the top would
+       fight whichever column they just clicked. #}
+    <tr data-provider="{{ m.provider }}"
+        data-reasoning="{{ 1 if m.reasoning else 0 }}"
+        data-vision="{{ 1 if m.vision else 0 }}"
+        data-audio="{{ 1 if m.audio else 0 }}"
+        data-id="{{ m.id }}"
+        class="{% if in_use.get(m.id) %}on{% endif %}">
+      {# `data-v` so the sort reads the id and not the id plus whatever the
+         badge says: without it two rows whose ids share a prefix order on the
+         persona label instead. #}
+      <td class="mono" data-v="{{ m.id }}">{{ m.id }}
+        {%- if in_use.get(m.id) %}
+        <span class="inuse" title="{{ in_use.get(m.id) | join(', ') }}">{{ in_use.get(m.id) | join(', ') }}</span>
+        {%- endif %}
+      </td>
+      <td>{{ provider_labels.get(m.provider, m.provider) }}</td>
+      {# A price of None is "not published", which is not the same as zero. A
+         local Ollama really is free at the point of use; ollama.com and an
+         OpenAI-compatible server are not, and printing $0 for them would put
+         them top of every cheapest-first comparison on this page.
+
+         `per_million` is what makes the column readable down rather than row
+         by row -- see the filter in app.py. #}
+      {% for field in ['input', 'cache_read', 'output'] %}
+      {#- The filter's own answer decides, not the raw value: it returns None
+          for anything it cannot read as a price, and rendering that would put
+          the literal word "None" in a money column. #}
+      {%- set shown = m[field] | per_million -%}
+      <td class="num mono" data-v="{% if m[field] is not none %}{{ m[field] }}{% endif %}">
+        {%- if shown is none -%}<span class="none">—</span>{%- else -%}{{ shown }}{%- endif -%}
+      </td>
+      {% endfor %}
+      <td class="num mono" data-v="{{ m.context or '' }}">
+        {%- if m.context -%}{{ m.context | token_count }}{%- else -%}<span class="none">—</span>{%- endif -%}
+      </td>
+      <td class="num mono" data-v="{{ m.max_output or '' }}">
+        {%- if m.max_output -%}{{ m.max_output | token_count }}{%- else -%}<span class="none">—</span>{%- endif -%}
+      </td>
+      <td>{% if m.reasoning %}✓{% endif %}</td>
+      <td>{% if m.vision %}✓{% endif %}</td>
+      <td>{% if m.audio %}✓{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+<script>
+// The rest of each role's models, added to its picker when somebody asks.
+//
+// The page ships the shortlist -- what the role runs now and what this page
+// would put there -- because that is what anybody actually chooses between.
+// Rendering every option for every role was 809 <option> elements for a page
+// where at most one gets changed, and the cost is the browser building them,
+// not this stack producing them: the cache loads in 5ms and every
+// recommendation in 5ms more.
+//
+// The button is `hidden` in the markup and revealed here, so a browser with no
+// JavaScript never shows a control that would do nothing. The picker is then
+// the shortlist, which is what the page recommends anyway.
+(function () {
+  var REST = {{ deferred_models|tojson }};
+  var buttons = document.querySelectorAll('.js-more');
+  for (var i = 0; i < buttons.length; i++) {
+    (function (btn) {
+      var role = btn.getAttribute('data-role');
+      if (!REST[role] || !REST[role].length) return;
+      btn.hidden = false;
+      btn.addEventListener('click', function () {
+        // Every picker of the role: a chain (the rescue models) has one per place.
+        var selects = document.querySelectorAll('select[name="model:' + role + '"], select[name^="model:' + role + ':"]');
+        if (!selects.length) return;
+        var groups = REST[role];
+        for (var si = 0; si < selects.length; si++) {
+        var select = selects[si];
+        for (var g = 0; g < groups.length; g++) {
+          var box = document.createElement('optgroup');
+          box.label = groups[g][0];
+          var models = groups[g][1];
+          for (var m = 0; m < models.length; m++) {
+            var opt = document.createElement('option');
+            opt.value = models[m][0];
+            // The price is already formatted server-side where it is known;
+            // null means unpublished, which is not the same as free.
+            opt.textContent = models[m][1] === null
+              ? models[m][0]
+              : models[m][0] + ' (~$' + models[m][1].toFixed(2) + ')';
+            box.appendChild(opt);
+          }
+          select.appendChild(box);
+        }
+        }
+        btn.remove();
+      });
+    })(buttons[i]);
+  }
+})();
+
+/* Type to narrow a picker.
+
+   Built here rather than in the template so a browser with no JavaScript never
+   sees a box that would do nothing -- the same rule "show all" follows. Rosters
+   run to a hundred and fifty models once that button is pressed, and scrolling
+   a <select> that long for a name you already know is the part that made this
+   page hard to use. */
+(function () {
+  // Only the image pickers: a role's picker is a provider, then its models,
+  // which is short enough to read without typing.
+  var selects = document.querySelectorAll('select[id^="img-"]');
+  for (var i = 0; i < selects.length; i++) {
+    (function (select) {
+      var box = document.createElement('input');
+      box.type = 'search';
+      box.className = 'model-filter';
+      box.placeholder = {{ t('admin.models.filter')|tojson }};
+      box.setAttribute('aria-label', {{ t('admin.models.filter')|tojson }});
+
+      select.parentNode.insertBefore(box, select);
+
+      function narrow(opts) {
+        var q = box.value.trim().toLowerCase();
+        var any = 0;
+        for (var o = 0; o < opts.length; o++) {
+          /* The label carries the price and any note, so searching for
+             "free" or "responses" finds what the id alone would not. */
+          var hay = (opts[o].value + ' ' + opts[o].textContent).toLowerCase();
+          var hit = !q || hay.indexOf(q) !== -1;
+          /* Never hide what is currently chosen, and never the empty "not
+             enabled" row. A filter that scrolls the selection out of view
+             reads as the setting having been cleared, and submitting then
+             changes a role nobody meant to touch. */
+          if (opts[o].selected || !opts[o].value) hit = true;
+          opts[o].hidden = !hit;
+          if (hit) any++;
+        }
+        return any;
+      }
+
+      function apply() {
+        var groups = select.getElementsByTagName('optgroup');
+        for (var g = 0; g < groups.length; g++) {
+          groups[g].hidden = !narrow(groups[g].getElementsByTagName('option'));
+        }
+        /* The image pickers list their models as bare <option>s with no
+           optgroup at all. Walking only the groups gave those selects a
+           search box that did precisely nothing. */
+        var loose = [], kids = select.children;
+        for (var c = 0; c < kids.length; c++) {
+          if (kids[c].tagName === 'OPTION') loose.push(kids[c]);
+        }
+        if (loose.length) narrow(loose);
+      }
+
+      box.addEventListener('input', apply);
+      /* "Show all" appends more optgroups; re-run so they are filtered too. */
+      if (select.id.indexOf('m-') === 0) {
+        var more = document.querySelector(
+          '.js-more[data-role="' + select.id.slice(2) + '"]');
+        if (more) more.addEventListener('click', function () { setTimeout(apply, 0); });
+      }
+    })(selects[i]);
+  }
+})();
+
+/* Two levels: provider, then model.
+
+   One <select> listing every source's models in <optgroup>s grew past what
+   anybody scrolls; the groups are already the providers, so they become the
+   first picker and the chosen group's models the second. The real select
+   stays in the form, hidden, and is the only thing submitted: without
+   JavaScript it is the page as it was. Choosing a provider asks for that
+   role's full roster ("show all"), since picking one means looking through
+   it. A provider with one choice (the house's own Ollama, "—") shows no
+   second picker. */
+(function () {
+  var LABEL_P = {{ t('admin.models.provider')|tojson }}, LABEL_M = {{ t('admin.models.model')|tojson }};
+  var reals = document.querySelectorAll('select[name^="model:"]');
+  Array.prototype.forEach.call(reals, function (real) {
+    // The image pickers list bare models, with no sources to choose between.
+    if (!real.getElementsByTagName('optgroup').length) return;
+    var role = real.name.split(':')[1];
+    var wrap = document.createElement('div');
+    wrap.className = 'pick-pair';
+    var prov = document.createElement('select'), mod = document.createElement('select');
+    prov.setAttribute('aria-label', LABEL_P);
+    mod.setAttribute('aria-label', LABEL_M);
+    wrap.appendChild(prov);
+    wrap.appendChild(mod);
+    real.parentNode.insertBefore(wrap, real.nextSibling);
+    real.hidden = true;
+
+    function groupOf(o) { return o.parentNode.tagName === 'OPTGROUP' ? o.parentNode.label : ''; }
+    function groups() {
+      var out = [], by = {};
+      Array.prototype.forEach.call(real.options, function (o) {
+        var g = groupOf(o);
+        if (!(g in by)) { by[g] = {label: g, opts: []}; out.push(by[g]); }
+        by[g].opts.push(o);
+      });
+      return out;
+    }
+    function paint(want) {
+      var gs = groups(), chosen = real.options[real.selectedIndex];
+      var pick = want != null ? want : (chosen ? groupOf(chosen) : '');
+      prov.textContent = '';
+      var shown = null;
+      gs.forEach(function (g) {
+        var vis = g.opts.filter(function (o) { return !o.hidden || o.selected; });
+        if (!vis.length && g.label !== pick) return;
+        var o = document.createElement('option');
+        o.value = g.label;
+        o.textContent = g.label || g.opts[0].textContent;
+        if (g.label === pick) { o.selected = true; shown = g; }
+        prov.appendChild(o);
+      });
+      mod.textContent = '';
+      if (!shown) { mod.hidden = true; return; }
+      shown.opts.forEach(function (src) {
+        if (src.hidden && !src.selected) return;
+        var o = document.createElement('option');
+        o.value = src.value;
+        o.textContent = src.textContent;
+        o.selected = src.selected;
+        mod.appendChild(o);
+      });
+      // One option that names a model (a setup, a lone model) is still shown:
+      // Vision read "Local models" and nothing else. Hidden only when the
+      // single choice is not a model at all ("—", the generic local one).
+      mod.hidden = shown.opts.length < 2 && /^(__local__)?$/.test(shown.opts[0].value);
+    }
+    function choose(value) {
+      if (real.value === value) return;
+      real.value = value;
+      real.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
+    /* The rest of the roster arrives the first time the provider picker is
+       opened, so every provider is in it; the "show all" button is then
+       redundant and hidden. */
+    function loadAll() {
+      var more = document.querySelector('.js-more[data-role="' + role + '"]');
+      if (more) more.click();
+    }
+    var btn = document.querySelector('.js-more[data-role="' + role + '"]');
+    if (btn) setTimeout(function () { btn.hidden = true; }, 0);
+    prov.addEventListener('focus', loadAll);
+    prov.addEventListener('mousedown', loadAll);
+    prov.addEventListener('change', function () {
+      loadAll();
+      var g = groups().filter(function (x) { return x.label === prov.value; })[0];
+      var chosen = real.options[real.selectedIndex];
+      if (g && !(chosen && groupOf(chosen) === g.label)) {
+        var first = g.opts.filter(function (o) { return !o.hidden; })[0] || g.opts[0];
+        choose(first.value);
+      }
+      paint(prov.value);
+    });
+    mod.addEventListener('change', function () { choose(mod.value); paint(prov.value); });
+    real.addEventListener('change', function () { paint(); });
+    /* "Show all" adds groups; the filter box hides options. Either way the
+       two pickers are redrawn from the real one. */
+    new MutationObserver(function () { paint(prov.value); })
+      .observe(real, {childList: true, subtree: true, attributes: true, attributeFilter: ['hidden']});
+    paint();
+  });
+})();
+</script>
+
+<script>
+// Filtering and sorting the roster, over the rows already on the page.
+//
+// No fetch and no library. The whole catalogue is rendered once -- four
+// hundred rows with OpenRouter on -- so hiding some of them is a class change,
+// and asking the server would be slower than reading the answer.
+//
+// With JavaScript off none of this runs and the table is the full roster in
+// the order the server sorted it, which is the honest fallback.
+(function () {
+  var table = document.getElementById('roster');
+  if (!table) return;
+  var body = table.tBodies[0];
+  var rows = Array.prototype.slice.call(body.rows);
+  var count = document.getElementById('f-count');
+  var controls = {
+    provider: document.getElementById('f-provider'),
+    vision: document.getElementById('f-vision'),
+    audio: document.getElementById('f-audio'),
+    grouped: document.getElementById('f-grouped'),
+    text: document.getElementById('f-text')
+  };
+
+  /* In-use rows first, and only when asked. Applied *after* the column sort
+     rather than instead of it, so the two compose: sort by price, tick this,
+     and you get the models in use cheapest-first followed by the rest
+     cheapest-first. Array.prototype.sort is stable in every browser this runs
+     in, so the order inside each group stays whatever the reader chose. */
+  function regroup() {
+    var order = controls.grouped.checked
+      ? rows.slice().sort(function (a, b) {
+          return (b.classList.contains('on') ? 1 : 0)
+               - (a.classList.contains('on') ? 1 : 0);
+        })
+      : rows;
+    order.forEach(function (row) { body.appendChild(row); });
+  }
+
+  function apply() {
+    regroup();
+    var want = controls.provider.value;
+    var needle = controls.text.value.trim().toLowerCase();
+    var shown = 0;
+    rows.forEach(function (row) {
+      var ok =
+        (!want || row.dataset.provider === want) &&
+        (!controls.vision.checked || row.dataset.vision === '1') &&
+        (!controls.audio.checked || row.dataset.audio === '1') &&
+        (!needle || row.dataset.id.toLowerCase().indexOf(needle) !== -1);
+      row.hidden = !ok;
+      // Restriped over what is still visible: `:nth-child(even)` counts the
+      // hidden rows as well, so the moment a filter is on the stripe stops
+      // tracking anything an eye can follow.
+      row.classList.remove('stripe-on', 'stripe-off');
+      if (ok) {
+        row.classList.add(shown % 2 ? 'stripe-on' : 'stripe-off');
+        shown++;
+      }
+    });
+    count.textContent = shown + ' / ' + rows.length;
+  }
+
+  Object.keys(controls).forEach(function (k) {
+    controls[k].addEventListener(k === 'text' ? 'input' : 'change', apply);
+  });
+
+  // Sorting. `data-sort` says what a column holds, because guessing gets the
+  // money columns wrong: "$0.8" and "—" are both text, and a text sort puts
+  // $10 before $9 and the unpriced rows in the middle of the prices.
+  var sortedBy = -1, ascending = true;
+  Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th, index) {
+    var kind = th.dataset.sort;
+    if (!kind) return;
+    th.tabIndex = 0;
+    th.classList.add('sortable');
+    function sort() {
+      ascending = sortedBy === index ? !ascending : true;
+      sortedBy = index;
+      Array.prototype.forEach.call(table.tHead.rows[0].cells, function (other) {
+        other.classList.remove('sorted-up', 'sorted-down');
+      });
+      th.classList.add(ascending ? 'sorted-up' : 'sorted-down');
+      var direction = ascending ? 1 : -1;
+      rows.sort(function (a, b) {
+        var x = a.cells[index], y = b.cells[index];
+        if (kind === 'num') {
+          // An empty data-v is "not published". It sorts to the end in both
+          // directions on purpose: it is not a zero and it is not a maximum,
+          // and letting it drift would make the cheapest-first order a lie.
+          var ax = x.dataset.v === '' ? null : parseFloat(x.dataset.v);
+          var bx = y.dataset.v === '' ? null : parseFloat(y.dataset.v);
+          if (ax === null && bx === null) return 0;
+          if (ax === null) return 1;
+          if (bx === null) return -1;
+          return (ax - bx) * direction;
+        }
+        if (kind === 'flag') {
+          var af = x.textContent.trim() ? 1 : 0;
+          var bf = y.textContent.trim() ? 1 : 0;
+          return (af - bf) * direction;
+        }
+        // `data-v` where a cell has one: the model column carries the bare id
+        // there, and its text also holds the in-use badge.
+        var at = x.dataset.v !== undefined ? x.dataset.v : x.textContent.trim();
+        var bt = y.dataset.v !== undefined ? y.dataset.v : y.textContent.trim();
+        return at.localeCompare(bt) * direction;
+      });
+      // Re-laid through apply(), so a column sort keeps the grouping the
+      // reader asked for and the stripes keep tracking what is visible.
+      apply();
+    }
+    th.addEventListener('click', sort);
+    th.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sort(); }
+    });
+  });
+
+  apply();
+})();
+</script>
+
+{# One listener for every button on the page. The CSRF token and the strings
+   arrive through `|tojson`, which is the only sanctioned way a rendered value
+   reaches a script here -- it emits valid JSON, quotes and all. #}
+<script>
+(function () {
+  var CSRF = {{ csrf_token()|tojson }};
+  var SAYS = {
+    running: {{ t('admin.models.test_running')|tojson }},
+    ok:      {{ t('admin.models.test_ok')|tojson }},
+    failed:  {{ t('admin.models.test_failed')|tojson }},
+    error:   {{ t('admin.models.test_error')|tojson }},
+    skipped: {{ t('admin.models.test_skipped')|tojson }},
+    asked:   {{ t('admin.models.test_asked')|tojson }},
+    replied: {{ t('admin.models.test_replied')|tojson }},
+    bench:   {{ t('admin.models.test_bench_sent')|tojson }},
+    benchDone: {{ t('admin.models.test_bench_done')|tojson }},
+    benchWaiting: {{ t('admin.models.test_bench_waiting')|tojson }},
+    benchProgress: {{ t('admin.models.test_bench_progress')|tojson }},
+    benchResult: {{ t('admin.models.test_bench_result')|tojson }}
+  };
+  var BENCH_LOG = {{ url_for('bench_log')|tojson }};
+  // A Test that ran the benchmark: follow ITS run, live -- each case as it
+  // finishes, how long the current one has been going, and whether it is
+  // still waiting behind another model's run. Read from the benchmark's own
+  // log, the same lines the Benchmark tab shows.
+  function followBench(box, data) {
+    var list = document.createElement('ul');
+    list.className = 'bench-live';
+    var status = document.createElement('span');
+    status.className = 'step';
+    box.appendChild(status);
+    box.appendChild(list);
+    var offset = 0, logName = '', current = '', mine = false, passed = 0, failed = 0, lastLine = Date.now(), ended = false;
+    var want = String(data.model || data.configured || '');
+    function line(text) {
+      var m = /^\s+(PASS|FAIL)\s+(\S+)\s+([\d.]+)s(.*)$/.exec(text);
+      if (m && mine) {
+        var li = document.createElement('li');
+        li.className = m[1] === 'PASS' ? 'good' : 'bad';
+        li.textContent = (m[1] === 'PASS' ? '✓ ' : '✗ ') + m[2] + ' · ' + m[3] + 's';
+        list.appendChild(li);
+        if (m[1] === 'PASS') { passed++; } else { failed++; }
+        lastLine = Date.now();
+        return;
+      }
+      var head = /^━━ (.+?)(?:\s+\[([^\]]*)\])?\s*$/.exec(text);
+      if (head) {
+        // Its own run: this model AND these cases. A run of the same model
+        // for another role is somebody else's, however alike it looks.
+        mine = head[1].trim() === want && (!head[2] || head[2] === String(data.groups || ''));
+        current = head[1].trim() + (head[2] ? ' (' + head[2] + ')' : '');
+        lastLine = Date.now();
+        return;
+      }
+      if (mine && /^\s+(failure|✗|-)/i.test(text) && list.lastChild) {
+        var why = document.createElement('div');
+        why.className = 'muted';
+        why.textContent = text.trim();
+        list.lastChild.appendChild(why);
+      }
+      if (mine && /^(stopped\.|the benchmark exited)/.test(text.trim())) { ended = text.trim(); }
+    }
+    function paint(d) {
+      var done = passed + failed, secs = Math.round((Date.now() - lastLine) / 1000);
+      if (!mine) {
+        status.textContent = SAYS.benchWaiting.replace('{model}', current || d.model || '…');
+      } else if (d.running && !ended) {
+        status.textContent = SAYS.benchProgress.replace('{done}', done).replace('{total}', data.cases || '?')
+          .replace('{passed}', passed).replace('{secs}', secs);
+      } else {
+        status.textContent = (ended ? ended + ' ' : '') +
+          SAYS.benchResult.replace('{passed}', passed).replace('{total}', done);
+        box.className = failed || ended ? 'verdict bad' : 'verdict good';
+      }
+    }
+    function poll() {
+      fetch(BENCH_LOG + '?offset=' + offset).then(function (r) { return r.json(); }).then(function (d) {
+        // A new run writes a new log: read it from its start.
+        if (logName && d.log !== logName) { logName = d.log; offset = 0; setTimeout(poll, 0); return; }
+        logName = d.log;
+        offset = d.offset;
+        (d.lines || []).forEach(line);
+        paint(d);
+        var finished = mine && (!d.running || ended);
+        if (!finished) setTimeout(poll, 2000);
+      }).catch(function () { setTimeout(poll, 5000); });
+    }
+    poll();
+  }
+  function render(box, data) {
+    box.textContent = '';
+    var head = document.createElement('b');
+    // Three states, not two. `null` means "not checked" -- a limit of the
+    // probe, not a verdict on the model -- and painting it red is exactly how
+    // a working model gets reported broken. Tested with `=== null`, because
+    // `false` still has to mean failed.
+    var skipped = data.ok === null;
+    // A scored probe says the number first: 4/5 is the answer somebody came
+    // for, and "failed" alone reads as "broken" when it may be four of five.
+    var scored = typeof data.score === 'number' && typeof data.max === 'number';
+    // Rate after the seconds, because the seconds are what somebody waited
+    // and the rate is why. Omitted rather than shown as 0 when the provider
+    // reported no usage -- an absent measurement is not a slow one.
+    head.textContent = (scored ? data.score + '/' + data.max + ' · ' : '') +
+                       (data.bench ? SAYS.bench : skipped ? SAYS.skipped : data.ok ? SAYS.ok : SAYS.failed) +
+                       (data.ms ? ' · ' + (data.ms / 1000).toFixed(1) + 's' : '') +
+                       (data.tok_s ? ' · ' + data.tok_s + ' tok/s' : '') +
+                       (data.tokens ? ' · ' + data.tokens + ' tok' : '');
+    box.appendChild(head);
+    // What this role was actually asked. Without it a criterion like "stays
+    // silent" is a word with no question behind it.
+    if (data.why) {
+      var why = document.createElement('span');
+      why.className = 'step';
+      why.textContent = SAYS.asked.replace('{what}', data.why);
+      box.appendChild(why);
+    }
+    box.className = skipped ? 'verdict'
+                  : data.ok ? 'verdict good'
+                  : (scored && data.score > 0) ? 'verdict' : 'verdict bad';
+    (data.steps || []).forEach(function (step) {
+      var line = document.createElement('span');
+      // Glyph and class test the same thing, so a step that carries no `ok`
+      // at all cannot come out as a red-less cross. Only `false` is a
+      // failure; anything else that is not `true` is "not checked".
+      line.className = step.ok === false ? 'step bad' : 'step';
+      line.textContent = (step.ok === true ? '\u2713 ' : step.ok === false ? '\u2717 ' : '\u2013 ') +
+                         step.step + (step.detail ? ' — ' + step.detail : '');
+      box.appendChild(line);
+    });
+    if (data.reply) {
+      var said = document.createElement('span');
+      said.className = 'step';
+      said.textContent = SAYS.replied.replace('{text}', data.reply);
+      box.appendChild(said);
+    }
+  }
+
+  document.querySelectorAll('.js-probe').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var role = button.dataset.role;
+      var box = document.querySelector('.verdict[data-for="' + role + '"]');
+      button.disabled = true;
+      box.className = 'verdict';
+      box.textContent = SAYS.running;
+      // The token goes in the *body*: the guard reads request.form['_csrf'],
+      // and a header alone is a 403.
+      fetch('/models/test', {
+        method: 'POST',
+        body: new URLSearchParams({ _csrf: CSRF, role: role })
+      })
+        .then(function (r) { return r.json().then(function (d) { return { code: r.status, data: d }; }); })
+        .then(function (out) {
+          // A refusal is still an answer worth showing: an unknown role or an
+          // empty slot is a thing to go and fix, not a silent no-op.
+          if (out.code >= 400 && !out.data.steps) {
+            box.className = 'verdict bad';
+            box.textContent = SAYS.error.replace('{detail}', out.data.error || out.code);
+            return;
+          }
+          render(box, out.data);
+          if (out.data.bench) followBench(box, out.data);
+        })
+        .catch(function (err) {
+          box.className = 'verdict bad';
+          box.textContent = SAYS.error.replace('{detail}', String(err));
+        })
+        .finally(function () { button.disabled = false; });
+    });
+  });
+})();
+</script>
+<script>
+/* A setup's model: the library's models, marked by how each tested on the
+   engine picked beside it; one that failed there cannot be picked (unless it
+   is what the setup runs now), and "Other" opens a box to type a name. */
+(function () {
+  document.querySelectorAll('select[data-other]').forEach(function (sel) {
+    var grid = sel.closest('.oi-grid');
+    var engine = grid && grid.querySelector('select[name$="-engine"]');
+    var other = document.getElementById(sel.getAttribute('data-other'));
+    var initial = sel.value;
+    function mark() {
+      var e = engine ? engine.value : 'ollama';
+      var key = 'state' + e.charAt(0).toUpperCase() + e.slice(1);
+      Array.prototype.forEach.call(sel.options, function (o) {
+        if (!o.hasAttribute('data-gib')) return;
+        var state = o.dataset[key] || 'none';
+        o.textContent = o.getAttribute('data-short') + ' · ' + o.getAttribute('data-gib') + ' GiB — '
+          + sel.getAttribute('data-l-' + state);
+        o.disabled = (state === 'fail' || state === 'none') && o.value !== initial;
+      });
+      if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) sel.value = '';
+    }
+    function toggle() {
+      var on = sel.value === '__other__';
+      if (other) { other.hidden = !on; other.required = on; if (on) other.focus(); }
+    }
+    if (engine) engine.addEventListener('change', mark);
+    sel.addEventListener('change', toggle);
+    mark(); toggle();
+  });
+})();
+</script>
+<script>
+/* The house's Ollama servers: "runs on" only beside a local model; Measure
+   and Apply without leaving the page. URLs come from data attributes. */
+(function () {
+  var csrf = document.querySelector('#ollama input[name=_csrf]');
+  function post(url, body) {
+    return fetch(url, {method: 'POST', headers: {'X-Requested-With': 'fetch'},
+                       body: new URLSearchParams(Object.assign({_csrf: csrf ? csrf.value : ''}, body || {}))})
+      .then(function (r) { return r.json(); });
+  }
+  var MEASURE = document.getElementById('ollama') && document.getElementById('ollama').getAttribute('data-measure');
+  document.querySelectorAll('[data-ollama-measure]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var old = b.textContent; b.disabled = true; b.textContent = '…';
+      post(MEASURE, {id: b.getAttribute('data-ollama-measure')}).then(function (d) {
+        b.textContent = d.message || old;
+        if (d.ok) setTimeout(function () { location.reload(); }, 1200); else b.disabled = false;
+      }).catch(function () { b.disabled = false; b.textContent = old; });
+    });
+  });
+  // Thinking is a llama.cpp server's switch; on an Ollama setup it does
+  // nothing, and a live control that is thrown away on save reads as a bug.
+  document.querySelectorAll('#ollama select[name$="-engine"]').forEach(function (eng) {
+    var think = eng.form && eng.form.elements[eng.name.replace(/-engine$/, '-thinking')];
+    if (!think) return;
+    function sync() { think.disabled = eng.value === 'ollama'; }
+    eng.addEventListener('change', sync);
+    sync();
+  });
+  // Preview: the form as it stands, placed on the cards by the save's own
+  // logic, drawn by the same partial as the cards above and thrown away.
+  var pbtn = document.getElementById('ollama-preview-btn');
+  var pout = document.getElementById('ollama-preview');
+  var pnote = document.getElementById('ollama-preview-note');
+  var PT = {unplaced: {{ t('admin.models.ollama_preview_unplaced')|tojson }},
+            cpu: {{ t('admin.models.ollama_preview_cpu')|tojson }},
+            same: {{ t('admin.models.ollama_preview_note')|tojson }},
+            failed: {{ t('admin.models.ollama_preview_failed')|tojson }}};
+  function say(text, bad) {
+    pnote.textContent = text;
+    pnote.classList.toggle('warn', !!bad);
+    pnote.hidden = false;
+  }
+  function asPreview(fd) { fd.set('preview', '1'); return new URLSearchParams(fd); }
+  if (pbtn) pbtn.addEventListener('click', function () {
+    var form = pbtn.closest('form');
+    pbtn.disabled = true;
+    // The whole form, _csrf included, plus the one field that makes it a preview.
+    fetch(form.getAttribute('action'), {method: 'POST', headers: {'X-Requested-With': 'fetch'},
+          body: asPreview(new FormData(form))})
+      .then(function (r) {
+        if ((r.headers.get('Content-Type') || '').indexOf('application/json') === 0) return r.json();
+        // A refused form (an expired session, a page from before a restart)
+        // answers in plain text that says what to do; an error page does not.
+        return r.text().then(function (t) {
+          throw new Error(/^\s*</.test(t) || !t.trim() ? r.status + ' ' + r.statusText : t.trim().slice(0, 300));
+        });
+      })
+      .then(function (d) {
+        pout.innerHTML = d.html || '';
+        pout.hidden = !d.html;
+        var problems = [].concat(d.errors || [], d.warnings || []);
+        if ((d.unplaced || []).length) problems.push(PT.unplaced.replace('{ids}', d.unplaced.join(', ')));
+        var notes = (d.cpu || []).map(function (c) { return PT.cpu.replace('{name}', c.name).replace('{gib}', c.gib); });
+        say([PT.same].concat(problems, notes).join(' '), !d.ok || problems.length);
+      })
+      .catch(function (e) {
+        pout.textContent = ''; pout.hidden = true;
+        say(PT.failed.replace('{error}', e.message), true);
+      })
+      .then(function () { pbtn.disabled = false; });
+  });
+  // A setup running partly on the CPU: reload it onto its card.
+  document.querySelectorAll('[data-ollama-reload]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var old = b.textContent; b.disabled = true; b.textContent = '…';
+      post(document.getElementById('ollama').getAttribute('data-reload'), {id: b.getAttribute('data-ollama-reload')})
+        .then(function (d) { b.textContent = d.message || old; if (d.ok) setTimeout(function () { location.reload(); }, 1500); })
+        .catch(function () { b.disabled = false; b.textContent = old; });
+    });
+  });
+  // Deleting a model asks first: it is gigabytes to download again.
+  document.querySelectorAll('form.js-confirm[data-confirm]').forEach(function (f) {
+    f.addEventListener('submit', function (ev) {
+      if (!window.confirm(f.getAttribute('data-confirm'))) ev.preventDefault();
+    });
+  });
+  // The library's Hugging Face form: list a repo's GGUF files, pick one.
+  var hf = document.getElementById('lib-hf');
+  if (hf) {
+    var repo = document.getElementById('lib-hf-repo'), pick = document.getElementById('lib-hf-file');
+    var go = document.getElementById('lib-hf-go'), hfNote = document.getElementById('lib-hf-note');
+    document.getElementById('lib-hf-list').addEventListener('click', function () {
+      hfNote.textContent = '…';
+      fetch(hf.getAttribute('data-files') + '?repo=' + encodeURIComponent(repo.value.trim()))
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          pick.textContent = '';
+          if (!d.ok) { hfNote.textContent = d.error || ''; pick.disabled = go.disabled = true; return; }
+          (d.files || []).forEach(function (f) {
+            var o = document.createElement('option');
+            o.value = f.model; o.textContent = f.path + ' · ' + f.gib + ' GiB';
+            pick.appendChild(o);
+          });
+          pick.disabled = go.disabled = !(d.files || []).length;
+          hfNote.textContent = (d.files || []).length ? '' : {{ t('admin.models.library_hf_none')|tojson }};
+        })
+        .catch(function () { hfNote.textContent = {{ t('admin.models.library_hf_failed')|tojson }}; });
+    });
+  }
+  // After "Save and apply": follow the host until it has done it.
+  var note = document.getElementById('ollama-apply-note'), log = document.getElementById('ollama-log');
+  if (!note || !note.hasAttribute('data-waiting')) return;
+  function poll() {
+    fetch(note.getAttribute('data-status')).then(function (r) { return r.json(); }).then(function (d) {
+      if (log) log.textContent = d.log || '';
+      if (d.requested) { setTimeout(poll, 2000); return; }
+      setTimeout(function () { location.reload(); }, 800);
+    }).catch(function () { setTimeout(poll, 4000); });
+  }
+  poll();
+})();
+</script>
+{% endblock %}

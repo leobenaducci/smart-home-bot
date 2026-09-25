@@ -1,0 +1,25 @@
+services:
+  registry:
+    image: registry:2
+    container_name: home-registry
+    restart: unless-stopped
+    environment:
+      # Where the images actually land. Absolute, and supplied by the deployer:
+      # a relative path here points inside the tree a deploy replaces.
+      - REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/var/lib/registry
+      # Answers a plain GET /v2/ so the deploy can prove it is up: 200 with an
+      # empty JSON object. The verify asserts that body rather than the status,
+      # because a status-only check passes against anything at all listening on
+      # the port -- and against the 401 this returns once auth is turned on.
+      - REGISTRY_HTTP_ADDR=0.0.0.0:5000
+    ports:
+      # The LAN, not loopback: every other machine in the house has to pull
+      # from it, which is the entire reason it exists.
+      - "${REGISTRY_PORT:-21040}:5000"
+    volumes:
+      - ${REGISTRY_STATE_DIR:?the deployer supplies this}:/var/lib/registry
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

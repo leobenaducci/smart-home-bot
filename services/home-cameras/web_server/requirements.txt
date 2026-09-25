@@ -1,0 +1,13 @@
+wheel
+setuptools
+Flask
+Flask-SocketIO
+opencv-python-headless
+av
+python-engineio
+python-socketio
+torch
+torchvision
+ultralytics
+numpy
+paho-mqtt

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+{# A list, and only a list. Editing somebody, switching them off, minting their
+   codes and removing them are on that person's own page -- doing them from a
+   row meant six columns, four buttons crammed into the last one, and five
+   hidden forms per member, with the destructive action one misclick from the
+   routine ones. #}
+<div class="card">
+  <h2>{{ t('admin.members.heading') }}</h2>
+  <p class="intro">{{ t('admin.members.intro') }}</p>
+  <p class="note">{{ t('admin.members.only_here') }}</p>
+
+  <table class="settings">
+    <thead>
+      <tr>
+        <th>{{ t('admin.members.display_name') }}</th>
+        <th>{{ t('admin.members.id') }}</th>
+        <th>{{ t('admin.members.locale') }}</th>
+        <th>{{ t('admin.members.is_admin') }}</th>
+        <th>{{ t('admin.services.state') }}</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in people %}
+    <tr>
+      <td>
+        <a href="{{ url_for('member_profile', member_id=p.id) }}"
+           style="font-weight:600;color:var(--ink)">{{ p.display_name }}</a>
+      </td>
+      <td class="mono">{{ p.id }}</td>
+      <td>{{ locale_names.get(p.locale, p.locale) }}</td>
+      <td>{% if p.admin %}✓{% endif %}</td>
+      <td>
+        {% if p.get('active', True) %}
+          <span class="pill on">{{ t('common.enabled') }}</span>
+        {% else %}
+          <span class="pill off">{{ t('common.disabled') }}</span>
+        {% endif %}
+      </td>
+      <td>
+        <a href="{{ url_for('member_profile', member_id=p.id) }}">{{ t('admin.profile.edit_link') }}</a>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="help">{{ t('admin.members.id_help') }}</p>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.members.add') }}</h2>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add">
+    <div class="field">
+      <label for="new-name">{{ t('admin.members.display_name') }}</label>
+      <input type="text" id="new-name" name="display_name"
+             placeholder="{{ t('admin.members.display_name') }}" style="max-width:260px">
+      <p class="help">{{ t('admin.members.add_help') }}</p>
+    </div>
+    <button type="submit">{{ t('common.add') }}</button>
+  </form>
+</div>
+{% endblock %}

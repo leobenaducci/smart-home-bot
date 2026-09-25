@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en" data-i18n-root>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MQTT Dashboard</title>
+  <!-- The house faces, served by this app. See
+       HomeCore/tools/fetch-fonts.sh for where they come from and why they
+       are not fetched from the internet. -->
+  <link rel="stylesheet" href="/fonts/house.css">
+  <style>
+    :root {
+      /* "The House" - same palette as the HomeCore portal and the lights page */
+      --plaster:#EFE9DC; --paper:#FBF8F1; --paper-2:#fff;
+      --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2;
+      --olive:#57633F; --olive-2:#7E8A61;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: var(--sans);
+      background: var(--plaster);
+      background-image:
+        radial-gradient(ellipse at 12% -10%, #F6F1E5 0%, transparent 55%),
+        radial-gradient(ellipse at 100% 0%, #E7DFCC 0%, transparent 45%);
+      background-attachment: fixed;
+      min-height: 100vh;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    /* Dark "wall" header, matching the lights page and the HomeCore portal. */
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 22px; padding: 18px 24px;
+      background: var(--wall); border-radius: 16px; flex-wrap: wrap; gap: 14px;
+      box-shadow: 0 8px 22px -16px rgba(60,50,30,.6);
+      /* This header is a rounded card, not full-bleed chrome, so the house edge
+         has to be clipped to the curve or its square ends poke out the corners. */
+      overflow: hidden;
+    }
+    h1 { font-size: 1.2rem; font-weight: 800; letter-spacing: -.01em; color: #F3EEDF; }
+    .status { display: flex; align-items: center; gap: 14px; }
+    .status-item { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--wall-fg); }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; }
+    /* Lightened so they read against the dark wall rather than the page. */
+    .status-dot.connected { background: #9CB86F; box-shadow: 0 0 0 3px rgba(156,184,111,.22); }
+    .status-dot.disconnected { background: #D07A63; }
+    .stats { display: flex; gap: 22px; }
+    .stat { text-align: center; }
+    .stat-value { font-size: 1.35rem; font-weight: 800; color: var(--honey-lt); }
+    .stat-label { font-size: 0.62rem; color: #8E937C; text-transform: uppercase; letter-spacing: .18em; }
+    .tabs { display: flex; gap: 6px; margin-bottom: 18px; }
+    .tab {
+      padding: 9px 18px; background: transparent; border: 1px solid transparent;
+      color: var(--ink-soft); border-radius: 10px; cursor: pointer;
+      font-size: 0.8rem; font-weight: 600;
+    }
+    .tab:hover { background: var(--paper); color: var(--ink); }
+    .tab.active { background: var(--paper); color: var(--olive); border-color: var(--line); box-shadow: 0 1px 0 #fff inset; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .controls { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; align-items: center; }
+    .controls input, .controls select {
+      padding: 9px 13px; background: var(--paper-2); border: 1px solid var(--line);
+      border-radius: 9px; color: var(--ink); font-size: 0.85rem;
+    }
+    .controls input::placeholder { color: #A79D8A; }
+    .controls input[type="text"] { flex: 1; min-width: 200px; }
+    .controls input[type="datetime-local"] { min-width: 180px; }
+    .controls select { min-width: 150px; }
+    .controls input:focus, .controls select:focus { outline: none; border-color: var(--olive); }
+    .filter-group { display: flex; align-items: center; gap: 6px; }
+    .filter-group label { font-size: 0.62rem; color: var(--olive); text-transform: uppercase; letter-spacing: .14em; font-weight: 700; white-space: nowrap; }
+    .btn {
+      padding: 9px 16px; background: var(--olive); color: #F3EEDF; border: 1px solid var(--olive);
+      border-radius: 10px; font-size: 0.82rem; cursor: pointer; font-weight: 600;
+      transition: background .15s, color .15s, border-color .15s;
+    }
+    .btn:hover { background: #47512F; }
+    .btn-secondary { background: var(--paper-2); color: var(--ink-soft); border-color: var(--line); }
+    .btn-secondary:hover { background: var(--plaster); color: var(--ink); }
+    .btn-danger { background: var(--clay); color: #FBF8F1; border-color: var(--clay); }
+    .btn-danger:hover { background: #8E3E2C; }
+    .btn-success { background: var(--olive-2); color: #fff; border-color: var(--olive-2); }
+    .btn-success:hover { background: #6C7753; }
+    .btn-sm { padding: 5px 10px; font-size: 0.72rem; border-radius: 8px; }
+    .table-container {
+      background: var(--paper); border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+      box-shadow: 0 1px 0 #fff inset, 0 8px 22px -18px rgba(60,50,30,.5);
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      background: var(--plaster); padding: 11px 16px; text-align: left;
+      font-size: 0.62rem; text-transform: uppercase; letter-spacing: .16em;
+      color: var(--olive); font-weight: 700; cursor: pointer; user-select: none;
+    }
+    th:hover { color: var(--ink); }
+    td { padding: 10px 16px; border-top: 1px solid var(--line); font-size: 0.85rem; }
+    tr:hover td { background: rgba(87,99,63,.05); }
+    .topic { color: var(--olive); font-family: var(--mono); font-weight: 600; }
+    .payload { color: var(--ink-soft); font-family: var(--mono); max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .payload:hover { white-space: normal; word-break: break-all; }
+    .time { color: #A79D8A; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .empty { text-align: center; padding: 40px; color: var(--ink-soft); }
+    .badge { display: inline-block; padding: 2px 8px; background: var(--plaster); border: 1px solid var(--line); border-radius: 6px; font-size: 0.72rem; color: var(--ink-soft); margin: 0 2px; }
+    .active-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .active-filters .filter-tag {
+      display: flex; align-items: center; gap: 5px; padding: 4px 10px;
+      background: rgba(87,99,63,.1); border: 1px solid rgba(87,99,63,.25);
+      border-radius: 20px; font-size: 0.72rem; color: var(--olive); font-weight: 600;
+    }
+    .active-filters .filter-tag .remove { cursor: pointer; color: var(--clay); font-weight: bold; }
+    .filtered-count { font-size: 0.72rem; color: var(--ink-soft); margin-bottom: 10px; }
+    .bridge-card {
+      background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
+      padding: 18px; margin-bottom: 13px;
+      box-shadow: 0 1px 0 #fff inset, 0 8px 22px -18px rgba(60,50,30,.5);
+    }
+    .bridge-card.disabled { opacity: 0.55; }
+    .bridge-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+    .bridge-name { font-size: 1rem; font-weight: 700; color: var(--ink); }
+    .bridge-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .bridge-detail-label { font-size: 0.62rem; color: var(--olive); text-transform: uppercase; letter-spacing: .14em; font-weight: 700; margin-bottom: 3px; }
+    .bridge-detail-value { font-family: var(--mono); color: var(--ink); font-size: 0.85rem; }
+    .bridge-actions { display: flex; gap: 8px; }
+    .toggle { position: relative; width: 44px; height: 24px; cursor: pointer; }
+    .toggle input { display: none; }
+    .toggle-slider { position: absolute; inset: 0; background: #D8CFBC; border-radius: 12px; transition: 0.2s; }
+    .toggle-slider::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: var(--paper-2); border-radius: 50%; transition: 0.2s; box-shadow: 0 1px 3px rgba(60,50,30,.3); }
+    .toggle input:checked + .toggle-slider { background: var(--olive); }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(43,39,33,0.45); z-index: 100; align-items: center; justify-content: center; }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: var(--paper-2); border: 1px solid var(--line); border-radius: 18px;
+      padding: 24px; width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto;
+      box-shadow: 0 24px 60px -24px rgba(60,50,30,.7);
+    }
+    .modal h2 { margin-bottom: 20px; color: var(--ink); font-size: 1.05rem; font-weight: 800; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 0.62rem; color: var(--olive); text-transform: uppercase; letter-spacing: .14em; font-weight: 700; margin-bottom: 6px; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%; padding: 9px 13px; background: var(--paper); border: 1px solid var(--line);
+      border-radius: 9px; color: var(--ink); font-size: 0.85rem;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--olive); }
+    .form-group textarea { min-height: 60px; resize: vertical; font-family: var(--mono); }
+    .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    .hint { font-size: 0.68rem; color: var(--ink-soft); margin-top: 4px; }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1 data-i18n="mqtt.title">MQTT Dashboard</h1>
+      <div class="status">
+        <div class="status-item">
+          <div class="status-dot disconnected" id="mqttDot"></div>
+          <span id="mqttText">MQTT</span>
+        </div>
+        <div class="status-item">
+          <div class="status-dot disconnected" id="wsDot"></div>
+          <span id="wsText">WS</span>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-value" id="totalCount">0</div>
+          <div class="stat-label">Total Messages</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="filteredCount">0</div>
+          <div class="stat-label">Showing</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="topicCount">0</div>
+          <div class="stat-label">Unique Topics</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="messages" data-i18n="mqtt.messages"Messages</button>
+      <button class="tab" data-tab="bridges">Ntfy Bridges</button>
+    </div>
+
+    <div class="tab-content active" id="tab-messages">
+      <div class="controls">
+        <input type="text" id="searchInput" placeholder="Search topics or payload...">
+
+        <div class="filter-group">
+          <label for="subtopicFilter">Subtopic</label>
+          <select id="subtopicFilter">
+            <option value="">All</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="topicFilter" data-i18n="mqtt.topic"Topic</label>
+          <select id="topicFilter">
+            <option value="">All</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="dateFrom">From</label>
+          <input type="datetime-local" id="dateFrom">
+        </div>
+
+        <div class="filter-group">
+          <label for="dateTo">To</label>
+          <input type="datetime-local" id="dateTo">
+        </div>
+
+        <button class="btn" id="applyFilters">Apply</button>
+        <button class="btn btn-secondary" id="clearFilters">Clear</button>
+
+        <div class="filter-group">
+          <label for="limitFilter">Limit</label>
+          <select id="limitFilter">
+            <option value="100">100</option>
+            <option value="500" selected>500</option>
+            <option value="1000">1000</option>
+            <option value="0">All</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="active-filters" id="activeFilters"></div>
+      <div class="filtered-count" id="filteredCountText"></div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="timestamp">Time</th>
+              <th data-sort="topic" data-i18n="mqtt.topic"Topic</th>
+              <th data-sort="payload" data-i18n="mqtt.payload"Payload</th>
+            </tr>
+          </thead>
+          <tbody id="messageTable">
+            <tr><td colspan="3" class="empty">Waiting for MQTT messages...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-bridges">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2 style="font-size: 1.05rem;">MQTT → Ntfy Bridges</h2>
+        <button class="btn" id="addBridgeBtn">+ Add Bridge</button>
+      </div>
+      <div id="bridgesList">
+        <div class="empty" id="noBridges">No bridges configured. Add one to forward MQTT messages to Ntfy.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="bridgeModal">
+    <div class="modal">
+      <h2 id="modalTitle">Add Bridge</h2>
+      <form id="bridgeForm">
+        <input type="hidden" id="bridgeId">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="bName" placeholder="e.g. Door Sensor → Phone" required>
+        </div>
+        <div class="form-group">
+          <label>MQTT Topic</label>
+          <input type="text" id="bTopic" placeholder="e.g. sensors/door or home/#" required>
+          <div class="hint">Supports wildcards: # (all levels), + (single level)</div>
+        </div>
+        <div class="form-group">
+          <label>Ntfy URL</label>
+          <input type="text" id="bNtfyUrl" placeholder="https://ntfy.sh" required>
+        </div>
+        <div class="form-group">
+          <label>Ntfy Topic</label>
+          <input type="text" id="bNtfyTopic" placeholder="my-mqtt-alerts" required>
+          <div class="hint">The topic/channel to publish to on the Ntfy server</div>
+        </div>
+        <div class="form-group">
+          <label>Title Template (optional)</label>
+          <input type="text" id="bTitleTemplate" placeholder="{topic}">
+          <div class="hint">Use {topic} as placeholder</div>
+        </div>
+        <div class="form-group">
+          <label>Message Template (optional)</label>
+          <textarea id="bMessageTemplate" placeholder="{payload}"></textarea>
+          <div class="hint">Use {payload} as placeholder</div>
+        </div>
+        <div class="form-group">
+          <label>Priority</label>
+          <select id="bPriority">
+            <option value="0">0 - Normal</option>
+            <option value="1">1 - Medium</option>
+            <option value="2">2 - High</option>
+            <option value="3">3 - Urgent</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelBridge">Cancel</button>
+          <button type="submit" class="btn">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let allMessages = [];
+    let sortField = 'timestamp';
+    let sortDir = -1;
+
+    const mqttDot = document.getElementById('mqttDot');
+    const mqttText = document.getElementById('mqttText');
+    const wsDot = document.getElementById('wsDot');
+    const wsText = document.getElementById('wsText');
+    const totalCount = document.getElementById('totalCount');
+    const filteredCountEl = document.getElementById('filteredCount');
+    const topicCount = document.getElementById('topicCount');
+    const searchInput = document.getElementById('searchInput');
+    const subtopicFilter = document.getElementById('subtopicFilter');
+    const topicFilter = document.getElementById('topicFilter');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const limitFilter = document.getElementById('limitFilter');
+    const messageTable = document.getElementById('messageTable');
+    const activeFiltersEl = document.getElementById('activeFilters');
+    const filteredCountText = document.getElementById('filteredCountText');
+
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+      });
+    });
+
+    function getFilterParams() {
+      const params = new URLSearchParams();
+      params.set('limit', limitFilter.value);
+      if (subtopicFilter.value) params.set('subtopic', subtopicFilter.value);
+      if (topicFilter.value) params.set('topic', topicFilter.value);
+      if (dateFrom.value) params.set('dateFrom', new Date(dateFrom.value).toISOString());
+      if (dateTo.value) params.set('dateTo', new Date(dateTo.value).toISOString());
+      return params;
+    }
+
+    async function loadMessages() {
+      const params = getFilterParams();
+      const res = await fetch(`/api/messages?${params}`);
+      allMessages = await res.json();
+      renderTable();
+      updateActiveFilters();
+    }
+
+    async function loadTopics() {
+      const res = await fetch('/api/topics');
+      const topics = await res.json();
+      topicFilter.innerHTML = '<option value="">All Topics</option>';
+      topics.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t; opt.textContent = t;
+        topicFilter.appendChild(opt);
+      });
+    }
+
+    async function loadSubtopics() {
+      const res = await fetch('/api/subtopics');
+      const subtopics = await res.json();
+      subtopicFilter.innerHTML = '<option value="">All Subtopics</option>';
+      subtopics.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s; opt.textContent = s;
+        subtopicFilter.appendChild(opt);
+      });
+    }
+
+    function updateStats() {
+      const topics = new Set(allMessages.map(m => m.topic));
+      totalCount.textContent = allMessages.length;
+      topicCount.textContent = topics.size;
+    }
+
+    function updateActiveFilters() {
+      const tags = [];
+      if (subtopicFilter.value) tags.push({ label: `subtopic: ${subtopicFilter.value}`, clear: () => { subtopicFilter.value = ''; loadMessages(); } });
+      if (topicFilter.value) tags.push({ label: `topic: ${topicFilter.value}`, clear: () => { topicFilter.value = ''; loadMessages(); } });
+      if (dateFrom.value) tags.push({ label: `from: ${dateFrom.value}`, clear: () => { dateFrom.value = ''; loadMessages(); } });
+      if (dateTo.value) tags.push({ label: `to: ${dateTo.value}`, clear: () => { dateTo.value = ''; loadMessages(); } });
+      activeFiltersEl.innerHTML = tags.map((t, i) =>
+        `<span class="filter-tag">${t.label} <span class="remove" data-idx="${i}">&times;</span></span>`
+      ).join('');
+      activeFiltersEl.querySelectorAll('.remove').forEach(el => {
+        el.addEventListener('click', () => tags[el.dataset.idx].clear());
+      });
+    }
+
+    function renderTable() {
+      let filtered = allMessages;
+      const search = searchInput.value.toLowerCase();
+      if (search) {
+        filtered = filtered.filter(m =>
+          m.topic.toLowerCase().includes(search) || m.payload.toLowerCase().includes(search)
+        );
+      }
+      filtered.sort((a, b) => {
+        let va = a[sortField], vb = b[sortField];
+        if (sortField === 'timestamp') { va = new Date(va); vb = new Date(vb); }
+        return va < vb ? -sortDir : va > vb ? sortDir : 0;
+      });
+      filteredCountEl.textContent = filtered.length;
+      filteredCountText.textContent = `Showing ${filtered.length} of ${allMessages.length} messages`;
+      if (filtered.length === 0) {
+        messageTable.innerHTML = '<tr><td colspan="3" class="empty">No messages match filters</td></tr>';
+        return;
+      }
+      messageTable.innerHTML = filtered.map(m => {
+        const date = new Date(m.timestamp);
+        const time = date.toLocaleTimeString() + ' ' + date.toLocaleDateString();
+        const topicParts = m.topic.split('/');
+        const topicHtml = topicParts.map((p, i) =>
+          `<span class="badge">${p}</span>${i < topicParts.length - 1 ? '/' : ''}`
+        ).join('');
+        return `<tr>
+          <td class="time">${time}</td>
+          <td class="topic">${topicHtml}</td>
+          <td class="payload" title="${escapeHtml(m.payload)}">${escapeHtml(m.payload)}</td>
+        </tr>`;
+      }).join('');
+      updateStats();
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    document.querySelectorAll('th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const field = th.dataset.sort;
+        if (sortField === field) sortDir *= -1;
+        else { sortField = field; sortDir = field === 'timestamp' ? -1 : 1; }
+        renderTable();
+      });
+    });
+
+    searchInput.addEventListener('input', renderTable);
+    document.getElementById('applyFilters').addEventListener('click', loadMessages);
+    document.getElementById('clearFilters').addEventListener('click', () => {
+      subtopicFilter.value = ''; topicFilter.value = '';
+      dateFrom.value = ''; dateTo.value = ''; searchInput.value = '';
+      loadMessages();
+    });
+
+    let mqttConnected = false;
+    const ws = new WebSocket(`ws://${location.host}`);
+    ws.onopen = () => { wsDot.className = 'status-dot connected'; wsText.textContent = 'WS'; };
+    ws.onclose = () => { wsDot.className = 'status-dot disconnected'; wsText.textContent = 'WS'; };
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'new') {
+        if (!mqttConnected) { mqttDot.className = 'status-dot connected'; mqttText.textContent = 'MQTT'; mqttConnected = true; }
+        allMessages.push(data.message);
+        renderTable();
+      } else if (data.type === 'mqtt_status') {
+        mqttConnected = data.connected;
+        mqttDot.className = data.connected ? 'status-dot connected' : 'status-dot disconnected';
+        mqttText.textContent = data.connected ? 'MQTT' : 'MQTT';
+      }
+    };
+
+    loadMessages();
+    loadTopics();
+    loadSubtopics();
+    setInterval(loadTopics, 5000);
+    setInterval(loadSubtopics, 5000);
+
+    async function loadBridges() {
+      const res = await fetch('/api/bridges');
+      const bridges = await res.json();
+      renderBridges(bridges);
+    }
+
+    function renderBridges(bridges) {
+      const list = document.getElementById('bridgesList');
+      const noBridges = document.getElementById('noBridges');
+      if (bridges.length === 0) {
+        noBridges.style.display = 'block';
+        list.querySelectorAll('.bridge-card').forEach(c => c.remove());
+        return;
+      }
+      noBridges.style.display = 'none';
+      list.innerHTML = bridges.map(b => `
+        <div class="bridge-card ${b.enabled ? '' : 'disabled'}">
+          <div class="bridge-header">
+            <div>
+              <span class="bridge-name">${escapeHtml(b.name)}</span>
+            </div>
+            <div class="bridge-actions">
+              <label class="toggle">
+                <input type="checkbox" ${b.enabled ? 'checked' : ''} onchange="toggleBridge('${b.id}', this.checked)">
+                <span class="toggle-slider"></span>
+              </label>
+              <button class="btn btn-sm btn-success" onclick="testBridge('${b.id}')">Test</button>
+              <button class="btn btn-sm btn-secondary" onclick="editBridge('${b.id}')">Edit</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteBridge('${b.id}')">Delete</button>
+            </div>
+          </div>
+          <div class="bridge-details">
+            <div class="bridge-detail">
+              <div class="bridge-detail-label">MQTT Topic</div>
+              <div class="bridge-detail-value">${escapeHtml(b.topic)}</div>
+            </div>
+            <div class="bridge-detail">
+              <div class="bridge-detail-label">Ntfy URL</div>
+              <div class="bridge-detail-value">${escapeHtml(b.ntfyUrl)}</div>
+            </div>
+            <div class="bridge-detail">
+              <div class="bridge-detail-label">Ntfy Topic</div>
+              <div class="bridge-detail-value">${escapeHtml(b.ntfyTopic)}</div>
+            </div>
+            <div class="bridge-detail">
+              <div class="bridge-detail-label">Priority</div>
+              <div class="bridge-detail-value">${b.priority}</div>
+            </div>
+            ${b.titleTemplate ? `<div class="bridge-detail">
+              <div class="bridge-detail-label">Title Template</div>
+              <div class="bridge-detail-value">${escapeHtml(b.titleTemplate)}</div>
+            </div>` : ''}
+            ${b.messageTemplate ? `<div class="bridge-detail">
+              <div class="bridge-detail-label">Message Template</div>
+              <div class="bridge-detail-value">${escapeHtml(b.messageTemplate)}</div>
+            </div>` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function openModal(bridge = null) {
+      document.getElementById('bridgeModal').classList.add('active');
+      document.getElementById('modalTitle').textContent = bridge ? 'Edit Bridge' : 'Add Bridge';
+      document.getElementById('bridgeId').value = bridge ? bridge.id : '';
+      document.getElementById('bName').value = bridge ? bridge.name : '';
+      document.getElementById('bTopic').value = bridge ? bridge.topic : '';
+      document.getElementById('bNtfyUrl').value = bridge ? bridge.ntfyUrl : '';
+      document.getElementById('bNtfyTopic').value = bridge ? bridge.ntfyTopic : '';
+      document.getElementById('bTitleTemplate').value = bridge ? (bridge.titleTemplate || '') : '';
+      document.getElementById('bMessageTemplate').value = bridge ? (bridge.messageTemplate || '') : '';
+      document.getElementById('bPriority').value = bridge ? (bridge.priority || 0) : '0';
+    }
+
+    function closeModal() {
+      document.getElementById('bridgeModal').classList.remove('active');
+    }
+
+    document.getElementById('addBridgeBtn').addEventListener('click', () => openModal());
+    document.getElementById('cancelBridge').addEventListener('click', closeModal);
+    document.getElementById('bridgeModal').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('bridgeModal')) closeModal();
+    });
+
+    document.getElementById('bridgeForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = document.getElementById('bridgeId').value;
+      const data = {
+        name: document.getElementById('bName').value,
+        topic: document.getElementById('bTopic').value,
+        ntfyUrl: document.getElementById('bNtfyUrl').value,
+        ntfyTopic: document.getElementById('bNtfyTopic').value,
+        titleTemplate: document.getElementById('bTitleTemplate').value,
+        messageTemplate: document.getElementById('bMessageTemplate').value,
+        priority: parseInt(document.getElementById('bPriority').value),
+      };
+      if (id) {
+        await fetch(`/api/bridges/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      } else {
+        await fetch('/api/bridges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      }
+      closeModal();
+      loadBridges();
+    });
+
+    window.toggleBridge = async (id, enabled) => {
+      await fetch(`/api/bridges/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      loadBridges();
+    };
+
+    window.editBridge = async (id) => {
+      const res = await fetch('/api/bridges');
+      const bridges = await res.json();
+      const bridge = bridges.find(b => b.id === id);
+      if (bridge) openModal(bridge);
+    };
+
+    window.deleteBridge = async (id) => {
+      if (confirm('Delete this bridge?')) {
+        await fetch(`/api/bridges/${id}`, { method: 'DELETE' });
+        loadBridges();
+      }
+    };
+
+    window.testBridge = async (id) => {
+      const res = await fetch(`/api/bridges/${id}/test`, { method: 'POST' });
+      const data = await res.json();
+      alert(data.message);
+    };
+
+    loadBridges();
+  </script>
+  <script src="/i18n/i18n.js"></script>
+  <script>
+    // The house language, chosen server-side and handed to the page. Falls back
+    // to English, which is also what a missing key renders -- a bare
+    // `mqtt.topic` on a wall display is worse than an untranslated word.
+    (async function () {
+      const params = new URLSearchParams(location.search);
+      const lang = params.get('lang')
+        || document.documentElement.getAttribute('data-locale')
+        || 'en';
+      await window.i18n.load('/i18n', lang);
+      window.i18n.apply();
+    })();
+  </script>
+</body>
+</html>

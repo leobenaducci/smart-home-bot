@@ -1,0 +1,173 @@
+# The house's side of the split horizon.
+#
+# A resolver on the LAN -- a Pi-hole, a router that does local DNS, a hosts
+# file -- answers `dns.chat` and `dns.portal` with hub's address for anything
+# on the LAN, so those two names arrive here instead of going out to the VPS
+# and back in again. Off the LAN the public records still point at the real
+# hosts and nothing here is involved.
+#
+# Both names come from `dns:` in config/home-stack.yml. They were literals --
+# `chat.home` and `house.home` -- and this file is bind-mounted
+# verbatim and never rendered, so on a household whose names are anything else
+# neither site block matched anything anybody typed. What Caddy does then is
+# the part worth knowing: the local CA certificate carries `*.<domain>`, so the
+# handshake succeeds for every name in the house, and an unmatched Host gets an
+# **empty 200**. The proxy's own verify was `curl -f -o /dev/null` and passed
+# on it, every deploy, for as long as that was true.
+#
+# Both names are served with the same wildcard certificate. Caddy does not
+# fetch it: the `acme` container next door issues `*.<domain>` over the
+# Hostinger DNS API and drops the files in the shared `/certs` volume, then
+# restarts this container. Caddy's own ACME client cannot do that job — a
+# DNS-01 challenge needs a provider module, and the only Hostinger one that
+# exists is a nine-commit third party package, while acme.sh's `dns_hostinger`
+# is what already renews certificates in this house.
+{
+	# Nothing here should ever try to issue a certificate: every site block
+	# names its files explicitly, and a stray ACME attempt against these
+	# hostnames would be an HTTP-01 challenge to a box the internet cannot
+	# reach — failing slowly and repeatedly rather than loudly.
+	auto_https disable_certs
+}
+
+# Extra site blocks, if this house has any. The one that exists here today
+# serves the *public* chat name from inside the house -- the Android app
+# hard-codes that name and uses it on the home wifi too, so without this it
+# leaves the house, comes back through the VPS and is told it is away: no
+# cameras, and no LAN-only extension in its Apps menu, on the one device the
+# family actually uses.
+#
+# A glob rather than a site block with an env default, because a block naming
+# certificate files that do not exist stops Caddy from starting at all, and most
+# houses will never have a public certificate on the hub. A glob that matches
+# nothing is valid and silent -- `caddy validate` agrees.
+#
+# The file and its certificate are written by public-cert.sh.
+import /certs/sites/*.caddy
+
+{$CHAT_NAME} {
+	tls /certs/fullchain.pem /certs/key.pem
+	encode gzip
+	# The local copy of the home-chat proxy, not HomeCore directly, so the LAN
+	# path runs the same code as the VPS one: device enrolment, the /chat/*
+	# endpoints and the session cookies the Android app already holds.
+	#
+	# flush_interval -1 disables response buffering. Alfred answers over SSE
+	# (/chat/send, /chat/events); with buffering on, a reply arrives as one
+	# lump when the stream closes instead of word by word. The VPS Caddyfile
+	# carries the same line for the same reason — see home-chat/Caddyfile.snippet.
+	# Caddy's own env substitution, with the default matching the example
+	# config. It was a literal, and the port renumbering moved the local proxy
+	# out from under it -- this file is bind-mounted verbatim and never
+	# templated, so nothing else would have caught it.
+	reverse_proxy 127.0.0.1:{$LOCAL_PROXY_PORT:21003} {
+		flush_interval -1
+	}
+}
+
+{$PORTAL_NAME} {
+	tls /certs/fullchain.pem /certs/key.pem
+	encode gzip
+	# ../cloud, the PHP site, published on loopback only.
+	reverse_proxy 127.0.0.1:{$ENTRY_PAGE_PORT:21004}
+}
+
+# opencode's own interface, for the Programmer space.
+#
+# A host of its own and not a path under the portal, because its assets and its
+# API are both absolute from the origin root -- `/assets/...`, `/session`,
+# `/api/...` -- and that last one collides with the portal's. Caddy rather than
+# the portal, because the interface syncs over a WebSocket, which Flask cannot
+# forward.
+#
+# `code.invalid` when the household has not set `dns.code`: RFC 2606 guarantees
+# it resolves nowhere, so the site exists, parses, and can never be reached.
+# The alternative is an empty site address, which is a config Caddy will not
+# load -- and a typo in one optional name taking the portal down with it is not
+# a trade worth making.
+{$CODE_NAME:code.invalid} {
+	tls /certs/fullchain.pem /certs/key.pem
+	encode gzip
+
+	# Access logging on this site only. It is new, it proxies somebody else's
+	# application, and "a blank page" is not something the portal's logs can
+	# explain -- an asset that 401'd and a WebSocket that never upgraded look
+	# identical from the outside.
+	log {
+		output stderr
+		format console
+	}
+
+	# Whatever the caller sent under these names, it is gone before anything
+	# reads them. They decide which member's server the request reaches, and
+	# each of those holds one person's MCP token: a header the client can set
+	# is a header that hands somebody else's projects over.
+	request_header -X-Code-Member
+	request_header -X-Code-Port
+
+	# The handoff itself is the portal's, not opencode's.
+	handle /_code/* {
+		reverse_proxy https://127.0.0.1:{$HOMECORE_PORT:21001} {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
+	}
+
+	handle {
+		# forward_auth written out, so the refusal can say something. Its
+		# built-in version copies the portal's 401 straight through, and that
+		# 401 has an empty body -- which a browser renders as a blank white
+		# page. Arriving here without a ticket is the ordinary case (a cold
+		# link, an expired cookie), so it must not look like a broken service.
+		reverse_proxy https://127.0.0.1:{$HOMECORE_PORT:21001} {
+			method GET
+			rewrite /_code/whoami
+			transport http {
+				tls_insecure_skip_verify
+			}
+
+			@ok status 2xx
+			handle_response @ok {
+				request_header X-Code-Member {rp.header.X-Code-Member}
+				request_header X-Code-Port {rp.header.X-Code-Port}
+			}
+
+			# Deliberately not a redirect to the portal. This app answers on
+			# more than one name and the session is host-only: sending the
+			# Android app to the portal's LAN name lands it on a host it is not
+			# logged into, which is a login its WebView cannot pass. The page
+			# names the door instead of guessing which one is yours.
+			@denied status 401 403
+			handle_response @denied {
+				# `respond` sends text/plain unless told otherwise, and a
+				# browser shows the markup rather than the page.
+				header Content-Type "text/html; charset=utf-8"
+				respond `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Código</title>
+<style>
+ body{font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      margin:0;min-height:100vh;display:grid;place-items:center;
+      background:#faf7f2;color:#2b2b2b;padding:1.5rem}
+ main{max-width:26rem;text-align:center}
+ h1{font-size:1.25rem;margin:0 0 .75rem}
+ p{margin:0 0 .5rem;color:#555}
+ code{background:#efe9df;padding:.1rem .35rem;border-radius:4px}
+</style>
+<main>
+<h1>Esta sesión no está abierta</h1>
+<p>Abrí el Programador desde el menú <b>Apps → Code</b> en el portal.</p>
+<p>Ese enlace es el que abre esta página: entra con tu sesión del portal,
+sin escribir ninguna dirección.</p>
+</main>` 401
+			}
+		}
+		# The port travels, never a host. Even if the strip above were somehow
+		# bypassed, the worst reachable is a port on this machine.
+		reverse_proxy 127.0.0.1:{http.request.header.X-Code-Port} {
+			flush_interval -1
+		}
+	}
+}

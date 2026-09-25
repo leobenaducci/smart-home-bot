@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Camera captures written to app external cache, shared to the camera app. -->
+    <external-cache-path name="camera" path="camera/" />
+    <!-- Downloaded APK updates, shared to the system package installer. -->
+    <external-files-path name="updates" path="updates/" />
+</paths>

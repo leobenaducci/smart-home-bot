@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block content %}
+{% if pending %}
+<div class="notice attn">
+  {{ t('admin.deploy.pending_services', n=pending|length) }}
+  <span class="mono">{{ pending|join(', ') }}</span>
+</div>
+{% endif %}
+
+{% if blocked_roles %}
+{# Said before the button, not after it. The deployer refuses this and always
+   has; what was missing is that the page offered the button anyway, so the
+   only way to learn was to press it and read a failed job. #}
+<div class="card danger">
+  <h2>{{ t('admin.deploy.blocked_heading') }}</h2>
+  <p class="intro">{{ t('admin.deploy.blocked_intro', roles=blocked_roles) }}</p>
+  <p class="help">{{ t('admin.deploy.blocked_why') }}</p>
+  <pre class="mono deploy-cmd">cd {{ ' ' }}~/smart-home-bot
+./home-stack deploy</pre>
+  <p class="help">{{ t('admin.deploy.blocked_alt') }}</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>{{ t('admin.deploy.heading') }}</h2>
+  <p class="intro">{{ t('admin.deploy.intro') }}</p>
+
+  <form method="post" id="deploy-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="field">
+      <label for="target">{{ t('admin.services.name') }}</label>
+      <select id="target" name="target" {% if job.running or blocked_roles %}disabled{% endif %}>
+        {% if pending %}
+        <option value="__pending__" selected>{{ t('admin.deploy.only_pending') }}</option>
+        {% endif %}
+        <option value="all">{{ t('admin.deploy.all') }}</option>
+        {% for n in names %}
+          {# This page cannot deploy itself: `compose down` comes before `up`,
+             and the process doing the deploying is inside the container being
+             taken down. It would die halfway with nothing to report. #}
+          <option value="{{ n }}" {% if n == self_service %}disabled{% endif %}>
+            {{ n }}{% if n == self_service %} — {{ t('admin.deploy.self_note') }}{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+      <p class="help" id="plan-line"></p>
+    </div>
+    {% if self_service %}
+    <p class="note">{{ t('admin.deploy.self_help', name=self_service) }}</p>
+    {% endif %}
+    <p>
+      <button type="submit" name="dry_run" value="1" class="ghost"
+              {% if job.running or blocked_roles %}disabled{% endif %}>{{ t('admin.deploy.dry_run') }}</button>
+      <button type="submit" {% if job.running or blocked_roles %}disabled{% endif %}>{{ t('admin.deploy.run') }}</button>
+    </p>
+  </form>
+</div>
+
+{% if job.running or has_log %}
+<div class="card">
+  <h2 id="job-title">
+    {% if job.running %}{{ t('admin.deploy.running') }}{% else %}{{ t('admin.deploy.last_run') }}{% endif %}
+  </h2>
+  <p class="intro">
+    <span class="mono">{{ job.targets|join(' ') if job.targets else '' }}</span>
+    {% if job.dry_run %}<span class="pill off">{{ t('admin.deploy.dry_run') }}</span>{% endif %}
+    <span id="job-elapsed" class="mono" style="float:right;color:var(--ink-soft)"></span>
+  </p>
+  <div id="job-status"></div>
+  <div id="job-log" class="joblog"></div>
+</div>
+
+<style>
+  .joblog .svc  { font-weight: 700; margin-top: 8px; color: #F2EFE7; }
+  .joblog .svc:first-child { margin-top: 0; }
+  .joblog .unit { color: var(--ink-soft); font-weight: 600; }
+  .joblog .ok   { color: #9DBE86; }
+  .joblog .fail { color: #E08A72; font-weight: 600; }
+  .joblog .warn { color: var(--attn); }
+  .joblog .dry  { color: #9AA199; }
+  .joblog .plain{ color: #B9C0B4; }
+  #job-status .flash { margin: 0 0 14px; }
+  .spin { display: inline-block; width: 12px; height: 12px; margin-right: 8px;
+          border: 2px solid var(--edge); border-top-color: var(--attn);
+          border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<script>
+(function () {
+  'use strict';
+  const logBox   = document.getElementById('job-log');
+  const status   = document.getElementById('job-status');
+  const title    = document.getElementById('job-title');
+  const elapsed  = document.getElementById('job-elapsed');
+  let offset = 0;
+  let running = {{ (job.running | default(false)) | tojson }};
+  const LOG_URL = {{ url_for('deploy_log') | tojson }};
+
+  // The deployer's terminal output, translated into something a person scans:
+  // services as headers, checks as green/red rows, dry-run lines muted.
+  function classify(line) {
+    if (line.startsWith('==>')) return ['svc', line.replace(/^==> /, '')];
+    if (/^\s*-- unit:/.test(line)) return ['unit', '└ ' + line.trim().replace(/^-- /, '')];
+    if (/^\s*ok\b|^\s+ok\s/.test(line.replace(/^\s+/, ' '))) return ['ok', '✓ ' + line.trim().replace(/^ok\s+/, '')];
+    if (line.includes('FAIL')) return ['fail', '✗ ' + line.trim().replace(/^FAIL\s+/, '')];
+    if (/^\s*warn/.test(line)) return ['warn', '⚠ ' + line.trim().replace(/^warn\s+/, '')];
+    if (line.includes('[dry-run]')) return ['dry', line.trim()];
+    return ['plain', line];
+  }
+
+  function append(lines) {
+    for (const raw of lines) {
+      if (!raw.trim()) continue;
+      const [cls, text] = classify(raw);
+      const div = document.createElement('div');
+      div.className = cls;
+      div.textContent = text;
+      logBox.appendChild(div);
+    }
+    logBox.scrollTop = logBox.scrollHeight;
+  }
+
+  async function poll() {
+    try {
+      // Outside the template literal, because `| tojson` emits the quotes:
+      // inside one it would have produced fetch(`"/deploy/log"?offset=0`).
+      const res = await fetch(`${LOG_URL}?offset=${offset}`);
+      const data = await res.json();
+      offset = data.offset;
+      append(data.lines);
+      elapsed.textContent = data.elapsed ? data.elapsed + 's' : '';
+      if (data.running) {
+        title.innerHTML = '<span class="spin"></span>' + {{ t('admin.deploy.running')|tojson }};
+        setTimeout(poll, 1200);
+      } else if (running || data.lines.length) {
+        running = false;
+        title.textContent = {{ t('admin.deploy.last_run')|tojson }};
+        status.innerHTML = data.failed
+          ? '<div class="flash error">' + {{ t('admin.deploy.failed')|tojson }} + '</div>'
+          : '<div class="flash ok">' + {{ t('admin.deploy.success')|tojson }} + '</div>';
+        document.querySelectorAll('#deploy-form button, #deploy-form select')
+          .forEach(el => el.removeAttribute('disabled'));
+      }
+    } catch (e) {
+      setTimeout(poll, 3000);
+    }
+  }
+  poll();
+
+  // What each choice would do, before pressing anything.
+  const plan = {{ plan|tojson }};
+  const select = document.getElementById('target');
+  const planLine = document.getElementById('plan-line');
+  function showPlan() {
+    const v = select.value;
+    let names;
+    if (v === 'all') names = Object.keys(plan);
+    else if (v === '__pending__') names = {{ pending|tojson }};
+    else names = [v];
+    const units = names.map(n => plan[n] ? `${n} (${plan[n].join(', ')})` : n);
+    planLine.textContent = units.join('  ·  ');
+  }
+  select.addEventListener('change', showPlan);
+  showPlan();
+})();
+</script>
+{% endif %}
+
+
+
+{# The Alfred APK. It shares this page because it is the other thing here that
+   takes minutes and streams a log, and because "release the app" belongs beside
+   "deploy the house" rather than under Services, which is about what runs. #}
+<div class="card" id="apk-card">
+  <h2>{{ t('admin.apk.heading') }}</h2>
+  <p class="intro">{{ t('admin.apk.intro') }}</p>
+
+  {% if not apk.image %}
+    <div class="flash warn">{{ t('admin.apk.no_image') }}</div>
+  {% endif %}
+
+  <div class="action-row">
+    <form method="post" action="{{ url_for('apk_build') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="channel" value="release">
+      <button type="submit" class="ghost" {% if apk.running %}disabled{% endif %}>
+        📦 {{ t('admin.apk.build_release') }}</button>
+    </form>
+    <p class="help">{{ t('admin.apk.release_help') }}</p>
+  </div>
+
+  <div class="action-row">
+    <form method="post" action="{{ url_for('apk_build') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="channel" value="beta">
+      <button type="submit" class="ghost" {% if apk.running %}disabled{% endif %}>
+        🧪 {{ t('admin.apk.build_beta') }}</button>
+    </form>
+    <p class="help">{{ t('admin.apk.beta_help') }}</p>
+  </div>
+
+  <h3 id="apk-title" class="stack">{{ t('admin.apk.last_run') }}</h3>
+  <div id="apk-status"></div>
+  <div id="apk-log" class="joblog"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  // The same offset/lines contract the deploy log uses, so both behave alike.
+  // Its own poller rather than a shared one: the two run independently and a
+  // single loop would have to know which of them is live.
+  const box   = document.getElementById('apk-log');
+  const title = document.getElementById('apk-title');
+  const status= document.getElementById('apk-status');
+  if (!box) return;
+  const URL_ = {{ url_for('apk_log')|tojson }};
+  const T = {
+    running: {{ t('admin.apk.running')|tojson }},
+    last:    {{ t('admin.apk.last_run')|tojson }},
+    ok:      {{ t('admin.apk.success')|tojson }},
+    failed:  {{ t('admin.apk.failed')|tojson }},
+    busy:    {{ t('admin.apk.busy')|tojson }}
+  };
+  let offset = 0, sawRunning = false;
+
+  // The buttons were disabled by the template at page load and nothing ever
+  // turned them back on, so they stayed grey until somebody reloaded -- which
+  // looks exactly like a page that has stopped working.
+  function setBusy(busy) {
+    document.querySelectorAll('#apk-card button').forEach(function (b) {
+      if (busy) { b.setAttribute('disabled', 'disabled'); }
+      else { b.removeAttribute('disabled'); }
+    });
+  }
+
+  async function poll() {
+    try {
+      const res  = await fetch(URL_ + '?offset=' + offset);
+      const data = await res.json();
+      offset = data.offset;
+      for (const raw of data.lines) {
+        if (!raw.trim()) continue;
+        const div = document.createElement('div');
+        // Gradle is noisy and the interesting lines are the ones this script
+        // prints; mark those rather than colouring by guesswork.
+        div.className = raw.startsWith('==>') ? 'ok'
+                      : (raw.indexOf('ERROR') === 0 || raw.indexOf('FAILURE') === 0) ? 'bad' : '';
+        div.textContent = raw;
+        box.appendChild(div);
+      }
+      box.scrollTop = box.scrollHeight;
+      if (data.running) {
+        sawRunning = true;
+        setBusy(true);
+        title.innerHTML = '<span class="spin"></span>' + T.running;
+        setTimeout(poll, 1500);
+      } else {
+        // Whenever it is not running and something has been built, say how it
+        // ended -- not only when this page happened to watch the transition.
+        // Landing on the page after the build finished, or after this container
+        // restarted mid-build, showed a full log and no verdict.
+        sawRunning = false;
+        setBusy(false);
+        if (data.failed !== null && data.failed !== undefined) {
+          title.textContent = T.last;
+          status.innerHTML = data.failed
+            ? '<div class="flash error">' + T.failed + '</div>'
+            : '<div class="flash ok">' + T.ok + '</div>';
+        }
+      }
+    } catch (e) { setTimeout(poll, 4000); }
+  }
+  // The forms still post -- that is the no-JavaScript path -- but with a script
+  // running there is no reason to leave: the log arrives into a card already on
+  // screen, and a reload to say "it started" throws the page away to deliver
+  // something the page is about to show anyway.
+  document.querySelectorAll('#apk-card form').forEach(function (form) {
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      setBusy(true);
+      status.innerHTML = '';
+      title.innerHTML = '<span class="spin"></span>' + T.running;
+      fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        headers: {'X-Requested-With': 'fetch'}
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) {
+          // Already building: leave the running one alone and say so.
+          status.innerHTML = '<div class="flash error">' + T.busy + '</div>';
+          return;
+        }
+        sawRunning = true;
+        setTimeout(poll, 800);
+      }).catch(function () { setBusy(false); });
+    });
+  });
+
+  poll();
+})();
+</script>
+
+{% endblock %}

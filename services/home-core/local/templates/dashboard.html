@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="{{ locale }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ t('portal.title') }} — {{ site_name }}</title>
+  <!-- The house faces, served by this app. See HomeCore/tools/fetch-fonts.sh
+       for where they come from and why they are not fetched from the internet. -->
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2; --olive:#57633F;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --ink-deep:#17140F; --olive-deep:#3E4A2B; --clay-deep:#8B3826; --honey-deep:#8A5E17;
+      --r-lg:16px; --r:10px; --r-sm:8px; --r-pill:999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+    }
+    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:var(--sans); background:var(--plaster); color:var(--ink);
+           -webkit-font-smoothing:antialiased; }
+    header { position:relative; display:flex; align-items:center; gap:.75rem;
+             padding:.9rem 1.2rem; background:var(--wall); color:var(--wall-fg); }
+    header h1 { font-family:var(--display); font-size:1.15rem; font-weight:600; flex:1; }
+    header a, header select { color:var(--wall-fg); text-decoration:none;
+                              font-size:.85rem; opacity:.85; }
+    header select { background:transparent; border:1px solid rgba(218,212,194,.35);
+                    border-radius:var(--r-pill); padding:.15rem .5rem;
+                    font-family:var(--sans); }
+    header select option { color:var(--ink); }
+    header::after { content:""; position:absolute; bottom:0; left:0; right:0; height:2px;
+      background:linear-gradient(90deg, var(--olive), var(--honey), var(--clay)); }
+
+    main { max-width:1100px; margin:0 auto; padding:1.4rem 1.2rem 3rem; }
+    h2 { font-family:var(--display); font-size:1rem; font-weight:600;
+         color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;
+         margin:1.6rem 0 .8rem; }
+    h2:first-of-type { margin-top:.4rem; }
+
+    /* One shape for every tile, whatever it links to. A household service and
+       one of this app's own pages are the same kind of thing to the person
+       looking at the wall, and making them look different would be inventing a
+       distinction only the deployer cares about. */
+    .wall { display:grid; gap:.8rem;
+            grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); }
+    .tile { display:flex; gap:.7rem; align-items:flex-start;
+            background:var(--paper); border:1px solid var(--line);
+            border-radius:var(--r-lg); box-shadow:var(--shadow);
+            padding:.9rem 1rem; text-decoration:none; color:inherit;
+            transition:transform .12s ease, box-shadow .12s ease; }
+    .tile:hover, .tile:focus-visible {
+      transform:translateY(-2px);
+      box-shadow:0 1px 0 rgba(255,255,255,.7) inset,
+                 0 18px 34px -20px rgba(60,50,30,.85); }
+    .tile:focus-visible { outline:2px solid var(--honey); outline-offset:2px; }
+    .tile .icon { font-size:1.5rem; line-height:1.2; }
+    .tile .txt { min-width:0; }
+    .tile .name { font-family:var(--display); font-weight:600; font-size:.98rem;
+                  color:var(--ink-deep); }
+    .tile .desc { font-size:.76rem; color:var(--ink-soft); margin-top:.15rem;
+                  overflow-wrap:anywhere; }
+    /* Extensions are marked, and deliberately not hidden away in small type:
+       when one of these breaks it is nobody's job here to fix it, and the wall
+       should say so before somebody files it against the stack. */
+    .tile .tag { display:inline-block; margin-top:.35rem; font-size:.66rem;
+                 font-family:var(--mono); text-transform:uppercase;
+                 letter-spacing:.05em; color:var(--honey-deep);
+                 border:1px solid var(--honey-lt); border-radius:var(--r-pill);
+                 padding:.05rem .45rem; }
+    .empty { color:var(--ink-soft); font-size:.85rem; padding:.6rem 0 1rem; }
+    /* Said once, at the bottom, rather than as a tooltip on each missing tile.
+       There is nothing to hover: the tiles are not there. */
+    .away { margin-top:2rem; font-size:.76rem; color:var(--ink-soft);
+            border-top:1px solid var(--line); padding-top:.8rem; }
+  </style>
+  <link rel="stylesheet" href="/theme.css">
+  <script>
+    /* Pick up a theme Alfred set while this page was open. See /theme/version. */
+    (function () {
+      var link = document.querySelector('link[href^="/theme.css"]');
+      if (!link) return;
+      var seen = null, timer = null;
+      function apply(v) {
+        // Swapping href re-fetches the sheet; the old one stays until the new
+        // one parses, so the page never flashes unstyled.
+        link.href = '/theme.css?v=' + v;
+        link.addEventListener('load', tellTheApp, { once: true });
+      }
+      /* The Android app owns the status bar and the window behind this
+         WebView, and CSS cannot reach either. Read the two colours back out of
+         the computed style so this can never disagree with the sheet, and hand
+         them over; in a browser the bridge is simply absent. */
+      function tellTheApp() {
+        try {
+          if (!window.AndroidTheme || !window.AndroidTheme.apply) return;
+          var css = getComputedStyle(document.documentElement);
+          var wall = css.getPropertyValue('--wall').trim();
+          var plaster = css.getPropertyValue('--plaster').trim();
+          if (wall && plaster) window.AndroidTheme.apply(wall, plaster);
+        } catch (e) {}
+      }
+      async function check() {
+        if (document.hidden) return;
+        try {
+          var r = await fetch('/theme/version', { cache: 'no-store' });
+          if (!r.ok) return;
+          var v = (await r.json()).v;
+          if (seen === null) { seen = v; return; }   // first look: just remember
+          if (v !== seen) { seen = v; apply(v); }
+        } catch (e) { /* offline, or logged out: try again next tick */ }
+      }
+      function start() { clearInterval(timer); timer = setInterval(check, 20000); check(); }
+      tellTheApp();          // whatever theme this page loaded with
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) clearInterval(timer); else start();
+      });
+      start();
+    })();
+  </script>
+</head>
+<body>
+  <header>
+    <span>🏠</span>
+    <h1>{{ t('portal.greeting', name=user) }}</h1>
+    {% if locales|length > 1 %}
+      <select onchange="location.search = '?lang=' + this.value" aria-label="Language">
+        {% for l in locales %}
+          <option value="{{ l.code }}" {% if l.code == locale %}selected{% endif %}>{{ l.name }}</option>
+        {% endfor %}
+      </select>
+    {% endif %}
+    <a href="/logout">{{ t('common.logout') }}</a>
+  </header>
+
+  <main>
+    {% set labels = {'basic': t('portal.section.basic'),
+                     'advanced': t('portal.section.advanced'),
+                     'extensions': t('portal.section.extensions')} %}
+    {% set total = wall.basic|length + wall.advanced|length + wall.extensions|length %}
+
+    {% for group in ['basic', 'advanced', 'extensions'] %}
+      {% if wall[group] %}
+        <h2>{{ labels[group] }}</h2>
+        <div class="wall">
+          {% for tile in wall[group] %}
+            <a class="tile" href="{{ tile.url }}"
+               {% if tile.external %}target="_blank" rel="noopener"{% endif %}>
+              <span class="icon" aria-hidden="true">{{ tile.icon }}</span>
+              <span class="txt">
+                <span class="name">{{ tile.title }}</span>
+                {% if tile.description %}<span class="desc">{{ tile.description }}</span>{% endif %}
+                {% if group == 'extensions' %}<span class="tag">{{ t('portal.tag.extension') }}</span>{% endif %}
+              </span>
+            </a>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    {% if not total %}<p class="empty">{{ t('portal.no_services') }}</p>{% endif %}
+    {% if not at_home %}<p class="away">{{ t('portal.away_note') }}</p>{% endif %}
+  </main>
+
+</body>
+</html>

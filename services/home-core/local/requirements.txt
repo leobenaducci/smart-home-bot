@@ -1,0 +1,22 @@
+flask>=3.0
+requests
+websocket-client
+bcrypt
+smbprotocol
+# Project credentials at rest (/projects/api): Fernet. It already arrived
+# transitively through smbprotocol, and a direct dependency that is only
+# present by accident is one upgrade away from an app that will not boot.
+cryptography
+tzdata
+# Server-side map rendering (/chat/map): composites OSM tiles + marker overlay.
+# >=10.1 for the scalable ImageFont.load_default(size=), so the image needs no
+# font package of its own.
+pillow>=10.1
+# Chat document attachments (/chat/upload-doc): text extraction only, never
+# rendering or writing. Each is imported lazily inside its own extractor, so a
+# missing one costs that one format and reports itself, rather than stopping the
+# app from booting. python-docx pulls lxml, which has aarch64 wheels — no
+# compiler needed on the pi.
+pypdf>=4.0
+python-docx>=1.1
+openpyxl>=3.1

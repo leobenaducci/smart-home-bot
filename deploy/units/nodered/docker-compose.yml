@@ -1,0 +1,43 @@
+# The flows the house runs on a schedule or a trigger.
+#
+# Upstream's image, unmodified, with one directory: `/data` holds `flows.json`,
+# `settings.js`, the installed palette and `flows_cred.json`. That last one is
+# encrypted with `credentialSecret` from `settings.js`, so the directory has to
+# move as a whole -- carrying the flows without it gives you every node in
+# place and every credential blank, which reads as a broken integration rather
+# than a missing file.
+services:
+  nodered:
+    image: ${NODERED_IMAGE:-nodered/node-red:latest}
+    container_name: nodered
+    restart: unless-stopped
+    # The same uid the rest of the stack deploys as. Upstream's image runs as
+    # `node-red` (1000) and the directory arrives owned by whoever copied it.
+    user: "${UID:-1000}:${GID:-1000}"
+    # The house is on the host, not on this compose network. Without the
+    # mapping every flow that posts to the portal or publishes to the broker
+    # fails `getaddrinfo` -- and a flow that cannot reach anything looks
+    # exactly like a flow nobody triggered.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${NODERED_PORT:-21060}:1880"
+    volumes:
+      - ${NODERED_DATA_DIR:-/var/lib/home-stack/state/nodered}:/data
+    environment:
+      TZ: ${TZ:-UTC}
+      # Where flows POST to reach the house. An address, not a `dns:` name: a
+      # container retrying getaddrinfo forever is indistinguishable from the
+      # service being down.
+      HOMECORE_URL: ${HOMECORE_URL:-}
+      MQTT_BROKER: ${MQTT_BROKER:-}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+    healthcheck:
+      # The editor's own settings endpoint, which answers JSON only once the
+      # runtime has actually loaded. `/` answers a page while the flows are
+      # still starting.
+      test: ["CMD-SHELL",
+             "node -e \"require('http').get('http://127.0.0.1:1880/settings',r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>process.exit(JSON.parse(b).httpNodeRoot?0:1))}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3

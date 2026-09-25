@@ -1,0 +1,123 @@
+services:
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    container_name: paperless
+    depends_on:
+      - postgres
+      - redis
+      - gotenberg
+      - tika
+    environment:
+      # Required since the paperless-ngx image began refusing to start
+      # without it (it used to warn and fall back to 'change-me'). A
+      # `docker compose pull` picked that image up on 2026-07-31 and the
+      # container went into a crash loop — nothing here changed, the upstream
+      # requirement did.
+      #
+      # `:?` rather than a default on purpose: an unset key must fail loudly at
+      # `compose config` time, not silently start a container whose session
+      # cookies and tokens are signed with a value anyone can read on GitHub.
+      # It comes from the Jenkins credential `paperless-secret-key` on a
+      # pipeline run, and from a 0600 .env beside this file for a hand-run.
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?set it in .env or the Jenkins credential PAPERLESS_SECRET_KEY}
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBHOST: postgres
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS: paperlesspass
+
+      PAPERLESS_URL: ${PAPERLESS_URL:-http://paperless.home:21030}
+      PAPERLESS_CONSUMPTION_DIR: /consume
+      # From the household's languages, via the deployer (`spa+eng`).
+      PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE:-eng}
+
+      # Email ingestion
+      PAPERLESS_ENABLE_MAIL: 1
+      PAPERLESS_MAIL_HOST: imap.hostinger.com
+      PAPERLESS_MAIL_USER: ${PAPERLESS_MAIL_USER:-}
+      PAPERLESS_MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      PAPERLESS_MAIL_FOLDER: INBOX
+      PAPERLESS_MAIL_POLL_INTERVAL: 300
+
+      # Built-in AI: suggestions for a document's title, tags, correspondent,
+      # type and date, from its OCR text. All of it is `assistant.models.
+      # documents` on the Models page, resolved by the deployer (paperless_*
+      # in deploy.py), under the names Paperless 3.x actually reads.
+      #
+      # Until 2026-09-12 this said PAPERLESS_AI_PROVIDER/MODEL/ENDPOINT/
+      # API_KEY, with a minicpm-v:8b fallback. Paperless reads none of those,
+      # so the AI was never configured and never on -- and minicpm-v cannot
+      # call tools, which is how Paperless's OpenAI client asks for an answer,
+      # so it would not have worked if it had been.
+      #
+      # No model chosen means off. That is the fallback, not a model this file
+      # guesses at: a model named here has to exist on somebody's Ollama.
+      PAPERLESS_AI_ENABLED: ${PAPERLESS_AI_ENABLED:-false}
+      PAPERLESS_AI_LLM_BACKEND: ${PAPERLESS_AI_LLM_BACKEND:-ollama}
+      PAPERLESS_AI_LLM_MODEL: ${PAPERLESS_AI_LLM_MODEL:-}
+      PAPERLESS_AI_LLM_ENDPOINT: ${PAPERLESS_AI_LLM_ENDPOINT:-}
+      PAPERLESS_AI_LLM_API_KEY: ${PAPERLESS_AI_LLM_API_KEY:-}
+      # The window the Ollama server runs, or Ollama reloads the model on every
+      # request that names a different one. From `cloud.ollama.*.context`.
+      PAPERLESS_AI_LLM_CONTEXT_SIZE: ${PAPERLESS_AI_LLM_CONTEXT_SIZE:-8192}
+      PAPERLESS_AI_LLM_OUTPUT_LANGUAGE: ${PAPERLESS_AI_LLM_OUTPUT_LANGUAGE:-}
+      # The index the AI chooses existing tags and correspondents from. No
+      # value on purpose: set when the deployer exports one, *unset* when it
+      # does not. Paperless refuses to start on an empty backend, and a `:-`
+      # default could only ever set it to something.
+      PAPERLESS_AI_LLM_EMBEDDING_BACKEND:
+      PAPERLESS_AI_LLM_EMBEDDING_MODEL:
+      PAPERLESS_AI_LLM_EMBEDDING_ENDPOINT:
+
+    # A container reaching a service on the host. On the default one-PC install
+    # every role is 127.0.0.1, which inside a bridge-networked container is the
+    # container itself -- so the deployer hands out `host.docker.internal` and
+    # this is what makes it resolve. Harmless when the roles have real
+    # addresses: nothing looks the name up.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Every one of these is live state, and every one of them used to be a
+      # hardcoded /mnt/storage path. The manifest declared PAPERLESS_DATA_DIR
+      # and PAPERLESS_MEDIA_DIR, the deployer exported them, `guard_state_paths`
+      # checked them and docs/backups.md documented them -- and the container
+      # wrote somewhere else entirely, because nothing here read the names. On
+      # a host with no /mnt/storage, Docker created one as root and a household
+      # scanned documents into a directory no backup knew about.
+      - ${PAPERLESS_DATA_DIR:-/var/lib/home-stack/state/paperless}:/usr/src/paperless/data
+      - ${PAPERLESS_MEDIA_DIR:-/var/lib/home-stack/media/paperless}:/usr/src/paperless/media
+      - ${PAPERLESS_CONSUME_DIR:-/var/lib/home-stack/media/paperless-consume}:/consume
+    ports:
+      - "${PAPERLESS_PORT:-21030}:8000"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: paperless-postgres
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: paperlesspass
+    volumes:
+      # The document database -- titles, tags, correspondents, the full-text
+      # index. Losing it loses everything about the documents except the files.
+      - ${PAPERLESS_DB_DIR:-/var/lib/home-stack/state/paperless-db}:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: paperless-redis
+    restart: unless-stopped
+
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: paperless-gotenberg
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=true"
+    restart: unless-stopped
+
+  tika:
+    image: apache/tika:latest
+    container_name: paperless-tika
+    restart: unless-stopped

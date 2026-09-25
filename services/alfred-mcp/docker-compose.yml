@@ -1,0 +1,21 @@
+# The MCP bridges between opencode and this household.
+#
+# **The services are generated.** One bridge per member is rendered into
+# docker-compose.members.yml by deploy/compose_alfred_mcp.py, from
+# `services.alfred-mcp.members`. This file holds only what they share, which is
+# the network.
+#
+# One container per person, and that is not a scaling decision -- it is what
+# makes the identity question answerable at all. A single bridge for the
+# household would have to decide which person a call is for, and the only thing
+# that could tell it is the request, which is composed by a model reading a
+# prompt. One person's credentials per process means there is nothing to
+# decide. See alfred_mcp/identity.py.
+
+networks:
+  # Joined, not created -- `pre_create_networks:` in the manifest makes it. The
+  # code broker is on it and publishes no port, so this is the only way to
+  # reach it.
+  default:
+    name: nanobot-net
+    external: true

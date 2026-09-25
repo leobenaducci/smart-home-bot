@@ -1,0 +1,16 @@
+# The Zigbee radio, when this machine is the one it is plugged into.
+#
+# Its own file because a device that is not present does not degrade: `up`
+# fails with "error gathering device information", and the whole service is
+# down rather than one integration. Same shape as the camera wall's GPU
+# overlay, and for the same reason.
+#
+# **By-id, not ttyUSBn.** The number is handed out in probe order, so plugging
+# in anything else that enumerates as a serial port renumbers it on the next
+# reboot and ZHA opens the wrong device -- which presents as the whole Zigbee
+# network being gone, not as a wrong path. `/dev/serial/by-id/...` is stable
+# across ports and reboots.
+services:
+  homeassistant:
+    devices:
+      - "${HOMEASSISTANT_SERIAL}:${HOMEASSISTANT_SERIAL}"

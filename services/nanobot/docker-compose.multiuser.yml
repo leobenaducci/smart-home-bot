@@ -1,0 +1,208 @@
+# Five isolated nanobot instances that share the same repo and host tools.
+#
+# Built and rolled by deploy/deploy.py (one image, then `up -d`), not with
+# `docker compose up --build`.
+#
+# Per-user state:
+#   ${NANOBOT_STATE_DIR}/userN/   -> mounted as /home/nanobot/.nanobot
+#
+# Each container runs both the gateway (port 1879N) and the OpenAI-compatible
+# API server (port 890N, localhost-only) via entrypoint.sh. This
+# ensures both processes read the same user-specific config and share the same
+# workspace, sessions, and memory — they are fully isolated from other users.
+#
+# The init-dirs service runs once as root to create and chown the host-side
+# per-user directories to UID/GID 1000 before any user container starts.
+# This prevents the "not writable (owned by UID 0)" error that occurs when
+# Docker auto-creates bind-mount directories as root.
+
+x-common-config: &common-config
+  # One image for everyone, built by the deployer — NOT a per-service
+  # `build:` block. With one, Compose builds the same Dockerfile once per user
+  # and exports five byte-identical images (alfred-nanobot-user1…5), each
+  # unpacked separately: ~200s apiece on the Pi, for nothing.
+  image: alfred-nanobot:latest
+  restart: unless-stopped
+  user: "${UID:-1000}:${GID:-1000}"
+  cap_drop:
+    - ALL
+  cap_add:
+    - SYS_ADMIN
+  security_opt:
+    - apparmor=unconfined
+    - seccomp=unconfined
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  # Variables a plugin contributes to this service, written by the deployer
+  # into the staged build context. Optional and usually absent -- with no
+  # plugins there is no file and nothing changes.
+  #
+  # A file rather than more `environment:` lines because the core compose
+  # cannot know a household service's variable names. Exporting them for
+  # interpolation is not enough: a variable the deployer exports but no
+  # compose service lists never reaches the container, which is how the
+  # Ollama endpoints once arrived nowhere.
+  env_file:
+    - path: plugin-contributions.env
+      required: false
+  environment:
+    - OPENCODE_API_KEY=${OPENCODE_API_KEY}
+    # Where ntfy-send publishes, and where its answer buttons point. Both were
+    # `.home` literals inside the script, so every notification the
+    # assistant sent needed local DNS to exist.
+    - NTFY_BASE_URL=${NTFY_BASE_URL:-}
+    - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-}
+    - VANE_BASE_URL=${VANE_BASE_URL:-}
+    - SEARCH_LANGUAGE=${SEARCH_LANGUAGE:-en}
+    - HOMECORE_URL=${HOMECORE_URL:-}
+    # The model endpoints. All four are always set, even when a provider is
+    # off: nanobot reads its whole config for ${...} and refuses to start on an
+    # *unset* reference, so a missing name is a container that never comes up
+    # rather than a feature that is off.
+    - OLLAMA_URL=${OLLAMA_URL:-}
+    - OLLAMA_API_KEY=${OLLAMA_API_KEY:-ollama}
+    - OLLAMA_CLOUD_URL=${OLLAMA_CLOUD_URL:-}
+    - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-disabled}
+    - OPENAI_COMPATIBLE_URL=${OPENAI_COMPATIBLE_URL:-}
+    - FREETOKEN_URL=${FREETOKEN_URL:-}
+    - FREETOKEN_API_KEY=${FREETOKEN_API_KEY:-disabled}
+    - OPENAI_COMPATIBLE_API_KEY=${OPENAI_COMPATIBLE_API_KEY:-disabled}
+    - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+    - HOMEASSISTANT_TOKEN=${HOMEASSISTANT_TOKEN:-}
+    # The one private range the SSRF check treats as this house. Empty means
+    # no exemption, which is the shipped state -- see site.lan_cidr.
+    - NANOBOT_LAN_CIDR=${NANOBOT_LAN_CIDR:-}
+    - SITE_LOCATION=${SITE_LOCATION:-}
+    - BRIGHTDATA_API_TOKEN=${BRIGHTDATA_API_TOKEN:-}
+    - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
+    - NANOBOT_N8N_API_KEY=${NANOBOT_N8N_API_KEY:-}
+    - PAPERLESS_URL=${PAPERLESS_URL:-http://paperless.home:21030}
+    # The camera wall's API, so camera-feed and the exec guard stop
+    # reading a host and a port out of their own source.
+    - CAMERA_API_URL=${CAMERA_API_URL:-}
+    - FILE_SHARE_HOST=${FILE_SHARE_HOST:-}
+    - FILE_SHARE_NAME=${FILE_SHARE_NAME:-share}
+    - FILE_SHARE_USERNAME=${FILE_SHARE_USERNAME:-share}
+    - FILE_SHARE_PASSWORD=${FILE_SHARE_PASSWORD:-}
+    # Hard cap on one background task. The 20-minute default silently truncated
+    # anything real ("investiga esto durante un par de horas" came back with a
+    # partial-progress summary at minute 20). Nothing waits on a socket for the
+    # answer any more — it is posted to HomeCore whenever it lands — so the only
+    # thing this needs to be is longer than the tasks people actually ask for.
+    - NANOBOT_SUBAGENT_MAX_RUNTIME_S=${NANOBOT_SUBAGENT_MAX_RUNTIME_S:-14400}
+  deploy:
+    resources:
+      limits:
+        cpus: "1"
+        memory: 1G
+
+  entrypoint: ["entrypoint.sh"]
+  depends_on:
+    init-dirs:
+      condition: service_completed_successfully
+
+services:
+  # One-shot init container: creates per-user host directories and sets
+  # ownership to UID 1000 so the non-root nanobot user can write to them.
+  init-dirs:
+    image: busybox
+    restart: "no"
+    user: "0:0"
+    volumes:
+      # The whole per-member state directory, not one bind per member. It was
+      # five, `.../user1:/mnt/user1` through user5, and the loop below is
+      # driven by the profiles the deployer generates -- so a sixth member's
+      # directory was one this container could not see, let alone create. The
+      # paths inside are the same either way: ${NANOBOT_STATE_DIR}/<member>.
+      - ${NANOBOT_STATE_DIR:-/var/lib/home-stack/state/nanobot}:/mnt
+      # The outage file every instance reads and writes. Same treatment as
+      # the per-user dirs and for the same reason: a bind mount whose host
+      # path does not exist is invented by docker as root, and the first
+      # write from inside would fail EACCES -- silently, because the store
+      # degrades to "knows nothing" rather than crashing.
+      - ${NANOBOT_SHARED_STATE_DIR:-/var/lib/home-stack/state/nanobot-shared}:/mnt/shared-state
+      # Generated by the deployer from the admin page's member
+      # profiles; the checkout's copy only carries the template.
+      - ${NANOBOT_PROFILES_DIR:-./user-profiles}:/user-profiles:ro
+      # Absolute: the deployer replaces this checkout wholesale, and the
+      # per-member agent config is edited in place by the running stack.
+      - ${NANOBOT_CONFIG_DIR:-/var/lib/home-stack/config/nanobot}:/nanobot-config-rw:rw
+    entrypoint:
+      - sh
+      - -c
+      - |
+        # Driven by the profiles the deployer generated, not by a hardcoded
+        # 1..5. It used to be the latter, and on a two-member install it spent
+        # three iterations failing to copy files that were never written and
+        # exited 1 -- taking the whole `up` with it.
+        for f in /user-profiles/user*.md; do
+          [ -e "$$f" ] || continue
+          u="$$(basename "$$f" .md)"
+          mkdir -p "/mnt/$$u/workspace"
+          # Seeded once. Memory consolidation rewrites this file, so copying it
+          # again on every deploy would throw away everything the assistant
+          # learned about that person.
+          [ -f "/mnt/$$u/workspace/USER.md" ] || cp "$$f" "/mnt/$$u/workspace/USER.md"
+          chown -R ${UID:-1000}:${GID:-1000} "/mnt/$$u"
+        done
+        # The prompt files are no longer here to chown: they live in the
+        # read-only config mount now, and are symlinked in by entrypoint.sh.
+        chown -R ${UID:-1000}:${GID:-1000} /nanobot-config-rw 2>/dev/null || true
+        # Shared with the house instance, which chowns it too from its own
+        # compose project. Idempotent either way, and whichever deploys
+        # first is the one that creates it.
+        chown -R ${UID:-1000}:${GID:-1000} /mnt/shared-state 2>/dev/null || true
+        # `|| true` because this is the last statement and the init
+        # container gates every assistant on
+        # `service_completed_successfully`. The store is built to
+        # degrade to "knows nothing" on a mount it cannot use; a
+        # bare chown here turns that into a house with no
+        # assistants, and `chown -R` also races the `.outages-*`
+        # temp file another instance is replacing right now.
+
+  # The only thing in this stack that touches a git remote. Same image as the
+  # agents and deliberately NOT the same environment: this one holds the
+  # projects' credentials and none of the family's, and the agents hold the
+  # family's and none of the projects'. That split is the design, and these two
+  # env blocks are what enforce it -- not anything in the code.
+  #
+  # No `ports:`. The compose network only, because nothing outside it has any
+  # business asking for a checkout, and an unpublished port is one that cannot
+  # be reached by mistake.
+  # The per-member assistants -- and the WhatsApp bridge of any member who has
+  # a linked phone -- are NOT here. They are rendered into
+  # docker-compose.members.yml by deploy/compose_members.py, one block per
+  # entry in `services.nanobot.members`, and overlaid on this file.
+  #
+  # They used to be five hand-written blocks, `nanobot-user1` through
+  # `nanobot-user5`. Two things were wrong with that. A sixth member got a
+  # profile, a port and a set of secrets and no container at all -- compose
+  # asked to start a profile that matches no service starts nothing and says
+  # nothing, so every stage of that deploy reported success. And the five had
+  # drifted from each other in four ways nothing could see: one member had no
+  # TASKS_API_URL, the file-share admin flag was on the wrong two people, every
+  # instance was told its share folder was `userN` when the portal serves it
+  # under the person's name, and WhatsApp was one member's by literal.
+  #
+  # See the module docstring for the rest. Anything that is the same for every
+  # member belongs in this file; anything derived from who a member is belongs
+  # in the renderer, where it is derived once.
+
+  nanobot-cli:
+    <<: *common-config
+    profiles:
+      - cli
+    entrypoint: ["entrypoint.sh"]
+    command: ["status"]
+    stdin_open: true
+    tty: true
+
+networks:
+  # Not created here. `pre_create_networks:` in the manifest makes it, because
+  # `docker compose config` does not check that an external network exists and
+  # `up` simply aborts on a fresh host with no hint of what was missing.
+  default:
+    name: nanobot-net
+    external: true

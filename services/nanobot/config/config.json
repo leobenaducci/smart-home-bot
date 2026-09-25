@@ -1,0 +1,223 @@
+{
+  "api": {
+    "_comment": "A turn carrying an image runs on qwen3-vl locally and takes ~2 minutes on this hardware, so 120 sat right on the edge and returned 504 for questions the model was answering correctly. The websocket path the family uses has no such cap; this one only bounded the OpenAI-compatible API.",
+    "timeout": 300
+  },
+  "gateway": {
+    "morningGreeting": {
+      "_comment": "The daily greeting each instance writes into its own person's chat — nanobot/agent/morning_greeting.py. One schedule for the whole house; the wording lives in shared-config/MORNING.md and can be edited without a restart. Off means the job stays registered and disabled, so turning it back on is this line and nothing else.",
+      "enabled": true,
+      "cron": "0 7 * * *"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "_comment_model": "Everyday Alfred: ordinary chat and anything not marked powerful. Moved off deepseek-v4-flash on 2026-08-16 after measuring both against this house's own traffic profile. Cost is a wash (99% of flash once cache_read is counted — an ordinary turn re-sends the history and the gateway caches ~98% of it, so the headline input price is not the number that matters). What is not a wash: luna answered a skill-block prompt in 2.0s against flash's 2.4s and used 40 completion tokens against 93, averaged 2.07s across three prompts against 3.07s, and spent ZERO reasoning tokens on all of them where flash spent 37-154. It also kept a clean register and did not invent a skill call — flash answered 'how warmly should I dress?' with a geo where_is and announced 'let me check the weather', which SOUL.md forbids in as many words.",
+      "model": "gpt-5.6-luna",
+      "provider": "custom",
+      "providerRetryMode": "persistent",
+      "timezone": "Etc/UTC",
+      "_comment_subagentModel": "Sub-agents get the strong model, not the fast one — the opposite of the main path, and deliberately. A background task is the long, hard end of what gets asked here ('investiga esto durante un par de horas', NANOBOT_SUBAGENT_MAX_RUNTIME_S is 4h) and nobody is waiting on a keystroke, so latency is worth nothing and being right is worth everything. deepseek-v4-pro rather than kimi-k3 for the default tier on cost: k3's cache_read is 0.30 against pro's 0.022, ~43x, and on the house's measured turn profile that is ~$25/month against ~$2.60 — 41% of the plan's $60 cap for the sub-agents alone. k3 is the better reasoner (bake-off 2026-08-16: the only model to catch that `with sqlite3.connect()` does not close, and the only one to look past Caddy to the WSGI worker timeout), so it takes the powerful tier where the cost is bounded by how rarely it is asked for.",
+      "subagentModel": "deepseek-v4-pro",
+      "subagentProvider": "custom",
+      "_comment_modelPowerful": "Main-agent model for turns the caller marks `powerful` — HomeCore sets it on every turn inside a profession (programmer, teacher, designer). Those are the contexts where the answer is worth more than the latency: a wrong figure, a wrong command or a guide for the wrong age costs more than the extra seconds. The normal chat stays on flash.",
+      "modelPowerful": "deepseek-v4-pro",
+      "providerPowerful": "custom",
+      "visionModel": "qwen3-vl:8b",
+      "visionProvider": "ollama",
+      "_comment_modelFallback": "The model to try once when the chosen one keeps erroring, after the retry ladder above has already run and established that waiting does not help. Added 2026-08-23, when gpt-5.6-luna returned a hard 500 on every attempt at the gateway while kimi-k3 and deepseek-v4-flash answered normally on the same key and the same base URL: the model was down, not busy, so providerRetryMode 'persistent' just kept asking a broken model politely and every member of the household had no assistant. Note how far one outage reaches -- luna is the model here and in several modelProfiles, and it is both model and subagentModel on the house instance, so a single failure on somebody else's server takes every assistant in the house down at once. deepseek-v4-flash is the fallback because it is precisely what luna replaced on 2026-08-16, which makes it a known-good assistant rather than an untested one: slower (3.07s against 2.07s averaged over three prompts) and it spends reasoning tokens where luna spends none, which is the correct trade when the alternative is an error string. It has to be a model this same provider can already route, because the swap happens inside one provider instance on the same key -- which is why there is deliberately no providerFallback. Once the fallback has answered in the main model's place the swap sticks for an hour, because an outage on somebody else's server lasts hours and re-proving the model dead on every call costs the whole ladder again -- ten requests and about 31 seconds here, per LLM call, and an agent turn makes one call per tool round trip. It sticks only when the fallback actually answered: if both models are erroring the gateway is down, that says nothing about which model is broken, and pinning the house to a second dead one is worse than not pinning it. Not applied to visionModel: different modality, different host, and the code decides that from the routing rather than from remembering to leave the key out.",
+      "modelFallback": "deepseek-v4-flash",
+      "_comment_modelProfiles": "One model per Profession. HomeCore sends the role name (`profile`), never a model — the roster lives here, so changing one is this file plus a restart and no client redeploy. A role that is not listed falls back to modelPowerful; the ones that happen to match it are still written out, so the whole roster reads in one place. Bake-off 2026-08-16, same two prompts (a 502-behind-Caddy diagnosis and a SQL-injection review) sent to all seven candidates on the gateway. glm-5.3 answered neither — 503 on six attempts — and qwen3.8-max only the review, so neither was judged. The programmer leaves kimi-k2.7-code, which wrote incoherent prose — two regional registers bolted together in the same breath, plus vulgarity — and claimed `with sqlite3.connect()` closes the connection, which it does not — it is a transaction context manager, not a closing one. It goes to kimi-k3, so the problem was the code-specialised variant and not the family: k3 writes clean, coherent prose and won both prompts outright. To be clear about the bar, since this entry has already been misread once: the test is whether the prose holds together and is correct, NOT which dialect it lands in. Any regional voice is perfectly fine; a model switching registers mid-sentence is not, and neither is one that is confidently wrong about the code. On the review it was the only model to name that exact trap and wrap the connection in `contextlib.closing` *and* `with conn:` for the transaction; on the diagnosis it was the only one to look past Caddy to the WSGI worker (Caddy v2's read_timeout defaults to 0, Gunicorn's to 30s, so a clean 60.0s cut is somebody's `--timeout 60`) and to say the worker dies on a signal, which is why nothing reaches the app's logger. deepseek-v4-pro is the runner-up — equally clean prose, also reached for `closing`, but blamed Caddy. minimax-m3 is unusable here whatever its prose: it emitted its `<think>` block, in English, inside the reply. The designer and the teacher move to gpt-5.6-luna: on the poster brief it produced a complete A4 page with @page rules and a real type scale at 2843 completion tokens against deepseek-v4-pro's 5076, and on a year-6 guide it was the one that used display `\\[ ... \\]` per line as personas/teacher.md actually asks, where deepseek inlined the maths with `\\( ... \\)`. That overrides the 2026-08-03 poster bake-off that put the designer on deepseek-v4-pro. The finance profile that used to sit here went with the finance skill.",
+      "modelProfiles": {
+        "programmer": "kimi-k3",
+        "designer": "gpt-5.6-luna",
+        "teacher": "gpt-5.6-luna",
+        "notifications": "gpt-5.6-luna",
+        "events": "gpt-5.6-luna",
+        "doctor": "deepseek-v4-pro",
+        "legal": "deepseek-v4-pro"
+      },
+      "_comment_notifications": "Not a Profession — the notification triage turn, which HomeCore marks with this role because it is the highest-volume thing Alfred does by an order of magnitude (~300/day against a couple of dozen of everything else) and the smallest: two thirds of them answer SILENCIO in eight tokens. Asked for the cheapest model on 2026-08-17 and measured it: gpt-5.6-luna already is. On the gateway it is the cheapest of all 25 models on input ($0.10/M against mimo-v2.5's $0.14, deepseek-v4-flash's $0.22, kimi-k3's $3.00) and second-cheapest on cache_read, and input is what this turn spends. mimo-v2.5's much cheaper cache_read ($0.0028) does not save anything here because only the ~24k system prefix is cached and the rest of the prompt is not — swapping to it would raise the bill ~40%. So this entry changes nothing today and is written down anyway, because the question will be asked again and because the roster reads in one place. What the turn actually costs is not the model: a day of real usage on 2026-08-17 measured 86k prompt tokens on average for a 21-token answer, because the ev-notif session accumulates the whole day (652 messages, 132k tokens) and every notification re-sends it. Capping that history is worth ~10x what any model swap is.",
+      "providerProfiles": {
+        "programmer": "custom",
+        "designer": "custom",
+        "teacher": "custom",
+        "notifications": "custom",
+        "events": "custom",
+        "doctor": "custom",
+        "legal": "custom"
+      },
+      "_comment_maxTokens": "Leaving this out is NOT the same as not setting a ceiling — that was the mistake this line corrects. There is no omit path (providers/openai_compat_provider.py always sends max_tokens / max_completion_tokens), so an absent key means the schema default, 8192 (config/schema.py AgentDefaults), silently applies. And on this gateway the models reason before they answer out of the same budget, so 8192 is not 8192 tokens of reply: measured on 2026-08-16, the same poster brief cost deepseek-v4-pro 5076 completion tokens uncapped (786 of them reasoning), and the identical request capped at 6000 spent all 6000 reasoning and returned an EMPTY message — which reaches the family as Alfred not answering, with nothing in the log that looks like an error. A Profession turn is the one that needs the room: a designed HTML page or a guide with its pauta is the long end of what this house asks for. 32768 is a ceiling, not an appetite — an ordinary turn is a few hundred tokens and costs the same as before. The one real cost is that agent/memory.py subtracts this from contextWindowTokens to decide when to consolidate, so Alfred now forgets at ~222k instead of ~247k.",
+      "maxTokens": 32768,
+      "_comment_contextWindowTokens": "nanobot's own default is 65536, and that was never deepseek-v4-flash's limit — it is the schema default nobody had changed. Measured against the live gateway on 2026-08-13: a 256,090-token prompt was accepted and billed, so the ceiling was ours. What this number actually drives is when Alfred *forgets*: agent/memory.py consolidates once a session's estimated prompt passes contextWindowTokens minus the completion reserve and a 1k buffer, and compacts it to half that. At 65536 that meant summarising at ~56k and dropping back to ~28k — a long afternoon of chat was being compressed away mid-conversation, which is its own contribution to Alfred losing the thread. At 256000 it is ~247k and ~123k. The cost is that every turn re-sends the history as input; the gateway's prompt caching absorbs most of it (the logs show prompt=45571 cached=44544 on an ordinary turn), but an uncached first turn on a long session is now a bigger bill. Raise the ceiling, not the appetite: this does not make Alfred use 247k, it stops him throwing away 28k of context he still had room for.",
+      "contextWindowTokens": 256000
+    }
+  },
+  "n8n": {
+    "_comment": "The n8n skill reads its connection from here. Without this block it falls back to the schema default, http://localhost:5678 — which inside the container is the container, so every workflow call fails. The key is the same one docker-compose.multiuser.yml passes in, under the name the container expects (see the credential trap in AGENTS.md).",
+    "baseUrl": "http://hub.home:5678",
+    "apiKey": "${NANOBOT_N8N_API_KEY}",
+    "workflowsEndpoint": "/api/v1/workflows/"
+  },
+  "providers": {
+    "custom": {
+      "apiKey": "${OPENCODE_API_KEY}",
+      "apiBase": "https://opencode.ai/zen/v1"
+    },
+    "ollama": {
+      "apiKey": "${OLLAMA_API_KEY}",
+      "apiBase": "${OLLAMA_URL}/v1"
+    },
+    "_comment_ollama_cloud": "ollama.com, for a model written `ollama-cloud:<name>` in assistant.models. Listed whether or not it is switched on, and the deployer exports a placeholder key when it is not: this file is read for ${...} in every string, and an unset reference stops the container from starting at all. Switched off, the block is simply never selected.",
+    "ollama_cloud": {
+      "apiKey": "${OLLAMA_CLOUD_API_KEY}",
+      "apiBase": "${OLLAMA_CLOUD_URL}/v1"
+    },
+    "together_ai": {
+      "apiKey": "${TOGETHER_API_KEY}",
+      "apiBase": "https://api.together.xyz/v1"
+    },
+    "_comment_freetoken": "A MoE serving engine on the household's own hardware, pointed at rather than deployed -- the same relationship this stack has with Ollama. It gets a slot of its own instead of using openai_compatible, because there is exactly one of those and spending it here would stop a household running FreeToken from also pointing at a vLLM box or an LM Studio. Listed whether or not it is switched on, and the deployer exports a placeholder key when it is not: this file is read for ${...} in every string and an unset reference stops the container from starting at all. Switched off, the block is simply never selected. FREETOKEN_API_KEY is usually empty -- a serving engine on your own desk takes no key -- which is why the provider spec carries is_local, without which nanobot refuses to build a keyless provider.",
+    "freetoken": {
+      "apiKey": "${FREETOKEN_API_KEY}",
+      "apiBase": "${FREETOKEN_URL}/v1"
+    },
+    "_comment_ollama_vision": "A second ollama on the household's own hardware, for the vision/OCR role only. It exists because OLLAMA_NUM_PARALLEL and OLLAMA_CONTEXT_LENGTH are server-global -- one ollama applies the same parallelism and context length to every model it has loaded -- so a single endpoint cannot give the text roles several small fast slots and an image turn one slot with a window of its own. Written `ollama-vision:<model>` in assistant.models. Listed whether or not it is switched on, and OLLAMA_VISION_URL is exported empty when it is not: this file is read for ${...} in every string and an unset reference stops the container from starting at all.",
+    "ollama_vision": {
+      "apiKey": "${OLLAMA_API_KEY}",
+      "apiBase": "${OLLAMA_VISION_URL}/v1"
+    },
+    "_comment_openrouter": "openrouter.ai, for a model written `openrouter:<name>` in assistant.models. MODEL_PROVIDERS in deploy.py has mapped that prefix for a long time while this block did not exist -- so choosing one named a provider the assistant does not define, and the turn failed at the first call rather than at deploy time.",
+    "openrouter": {
+      "apiKey": "${OPENROUTER_API_KEY}",
+      "apiBase": "https://openrouter.ai/api/v1"
+    },
+    "_comment_openai": "OpenAI itself, for `openai:<name>`. Listed whether or not the key is set, like every provider here: this file is read for ${...} in every string and an unset reference stops the container from starting.",
+    "openai": {
+      "apiKey": "${OPENAI_API_KEY}",
+      "apiBase": "https://api.openai.com/v1"
+    },
+    "_comment_openai_compatible": "Any server that speaks the OpenAI API, at the address cloud.openai_compatible.url gives it -- a vLLM or llama.cpp box on the LAN, LM Studio, or a hosted provider. For a model written `openai-compatible:<id>` in assistant.models. Listed whether or not it is switched on, and the deployer exports a placeholder key when it is not, for the same reason as ollama_cloud above: this file is read for ${...} in every string and an unset reference stops the container from starting. The deploy strips a trailing /v1 from the configured URL, so the /v1 here is added exactly once.",
+    "openai_compatible": {
+      "apiKey": "${OPENAI_COMPATIBLE_API_KEY}",
+      "apiBase": "${OPENAI_COMPATIBLE_URL}/v1"
+    }
+  },
+  "channels": {
+    "websocket": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "_comment": "A non-empty token turns the handshake gate ON (see _authorize_websocket_handshake): the query param must match it. Empty falls through to websocketRequiresToken, which stays false so a missing credential degrades to the old open behaviour rather than locking the whole family out of chat.",
+      "token": "${NANOBOT_API_SECRET}",
+      "websocketRequiresToken": false
+    }
+  },
+  "tools": {
+    "exec": {
+      "allowedEnvKeys": [
+        "PAPERLESS_API_TOKEN",
+        "PAPERLESS_URL",
+        "PAPERLESS_GPT_URL",
+        "NANOBOT_N8N_API_KEY",
+        "NANOBOT_N8N_BASE_URL",
+        "NANOBOT_N8N_WORKFLOWS_ENDPOINT",
+        "NANOBOT_WORKSPACE",
+        "HOMEASSISTANT_TOKEN",
+        "HOMEASSISTANT_URL",
+        "NTFY_CREDENTIALS",
+        "FILE_SHARE_HOST",
+        "FILE_SHARE_NAME",
+        "FILE_SHARE_USERNAME",
+        "FILE_SHARE_PASSWORD",
+        "FILE_SHARE_FOLDER",
+        "FILE_SHARE_ADMIN",
+        "FILE_SHARE_DOCS_SUBDIR",
+        "FILE_SHARE_PROCESSED_DIR",
+        "TASKS_API_URL",
+        "FILES_API_URL",
+        "HOMECORE_URL",
+        "HOMECORE_USER_ID",
+        "HOMECORE_PROXY_TOKEN",
+        "FINANCE_API_URL",
+        "TOGETHER_API_KEY",
+        "TOGETHER_API_URL",
+        "TOGETHER_IMAGE_MODEL",
+        "SEARXNG_BASE_URL",
+        "VANE_BASE_URL",
+        "SEARCH_LANGUAGE",
+        "CODE_BROKER_URL",
+        "CODE_BROKER_TOKEN",
+        "NANOBOT_INSTANCE",
+        "TOGETHER_IMAGE_MODEL_HIGH",
+        "IMAGE_MODEL",
+        "IMAGE_MODEL_HIGH",
+        "IMAGE_API_MODEL",
+        "IMAGE_API_MODEL_HIGH",
+        "IMAGE_API_URL",
+        "IMAGE_API_URL_HIGH",
+        "IMAGE_API_KEY"
+      ]
+    },
+    "_comment_ssrfWhitelist": "What the agent may fetch on a private address, and nothing else may. The literal here used to be 192.168.1.0/24 -- a shipped guess at a household's network, which is an exemption granted to somebody else's LAN and wrong by one octet on the house this was extracted from. It comes from site.lan_cidr now; empty is the shipped state and blocks every private range, and an unparseable entry is skipped rather than fatal. 100.64.0.0/10 is Tailscale: reaching the house over the VPN is the household's own network too.",
+    "ssrfWhitelist": [
+      "${NANOBOT_LAN_CIDR}",
+      "100.64.0.0/10"
+    ],
+    "_comment_disabled": "Built-in tools not offered: their schemas are in every prompt, used or not. glob is file discovery for a coding agent, and notebook_edit edits Jupyter notebooks; neither is anything this household asks for. grep stays -- the memory skill searches past conversations with it.",
+    "disabled": ["glob", "notebook_edit"],
+    "mcpServers": {
+      "homeassistant": {
+        "type": "sse",
+        "url": "${HOMEASSISTANT_URL}/mcp_server/sse",
+        "headers": {
+          "Authorization": "Bearer ${HOMEASSISTANT_TOKEN}"
+        },
+        "toolTimeout": 30,
+        "_comment_disabledTools": "Home Assistant's to-do tools reach its own built-in list, which is empty (checked 2026-09-11: one list, todo.shopping_list, 0 items). The family's shopping list and chores both live in HomeCore, behind the grocery and tasks skills. With these on, every prompt carries a real function that sounds right for both and a skill that is right -- and function-calling models reach for the function: in the model benchmark it answered 'no tasks' from the empty list, or wrote invented items onto it, for 3 of the 9 models that missed the chores question. A denylist rather than an allowlist, because Home Assistant adds an intent tool for each new kind of device and an allowlist would hide every one of them. Also off (2026-09-23, prompt trim): timers and broadcast need an Assist voice satellite and this house has none; GetDateTime answers what every turn's runtime context already says; the Assist prompt and the context snapshot are GetLiveContext again. The media-player intents stay -- two TVs and a Music Frame are exposed.",
+        "disabledTools": [
+          "todo_get_items",
+          "HassListAddItem",
+          "HassListCompleteItem",
+          "HassListRemoveItem",
+          "HassCancelAllTimers",
+          "HassBroadcast",
+          "GetDateTime",
+          "mcp_homeassistant_prompt_Assist",
+          "mcp_homeassistant_resource_assist_context_snapshot"
+        ]
+      },
+      "brightdata": {
+        "type": "streamableHttp",
+        "url": "https://mcp.brightdata.com/mcp?token=${BRIGHTDATA_API_TOKEN}",
+        "toolTimeout": 60,
+        "enabledTools": [
+          "scrape_as_markdown",
+          "web_data_amazon_product",
+          "search_engine",
+          "web_data_google_shopping"
+        ]
+      },
+      "crawl4ai": {
+        "_comment": "The house's own crawler. Its image serves MCP directly, so there is no bridge here -- the /sse suffix is what selects the transport (agent/tools/mcp.py auto-detects it), and the Bearer token is not optional: without CRAWL4AI_API_TOKEN the container binds its own loopback and this URL is unreachable.",
+        "url": "http://crawl4ai:11235/mcp/sse",
+        "headers": {
+          "Authorization": "Bearer ${CRAWL4AI_API_TOKEN}"
+        },
+        "toolTimeout": 120,
+        "_comment_enabledTools": "Three of the seven it offers. `execute_js` runs arbitrary JavaScript on a page and is the fifth item in GHSA-365w-hqf6-vxfg; nothing the household asks for needs it. `screenshot` and `pdf` are heavy and unused, and `ask` answers questions about the crawl4ai library itself, which is noise in a tool list the model reads on every turn. Since 2026-09-23 only `md`: `crawl` (2.8k characters of schema, the largest of any tool) and `html` read the same pages as `md` does, and a page is read to get its text.",
+        "enabledTools": [
+          "md"
+        ]
+      },
+      "browser-use": {
+        "type": "streamableHttp",
+        "url": "http://browser-use:21034/mcp",
+        "toolTimeout": 180,
+        "_comment_enabledTools": "One of the two it offers. `read` opens a page and gives back its text, which is what crawl4ai above already does -- and shipping both puts two tools in every prompt whose descriptions both say they read a web page, which is the thing removing Firecrawl was for: a model picks between those by ordering rather than by fitness. `browse` is the one nothing else here can do, because it clicks. Turn `read` back on only if crawl4ai goes off.",
+        "enabledTools": [
+          "browse"
+        ]
+      }
+    }
+  }
+}
