@@ -1,0 +1,6 @@
+faster-whisper
+ctranslate2
+uvicorn
+fastapi
+pydantic
+python-multipart

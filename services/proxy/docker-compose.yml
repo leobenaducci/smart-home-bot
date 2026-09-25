@@ -1,0 +1,54 @@
+services:
+  chat-proxy:
+    build: ./server
+    container_name: home-chat-proxy
+    # Host networking so the proxy can reach the autossh reverse tunnel that the
+    # home side opens on the VPS's 127.0.0.1:8443. Bound to loopback only (see
+    # command) so nothing is exposed publicly; the host Caddy fronts it.
+    network_mode: host
+    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8080"]
+    # Optional. Standing alone this file is how you configure the proxy; under
+    # the deployer every one of these names arrives in the environment already
+    # and no .env is written, so a required env_file made `compose config`
+    # fail outright and took the whole deploy with it.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # autossh reverse tunnel endpoint on the VPS loopback (see docs/proxy-integration-plan.md).
+      HOMECORE_LOCAL_URL: ${HOMECORE_LOCAL_URL}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET}
+      SESSION_SIGNING_KEY: ${SESSION_SIGNING_KEY}
+      # Empty by default: with AUTH_MODE=upstream the proxy asks the home
+      # machine to verify a login instead of checking a local copy of the
+      # hashes. Set a path here only if you deliberately want an offline copy.
+      USERS_FILE: ${USERS_FILE:-}
+      AUTH_MODE: ${AUTH_MODE:-upstream}
+      HOUSE_ONLY_APPS: ${HOUSE_ONLY_APPS:-cameras}
+      # Which source addresses count as inside the house on this copy: the VPN,
+      # and whatever else the household names. A real default, not `${VAR:-}`:
+      # the deployer exports an empty string when nothing is configured, and an
+      # empty export would replace this with "nobody" rather than falling
+      # through to it. See `home_networks()` in deploy.py.
+      HOME_NETWORKS: ${HOME_NETWORKS:-100.64.0.0/10}
+      PUBLISH_ENTRY_PAGE: ${PUBLISH_ENTRY_PAGE:-false}
+      DEVICES_DB_PATH: /app/data/devices.db
+      NTFY_CONFIG_FILE: /app/data/ntfy_config.json
+      # Empty, not a plausible-looking name. This is handed to the phone,
+      # which dials it directly -- so a default that looks like an address and
+      # resolves nowhere is worse than no answer at all: the app retries a
+      # websocket to it forever and the house looks like it stopped sending
+      # notifications. Empty, the app has nothing to subscribe to and says so.
+      NTFY_BASE_URL: ${NTFY_BASE_URL:-}
+      VERIFY_UPSTREAM_TLS: "0"   # HomeCore uses a self-signed cert on the private link
+      SECURE_COOKIE: "1"
+    volumes:
+      # One directory, and nothing in it belongs to the household: enrolled
+      # device public keys and per-user notification topics, both created here.
+      #
+      # The bcrypt user store used to be synced onto this box read-only. It is
+      # not any more: a proxy that forwards every request to the home machine
+      # can ask that machine to verify a password too, and the copy meant the
+      # household's password hashes sat on hardware they do not control.
+      - ${CHAT_PROXY_DATA_DIR:-./data}:/app/data
+    restart: unless-stopped

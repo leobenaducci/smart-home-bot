@@ -1,0 +1,237 @@
+{# The shell every config page wears.
+
+   Four pages — Proyectos, Credenciales, Directorio, Correos — configure the
+   same thing from different sides: what Alfred is allowed to know and do. They
+   were four copies of one shell, 46 byte-identical CSS lines apiece, and they
+   had already drifted once: the caret and the contrast tokens were fixed in
+   two of them and not the other two, in the same afternoon.
+
+   So the shell exists once. Nothing here is new design — it is the La Casa
+   tokens and chrome the pages already shared, moved to the only place they can
+   stay in agreement.
+
+   The one idea this base adds is the `aside` block. Every one of these pages
+   ends in an artifact somebody else reads: FAMILY.md for the directory, the
+   config overlay for the mailboxes, a public key for a credential. A page that
+   shows you the artifact is one you can check; a page that hides it is one you
+   have to trust. Where a page has such a thing, it goes in the rail — same
+   place, same monospace, same label — and where it does not, the rail is
+   simply absent rather than filled with something invented for symmetry.
+
+   Blocks: title, icon, heading, intro, content, aside, aside_title, scripts. #}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{% block title %}Ajustes{% endblock %} — Mi Casa</title>
+  <link rel="stylesheet" href="/static/vendor/fonts/la-casa.css">
+  <style>
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2; --olive:#57633F;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --ink-deep:#17140F; --olive-deep:#3E4A2B; --clay-deep:#8B3826; --honey-deep:#8A5E17;
+      /* Text colours, derived by contrast rather than by darkening — /theme.css
+         recomputes these per theme so they stay readable on a dark house. */
+      --olive-ink:#3E4A2B; --clay-ink:#8B3826; --honey-ink:#8A5E17; --clay-loud:#AC4B36;
+      --toast-bg:#3C4630; --toast-fg:#DAD4C2; --toast-bad-fg:#FFFFFF; --danger-fg:#FFFFFF;
+      --caret:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236E665A' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      --r-lg:16px; --r:10px; --r-sm:8px; --r-pill:999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+    }
+    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:var(--sans); background:var(--plaster); color:var(--ink); }
+
+    header { position:relative; display:flex; align-items:center; gap:.75rem;
+             padding:.9rem 1.2rem; background:var(--wall); color:var(--wall-fg); }
+    header h1 { font-family:var(--display); font-size:1.15rem; font-weight:600; flex:1; }
+    header a { color:var(--wall-fg); text-decoration:none; font-size:.85rem; opacity:.85; }
+    header::after { content:""; position:absolute; bottom:0; left:0; right:0; height:2px;
+      background:linear-gradient(90deg, var(--olive), var(--honey), var(--clay)); }
+
+    main { max-width:1200px; margin:0 auto; padding:1.2rem; }
+    .back-link { display:inline-block; margin-bottom:1rem; color:var(--olive-ink);
+                 text-decoration:none; font-size:.85rem; }
+    .sheet { background:var(--paper); border:1px solid var(--line); border-radius:var(--r-lg);
+             box-shadow:var(--shadow); padding:1.1rem; margin-bottom:1.1rem; }
+    .sheet > h2 { font-family:var(--display); font-size:1rem; font-weight:600; margin-bottom:.15rem; }
+    .sheet > p.note { font-size:.78rem; color:var(--ink-soft); margin-bottom:.9rem; }
+    .sheet > p.note + p.note { margin-top:-.6rem; }
+
+    label { display:block; font-size:.8rem; color:var(--ink-soft); margin-bottom:.15rem; }
+    input[type=text], input[type=url], select, textarea {
+      width:100%; font-family:var(--sans); font-size:.9rem; padding:.45rem .6rem;
+      border:1px solid var(--line); border-radius:var(--r-sm);
+      background:var(--paper); color:var(--ink);
+    }
+    select { appearance:none; -webkit-appearance:none; background-image:var(--caret);
+             background-repeat:no-repeat; background-position:right .6rem center;
+             padding-right:1.8rem; }
+    option { background:var(--paper); color:var(--ink); }
+    textarea { min-height:5rem; resize:vertical; }
+    form { display:grid; gap:.7rem; }
+    .inline { display:grid; grid-template-columns:1fr 1fr; gap:.7rem; }
+    @media (max-width:640px) { .inline { grid-template-columns:1fr; } }
+    .row { display:flex; gap:.4rem; flex-wrap:wrap; align-items:flex-end; }
+    .row > * { flex:1 1 8rem; }
+    .row > button { flex:0 0 auto; }
+    .actions { display:flex; gap:.5rem; margin-top:.3rem; flex-wrap:wrap; }
+
+    button { font-family:var(--sans); font-size:.85rem; padding:.45rem .9rem;
+             border:1px solid var(--line); border-radius:var(--r-sm);
+             background:var(--wall); color:var(--wall-fg); cursor:pointer; }
+    button.secondary { background:var(--paper); color:var(--ink); }
+    button.danger { background:var(--clay); color:var(--danger-fg); border-color:var(--clay); }
+    button.small { font-size:.75rem; padding:.2rem .5rem; }
+
+    table { width:100%; border-collapse:collapse; font-size:.85rem; margin-top:.6rem; }
+    th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--line);
+             vertical-align:top; }
+    th { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+         color:var(--ink-soft); font-weight:600; }
+    td.mono, .mono { font-family:var(--mono); font-size:.8rem; }
+
+    .tag { display:inline-block; font-size:.72rem; padding:.15rem .45rem;
+           border-radius:var(--r-pill); background:var(--honey-lt); color:var(--honey-ink); }
+    .empty { color:var(--ink-soft); font-size:.85rem; padding:.6rem 0; }
+
+    /* ── Adding and editing, on the pages that keep a list ────────────────
+       Here rather than on each page because both config pages had the same
+       shape and the same fault: they opened on an empty form with the list
+       underneath, and «Editar» filled that form in silently -- usually above
+       the fold, so pressing it looked like nothing happening.
+       The rule they now share: the list is the page, the form is a mode that
+       says which of the two it is, and the row it belongs to is marked. */
+    .sheet-head { display:flex; align-items:baseline; gap:.75rem; }
+    .sheet-head > h2 { flex:1; }
+    tr.being-edited > td { background:var(--honey-lt); }
+    tr.being-edited > td:first-child { box-shadow:inset 3px 0 var(--honey); }
+    .editor-head { display:flex; align-items:baseline; gap:.6rem; flex-wrap:wrap;
+                   margin-bottom:.9rem; }
+    .editor-head > h2 { font-family:var(--display); font-size:1rem; font-weight:600;
+                        margin:0; flex:1; }
+    .editor-head .slug-chip { font-family:var(--mono); font-size:.75rem;
+                              padding:.12rem .45rem; border-radius:var(--r-sm);
+                              background:var(--honey-lt); color:var(--honey-ink); }
+    /* The empty state asks for the one thing you can do, rather than reporting
+       an absence and leaving you to find the button. */
+    .empty-cta { text-align:center; padding:1.4rem .5rem; }
+    .empty-cta p { color:var(--ink-soft); font-size:.9rem; margin-bottom:.7rem; }
+    /* Sections, for a form long enough to be a list to get through. */
+    .group { border-top:1px solid var(--line); padding-top:.75rem; margin-top:1rem; }
+    .group:first-of-type { border-top:0; padding-top:0; margin-top:0; }
+    .group > h3 { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+                  color:var(--ink-soft); font-weight:600; margin-bottom:.15rem; }
+    .group > p.note { font-size:.78rem; color:var(--ink-soft); margin-bottom:.7rem; }
+    .group > div + div, .group > .brief { margin-top:.7rem; }
+    .warn { color:var(--clay-ink); font-size:.78rem; }
+    .warn-sheet { background:var(--honey-lt); color:var(--honey-ink); border-color:var(--honey); }
+    .warn-sheet h2 { color:var(--clay-loud); }
+    .toast { position:fixed; bottom:1rem; right:1rem; padding:.7rem 1rem;
+             border-radius:var(--r-sm); background:var(--toast-bg); color:var(--toast-fg);
+             font-size:.85rem; box-shadow:var(--shadow); z-index:20; }
+
+    /* ── The rail ─────────────────────────────────────────────────────────
+       What the page produces, beside what produces it. These four pages all
+       end in something another process reads — a markdown file, a config
+       overlay, a public key — and the settings only mean whatever that
+       artifact says. Shown rather than described, in the face it is actually
+       written in, so a change here can be checked and not just trusted. */
+    .split { display:grid; grid-template-columns:1fr 24rem; gap:1.1rem; align-items:start; }
+    @media (max-width:1000px) { .split { grid-template-columns:1fr; } }
+    .rail { position:sticky; top:1.2rem; }
+    .rail > h2 { display:flex; align-items:baseline; gap:.5rem; }
+    .rail .what { font-family:var(--mono); font-size:.7rem; color:var(--ink-soft);
+                  font-weight:400; letter-spacing:.02em; }
+    .rail pre { font-family:var(--mono); font-size:.72rem; line-height:1.5;
+                white-space:pre-wrap; word-break:break-word; color:var(--ink);
+                background:var(--plaster); border-radius:var(--r-sm);
+                padding:.7rem .8rem; max-height:68vh; overflow:auto; }
+
+    /* ── Groups: a card per person, per instance, per project ───────────── */
+    .group { border:1px solid var(--line); border-radius:var(--r); margin-bottom:.9rem;
+             background:var(--paper); overflow:hidden; }
+    .group > summary { cursor:pointer; padding:.75rem .9rem; display:flex;
+                       align-items:baseline; gap:.6rem; list-style:none; }
+    .group > summary::-webkit-details-marker { display:none; }
+    .group > summary::before { content:"▸"; color:var(--ink-soft); font-size:.8rem; }
+    .group[open] > summary::before { content:"▾"; }
+    .group h3 { font-family:var(--display); font-size:1.05rem; font-weight:600; }
+    /* The one line worth reading before opening the card. */
+    .group .meta { font-size:.8rem; color:var(--ink-soft); flex:1; }
+    .group .body { padding:0 .9rem .9rem; border-top:1px solid var(--line); }
+    .block { margin-top:.9rem; padding-top:.75rem; border-top:1px solid var(--line); }
+    .block h4 { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+                color:var(--ink-soft); font-weight:600; margin-bottom:.5rem; }
+
+    :focus-visible { outline:2px solid var(--honey); outline-offset:2px;
+                     border-radius:var(--r-sm); }
+    @media (prefers-reduced-motion:reduce) { * { animation:none !important; transition:none !important; } }
+    {% block styles %}{% endblock %}
+  </style>
+  <link rel="stylesheet" href="/theme.css">
+</head>
+<body>
+  <header>
+    <span>{% block icon %}⚙️{% endblock %}</span>
+    <h1>{% block heading %}{{ self.title() }}{% endblock %}</h1>
+    <a href="/">{{ user_name }} &#x2192; Volver</a>
+  </header>
+
+  <main>
+    <a href="/" class="back-link">&#8592; Panel principal</a>
+    {% block body %}
+    <div class="split">
+      <div>{% block content %}{% endblock %}</div>
+      {% block aside %}{% endblock %}
+    </div>
+    {% endblock %}
+  </main>
+
+  <script>
+    /* The three things every one of these pages needs and none of them should
+       own: who we are to the CSRF gate, how a request is made, and how a
+       failure is said out loud. */
+    const CSRF = document.querySelector('meta[name=csrf-token]').content;
+    const H = { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF };
+    const escapeHtml = s => esc(s);   // the name the older pages use
+
+    function toast(msg, isError) {
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = msg;
+      el.style.background = isError ? 'var(--clay-deep)' : 'var(--toast-bg)';
+      el.style.color = isError ? 'var(--toast-bad-fg)' : 'var(--toast-fg)';
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 3000);
+    }
+
+    /* The CSRF header is added here and not at each call site. A header every
+       caller has to remember is one somebody forgets, and the failure is a 403
+       on a form that looks perfectly correct — which is a bad afternoon. Taken
+       from the projects page, which had it right; the other three were passing
+       it by hand.
+
+       Errors say what the server said. «Error 500» tells somebody nothing they
+       can act on; the message beside it usually tells them everything. */
+    async function api(path, opts = {}) {
+      const method = (opts.method || 'GET').toUpperCase();
+      const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+      if (method !== 'GET') headers['X-CSRF-Token'] = CSRF;
+      const r = await fetch(path, { credentials: 'same-origin', ...opts, headers });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `Error ${r.status}`);
+      return data;
+    }
+
+    const esc = s => String(s == null ? '' : s)
+      .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

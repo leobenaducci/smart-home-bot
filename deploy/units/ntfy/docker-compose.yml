@@ -1,0 +1,30 @@
+# Notifications, on your own network.
+#
+# `cloud.notifications.mode: local` is the default, and it promised a container
+# the package did not contain -- every service published to a host that was
+# never deployed, and the failure looked like a notification nobody received.
+services:
+  ntfy:
+    image: ${NTFY_IMAGE:-binwiederhier/ntfy:v2}
+    container_name: ntfy
+    restart: unless-stopped
+    command: serve
+    ports:
+      - "${NTFY_PORT:-21031}:80"
+    volumes:
+      - ${NTFY_STATE_DIR:-/var/lib/home-stack/state/ntfy}:/var/lib/ntfy
+      - ${NTFY_CONFIG_DIR:-/var/lib/home-stack/config/ntfy}:/etc/ntfy
+    environment:
+      TZ: ${TZ:-UTC}
+      NTFY_BASE_URL: ${NTFY_BASE_URL:-}
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_ATTACHMENT_CACHE_DIR: /var/lib/ntfy/attachments
+      # Anonymous on the LAN, matching the broker beside it. Publishing needs no
+      # credential in this mode, which is why NTFY_CREDENTIALS is documented as
+      # required only for `external`.
+      NTFY_AUTH_DEFAULT_ACCESS: ${NTFY_AUTH_DEFAULT_ACCESS:-read-write}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/v1/health | grep -q '\"healthy\":true'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

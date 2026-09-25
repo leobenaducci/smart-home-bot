@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Real-time location for Alfred (foreground). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- On-device geofencing: monitor arrivals even when the app is closed, and
+         re-register fences after reboot (Android clears them). -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- "Find my phone": ring through silent mode. VIBRATE needs no grant;
+         ACCESS_NOTIFICATION_POLICY lets us raise the alarm volume while Do Not
+         Disturb is on (the user grants it in settings — without it the tone
+         still plays, just at whatever volume the alarm stream was left at). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Required for DownloadManager VISIBILITY_HIDDEN (silent APK self-update).
+         Without it enqueue() throws SecurityException and the download never
+         starts — the update badge sticks on "descargando…". -->
+    <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- Package visibility for speech recognition (targetSdk 34). Without this,
+         queryIntentServices(RecognitionService) returns ONLY our own stub
+         service — see SttSupport.pickNetworkRecognizer — and on-device/Google
+         transcription silently never gets used, with no error anywhere. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <!-- Lets the notification listener resolve an app's display name
+             ("WhatsApp" rather than "com.whatsapp"). Launchable apps only —
+             narrower than QUERY_ALL_PACKAGES, and enough for anything that
+             posts notifications a person would recognize. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.as" />
+        <package android:name="com.google.android.tts" />
+    </queries>
+
+    <application
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:allowBackup="true"
+        android:label="${assistantName}"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:hardwareAccelerated="true"
+        android:theme="@style/Theme.Alfred">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.Alfred">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Compartir → Alfred" from any app. Translucent and short-lived: it
+             uploads the file (POST /chat/share) and hands off to MainActivity,
+             which opens the chat with the attachment already staged.
+
+             The MIME list mirrors HomeCore's DOC_EXTS — only formats
+             _extract_document_text can actually read. Appearing in the share
+             sheet for a file we would then refuse is worse than not appearing:
+             the refusal arrives after the person has already chosen us.
+             text/plain is here for links and selections, which need no
+             extraction and go into the chat box as a prefill.
+
+             Images are deliberately absent. They belong to the vision pipeline,
+             which takes data URLs through /chat/send, not stored extractions —
+             the 📎 button in the chat handles those. -->
+        <activity
+            android:name=".share.ShareActivity"
+            android:exported="true"
+            android:label="${assistantName}"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="text/markdown" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".ntfy.NtfyClientService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Reads other apps' notifications so Alfred can act on them, and
+             answers them through their own reply action. Inert until the user
+             grants "Notification access" in Android settings; content is only
+             relayed for apps they allowed in Alfred's own settings panel. -->
+        <service
+            android:name=".notif.NotificationRelayService"
+            android:label="${assistantName}"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Geofence transitions from Play Services (via our own PendingIntent). -->
+        <receiver
+            android:name=".geo.GeofenceBroadcastReceiver"
+            android:exported="false" />
+
+        <!-- Task notification action buttons (Lista / Más tarde) fire here. -->
+        <receiver
+            android:name=".ntfy.NotifyActionReceiver"
+            android:exported="false" />
+
+        <!-- "Detener" on the find-my-phone ring notification. -->
+        <receiver
+            android:name=".ring.PhoneRinger$StopReceiver"
+            android:exported="false" />
+
+        <!-- Re-register geofences after reboot (the OS clears them). -->
+        <receiver
+            android:name=".geo.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Digital assistant: makes Alfred selectable as the device assistant
+             and opens the chat on the assist gesture (long-press home / power). -->
+        <service
+            android:name=".assist.AlfredVoiceInteractionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/interaction_service" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".assist.AlfredVoiceInteractionSessionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true" />
+        <service
+            android:name=".assist.AlfredRecognitionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
+        </service>
+
+        <!-- Fallback assist entry: catches ACTION_ASSIST when the device fires
+             it as an activity intent (e.g. Samsung side-key press-and-hold)
+             instead of showing the voice-interaction session. -->
+        <activity
+            android:name=".assist.AssistActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

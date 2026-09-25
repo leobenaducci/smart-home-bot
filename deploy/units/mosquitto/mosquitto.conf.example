@@ -1,0 +1,16 @@
+# Seed for {paths.config}/mosquitto/mosquitto.conf.
+#
+# Anonymous and plaintext on the LAN, which is what every client in this stack
+# expects. The topic grammar, QoS and retention rules that go with it are in
+# docs/mqtt-conventions.md and they govern the whole stack, not just the broker.
+listener 1883
+allow_anonymous true
+
+# Deliberately off. Retained `state` and `status` messages do not survive a
+# broker restart, so treat `status` as the liveness signal rather than assuming
+# a retained value is current.
+persistence false
+
+log_dest stdout
+log_type warning
+log_type error

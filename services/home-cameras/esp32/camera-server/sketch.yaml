@@ -1,0 +1,13 @@
+# Arduino sketch profile — optimized for ESP32-S3-WROOM-1 N16R8
+# (16 MB QIO flash + 8 MB QSPI PSRAM), CH343 USB-serial bridge on COM3.
+# Open this sketch in Arduino IDE 2.x and pick the "esp32s3_n16r8" profile,
+# or build from CLI:  arduino-cli compile -m esp32s3_n16r8
+profiles:
+  esp32s3_n16r8:
+    notes: Optimized for ESP32-S3 N16R8 + OV camera (PSRAM enabled, 16 MB, custom partitions)
+    fqbn: esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=custom,DebugLevel=none,PSRAM=enabled,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default
+    platforms:
+      - platform: esp32:esp32 (3.3.11)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+
+default_profile: esp32s3_n16r8

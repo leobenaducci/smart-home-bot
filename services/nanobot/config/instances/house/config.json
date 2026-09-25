@@ -1,0 +1,147 @@
+{
+  "api": {
+    "_comment": "Voice turns carry no images (vision stays available but nothing on this path sends one), so the 300s image ceiling from the base config does not apply. 120 bounds a runaway tool loop at something a person standing in a room might still be waiting for.",
+    "timeout": 120
+  },
+  "gateway": {
+    "morningGreeting": {
+      "_comment": "The greeting writes into one person's HomeCore chat, and this instance has no person — it also self-disables without HOMECORE_USER_ID (morning_greeting.py refuses to fire). Off here too so intent is visible in config, not just in an env absence.",
+      "enabled": false,
+      "cron": "0 7 * * *"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "_comment": "One model, no modelPowerful: nobody marks a voice turn `powerful` (that flag comes from HomeCore's profession UI, which this instance never sees), and somebody talking to a speaker — in whichever room they happen to be standing in — is the most latency-sensitive caller in the house. This one container answers all of them, so the cost of a slow model is paid in every room at once, which is why it followed the family instances onto gpt-5.6-luna on 2026-08-16. The measurement that moved them lands hardest here: 2.07s average against deepseek-v4-flash's 3.07s across three prompts, and ZERO reasoning tokens on all of them where flash spent 37-154. A voice turn pays that thinking tax while somebody waits in front of a speaker for the lights to come on. maxTokens stays absent, i.e. the schema default of 8192, and on luna that is now genuinely comfortable rather than a gamble: without a reasoning tax there is no risk of the budget being eaten before the reply starts, which is the failure the family instances raised theirs to avoid. Nobody asks a speaker for a poster.",
+      "model": "gpt-5.6-luna",
+      "provider": "custom",
+      "providerRetryMode": "persistent",
+      "timezone": "Etc/UTC",
+      "subagentModel": "gpt-5.6-luna",
+      "subagentProvider": "custom",
+      "visionModel": "qwen3-vl:8b",
+      "visionProvider": "ollama",
+      "_comment_modelFallback": "See the same key in the base config for why this exists. It matters more here than anywhere: this one container answers every voice turn in the house, so when gpt-5.6-luna went to a hard 500 on 2026-08-23 the failure was somebody standing in a room talking to a speaker that had stopped answering. deepseek-v4-flash is slower, and a slow reply beats no reply in a way that is obvious standing in front of a speaker. Same gateway and same key, so this provider can route it. The swap sticks for an hour once it has worked, which matters most right here: without it every single utterance pays the full retry ladder over again before answering, and half a minute of silence per sentence is not a slow assistant, it is a broken one. Note the ceiling: maxTokens is absent here, i.e. the schema default of 8192, and that was chosen for a model that spends no reasoning tokens -- the fallback does spend them, so a fallback turn has less budget for the reply than a normal one. The code refuses to count an empty reply as a rescue for exactly that reason.",
+      "modelFallback": "deepseek-v4-flash",
+      "_comment_disabledSkills": "Everything user-bound is off, not just unusable. Those skills fail closed without HOMECORE_USER_ID/HOMECORE_PROXY_TOKEN/FILE_SHARE_FOLDER — but present-and-failing means their SKILL.md still enters every prompt, inviting the agent to try, apologize, and burn a voice turn. Absent is better. The personal path from a room is the confirmation flow in SOUL.md (ntfy-send → the person's own Alfred), not a skill.",
+      "disabledSkills": [
+        "chores",
+        "menu",
+        "grocery",
+        "geo",
+        "family",
+        "family-message",
+        "notifications",
+        "theme",
+        "file-share",
+        "document",
+        "profession",
+        "paperless",
+        "marketplace-search",
+        "home-assistant",
+        "n8n",
+        "github",
+        "clawhub",
+        "skill-creator",
+        "tmux",
+        "canvas-design",
+        "canvas-image"
+      ]
+    }
+  },
+  "providers": {
+    "custom": {
+      "apiKey": "${OPENCODE_API_KEY}",
+      "apiBase": "https://opencode.ai/zen/v1"
+    },
+    "_comment_together": "Present now, and it was absent on purpose until a fallback needed it. The old reasoning still holds for images -- the `theme` skill's backdrop generation is disabled here and this instance should hold as few credentials as it can -- but a cross-provider fallback is routed to that provider's OWN client, and a client cannot be built from a provider block this file does not have. Leaving it out meant the deployer wrote `{model: ..., provider: together_ai}` in and nanobot logged `Fallback provider together_ai is not configured in this process` during a real OpenCode Zen outage, then answered the room with an error. TOGETHER_API_KEY is passed to this container and always was, so nothing new is demanded. apply_model_choices now refuses to write a fallback naming a provider the target config lacks, so this cannot silently regress. The original note follows: its only user in this house was the `theme` skill's backdrop generation, which is disabled here. Nanobot fails to start when an env reference in this file is unset, so listing a provider is the same as demanding its credential (and this sentence spells that out in prose rather than writing the reference, because the loader resolves them in EVERY string including comments — a comment using the syntax demands a variable of its own, which is how this one asked for one named VAR) — and the fewer this instance holds, the better.",
+    "together_ai": {
+      "apiKey": "${TOGETHER_API_KEY}",
+      "apiBase": "https://api.together.xyz/v1"
+    },
+    "ollama": {
+      "apiKey": "${OLLAMA_API_KEY}",
+      "apiBase": "${OLLAMA_URL}/v1"
+    },
+    "_comment_freetoken": "A MoE serving engine on the household's own hardware, pointed at rather than deployed -- the same relationship this stack has with Ollama. It gets a slot of its own instead of using openai_compatible, because there is exactly one of those and spending it here would stop a household running FreeToken from also pointing at a vLLM box or an LM Studio. Listed whether or not it is switched on, and the deployer exports a placeholder key when it is not: this file is read for ${...} in every string and an unset reference stops the container from starting at all. Switched off, the block is simply never selected. FREETOKEN_API_KEY is usually empty -- a serving engine on your own desk takes no key -- which is why the provider spec carries is_local, without which nanobot refuses to build a keyless provider.",
+    "freetoken": {
+      "apiKey": "${FREETOKEN_API_KEY}",
+      "apiBase": "${FREETOKEN_URL}/v1"
+    },
+    "_comment_ollama_vision": "A second ollama on the household's own hardware, for the vision/OCR role only. It exists because OLLAMA_NUM_PARALLEL and OLLAMA_CONTEXT_LENGTH are server-global -- one ollama applies the same parallelism and context length to every model it has loaded -- so a single endpoint cannot give the text roles several small fast slots and an image turn one slot with a window of its own. Written `ollama-vision:<model>` in assistant.models. Listed whether or not it is switched on, and OLLAMA_VISION_URL is exported empty when it is not: this file is read for ${...} in every string and an unset reference stops the container from starting at all.",
+    "ollama_vision": {
+      "apiKey": "${OLLAMA_API_KEY}",
+      "apiBase": "${OLLAMA_VISION_URL}/v1"
+    },
+    "_comment_ollama_cloud": "ollama.com, for a model written `ollama-cloud:<name>` in assistant.models. Listed whether or not it is switched on, and the deployer exports a placeholder key when it is not: this file is read for ${...} in every string, and an unset reference stops the container from starting at all. Switched off, the block is simply never selected.",
+    "ollama_cloud": {
+      "apiKey": "${OLLAMA_CLOUD_API_KEY}",
+      "apiBase": "${OLLAMA_CLOUD_URL}/v1"
+    }
+  },
+  "channels": {
+    "websocket": {
+      "_comment": "Kept for debugging with the webui or wscat — the voice path itself never uses it (HA calls the OpenAI-compatible API). Same token gate semantics as the family instances.",
+      "enabled": true,
+      "host": "0.0.0.0",
+      "token": "${NANOBOT_API_SECRET}",
+      "websocketRequiresToken": false
+    }
+  },
+  "tools": {
+    "exec": {
+      "_comment": "Minimal on purpose: this agent listens to anyone standing in a room (including guests and whatever a TV says), so it holds only house-shared credentials. No HOMECORE_*, no FILE_SHARE_*, no PAPERLESS_* — the compose file doesn't pass them and this list wouldn't forward them.",
+      "allowedEnvKeys": [
+        "HOMEASSISTANT_TOKEN",
+        "HOMEASSISTANT_URL",
+        "NTFY_CREDENTIALS",
+        "NANOBOT_WORKSPACE",
+        "VOICE_GATEWAY_URL",
+        "VOICE_GATEWAY_TOKEN",
+        "SEARXNG_BASE_URL",
+        "VANE_BASE_URL",
+        "SEARCH_LANGUAGE",
+        "CODE_BROKER_SECRET",
+        "TOGETHER_IMAGE_MODEL",
+        "TOGETHER_IMAGE_MODEL_HIGH",
+        "IMAGE_MODEL",
+        "IMAGE_MODEL_HIGH",
+        "IMAGE_API_MODEL",
+        "IMAGE_API_MODEL_HIGH",
+        "IMAGE_API_URL",
+        "IMAGE_API_URL_HIGH",
+        "IMAGE_API_KEY"
+      ]
+    },
+    "_comment_ssrfWhitelist": "What the agent may fetch on a private address, and nothing else may. The literal here used to be 192.168.1.0/24 -- a shipped guess at a household's network, which is an exemption granted to somebody else's LAN and wrong by one octet on the house this was extracted from. It comes from site.lan_cidr now; empty is the shipped state and blocks every private range, and an unparseable entry is skipped rather than fatal. 100.64.0.0/10 is Tailscale: reaching the house over the VPN is the household's own network too.",
+    "ssrfWhitelist": [
+      "${NANOBOT_LAN_CIDR}",
+      "100.64.0.0/10"
+    ],
+    "_comment_disabled": "Same as the base config: built-in tools nobody here uses, whose schemas are in every prompt anyway. grep stays for the memory skill.",
+    "disabled": ["glob", "notebook_edit"],
+    "_comment_mcpServers": "homeassistant only — no brightdata: its token isn't passed to this container, and a room assistant has no business scraping the web on request from an unauthenticated voice. NOTE: this comment lives at the `tools` level on purpose — `mcpServers` is a map of server-name to server-config, so a `_comment` key inside it parses as a server named `_comment` and the container refuses to start.",
+    "mcpServers": {
+      "homeassistant": {
+        "type": "sse",
+        "url": "${HOMEASSISTANT_URL}/mcp_server/sse",
+        "headers": {
+          "Authorization": "Bearer ${HOMEASSISTANT_TOKEN}"
+        },
+        "toolTimeout": 30,
+        "_comment_disabledTools": "The same four as the base config, for the same reason: Home Assistant's to-do list is not the family's shopping list or chores, which live in HomeCore behind the grocery and tasks skills.",
+        "disabledTools": [
+          "todo_get_items",
+          "HassListAddItem",
+          "HassListCompleteItem",
+          "HassListRemoveItem",
+          "HassCancelAllTimers",
+          "HassBroadcast",
+          "GetDateTime",
+          "mcp_homeassistant_prompt_Assist",
+          "mcp_homeassistant_resource_assist_context_snapshot"
+        ]
+      }
+    }
+  }
+}

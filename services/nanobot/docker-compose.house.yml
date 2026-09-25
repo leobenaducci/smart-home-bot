@@ -1,0 +1,196 @@
+# Alfred House — the room-scoped Alfred.
+#
+# ONE container serves every room in the house. A room is a `chat_id` on the
+# `voice` channel (`cocina`, `living`, …), not a container: nanobot keeps a
+# session, a history and a lock per chat_id, so two rooms talking at once are
+# two concurrent turns. Adding a room is an Area assignment in Home Assistant —
+# nothing here enumerates them.
+#
+# Runs on hub alongside the per-member instances and Home Assistant itself.
+# Reuses the same `alfred-nanobot:latest` the deployer already builds on this
+# host: same image, same entrypoint, same mounted `config/` — the only
+# difference is `NANOBOT_INSTANCE=house`, which makes entrypoint.sh take
+# `config/instances/house/` for the config and for every prompt file that
+# exists there. One name turns the same image into a different assistant, with
+# no code change and no second build.
+#
+# It used to be done by mounting a whole second directory at the same path.
+# That worked, and it also meant TOOLS.md and HEARTBEAT.md existed twice,
+# byte-identical, waiting to drift.
+
+services:
+  # Ownership only, same shape as init-dirs in the multiuser file. The seeding
+  # it used to do — USER.md once, the instance's skills on every start — moved
+  # into entrypoint.sh, which is the only place that knows which instance this
+  # is. Two copies of that logic is how the skill loop came to name `announce`
+  # explicitly here and miss `ir` and `sensors` entirely: both were written,
+  # committed and deployed, and the house Alfred booted with no way to reach
+  # the gateway at all.
+  #
+  # This still has to run as root and it still has to run first: the entrypoint
+  # is uid 1000 and cannot chown the volume it is about to write into.
+  init-dirs-casa:
+    image: busybox
+    restart: "no"
+    user: "0:0"
+    volumes:
+      - ${NANOBOT_STATE_DIR:-/var/lib/home-stack/state/nanobot-house}:/mnt/casa
+      # The outage file the family instances write. The house Alfred runs
+      # on the same gateway under the same key, so a model somebody's chat
+      # already proved dead should not cost a room half a minute of silence
+      # to prove again. Chowned here for the same reason as /mnt/casa.
+      - ${NANOBOT_SHARED_STATE_DIR:-/var/lib/home-stack/state/nanobot-shared}:/mnt/shared-state
+    entrypoint:
+      - sh
+      - -c
+      - |
+        mkdir -p /mnt/casa/workspace/skills
+        chown -R ${UID:-1000}:${GID:-1000} /mnt/casa
+        chown -R ${UID:-1000}:${GID:-1000} /mnt/shared-state 2>/dev/null || true
+        # `|| true` because this is the last statement and the init
+        # container gates every assistant on
+        # `service_completed_successfully`. The store is built to
+        # degrade to "knows nothing" on a mount it cannot use; a
+        # bare chown here turns that into a house with no
+        # assistants, and `chown -R` also races the `.outages-*`
+        # temp file another instance is replacing right now.
+
+  nanobot-house:
+    container_name: nanobot-house
+    image: alfred-nanobot:latest
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Variables a plugin contributes to this service, written by the deployer
+    # into the staged build context. Optional and usually absent -- with no
+    # plugins there is no file and nothing changes.
+    #
+    # A file rather than more `environment:` lines because the core compose
+    # cannot know a household service's variable names. Exporting them for
+    # interpolation is not enough: a variable the deployer exports but no
+    # compose service lists never reaches the container, which is how the
+    # Ollama endpoints once arrived nowhere.
+    env_file:
+      - path: plugin-contributions.env
+        required: false
+    environment:
+      # The one line that makes this a different Alfred. entrypoint.sh reads it
+      # and takes config/instances/house/ for the config and for every prompt
+      # file that exists there, falling back to the base for the rest.
+      - NANOBOT_INSTANCE=house
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY}
+      # The model endpoints. All four are always set, even when a provider is
+      # off: nanobot reads its whole config for ${...} and refuses to start on an
+      # *unset* reference, so a missing name is a container that never comes up
+      # rather than a feature that is off.
+      - OLLAMA_URL=${OLLAMA_URL:-}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-ollama}
+      # Added 2026-09-20. The manifest has supplied this for nanobot-house all
+      # along (deploy/manifest.yml, beside nanobot's own), and every member
+      # instance consumes it -- this file was the one that did not, so the value
+      # was derived, passed to compose, and dropped here. The room-facing
+      # assistant therefore had no vision endpoint at all while the five member
+      # assistants did, which reads as "the vision model is down" from the one
+      # Alfred people actually talk to.
+      - OLLAMA_VISION_URL=${OLLAMA_VISION_URL:-}
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-}
+      - OLLAMA_CLOUD_URL=${OLLAMA_CLOUD_URL:-}
+      - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-disabled}
+      - OPENAI_COMPATIBLE_URL=${OPENAI_COMPATIBLE_URL:-}
+      - FREETOKEN_URL=${FREETOKEN_URL:-}
+      - FREETOKEN_API_KEY=${FREETOKEN_API_KEY:-disabled}
+      - OPENAI_COMPATIBLE_API_KEY=${OPENAI_COMPATIBLE_API_KEY:-disabled}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      # The two image slots from the admin page. Passed even when empty: the
+      # theme skill falls back to its own literal on an empty string, and an
+      # *unset* name is what nanobot refuses to start on.
+      - IMAGE_MODEL=${IMAGE_MODEL:-}
+      - IMAGE_MODEL_HIGH=${IMAGE_MODEL_HIGH:-}
+      - TOGETHER_IMAGE_MODEL=${TOGETHER_IMAGE_MODEL:-}
+      - TOGETHER_IMAGE_MODEL_HIGH=${TOGETHER_IMAGE_MODEL_HIGH:-}
+      - IMAGE_API_MODEL=${IMAGE_API_MODEL:-}
+      - IMAGE_API_MODEL_HIGH=${IMAGE_API_MODEL_HIGH:-}
+      - IMAGE_API_URL=${IMAGE_API_URL:-}
+      - IMAGE_API_URL_HIGH=${IMAGE_API_URL_HIGH:-}
+      - IMAGE_API_KEY=${IMAGE_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - HOMEASSISTANT_TOKEN=${HOMEASSISTANT_TOKEN:-}
+      - HOMEASSISTANT_URL=${HOMEASSISTANT_URL:-http://127.0.0.1:8123}
+      # Empty on purpose: no LAN exemption unless the household names one.
+      - NANOBOT_LAN_CIDR=${NANOBOT_LAN_CIDR:-}
+      - SITE_LOCATION=${SITE_LOCATION:-}
+      - NTFY_CREDENTIALS=${NTFY_CREDENTIALS:-}
+      # Repeated per service: `environment:` replaces the anchor's list
+      # wholesale, so inheriting it is not a thing that happens here.
+      - NTFY_BASE_URL=${NTFY_BASE_URL:-}
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-}
+      - VANE_BASE_URL=${VANE_BASE_URL:-}
+      - SEARCH_LANGUAGE=${SEARCH_LANGUAGE:-en}
+      - HOMECORE_URL=${HOMECORE_URL:-}
+      # Where ntfy-send publishes, and where its answer buttons point.
+      # Both were `.home` literals in the script until now.
+      - NTFY_BASE_URL=${NTFY_BASE_URL:-}
+      - HOMECORE_URL=${HOMECORE_URL:-}
+      # How Alfred speaks into a room nobody addressed — the `announce` skill.
+      # The gateway is also what calls *him*, so this is the one connection in
+      # the house that runs both ways between the same two services.
+      - VOICE_GATEWAY_URL=${VOICE_GATEWAY_URL:-http://voice.home:21011}
+      # The camera wall's API, so camera-feed and the exec guard stop
+      # reading a host and a port out of their own source.
+      - CAMERA_API_URL=${CAMERA_API_URL:-}
+      - VOICE_GATEWAY_TOKEN=${VOICE_GATEWAY_TOKEN:-}
+      - NANOBOT_API_SECRET=${NANOBOT_API_SECRET_HOUSE:-}
+      - NANOBOT_SUBAGENT_MAX_RUNTIME_S=${NANOBOT_SUBAGENT_MAX_RUNTIME_S:-14400}
+      - NANOBOT_DEBUG_SECRET=${NANOBOT_DEBUG_SECRET:-}
+      #
+      # DELIBERATELY ABSENT, and this is the security boundary of the whole
+      # design — do not "fix" it by adding one:
+      #   HOMECORE_USER_ID / HOMECORE_PROXY_TOKEN  (tasks, menu, grocery, family…)
+      #   FILE_SHARE_*                           (the household share)
+      #   PAPERLESS_API_TOKEN                    (personal documents)
+      #   BRIGHTDATA_API_TOKEN                   (paid scraping on voice command)
+      # Anyone standing in a room can talk to this agent — a guest, a child,
+      # sometimes the television. It holds house credentials only. A personal
+      # request is confirmed on the owner's phone and executed by THEIR Alfred
+      # with THEIR keys (see config/instances/house/SOUL.md).
+    volumes:
+      - ${NANOBOT_STATE_DIR:-/var/lib/home-stack/state/nanobot-house}:/home/nanobot/.nanobot
+      - ${NANOBOT_SHARED_STATE_DIR:-/var/lib/home-stack/state/nanobot-shared}:/shared-state
+      # The one line that makes this a different Alfred. Read-only for the same
+      # reason as the family mount: this agent takes untrusted input from a
+      # room, and a prompt injection that rewrote the persona would be worse
+      # here than anywhere else in the house.
+      - ./config:/nanobot-config:ro
+      # Same script the family uses, verbatim — it is how a room request reaches
+      # a person's phone with answer buttons.
+      - ./config/ntfy-send:/usr/local/bin/ntfy-send:ro
+    ports:
+      # The top of each member range rather than the next number after the
+      # last member: adding a sixth member used to hand it the house's own
+      # port. user1 is ..01, the house is ..99.
+      - 21299:8765
+      - 21399:8900
+      - 21499:18790
+    deploy:
+      resources:
+        limits:
+          # Half of what a family instance gets. hub runs five of those plus
+          # Home Assistant plus HomeCore in 8 GB and is already touching swap;
+          # this one holds no images in context and runs flash-only, so it is
+          # the cheapest agent in the house. Raise it only with `free -m` in
+          # hand.
+          cpus: "1"
+          memory: 512M
+    entrypoint: ["entrypoint.sh"]
+    depends_on:
+      init-dirs-casa:
+        condition: service_completed_successfully

@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="{{ locale }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ t('admin.title') }} · {{ site_name }}</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   The service panel.
+
+   Every other screen in this stack shares "The House" — plaster, ink, olive,
+   honey, clay — because a family looks at it. This one is the utility room:
+   the page where you throw breakers, hang a tag on a circuit, and read a
+   legend. So it keeps the house's colours and spends them as panel hardware
+   rather than soft furnishing.
+
+   No web fonts, on purpose: the house rule is that nothing here asks the
+   internet for anything — a render-blocking font request on a LAN-only box is
+   tens of seconds of blank page. Monospace does the label voice (engraved
+   circuit labels really are monospaced) and a system sans does prose.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Chassis. Dark in both themes: the door is the door. */
+  --panel:    #2F3733;
+  --panel-2:  #3A433E;
+  --panel-3:  #47514B;
+  /* Laminate */
+  --plate:    #EDEAE2;
+  --plate-2:  #FFFDF8;
+  --edge:     #D8D2C4;
+  --ink:      #1E2320;
+  --ink-soft: #66614F;
+  /* States, as a *fill*: the breaker body, a button, a bar. Saturated. */
+  --live:     #6E8C5A;   /* circuit closed */
+  --tag:      #B4462F;   /* lockout / failure */
+  --attn:     #C6892B;   /* changed, not yet energized */
+  /* The same three as *text on a plate*, which is a different job and needs a
+     different value. Reusing the fill colour for type is why an error message
+     sat at 2.5:1 on the dark card and read as decoration. */
+  --live-ink: #5C7A48;
+  --tag-ink:  #A33A24;
+  --attn-ink: #8A5D12;
+  /* Door type, on the dark chassis in either theme. */
+  --door-ink:  #CBD4C6;
+  --door-dim:  #9EAB98;
+  /* Table rows. `--row-alt` is the stripe that lets an eye track one row
+     across eight columns; `--row-on` is `--live` at the weight a whole row
+     can carry without becoming the loudest thing on the page. */
+  --row-alt:  #F4F1EA;
+  --row-on:   #E7EEE1;
+  /* The same idea for the other two signals: a tint a pill or badge sits on,
+     under its own ink. These were literals in models.html, light in both
+     themes -- so in dark mode `--tag-ink`, which turns light, landed on a pale
+     pink it could not be read against. */
+  --tag-wash:  #F6E3DE;
+  --attn-wash: #F8EBD2;
+  /* Type on the `--attn` fill itself. The fill is the same amber in both
+     themes, so this is too: dark ink, 5.5:1. */
+  --on-attn:   #2A1D05;
+
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, monospace;
+  --r: 4px;
+
+  /* A spacing scale, because there was not one. Every block that wanted air
+     above it invented a number: 6, 8, 12, 14, 16, 18 and 20px are all in these
+     templates doing the same job, and 107 inline `style=` attributes across
+     thirteen pages is what that costs. Five steps, each a clear jump from the
+     last, so "a bit more room" is a step rather than a guess. */
+  --s1: 6px;    /* inside a control: a label to its field */
+  --s2: 12px;   /* between controls in the same group */
+  --s3: 18px;   /* between groups: a table and the form under it */
+  --s4: 28px;   /* between cards */
+  --s5: 44px;   /* around a page's own heading */
+}
+
+/* The dark theme is a full palette, not an override of three values.
+   It used to be exactly that, and the result was a page with no structure
+   left: the door sat 1.2:1 from the plate, the cards 1.1:1 from the page and
+   the borders 1.4:1 from the cards, so the whole "panel door beside a laminate
+   plate" idea flattened into one slab of grey-green.
+   The surfaces are spaced by perceptual lightness rather than by contrast
+   ratio -- the ratio compresses badly down here, and two clearly different
+   dark greys measure 1.2 -- so each step is ~6 L*, which is the same step the
+   light theme uses between its page and its cards. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --panel:   #101312;   /* L* 6  - door, darkest thing on screen */
+    --panel-2: #1c211f;   /* L* 12 - door hover */
+    --panel-3: #3b4540;   /* L* 28 - rocker body */
+    --plate:   #222724;   /* L* 15 - page */
+    --plate-2: #2f3633;   /* L* 22 - card, a step above the page */
+    --edge:    #47524d;   /* L* 34 - visible against the card */
+    --ink:      #E9E5DB;
+    --ink-soft: #A8A194;
+    --live-ink: #93B87A;
+    --tag-ink:  #EC8168;
+    --attn-ink: #E3AA4B;
+    --row-alt:  #272d2a;
+    --row-on:   #2c3a2c;
+    --tag-wash:  #3d2621;   /* tag-ink 5.3:1 on it */
+    --attn-wash: #40361f;   /* attn-ink 5.7:1 on it */
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--sans);
+  background: var(--plate);
+  color: var(--ink);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Shell: the panel door on the left, the plate on the right ───────────── */
+.shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+/* A grid item's automatic minimum is its *min-content*, so a wide child sets a
+   floor the track cannot go below -- and `overflow-x: auto` on that child does
+   not lower it, because that rule is about flex and grid items rather than
+   blocks in normal flow. The roster's min-content is ~1000px, so on a phone
+   the 1fr track stayed 1000px wide, the shell overflowed the body, and every
+   card on every page rendered at the roster's width with its right edge off
+   screen. `.scroll` was doing its job; it never got the chance.
+   This is the same lesson as `.fields > .field { min-width: 0 }` below, which
+   the settings grid learned and the shell never did. */
+.shell > * { min-width: 0; }
+
+.door {
+  background: var(--panel); color: var(--door-ink); padding: 22px 0 28px;
+  position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
+  box-shadow: inset -1px 0 0 rgba(0,0,0,.35), 2px 0 14px rgba(0,0,0,.10);
+}
+.door-head { padding: 0 20px 18px; }
+.door-head .site {
+  font-family: var(--mono); font-size: .72rem; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--door-dim); display: block; margin-bottom: 3px;
+}
+.door-head h1 { font-size: 1.12rem; font-weight: 650; letter-spacing: -.01em; }
+.door-head .sub { font-size: .78rem; color: var(--door-dim); margin-top: 4px; line-height: 1.4; }
+
+/* ── The directory: the card inside a panel door ─────────────────────────── */
+.directory { display: flex; flex-direction: column; }
+.directory a {
+  display: flex; align-items: center; gap: 10px; padding: 9px 20px;
+  text-decoration: none; color: var(--door-ink); font-size: .9rem;
+  border-left: 3px solid transparent;
+}
+.directory a:hover { background: var(--panel-2); color: #fff; }
+.directory a[aria-current="page"] {
+  background: var(--panel-2); color: #fff; border-left-color: var(--attn); font-weight: 600;
+}
+/* The slot number is not decoration: it is what makes a row findable by
+   position instead of by reading, which is what a panel directory is for. */
+.directory .slot {
+  font-family: var(--mono); font-size: .72rem; color: var(--door-dim);
+  min-width: 1.2em; text-align: right;
+}
+.directory a[aria-current="page"] .slot { color: var(--attn); }
+.directory .tag-dot {
+  margin-left: auto; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--attn); box-shadow: 0 0 0 3px rgba(198,137,43,.20);
+}
+
+.door-foot { margin-top: 22px; padding: 16px 20px 0; border-top: 1px solid rgba(255,255,255,.08); }
+.door-foot .label {
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--door-dim); display: block; margin-bottom: 8px;
+}
+/* Keys on the panel, not a row of codes. The current one is pressed in. */
+.langs { display: flex; flex-wrap: wrap; gap: 4px; }
+.langs a {
+  font-size: .78rem; line-height: 1.2; padding: 5px 9px;
+  border: 1px solid var(--panel-3); border-radius: var(--r);
+  text-decoration: none; color: var(--door-ink);
+  background: linear-gradient(var(--panel-2), var(--panel));
+  box-shadow: 0 1px 0 rgb(0 0 0 / .45);
+  transition: transform .1s, background .1s;
+}
+.langs a:hover { color: #fff; border-color: var(--door-dim); }
+.langs a[aria-current="true"] {
+  color: #fff; font-weight: 600;
+  border-color: var(--live);
+  background: color-mix(in srgb, var(--live) 30%, var(--panel));
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / .5);   /* pressed */
+  transform: translateY(1px);
+}
+
+/* ── Plate ───────────────────────────────────────────────────────────────── */
+.plate { padding: 30px 34px 72px; max-width: 1000px; }
+/* One page has a table genuinely wider than prose -- the model roster. Rather
+   than widen every page (forms and prose read worse long), the plate widens
+   only when the page actually contains a `.card.wide`. Prose inside keeps its
+   own 68ch/72ch caps, so nothing but the table uses the extra room.
+   `:has()` is the whole mechanism: where it is unsupported the plate simply
+   stays 1000px and `.scroll` keeps doing what it did before, which is the
+   behaviour this replaced rather than a broken one. */
+@media (min-width: 1100px) {
+  .plate:has(.card.wide) { max-width: min(1560px, 100%); }
+}
+
+.card {
+  background: var(--plate-2); border: 1px solid var(--edge);
+  border-radius: var(--r); margin-bottom: 20px;
+}
+/* The engraved header strip: the one ornament this page keeps. */
+.card > h2 {
+  font-family: var(--mono); font-size: .76rem; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft);
+  padding: 12px 22px; border-bottom: 1px solid var(--edge);
+  background: linear-gradient(var(--plate-2), var(--plate));
+  border-radius: var(--r) var(--r) 0 0;
+}
+.card > *:not(h2) { padding-left: 22px; padding-right: 22px; }
+.card > .intro { color: var(--ink-soft); font-size: .88rem; padding-top: 16px; max-width: 68ch; }
+.card > form, .card > table, .card > p, .card > div { padding-bottom: 18px; }
+.card > h2 + * { padding-top: 18px; }
+
+h3 {
+  font-family: var(--mono); font-size: .72rem; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft);
+  margin: 22px 0 10px;
+}
+
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+/* Settings tables: a fixed set of named rows with one control each -- the
+   hosts, the names, the data locations. `width: 100%` is right for the roster
+   and the service list, where the last column is prose that wants the room. It
+   is wrong here: three short controls stretched across a wide monitor put the
+   role at the far left and its address box a hand's width away, with the
+   header rule running on past both.
+
+   So these size to their content and stop. The label column hugs, the control
+   columns are as wide as the controls, and the whole table ends at a readable
+   measure instead of at the window edge. */
+table.settings { width: auto; max-width: 100%; }
+table.settings th, table.settings td { padding-right: 22px; }
+table.settings th:last-child, table.settings td:last-child { padding-right: 0; }
+table.settings td:first-child, table.settings th:first-child {
+  white-space: nowrap; color: var(--ink-soft);
+}
+/* One width for every control in a column, so the boxes line up down the page
+   rather than each ending wherever its value happens to. */
+table.settings input[type=text] { width: 100%; min-width: 0; }
+table.settings td.grow { width: 340px; }
+table.settings td.grow-sm { width: 180px; }
+@media (max-width: 700px) {
+  /* Each row becomes a small stack. A three-column settings table on a phone
+     is three columns of two characters each. */
+  table.settings, table.settings tbody, table.settings tr, table.settings td { display: block; width: auto; }
+  table.settings thead { display: none; }
+  table.settings tr { border-bottom: 1px solid var(--edge); padding: 10px 0; }
+  table.settings tr:last-child { border-bottom: 0; }
+  table.settings td { border-bottom: 0; padding: 3px 0; }
+  table.settings td.grow, table.settings td.grow-sm { width: auto; }
+}
+th {
+  text-align: left; font-family: var(--mono); font-weight: 600; font-size: .72rem;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft);
+  padding: 0 12px 9px 0; border-bottom: 1px solid var(--edge);
+}
+td { padding: 11px 12px 11px 0; border-bottom: 1px solid var(--edge); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+.mono { font-family: var(--mono); font-size: .84rem; }
+
+/* The roster's filter row. Wraps rather than scrolls: four controls on a phone
+   are two rows, and a horizontally scrolling filter bar hides the control you
+   were looking for. */
+.roster-controls {
+  display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: flex-end;
+  padding-bottom: 14px;
+}
+.roster-controls label { font-size: .78rem; margin: 0; color: var(--ink-soft); }
+.roster-controls label.check {
+  display: inline-flex; gap: 7px; align-items: center; font-weight: 400;
+  color: var(--ink); align-self: center; padding-bottom: 8px;
+}
+.roster-controls select, .roster-controls input[type=text] {
+  display: block; margin-top: 4px; max-width: 220px; padding: 6px 9px;
+}
+#f-count { color: var(--ink-soft); font-size: .78rem; margin-left: auto; padding-bottom: 8px; }
+
+/* A sortable header says so before it is clicked -- the cursor and the arrow
+   slot are both there from the start, so the column does not shift by an
+   arrow's width the first time somebody sorts it. */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable::after { content: "\2003"; font-size: .7em; opacity: .55; }
+th.sorted-up::after { content: " \25B2"; opacity: 1; }
+th.sorted-down::after { content: " \25BC"; opacity: 1; }
+th.sortable:hover, th.sortable:focus-visible { color: var(--ink); }
+tr[hidden] { display: none; }
+
+/* A command to copy. Not a paragraph: it is meant to be selected whole, and
+   wrapping it into prose is how a `cd` and the command after it get pasted as
+   one line. */
+pre.deploy-cmd {
+  font-family: var(--mono); font-size: .84rem; margin: 10px 0;
+  padding: 10px 12px; background: var(--panel); color: var(--door-ink);
+  border-radius: var(--r); overflow-x: auto; white-space: pre;
+}
+
+/* An action and the sentence explaining it, on one line. Each is its own form,
+   because minting a code is not a thing that should ride along with a rename
+   when somebody presses Save. */
+.action-row {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline;
+  padding: 10px 0; border-bottom: 1px solid var(--edge);
+}
+.action-row:last-child { border-bottom: 0; }
+.action-row form { margin: 0; padding: 0; flex: none; }
+.action-row .help { margin: 0; flex: 1 1 22ch; }
+
+/* A checkbox and its label on one line, which is what a checkbox wants and
+   what the block `label` rule above would otherwise prevent. */
+label.check-row {
+  display: flex; gap: 8px; align-items: center; font-weight: 400;
+  margin: 0 0 8px;
+}
+
+/* Several of those as one control -- the backup page ticks which services to
+   check, and a house runs fifteen. Stacked one per line that is a column of
+   fifteen rows above the button; wrapped into tracks it is three or four. The
+   `auto-fill` minimum is a service name, not a guess at a column count, so a
+   narrow window gets one column rather than a scrollbar. */
+.ticks {
+  display: grid; gap: 0 18px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+.ticks > label.check-row { margin-bottom: 6px; }
+
+/* A name that carries the rest of its record in a tooltip. Marked so it reads
+   as hoverable rather than as a label somebody forgot to make clickable --
+   `help` is the cursor browsers already use for "there is more here", and the
+   dotted underline is what says so before the pointer arrives. It is still a
+   real <label>, so clicking it works the breaker beside it. */
+label.registers {
+  margin: 0;
+  cursor: help;
+  text-decoration: underline dotted var(--ink-soft);
+  text-underline-offset: 3px;
+}
+
+/* The card holding the one action that cannot be undone. Tagged rather than
+   red-all-over: the lockout colour on the header strip is the panel's own
+   vocabulary for "this one bites". */
+.card.danger > h2 { color: var(--tag-ink); border-bottom-color: var(--tag); }
+button.ghost.danger { color: var(--tag-ink); border-color: var(--tag); }
+button.ghost.danger:hover { background: var(--tag); color: var(--plate-2); }
+
+/* Textareas were sized with an inline style on every one of them, so a new one
+   was a new chance to pick a different width. */
+textarea { width: 100%; max-width: 520px; padding: 9px 11px; font: inherit;
+           border: 1px solid var(--edge); border-radius: var(--r);
+           background: var(--plate-2); color: var(--ink); }
+
+label { display: block; font-size: .84rem; font-weight: 600; margin-bottom: 5px; }
+/* --- the vocabulary these pages kept re-inventing inline ------------------
+   Named for what they mean rather than what they do, so a page says "this is
+   secondary" and not "this is #A8A194": the dark theme swaps the value and a
+   hardcoded colour does not follow. */
+.stack   { margin-top: var(--s3); }
+.stack-s { margin-top: var(--s2); }
+.stack-l { margin-top: var(--s4); }
+
+/* A line of controls that wraps rather than overflowing on a phone. Three
+   pages had this as `display:flex;gap:8px;align-items:center` and one of them
+   forgot the wrap. */
+.row      { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.row-tight{ display: flex; gap: var(--s1); align-items: center; flex-wrap: wrap; }
+
+.muted  { color: var(--ink-soft); }
+.strong { color: var(--ink); }
+.tiny   { font-size: .78rem; }
+.warn   { color: var(--attn-ink); }
+
+/* A suggestion or a tag you can click: small, quiet, and clearly not the
+   button that submits the form it sits in. */
+.chip {
+  padding: 2px 10px;
+  font-size: .8rem;
+  margin-left: var(--s1);
+}
+
+/* Field widths, as three intentions rather than eleven pixel values. A path
+   needs room, a port does not, and a name is in between. */
+.w-path { width: 100%; max-width: 420px; }
+.w-name { width: 100%; max-width: 260px; }
+.w-num  { width: 110px; }
+/* ...and the same three again, aimed at an input.
+   `input[type=text]` below sets `width: 100%` and is element+attribute, which
+   outranks a bare class and also comes later in the file -- so every one of
+   these lost twice over and a port box for five digits rendered 350px wide.
+   The compound selector is what wins, and it has to be spelled out rather
+   than relying on order, or moving this block breaks it again. */
+input[type=text].w-path { width: 100%; max-width: 420px; }
+input[type=text].w-name { width: 100%; max-width: 260px; }
+input[type=text].w-num  { width: 110px; max-width: 110px; }
+/* One port key and its box on a line of their own. The bundled list does this
+   with an inline style repeated per row; this is the same thing named once.
+   A grid rather than an inline-block with a minimum width, which is what this
+   was: a `min-width` is a floor and not a column, so any label wider than it
+   pushed its own box right and the boxes went ragged again. `nanobot` has
+   three of them -- `websocket_port_base`, `api_port_base`,
+   `gateway_port_base` -- at three different left edges.
+
+   19ch is `websocket_port_base`, the longest key any service declares, and it
+   is set in the monospace face so its width really is characters. A longer
+   key added later overflows its cell rather than moving the boxes, which is
+   the failure worth having: one row looks cramped instead of the column
+   losing its edge. */
+.portline { display: grid; grid-template-columns: 19ch auto; gap: 0 6px;
+            align-items: center; margin: 1px 0; white-space: nowrap; }
+.portline span { text-align: right; }
+/* Headings that read as two words and wrap into two lines at the width the
+   host column gets. */
+.nowrap { white-space: nowrap; }
+
+/* A column of figures. Used by the backups table and the model roster and
+   defined by neither, so every size and price in this page has been reading
+   left-aligned against a right-aligned heading. */
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* A table too wide for a phone, scrolling inside its own box rather than
+   taking the page sideways with it. The roster and the per-role suggestion
+   table are both wider than a narrow screen and neither should make the whole
+   settings page pan. */
+.scroll { overflow-x: auto; }
+/* A cell of prose in a table of data: it wraps, it is quieter than the figures
+   beside it, and it has a floor so a two-word reason does not squeeze the
+   column somebody is actually reading. */
+.why {
+  white-space: normal;
+  color: var(--ink-soft);
+  min-width: 22ch;
+  line-height: 1.45;
+}
+
+/* The meter reading under a circuit: what this role actually spent last month,
+   and which model the ranking would have reached for. It sits below the
+   picker because it is evidence for the choice, not part of making it, and it
+   is in the label voice because it is all figures. These were two more
+   full-width grey paragraphs in the stack above the control. */
+.gauge {
+  font-size: .78rem; color: var(--ink-soft);
+  margin: 9px 0 0; line-height: 1.65; max-width: 72ch;
+}
+/* The model id is the label voice; the words around it are not, which is why
+   this is not a mono block. `measured` deliberately does NOT get this: it
+   reads as figures for most roles but is a sentence for `everyday`, and a
+   sentence set in monospace is both hard to read and far wider than the same
+   words in the prose face. */
+.gauge b { font-family: var(--mono); font-weight: 700; color: var(--ink); }
+
+/* Pros and cons arrive as facts -- one entry each, already separate -- and
+   were being joined into a semicolon run, which reads as a paragraph and
+   hides how many there are. One line each instead.
+
+   The +/- is not a rating. This table is inside `.scroll`, so on a phone a
+   cell can be read with its heading scrolled off the left, and the mark is
+   how it still says which column it came from. Kept in the soft ink so it
+   stays a list marker: a red "against" column would make every alternative
+   look broken, which is why --tag-ink is not spent here. */
+td:has(> .tally) { vertical-align: top; }
+.tally { list-style: none; margin: 0; padding: 0; }
+.tally li { text-indent: -1.15em; padding-left: 1.15em; }
+.tally li + li { margin-top: 4px; }
+.tally.pro li::before,
+.tally.con li::before { font-family: var(--mono); color: var(--ink-soft); }
+.tally.pro li::before { content: "+\00a0"; }
+.tally.con li::before { content: "\2212\00a0"; }
+
+/* A role card reads as three answers, and it used to run them together as one
+   column of paragraphs: what this job *is*, what it runs *now*, and what this
+   page would *suggest*. Nothing separated the third from the first, so the
+   measured note and the recommendation read as more description -- and the one
+   part somebody acts on was the least visible.
+   A rule down the edge rather than a box: these sit inside a field that is
+   already bordered, and a box inside a box reads as a warning. */
+/* `var(--line)` for the rule, which this app has never defined -- so the
+   shorthand was invalid at computed-value time, border-left-style fell back
+   to `none`, and the one thing marking this block off has never drawn. The
+   10px indent has been indenting against nothing. `--edge` is this console's
+   hairline and is what the rule meant. */
+.suggests { margin: 8px 0 0; padding: 2px 0 2px 10px;
+            border-left: 2px solid var(--edge); }
+.suggests > .cap { font-size: .78rem; text-transform: none;
+                   color: var(--ink-soft); margin: 0 0 4px; }
+
+/* What each provider would put in a role, folded away.
+   A disclosure rather than a list on the card: the answer somebody usually
+   wants is the one recommendation above it, and this is the second question --
+   "what would the provider I already pay for put here?". Open, it is four
+   short lines; closed, it costs a row nothing.
+   Its own class rather than a bare <details> so the summary can carry the
+   pointer and the muted colour without restyling every disclosure on the
+   page -- the config pages use them too. */
+.fits { margin: 6px 0 0; }
+.fits > summary { cursor: pointer; color: var(--ink-soft); font-size: .92em; }
+.fits > summary:hover { color: var(--ink); }
+.fits .tally { margin-top: 6px; font-size: .92em; }
+.fits code { font-family: var(--mono); font-size: .95em; }
+
+/* Asking a model whether it actually works, and what it said back.
+   The page could always say what a model costs and never whether it answers;
+   these are the three things that broke on 2026-09-02 while it looked fine.
+
+   The verdict is a stack rather than a line: each step is its own fact, and
+   the one that failed is the one somebody needs, so it must not be buried in
+   a run of prose. Same reasoning as `.tally` above. */
+.probe { margin: 10px 0 0; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.verdict { font-size: .78rem; color: var(--ink-soft); line-height: 1.55; }
+.verdict b { font-family: var(--mono); font-weight: 700; color: var(--ink-soft); }
+.verdict.good b { color: var(--live-ink); }
+/* The failure colour, and one of the few places it is right to spend it: this
+   is a thing that is broken, not a trade-off. */
+.verdict.bad b { color: var(--tag-ink); }
+.step { display: block; max-width: 70ch; }
+.step.bad { color: var(--tag-ink); }
+/* The standing score beside the Test button: what the last run measured for
+   the model this role points at now. Monospace so 3/5 and 10/10 line up down
+   the column, and three colours because a partial pass is its own answer --
+   painting 4/5 the same red as a model that would not answer at all is the
+   reading that sends somebody to replace a model that mostly works. */
+/* An ordered fallback chain, which the picker beside it cannot edit. */
+.chain { margin: 0 0 8px; font-size: .78rem; color: var(--ink-soft); }
+.scored { font-family: var(--mono); font-size: .74rem; color: var(--ink-soft); }
+.scored.good { color: var(--live-ink); }
+.scored.part { color: var(--ink-soft); }
+.scored.bad { color: var(--tag-ink); }
+
+/* Where you are now, among five alternatives. Without it the table answers
+   "what exists" but not "is any of this better than the one I have", which is
+   the only question being asked of it. */
+.here { display: block; color: var(--live-ink); font-weight: 700; font-size: .72rem; }
+
+/* The roster, and what makes 125 rows of it readable.
+   ------------------------------------------------------------------
+   Four things, each answering a question somebody had to ask the table by
+   hand before:
+
+   `.unit` puts "$/M" under the three money headings. Every figure in those
+   columns is dollars per million tokens and that was said once, in the
+   paragraph above the table -- so a person who scrolled past it was reading
+   a column of bare numbers whose unit was off-screen.
+
+   `.on` and `.tag` mark the rows this house is actually on. That is the
+   question the page gets opened with, and answering it meant reading the
+   twelve pickers above and searching the table for each.
+
+   The stripes are for tracking a row across eight columns; the sticky header
+   keeps the column you are comparing named while you scroll. Both are about
+   the table being long, which it only became when Together's roster arrived. */
+.unit {
+  display: block;
+  font-size: .7rem;
+  font-weight: 400;
+  color: var(--ink-soft);
+  letter-spacing: .02em;
+}
+/* `:nth-child` counts hidden rows too, so once a filter is on it stripes the
+   DOM rather than what is on screen and two adjacent visible rows share a
+   shade -- which is exactly the tracking the stripe exists to provide. The
+   script restripes what it left visible; nth-child stays as the no-JS case,
+   where nothing is ever hidden and it is correct. */
+#roster tbody tr:nth-child(even) { background: var(--row-alt); }
+#roster tbody tr.stripe-off { background: transparent; }
+#roster tbody tr.stripe-on { background: var(--row-alt); }
+#roster tbody tr.on { background: var(--row-on); }
+#roster tbody tr.on td:first-child { box-shadow: inset 3px 0 0 var(--live); }
+#roster thead th {
+  position: sticky;
+  top: 0;
+  background: var(--plate-2);
+  z-index: 1;
+}
+/* Which persona is on this model. `--live` is the palette's "circuit closed",
+   which is exactly what this says. It is a label and not a control -- the
+   thing you click to change it is the picker above -- so it is quieter than
+   .chip and takes no pointer. Not called `.tag`: `--tag` in this palette is
+   the failure red, and a green badge named after it would be a trap for the
+   next person editing this file. */
+.inuse {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--row-on);
+  color: var(--live-ink);
+  font-family: var(--sans);
+  font-size: .72rem;
+  white-space: nowrap;
+}
+/* "Not published" -- which is not zero, and must not read as a price. */
+.none { color: var(--ink-soft); }
+.help { font-size: .8rem; color: var(--ink-soft); margin: 5px 0 0; max-width: 64ch; }
+.field { margin-bottom: 18px; }
+/* Short settings side by side rather than one per row.
+   Every input here is capped at 420px, so a card holding six of them on a wide
+   screen was six short boxes in a single column with two thirds of each row
+   empty -- and the page scrolled far enough that the timezone and the language
+   that depends on it were never visible together. auto-fit means this collapses
+   to one column on a phone without a second rule.
+   `.field.wide` opts a control out: a list of checkboxes or a long path wants
+   the whole row, and squeezing it into a 280px cell is worse than a gap. */
+.fields {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0 28px; align-items: start;
+}
+.fields > .field { min-width: 0; }          /* or a long value widens the cell */
+.fields > .field input, .fields > .field select { max-width: 100%; }
+.fields > .field.wide { grid-column: 1 / -1; }
+.fields > .field.wide input { max-width: 520px; }
+input[type=text], input[type=password], input[type=date], input[type=number], input[type=search], select, textarea {
+  width: 100%; max-width: 420px; padding: 8px 11px; font: inherit; font-size: .9rem;
+  border: 1px solid var(--edge); border-radius: var(--r);
+  background: var(--plate-2); color: var(--ink);
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+button:focus-visible, a:focus-visible, input[type=checkbox]:focus-visible {
+  outline: 2px solid var(--attn); outline-offset: 2px;
+}
+select {
+  appearance: none; padding-right: 32px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%),
+                    linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
+  background-position: right 14px center, right 9px center;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+
+button {
+  font: inherit; font-size: .88rem; font-weight: 600; padding: 8px 16px;
+  border: 1px solid var(--panel); cursor: pointer; border-radius: var(--r);
+  background: var(--panel); color: var(--door-ink);
+}
+button:hover { background: var(--panel-2); }
+button.ghost { background: transparent; color: var(--ink); border-color: var(--edge); }
+button.ghost:hover { background: var(--plate); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* A control that reveals the form underneath it, with no script behind it.
+   Only a <summary> opens its own <details>, so this cannot be a <button> --
+   and rather than grow a second kind of button, it borrows the ghost one's
+   look. The marker is dropped in both spellings because Safari still wants
+   the WebKit pseudo-element and Chrome and Firefox take `list-style`. */
+summary.reveal {
+  display: inline-block;
+  font-size: .88rem; font-weight: 600; padding: 8px 16px;
+  border: 1px solid var(--edge); border-radius: var(--r);
+  background: transparent; color: var(--ink);
+  cursor: pointer; user-select: none; list-style: none;
+}
+summary.reveal::-webkit-details-marker { display: none; }
+summary.reveal:hover { background: var(--plate); }
+details[open] > summary.reveal { background: var(--plate); }
+
+/* ── The breaker. The one place this page spends its boldness. ───────────── */
+.breaker { display: inline-block; position: relative; width: 34px; height: 20px; vertical-align: middle; }
+.breaker input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.breaker .body {
+  /* pointer-events: none is load-bearing, not a tidy-up. This span is
+     positioned, has no z-index, and comes after the input in the DOM -- so it
+     paints above it and, without this, swallows every click aimed at the
+     switch. The breaker looked dead: the only thing that toggled a service was
+     clicking its name, which happens to be a <label for>. */
+  pointer-events: none;
+  position: absolute; inset: 0; border-radius: 3px; background: var(--panel-3);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.45); transition: background .16s;
+}
+.breaker .body::after {                       /* the rocker */
+  content: ""; position: absolute; left: 2px; top: 2px; width: 14px; height: 16px;
+  border-radius: 2px; background: linear-gradient(#F6F3EC, #D9D3C6);
+  box-shadow: 0 1px 2px rgba(0,0,0,.4); transition: transform .16s;
+}
+.breaker input:checked + .body { background: var(--live); }
+.breaker input:checked + .body::after { transform: translateX(16px); }
+.breaker input:disabled { cursor: not-allowed; }
+.breaker input:disabled + .body { opacity: .8; }
+.breaker input:focus-visible + .body { outline: 2px solid var(--attn); outline-offset: 2px; }
+
+/* The lockout tag: hung on a circuit that must not be switched. */
+.lockout {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 9px;
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .1em;
+  text-transform: uppercase; font-weight: 700; color: var(--tag-ink);
+  border: 1px solid currentColor; border-radius: 2px; padding: 2px 6px 2px 5px;
+}
+.lockout::before { content: "⛒"; font-size: .8rem; line-height: 1; }
+
+.pill {
+  display: inline-block; padding: 2px 8px; border-radius: 2px;
+  font-family: var(--mono); font-size: .7rem; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.pill.on   { color: var(--live-ink); }
+.pill.off  { color: var(--ink-soft); }
+.pill.warn { color: var(--attn-ink); }
+.pill { background: color-mix(in srgb, currentColor 15%, transparent); }
+
+.flash, .notice {
+  padding: 11px 16px; border-radius: var(--r); margin-bottom: 18px;
+  font-size: .88rem; border-left: 3px solid;
+}
+.flash.ok    { color: var(--live-ink); }
+.flash.error { color: var(--tag-ink); }
+.notice.attn { color: var(--attn-ink); }
+.flash, .notice { background: color-mix(in srgb, currentColor 12%, transparent);
+                  border-color: currentColor; }
+.notice.attn { color: var(--attn-ink); }
+/* ── The overview's to-do list. ──────────────────────────────────────────────
+   One row per thing that still needs a person, and each row carries the link
+   to the page that does it. The point is that "what is wrong" and "where it
+   is fixed" are one click apart: a missing model API key is on Credentials, a
+   household with nobody in it is on Household, and saved-but-not-deployed is
+   on Deploy -- which nobody should have to work out from a service count. */
+.todo { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.todo li {
+  display: flex; align-items: baseline; gap: 13px; flex-wrap: wrap;
+  padding: 13px 15px; border-radius: var(--r);
+  border: 1px solid var(--edge); background: var(--plate);
+}
+.todo .mark { font-weight: 700; line-height: 1; font-size: .9rem; }
+.todo li.warn .mark { color: var(--tag-ink); }
+.todo li.attn .mark { color: var(--attn-ink); }
+.todo .what { flex: 1 1 24ch; font-size: .9rem; }
+.todo .what .detail {
+  display: block; color: var(--ink-soft); font-size: .82rem; margin-top: 4px;
+}
+.todo .go {
+  font-size: .84rem; font-weight: 600; white-space: nowrap;
+  color: var(--ink); border-bottom: 1px solid var(--edge); padding-bottom: 1px;
+}
+.todo .go:hover { border-bottom-color: currentColor; }
+.settled {
+  display: flex; align-items: baseline; gap: 10px;
+  font-size: .9rem; color: var(--live-ink);
+}
+.settled .mark { font-weight: 700; }
+
+.note {
+  font-size: .84rem; color: var(--ink-soft); border-left: 2px solid var(--attn-ink);
+  padding-left: 12px; margin-top: 16px; max-width: 66ch;
+}
+
+pre.out, .joblog {
+  background: var(--panel); color: #DDE3D8; padding: 15px 17px; border-radius: var(--r);
+  overflow-x: auto; font-family: var(--mono); font-size: .8rem; line-height: 1.6;
+}
+
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .door { position: static; max-height: none; padding-bottom: 18px; }
+  .directory { flex-direction: row; flex-wrap: wrap; padding: 0 12px; }
+  .directory a { border-left: 0; border-bottom: 3px solid transparent; padding: 8px 12px; }
+  .directory a[aria-current="page"] { border-left: 0; border-bottom-color: var(--attn); }
+  .directory .slot, .directory .tag-dot { display: none; }
+  .plate { padding: 22px 18px 56px; }
+  .card > h2, .card > *:not(h2) { padding-left: 16px; padding-right: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ── The gate: the panel door closed ─────────────────────────────────────── */
+.gate {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 18px;
+  padding: 24px;
+  background: var(--panel);
+}
+.gate-plate {
+  width: min(92vw, 380px);
+  background: var(--plate-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--r);
+  padding: 28px 26px 26px;
+  display: grid;
+  gap: 10px;
+  box-shadow: 0 1px 0 var(--panel-3), 0 18px 40px rgb(0 0 0 / .35);
+}
+.gate-head { margin-bottom: 6px; }
+.gate-head .site {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.gate-head h1 { font-size: 20px; line-height: 1.25; margin-top: 2px; }
+.gate-head .sub { color: var(--ink-soft); font-size: 13px; margin-top: 4px; }
+.gate-plate label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.gate-plate input[type=password] {
+  font: inherit; width: 100%; padding: 9px 11px;
+  background: var(--plate); color: var(--ink);
+  border: 1px solid var(--edge); border-radius: var(--r);
+}
+.gate-plate input[type=password]:focus-visible {
+  outline: 2px solid var(--live); outline-offset: 1px;
+}
+.gate-plate button {
+  font: inherit; font-weight: 600; margin-top: 8px; padding: 10px 14px;
+  background: var(--live); color: #FFFDF8;
+  border: none; border-radius: var(--r); cursor: pointer;
+}
+.gate-plate button:hover { filter: brightness(1.06); }
+.gate-plate button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.gate-error {
+  font-size: 13px; color: #FFFDF8; background: var(--tag-ink);
+  padding: 8px 11px; border-radius: var(--r);
+}
+.gate-note { font-size: 12px; color: var(--ink-soft); }
+.gate-langs { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
+              max-width: min(92vw, 380px); }
+.gate-langs a {
+  font-size: .78rem; line-height: 1.2; padding: 5px 9px;
+  border: 1px solid var(--panel-3); border-radius: var(--r);
+  text-decoration: none; color: var(--door-ink);
+  background: linear-gradient(var(--panel-2), var(--panel));
+}
+.gate-langs a:hover { color: #fff; border-color: var(--door-dim); }
+.gate-langs a[aria-current=true] {
+  color: #fff; font-weight: 600; border-color: var(--live);
+  background: color-mix(in srgb, var(--live) 30%, var(--panel));
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / .5);
+}
+
+/* Sign-out sits with the language switch: both are about this browser, not
+   about the house. */
+.signout { margin-bottom: 10px; }
+.signout button {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--door-ink); opacity: .6;
+  background: none; border: 1px solid currentColor; border-radius: var(--r);
+  padding: 4px 8px; cursor: pointer;
+}
+.signout button:hover { opacity: 1; }
+
+/* The thing a phone points at, not decoration. `line-height:1` and no
+   letter-spacing are what make it scan: qrcode-terminal draws with half-block
+   glyphs, and any gap between rows breaks the finder pattern, so a phone never
+   locks on. Dark on white regardless of theme -- an inverted QR is not a QR,
+   and this page has a dark mode. */
+.wa-qr {
+  font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+  line-height: 1;
+  letter-spacing: 0;
+  font-size: 9px;
+  background: #fff;
+  color: #000;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  width: max-content;
+  max-width: 100%;
+}
+</style>
+</head>
+<body>
+{% block shell %}
+<div class="shell">
+  <nav class="door" aria-label="{{ t('admin.title') }}">
+    <div class="door-head">
+      <span class="site">{{ site_name }}</span>
+      <h1>{{ t('admin.title') }}</h1>
+      <p class="sub">{{ t('admin.subtitle') }}</p>
+    </div>
+
+    {% set page = request.endpoint %}
+    {# Voice takes a letter rather than a digit: 1-9 and 0 are already
+       spoken for, and a page worth reaching by keyboard is worth a key
+       that is not. #}
+    {% set nav_rows = [
+      ('overview',     '1', t('admin.nav.overview')),
+      ('services',     '2', t('admin.nav.services')),
+      ('site',         '3', t('admin.nav.site')),
+      ('members',      '4', t('admin.nav.members')),
+      ('secrets_page', '5', t('admin.nav.secrets')),
+      ('models_page',  '6', t('admin.nav.models')),
+      ('voice_page',   'V', t('admin.nav.voice')),
+      ('backups',      '7', t('admin.nav.backups')),
+      ('access',       '8', t('admin.nav.access')),
+      ('status_page',  '9', t('admin.nav.status')),
+      ('deploy',       '0', t('admin.nav.deploy')),
+    ] %}
+    <div class="directory">
+      {% for endpoint, slot, label in nav_rows %}
+        <a href="{{ url_for(endpoint) }}"
+           {% if page == endpoint or (endpoint == 'members' and page == 'member_profile') or (endpoint == 'models_page' and page == 'models_catalog') %}aria-current="page"{% endif %}>
+          <span class="slot">{{ slot }}</span>{{ label }}
+          {% if endpoint == 'deploy' and pending_count %}
+            <span class="tag-dot" title="{{ t('admin.deploy.pending_services', n=pending_count) }}"></span>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </div>
+
+    <div class="door-foot">
+      <form method="post" action="{{ url_for('logout') }}" class="signout">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <button type="submit">{{ t('admin.auth.sign_out') }}</button>
+      </form>
+      <span class="label">{{ t('common.language') }}</span>
+      {# The names, not the codes. `_meta.name` in every catalogue is the
+         language's own name for itself, it was already being passed here, and
+         it was spent on a tooltip while the visible text stayed a two-letter
+         code -- so the one place a person picks a language showed them `zh`
+         and made them guess. `lang` on each link so a browser renders 日本語
+         with the right font rather than whatever the page is set to. #}
+      <div class="langs" role="group" aria-label="{{ t('common.language') }}">
+        {% for l in locales %}
+          <a href="?lang={{ l.code }}" lang="{{ l.code }}" hreflang="{{ l.code }}"
+             {% if l.code == locale %}aria-current="true"{% endif %}>{{ l.name }}</a>
+        {% endfor %}
+      </div>
+    </div>
+  </nav>
+
+  <main class="plate">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ t('common.saved') if message == 'saved' else message }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% endblock %}
+</body>
+</html>

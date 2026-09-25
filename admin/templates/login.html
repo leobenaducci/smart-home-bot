@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{# The panel door, closed. Same chassis and laminate as the rest of the page,
+   with none of the directory: there is nothing to navigate to yet. #}
+
+{% block shell %}
+<div class="gate">
+  <form class="gate-plate" method="post" autocomplete="on">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ next }}">
+
+    <div class="gate-head">
+      <span class="site">{{ site_name }}</span>
+      <h1>{{ t('admin.title') }}</h1>
+      <p class="sub">{{ t('admin.auth.locked_sub') }}</p>
+    </div>
+
+    {% if error %}<p class="gate-error" role="alert">{{ error }}</p>{% endif %}
+
+    <label for="password">{{ t('admin.auth.password') }}</label>
+    <input id="password" name="password" type="password" required autofocus
+           autocomplete="current-password">
+
+    <button type="submit">{{ t('admin.auth.sign_in') }}</button>
+  </form>
+
+  <div class="gate-langs">
+    {% for l in locales %}
+      <a href="?lang={{ l.code }}" lang="{{ l.code }}" hreflang="{{ l.code }}"
+         {% if l.code == locale %}aria-current="true"{% endif %}>{{ l.name }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

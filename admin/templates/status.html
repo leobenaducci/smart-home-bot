@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}{{ t('admin.nav.status') }}{% endblock %}
+{% block content %}
+
+{# ─────────────────────────────────────────────────────────────────────────
+   The panelboard.
+
+   The rest of the admin is described in base.html as the utility room: the
+   page where you throw breakers and hang a tag on a circuit. This page is the
+   board itself, so it is drawn as one — a strip of circuits, each with an
+   engraved label, a throw showing whether it is energised, and slots where a
+   tag can hang.
+
+   The slots are the reason for the whole layout. A service carries three
+   findings that are *not* the same question:
+
+       change   a setting was saved and nothing deployed it — needs somebody
+       image    the tag moved, so this is a build nobody replaced
+       source   a file under the service is newer than its container
+
+   The table this replaced put them in one "Up to date" column behind an
+   if/elif chain, so `change` hid `image` and `image` hid `source`: a service
+   could be all three and report one. `admin/test_status.py` opens by saying
+   these must not collapse, and the page collapsed them anyway.
+
+   So the three slots are always drawn, in the same order, whether or not
+   anything hangs in them. An empty slot is a hairline; a full one is a solid
+   tag. That costs space on a board where most circuits are clear — which is
+   the point. You read a panel by scanning for the tag that is *there*, and
+   that only works if the empty positions hold still.
+   ───────────────────────────────────────────────────────────────────────── #}
+
+<style>
+  .board-lede { color: var(--ink-soft); font-size: .88rem; max-width: 64ch;
+                margin: 0 0 var(--s4); }
+
+  /* The main indicator. One line, the size of the answer somebody came for. */
+  .verdict { display: flex; gap: var(--s2); align-items: baseline;
+             flex-wrap: wrap; margin: 0; }
+  .verdict-lamp { width: 12px; height: 12px; border-radius: 50%;
+                  flex: none; align-self: center;
+                  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+  .verdict-text { font-size: 1.05rem; line-height: 1.35; }
+  .verdict-names { font-family: var(--mono); font-size: .86rem;
+                   color: var(--ink-soft); }
+  .verdict.is-ok      { color: var(--live-ink); }
+  .verdict.is-attn    { color: var(--attn-ink); }
+  .verdict.is-trouble { color: var(--tag-ink); }
+  .verdict.is-note    { color: var(--ink-soft); }
+  .verdict-lamp.is-ok      { background: var(--live); }
+  .verdict-lamp.is-attn    { background: var(--attn); }
+  .verdict-lamp.is-trouble { background: var(--tag); }
+  .verdict-lamp.is-note    { background: var(--panel-3); }
+
+  /* ── the strip ───────────────────────────────────────────────────────── */
+  .board { display: flex; flex-direction: column; }
+
+  .circuit {
+    display: grid;
+    grid-template-columns: 6px minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--s3);
+    padding: 12px 0;
+    border-bottom: 1px solid var(--edge);
+  }
+  .circuit:last-child { border-bottom: 0; }
+
+  /* The breaker body. Colour is energised state and nothing else — a tag
+     hanging on the circuit never changes it, because "is it on" and "is it
+     current" are different questions and this answers the first. */
+  .throw { align-self: stretch; border-radius: 2px; background: var(--live); }
+  .throw.is-trouble { background: var(--tag); }
+  .throw.is-partial { background: var(--attn); }
+  .throw.is-idle    { background: var(--edge); }
+
+  .circuit-label { min-width: 0; }
+  .circuit-name {
+    font-family: var(--mono); font-size: .92rem; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--ink);
+    word-break: break-word;
+  }
+  .circuit-desc { font-size: .8rem; color: var(--ink-soft); margin-top: 2px;
+                  max-width: 56ch; }
+  .circuit-state { font-size: .8rem; color: var(--ink-soft); margin-top: 3px; }
+  .circuit-state .is-trouble { color: var(--tag-ink); font-weight: 600; }
+  .circuit-state .is-partial { color: var(--attn-ink); font-weight: 600; }
+  .circuit-broken { font-family: var(--mono); font-size: .76rem;
+                    color: var(--tag-ink); margin-top: 3px;
+                    word-break: break-all; }
+
+  /* ── the tag rail ────────────────────────────────────────────────────── */
+  .rail { display: flex; gap: var(--s1); flex: none; }
+  .slot {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .08em;
+    text-transform: uppercase; text-align: center;
+    min-width: 62px; padding: 4px 7px; border-radius: 2px;
+    border: 1px solid transparent;
+  }
+  /* Empty: a hairline where a tag would hang. Quiet enough that the eye skips
+     it, present enough that the filled ones line up in a column you can read
+     straight down. */
+  .slot.is-clear {
+    color: transparent; border-color: var(--edge);
+    border-style: dashed; background: none;
+  }
+  .slot.is-change { background: var(--attn); color: var(--on-attn); font-weight: 700; }
+  .slot.is-image  { background: var(--panel-3); color: var(--plate-2); }
+  .slot.is-source { color: var(--ink-soft); border-color: var(--edge); }
+
+  .board-foot { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s3);
+                align-items: baseline; margin-top: var(--s3);
+                font-size: .82rem; color: var(--ink-soft); }
+  .key { display: flex; align-items: baseline; gap: var(--s1); }
+  .key .slot { min-width: 0; }
+
+  @media (max-width: 620px) {
+    .circuit { grid-template-columns: 6px minmax(0, 1fr); row-gap: var(--s2); }
+    .rail { grid-column: 2; }
+    .slot { min-width: 0; flex: 1; }
+  }
+</style>
+
+<h1>{{ t('admin.status.title') }}</h1>
+<p class="board-lede">{{ t('admin.status.lede') }}</p>
+
+<div class="card">
+  {% if trouble %}{% set tone = 'is-trouble' %}
+  {% elif needs_deploy %}{% set tone = 'is-attn' %}
+  {% elif stale %}{% set tone = 'is-note' %}
+  {% else %}{% set tone = 'is-ok' %}{% endif %}
+  <p class="verdict {{ tone }}">
+    <span class="verdict-lamp {{ tone }}"></span>
+    {% if trouble %}
+      <span class="verdict-text">{{ t('admin.status.verdict_trouble', n=trouble|length) }}</span>
+      <span class="verdict-names">{{ trouble|map(attribute='name')|join(' · ') }}</span>
+    {% elif needs_deploy %}
+      <span class="verdict-text">{{ t('admin.status.verdict_pending', n=needs_deploy|length) }}</span>
+      <span class="verdict-names">{{ needs_deploy|join(' · ') }}</span>
+    {% elif stale %}
+      {# Everything is up, and something is running a build nobody replaced.
+         Saying "all current" here is the page contradicting a tag it drew
+         three lines further down. #}
+      <span class="verdict-text">{{ t('admin.status.verdict_stale', n=stale|length) }}</span>
+      <span class="verdict-names">{{ stale|map(attribute='name')|join(' · ') }}</span>
+    {% else %}
+      <span class="verdict-text">{{ t('admin.status.verdict_ok', n=healthy) }}</span>
+    {% endif %}
+  </p>
+  {% if needs_deploy %}
+    <p class="help">{{ t('admin.status.pending_note') }}
+       <a href="{{ url_for('deploy') }}">{{ t('admin.nav.deploy') }}</a></p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.status.board_title') }}</h2>
+  <div class="board">
+    {% for r in rows %}
+      {# Energised state only. See the note on `.throw`. #}
+      {% if r.unhealthy %}{% set throw = 'is-trouble' %}
+      {% elif not r.containers %}{% set throw = 'is-idle' %}
+      {% elif r.running < r.containers %}{% set throw = 'is-partial' %}
+      {% else %}{% set throw = '' %}{% endif %}
+      <div class="circuit">
+        <div class="throw {{ throw }}"></div>
+        <div class="circuit-label">
+          <div class="circuit-name">{{ r.name }}</div>
+          {% if r.description %}<div class="circuit-desc">{{ r.description }}</div>{% endif %}
+          <div class="circuit-state">
+            {% if r.unhealthy %}
+              <span class="is-trouble">{{ t('admin.status.state_broken') }}</span>
+            {% elif not r.containers %}
+              {{ t('admin.status.state_idle') }}
+            {% elif r.running < r.containers %}
+              <span class="is-partial">{{ t('admin.status.state_partial',
+                                            up=r.running, total=r.containers) }}</span>
+            {% else %}
+              {{ t('admin.status.state_up', n=r.running) }}{% if r.age %} ·
+              {{ t('admin.status.age', age=r.age) }}{% endif %}
+            {% endif %}
+          </div>
+          {% if r.unhealthy %}
+            <div class="circuit-broken">{{ r.unhealthy|join(' ') }}</div>
+          {% endif %}
+        </div>
+        {# Three slots, always, in this order. An empty one keeps its width so
+           the filled ones stack into a column somebody can read down. #}
+        <div class="rail">
+          {% for slot in [
+              ('is-change', r.pending, 'admin.status.tag_change', 'admin.status.pending_help'),
+              ('is-image',  r.stale,   'admin.status.tag_image',  'admin.status.stale_help'),
+              ('is-source', r.behind,  'admin.status.tag_source', 'admin.status.behind_help')] %}
+            {% if slot[1] %}
+              <span class="slot {{ slot[0] }}" title="{{ t(slot[3]) }}">{{ t(slot[2]) }}</span>
+            {% else %}
+              <span class="slot is-clear" aria-hidden="true">·</span>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {# Only the tags that are actually hanging. A key for a tag nothing carries
+     is three lines to read past to reach the board. #}
+  {% if needs_deploy or stale or idle %}
+    <div class="board-foot">
+      {% if needs_deploy %}
+        <span class="key"><span class="slot is-change">{{ t('admin.status.tag_change') }}</span>
+          {{ t('admin.status.pending_help') }}</span>
+      {% endif %}
+      {% if stale %}
+        <span class="key"><span class="slot is-image">{{ t('admin.status.tag_image') }}</span>
+          {{ t('admin.status.stale_help') }}</span>
+      {% endif %}
+      {% if idle %}
+        <span class="key">{{ t('admin.status.state_idle') }} — {{ t('admin.status.idle_help') }}</span>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

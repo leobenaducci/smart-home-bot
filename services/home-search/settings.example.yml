@@ -1,0 +1,61 @@
+# SearXNG settings for the house instance — the SEED, not the deployed file.
+#
+# The deployed one lives at `{paths.config}/home-search/searxng/settings.yml`.
+# This file is copied there once, on the first deploy, and never again: it is
+# state after that, and editing this copy changes nothing on a machine that has
+# already deployed. Edit the deployed one, or delete it and re-deploy.
+#
+# `server.secret_key` below is the image's own placeholder. The deploy replaces
+# it with `SEARXNG_SECRET_KEY` from the credentials file the first time it sees
+# it, and `validate-settings.py` refuses to deploy while the placeholder is
+# still there — so an unedited copy cannot reach a container by accident.
+use_default_settings: true
+
+general:
+  # Shown on the instance's own pages. Nobody outside the house sees it.
+  instance_name: "home"
+  donation_url: false
+  contact_url: false
+
+server:
+  # Replaced on the first deploy from SEARXNG_SECRET_KEY. Generate that with
+  # `./home-stack install --generate-secrets`, or by hand with
+  # `openssl rand -hex 32`.
+  secret_key: "ultrasecretkey"
+  # Off on purpose, and `validate-settings.py` rejects a file that does not say
+  # so. The limiter exists to slow strangers down, and the way it does that is
+  # by answering 429 to anything whose User-Agent looks like a script — which is
+  # exactly what the assistant is. Every caller here is already on the LAN.
+  #
+  # Deleting this line is not the same as `false`: this is the setting that
+  # decides whether the instance answers the assistant at all, so it is stated
+  # here rather than inherited from an upstream default nobody in this house
+  # controls. SEARXNG_LIMITER in the container environment would beat it.
+  # Nothing passes that, and nothing should.
+  limiter: false
+  # Proxying images costs this box bandwidth to hide a request that never
+  # leaves the house anyway.
+  image_proxy: false
+
+search:
+  # **The reason this file exists.** `json` is not in the default format list,
+  # and without it /search?format=json answers 403 with an HTML body — which
+  # reads as "the instance is broken" rather than "it is not serving JSON".
+  # The searxng skill's whole contract is that endpoint, so
+  # `validate-settings.py` fails the deploy when it is missing.
+  formats:
+    - html
+    - json
+  # The web UI's language, for somebody browsing the instance by hand. The
+  # skill does NOT inherit it: it sends SEARCH_LANGUAGE, which the deployer
+  # exports from `locale.default`.
+  default_lang: "en"
+  # Matches the image default, and stated anyway: this instance serves a
+  # household that may have children on it, so the value is a decision rather
+  # than an omission. The skill sends no safesearch of its own and follows it.
+  safe_search: 0
+  # NOT filler, and the one line here that closes a leak. The image defaults
+  # this to "duckduckgo", which sends every keystroke typed into the search box
+  # straight out of the LAN — the exact thing running your own instance was
+  # for. Empty disables suggestions entirely.
+  autocomplete: ""

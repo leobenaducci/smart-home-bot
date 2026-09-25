@@ -1,0 +1,7 @@
+# The official MCP SDK. FastMCP's streamable-HTTP transport is what opencode's
+# `"type": "remote"` connects to; the SSE transport it also offers is the older
+# one and is not what is used here.
+mcp>=1.29,<2
+# httpx rather than requests: it is already an mcp dependency, so this adds
+# nothing to the image, and it is the one client used for all three upstreams.
+httpx>=0.27

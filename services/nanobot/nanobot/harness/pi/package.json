@@ -1,0 +1,8 @@
+{
+  "name": "alfred-pi-harness",
+  "private": true,
+  "description": "pi (pi.dev) for long background tasks; see nanobot/harness/pi_runner.py. The lockfile pins every dependency, not only pi.",
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "0.73.1"
+  }
+}

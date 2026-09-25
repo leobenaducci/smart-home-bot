@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - HomeCameras</title>
+    <!-- The house faces, served by this app. See
+         HomeCore/tools/fetch-fonts.sh for where they come from and why they
+         are not fetched from the internet. -->
+    <link rel="stylesheet" href="{{ base }}/static/fonts/house.css">
+    <style>
+        /* ---- "The House", after dark ----------------------------------------
+           The same tokens HomeCore, finance_helper, the MQTT dashboard and the
+           SmartButton page use, in the palette's night values. The house has a
+           night mode and this is the room that lives in it: reviewing footage
+           on a lit cream page is worse, not more consistent, so the kinship is
+           carried by the palette, the type and the shapes rather than by making
+           a camera wall bright.
+
+           Names are the ones this app already used, so nothing downstream had
+           to be renamed to adopt them. `--accent` and `--warning` are both
+           honey on purpose: the house has three semantic hues — honey for
+           attention, olive for good, clay for bad — and inventing a fourth to
+           fill a slot would be the opposite of normalising. */
+        :root {
+            --bg: #16180F;
+            --surface: #1E2117;
+            --surface-2: #242819;
+            --border: #333823;
+            --text: #EBE4D2;
+            --text-muted: #9D9781;
+            --accent: #DFAA54;
+            --accent-quiet: #5C4A25;
+            --accent-hot: #EDBE71;
+            --danger: #D2705A;
+            --success: #93A46E;
+            --warning: #DFAA54;
+            --radius: 12px;
+            --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: var(--sans);
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        .nav {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .nav h1 {
+            margin: 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+        .nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            padding: 4px 10px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .nav a:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .nav a.active { color: var(--accent); }
+
+        .main {
+            max-width: 700px;
+            margin: 24px auto;
+            padding: 0 16px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 16px;
+        }
+        .card h2 {
+            margin: 0 0 6px 0;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+        .card p {
+            margin: 0 0 16px 0;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .btn {
+            padding: 8px 14px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.82rem;
+            font-weight: 500;
+            transition: all 0.15s;
+            background: var(--surface);
+            color: var(--text);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .btn:hover { background: rgba(255,255,255,0.06); }
+        .btn-accent {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--bg);
+        }
+        .btn-accent:hover { background: var(--accent-hot); border-color: var(--accent-hot); }
+        .btn-danger {
+            background: transparent;
+            border-color: var(--danger);
+            color: var(--danger);
+        }
+        .btn-danger:hover { background: rgba(210,112,90,0.1); }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 500;
+            margin-bottom: 4px;
+            color: var(--text);
+        }
+        .form-group input[type="number"],
+        .form-group select {
+            width: 100%;
+            padding: 8px 10px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.85rem;
+            transition: border-color 0.15s;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(223,170,84,0.15);
+        }
+        .form-group small {
+            display: block;
+            margin-top: 4px;
+            color: var(--text-muted);
+            font-size: 0.78rem;
+        }
+        .form-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 8px;
+            accent-color: var(--accent);
+        }
+        .form-group.checkbox label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            font-weight: 400;
+        }
+
+        .time-range {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .time-range input {
+            width: 80px !important;
+            text-align: center;
+        }
+        .time-range span { color: var(--text-muted); font-size: 0.85rem; }
+
+        .divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 20px 0;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--success);
+            color: var(--bg);
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            z-index: 1000;
+            display: none;
+            animation: slideUp 0.3s ease;
+        }
+        .toast.error { background: var(--danger); }
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+        /* The reviewer's own state. It lives here rather than on the
+           recordings page on purpose: the tray there is a to-do list and stays
+           hidden when there is nothing to do, which is right for a notice and
+           wrong for "is this thing running at all". */
+        /* A row of figures, so they have to line up on two lines: the numbers
+           on one baseline and their labels on another. The model name is
+           smaller and monospaced, so left to itself it floated off both — the
+           number line is a fixed height and everything sits on its bottom. */
+        .review-status { display: flex; flex-wrap: wrap; gap: 16px 28px; margin-top: 6px; }
+        .review-status .rs { display: flex; flex-direction: column; gap: 3px; }
+        .review-status .rs-n,
+        .review-status .rs-model {
+            /* flex-end, not baseline: each of these holds a single text run, and
+               baseline alignment only relates items to each other *inside* one
+               container — with nothing to align to it falls back to the top,
+               which is the float the fixed height was meant to stop. */
+            display: flex; align-items: flex-end; min-height: 1.6rem;
+        }
+        .review-status .rs-n {
+            font-size: 1.35rem; font-weight: 600; color: var(--text);
+            font-variant-numeric: tabular-nums; line-height: 1.15;
+        }
+        .review-status .rs-l { font-size: .68rem; text-transform: uppercase;
+            letter-spacing: .09em; color: var(--text-muted); line-height: 1; }
+        .review-status .rs-model { font-family: var(--mono); font-size: .82rem;
+            color: var(--text-muted); line-height: 1.15; }
+        .review-status .rs-off { color: var(--warning); }
+        .review-status .rs-err { color: var(--danger); font-size: .82rem; width: 100%; }
+    </style>
+    <!-- HomeCore's CSRF token on every request of ours that changes something.
+         Empty `base` means the LAN, where there is no HomeCore session to
+         protect and the file does nothing. What it covers and what it cannot
+         (socket.io, which is XHR) is written down in the file itself. -->
+    <script src="{{ base }}/static/js/csrf.js" data-base="{{ base }}"></script>
+    <!-- This member's theme, in the night register this page is written in.
+         Only reachable when the page is served through HomeCore (/camaras/),
+         which is also the only time the app knows who is looking; opened
+         straight off the LAN it 404s and the page keeps its own colours,
+         which is exactly the wanted behaviour and needs no branch. -->
+    <link rel="stylesheet" href="/theme/night.css">
+    <script>
+      /* Repaint when somebody changes their theme while this is open, the
+         same twenty seconds the house pages use. Only swaps the href, so a
+         camera feed is never reloaded by a colour change. */
+      (function () {
+        var link = document.querySelector('link[href$="/theme/night.css"]');
+        if (!link || !"{{ base }}") return;
+        var seen = null;
+        setInterval(async function () {
+          try {
+            var r = await fetch("/theme/version", { cache: 'no-store' });
+            if (!r.ok) return;
+            var v = (await r.json()).v;
+            if (seen === null) { seen = v; return; }
+            if (v !== seen) { seen = v; link.href = "/theme/night.css?v=" + v; }
+          } catch (e) { /* offline or logged out; try again next tick */ }
+        }, 20000);
+      })();
+    </script>
+</head>
+<body>
+    <nav class="nav">
+        <h1>HomeCameras</h1>
+        <a href="{{ base }}/">Dashboard</a>
+        <a href="{{ base }}/settings" class="active">Settings</a>
+        <a href="{{ base }}/recordings">Recordings</a>
+    </nav>
+
+    <div class="main">
+        <div class="card">
+            <h2>Manage Cameras</h2>
+            <p>Add, import, or export camera configurations.</p>
+            <div class="btn-row">
+                <a href="{{ base }}/add_camera" class="btn btn-accent">+ Add Camera</a>
+                <a href="{{ base }}/api/export_config" class="btn">Export Config</a>
+                <button class="btn" onclick="document.getElementById('import-file').click()">Import Config</button>
+            </div>
+            <input type="file" id="import-file" accept=".json" style="display: none;">
+            <label class="form-group checkbox" style="margin-top: 8px;">
+                <input type="checkbox" id="merge-settings">
+                <span>Merge with existing settings</span>
+            </label>
+        </div>
+
+        <div class="card">
+            <h2>Clip review</h2>
+            <p>Every recording goes through the vision model before it is
+               saved. What it decided appears under each clip in Recordings.</p>
+            <div id="review-status" class="review-status">Consultando…</div>
+        </div>
+
+        <div class="card">
+            <h2>Recording Settings</h2>
+            <p>Configure motion-triggered recording behavior.</p>
+            <form id="global-settings-form">
+                <div class="form-group checkbox">
+                    <label>
+                        <input type="checkbox" id="recording-enabled" name="recording_enabled">
+                        <span>Enable motion-triggered recording</span>
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label>Recording Time Window</label>
+                    <div class="time-range">
+                        <input type="number" id="recording-start-hour" min="0" max="23" value="0">
+                        <span>to</span>
+                        <input type="number" id="recording-end-hour" min="0" max="24" value="24">
+                    </div>
+                    <small>Hour range (0-24). Set to 0-24 for all day recording.</small>
+                </div>
+
+                {# The named schedules. A camera points at one of these instead
+                   of carrying its own copy of the hours, so changing a window
+                   here moves every camera following it — which is the whole
+                   reason for naming them rather than copying hours around. #}
+                {%- for name, w in (recording_presets or {}).items() %}
+                <div class="form-group">
+                    <label>Schedule: {{ name }} cameras</label>
+                    <div class="time-range">
+                        <input type="number" class="preset-start" data-preset="{{ name }}"
+                               min="0" max="23" value="{{ w.start_hour }}"
+                               aria-label="{{ name }} start hour">
+                        <span>to</span>
+                        <input type="number" class="preset-end" data-preset="{{ name }}"
+                               min="0" max="24" value="{{ w.end_hour }}"
+                               aria-label="{{ name }} end hour">
+                    </div>
+                    <small>
+                        {%- if w.start_hour == w.end_hour %}All day.
+                        {%- elif w.start_hour < w.end_hour %}{{ w.start_hour }}:00 to {{ w.end_hour }}:00.
+                        {%- else %}{{ w.start_hour }}:00 to {{ w.end_hour }}:00 the next day — crosses midnight.
+                        {%- endif %}
+                        Every camera set to follow the {{ name }} cameras uses this.
+                    </small>
+                </div>
+                {%- endfor %}
+
+                <div class="form-group">
+                    <label for="recording-duration">Recording Duration (seconds)</label>
+                    <input type="number" id="recording-duration" min="1" max="3600" value="10">
+                    <small>How long to record after motion is detected</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="pre-motion-duration">Pre-Motion Buffer (seconds)</label>
+                    <input type="number" id="pre-motion-duration" min="0" max="30" value="5" step="0.5">
+                    <small>Footage kept before motion is detected (0-30s)</small>
+                </div>
+
+                <button type="submit" class="btn btn-accent" style="width:100%;">Save Settings</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        function showToast(msg, error) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast' + (error ? ' error' : '');
+            t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 3000);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetch('{{ base }}/api/global/settings')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.recording_enabled !== undefined)
+                        document.getElementById('recording-enabled').checked = data.recording_enabled;
+                    if (data.recording_start_hour !== undefined)
+                        document.getElementById('recording-start-hour').value = data.recording_start_hour;
+                    if (data.recording_end_hour !== undefined)
+                        document.getElementById('recording-end-hour').value = data.recording_end_hour;
+                    if (data.recording_duration !== undefined)
+                        document.getElementById('recording-duration').value = data.recording_duration;
+                    if (data.pre_motion_duration !== undefined)
+                        document.getElementById('pre-motion-duration').value = data.pre_motion_duration;
+
+                })
+                .catch(err => console.error('Error loading settings:', err));
+        });
+
+        // Read the named schedules back off the page. Sent whole rather than
+        // as a patch: the server replaces the set, so a preset left out here
+        // would be dropped and every camera following it would silently fall
+        // back to the house window.
+        function collectRecordingPresets() {
+            const out = {};
+            document.querySelectorAll('.preset-start').forEach(function (start) {
+                const name = start.dataset.preset;
+                const end = document.querySelector('.preset-end[data-preset="' + name + '"]');
+                if (!end) return;
+                out[name] = { start_hour: parseInt(start.value, 10),
+                              end_hour: parseInt(end.value, 10) };
+            });
+            return out;
+        }
+
+        document.getElementById('global-settings-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            fetch('{{ base }}/api/global/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    recording_enabled: document.getElementById('recording-enabled').checked,
+                    recording_start_hour: parseInt(document.getElementById('recording-start-hour').value),
+                    recording_end_hour: parseInt(document.getElementById('recording-end-hour').value),
+                    recording_duration: parseInt(document.getElementById('recording-duration').value),
+                    pre_motion_duration: parseFloat(document.getElementById('pre-motion-duration').value),
+                    recording_presets: collectRecordingPresets()
+                })
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) showToast('Settings saved');
+                else showToast('Error: ' + result.error, true);
+            })
+            .catch(err => showToast('Error: ' + err.message, true));
+        });
+
+        document.getElementById('import-file').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const merge = document.getElementById('merge-settings').checked;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                try {
+                    const config = JSON.parse(event.target.result);
+                    fetch('{{ base }}/api/import_config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ config: config, merge: merge })
+                    })
+                    .then(r => r.json())
+                    .then(result => {
+                        if (result.success) {
+                            showToast('Config imported (' + (result.cameras_loaded || result.cameras_loaded) + ' cameras)');
+                            setTimeout(() => window.location.reload(), 1500);
+                        } else showToast('Error: ' + result.error, true);
+                    })
+                    .catch(err => showToast('Error: ' + err.message, true));
+                } catch (err) {
+                    showToast('Invalid JSON file', true);
+                }
+            };
+            reader.readAsText(file);
+            e.target.value = '';
+        });
+    
+        // The reviewer's state, from the endpoint that already computes it.
+        function loadReviewStatus() {
+            const box = document.getElementById('review-status');
+            if (!box) return;
+            fetch('{{ base }}/api/recordings/review')
+                .then(r => { if (!r.ok) throw new Error('API ' + r.status); return r.json(); })
+                .then(data => {
+                    const s = data.review || {};
+                    if (!s.enabled) {
+                        box.innerHTML = '<span class="rs-off">Review is switched off: '
+                            + 'todas las grabaciones se guardan sin mirarlas.</span>';
+                        return;
+                    }
+                    const cell = (n, l) => '<div class="rs"><span class="rs-n">' + n
+                        + '</span><span class="rs-l">' + l + '</span></div>';
+                    box.innerHTML =
+                        cell(s.reviewed || 0, 'revisados') +
+                        cell(s.kept || 0, 'guardados') +
+                        cell(s.to_review || 0, 'a la bandeja') +
+                        // The only number here that stands for files that no
+                        // longer exist, so it is shown whether or not any have
+                        // gone yet: a zero says the rule is on and has not
+                        // fired, which is a different thing from no rule.
+                        // "borrados" alone, because it sits in a row of
+                        // destinations — revisados, guardados, a la bandeja —
+                        // and there it can only mean the fourth one.
+                        (s.delete_static ? cell(s.deleted || 0, 'borrados') : '') +
+                        cell(s.pending || 0, 'en cola') +
+                        // Only once it has happened. A permanent zero here
+                        // would be one more number to read past on a box with
+                        // no card, where the reviewer never waits at all.
+                        (s.gpu_waits ? cell(s.gpu_waits, 'esperas de GPU') : '') +
+                        (s.gpu_timeouts ? cell(s.gpu_timeouts, 'sin esperar más') : '') +
+                        '<div class="rs"><span class="rs-model">' + (s.model || '—')
+                        + '</span><span class="rs-l">modelo</span></div>' +
+                        (s.last_error
+                            ? '<span class="rs-err">Último problema: ' + s.last_error + '</span>'
+                            : '');
+                })
+                // Counts since the last restart, so this is "is it working",
+                // not a historical total — say so if it cannot be reached.
+                .catch(e => { box.textContent = 'No pude leer el estado (' + e.message + ').'; });
+        }
+        loadReviewStatus();
+</script>
+</body>
+</html>

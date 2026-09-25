@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{# First run. This is the only page that answers until a password exists, so a
+   fresh install is closed rather than open — and whoever reaches it first sets
+   the password rather than finding that somebody else already did. #}
+
+{% block shell %}
+<div class="gate">
+  <form class="gate-plate" method="post" autocomplete="on">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+    <div class="gate-head">
+      <span class="site">{{ site_name }}</span>
+      <h1>{{ t('admin.auth.setup_title') }}</h1>
+      <p class="sub">{{ t('admin.auth.setup_sub') }}</p>
+    </div>
+
+    {% if error %}<p class="gate-error" role="alert">{{ error }}</p>{% endif %}
+
+    <label for="password">{{ t('admin.auth.new_password') }}</label>
+    <input id="password" name="password" type="password" required autofocus
+           minlength="{{ min_length }}" autocomplete="new-password">
+
+    <label for="password2">{{ t('admin.auth.repeat_password') }}</label>
+    <input id="password2" name="password2" type="password" required
+           minlength="{{ min_length }}" autocomplete="new-password">
+
+    <p class="gate-note">{{ t('admin.auth.password_hint', n=min_length) }}</p>
+
+    <button type="submit">{{ t('admin.auth.set_password') }}</button>
+  </form>
+
+  <div class="gate-langs">
+    {% for l in locales %}
+      <a href="?lang={{ l.code }}" lang="{{ l.code }}" hreflang="{{ l.code }}"
+         {% if l.code == locale %}aria-current="true"{% endif %}>{{ l.name }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

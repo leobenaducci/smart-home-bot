@@ -1,0 +1,47 @@
+# The GPU half of the audio.cpp bench.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+#         --profile bench up -d --build
+#
+# A *different image* rather than a flag on the same one: the CUDA backend
+# needs nvcc to build and the CUDA runtime libraries to run, and the 187 MB CPU
+# image is one of the things this bench is defending. `audio-cpp:latest` is
+# untouched by building this.
+#
+# It answers the question the CPU profile left open. The README's rule is that
+# if audio.cpp needs the card to win it has lost, because the card is already
+# three services deep -- but "how much does the card buy" and "how much VRAM
+# does it cost" are measurements, and a rule you cannot put a number against is
+# an opinion. This produces the number.
+#
+# **Check what is on the card before believing a result.** Measured while
+# writing this: Ollama's vision model 5,354 MiB, the camera detectors 3,504 and
+# 1,044 MiB, leaving 2.3 GB of 12 GB free. A model that OOMs here has not been
+# shown to be too big for the card; it has been shown to be too big for
+# whatever the card had left at the time, which is a different sentence and the
+# one worth writing down.
+
+services:
+  audio-cpp:
+    build:
+      args:
+        BUILD_BASE: nvidia/cuda:12.6.3-devel-ubuntu24.04
+        RUNTIME_BASE: nvidia/cuda:12.6.3-runtime-ubuntu24.04
+        AUDIOCPP_BACKEND: cuda
+        # This box's RTX 3060 is compute 8.6. Naming it builds one
+        # architecture instead of every one nvcc knows.
+        CUDA_ARCH: "86"
+    image: audio-cpp:cuda
+    environment:
+      # Must match the backend the image was built with -- see entrypoint.sh.
+      - AUDIOCPP_BACKEND=cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # One card, and which one is a setting (`services.audio-cpp.gpu_device`):
+              # `count: 1` let Docker pick, and it picked the card the cameras
+              # and the vision model were already on.
+              device_ids: ["${AUDIOCPP_GPU_DEVICE:-0}"]
+              capabilities: [gpu]

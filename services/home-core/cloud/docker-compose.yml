@@ -1,0 +1,41 @@
+services:
+  web:
+    build: .
+    container_name: cloud-web
+    restart: unless-stopped
+    # Loopback only. The site speaks plain HTTP; the only thing that should ever
+    # reach it is the Caddy in ../proxy on this same box, which terminates TLS
+    # for house.home. Publishing it on the LAN would mean the
+    # login form is one `http://hub.home:8081` away from being posted in the
+    # clear, and the password it takes is the household one.
+    ports:
+      # Loopback only, for the reason above. 21004 is the entry page's slot in
+      # the band; 8081 was cAdvisor's on the machine this came from.
+      - "127.0.0.1:${ENTRY_PAGE_PORT:-21004}:80"
+    environment:
+      # This container had NO `environment:` and no `env_file:` at all, so
+      # every `getenv()` in the PHP was false and both pages fell through to
+      # their hardcoded fallbacks. The portal URL was added to the deployer
+      # and commented in both files as "supplied by the deployer" -- and
+      # arrived nowhere, which is the failure that fix was written for.
+      - HOME_STACK_PORTAL_URL=${HOME_STACK_PORTAL_URL:-}
+      - HOME_STACK_DOMAIN=${HOME_STACK_DOMAIN:-}
+      - HOME_STACK_SITE_NAME=${HOME_STACK_SITE_NAME:-}
+    volumes:
+      # The live user store, not the copy baked into the image, so
+      # `manage_users.py` run against the deploy workspace takes effect without
+      # a rebuild. This is the same file the Flask container mounts read-only —
+      # one store, two apps, which is the only reason both agree on passwords.
+      - ${HOMECORE_USERS_FILE:-/var/lib/home-stack/state/home-core/users.json}:/var/www/html/users.json:ro
+      - cloud-sessions:/var/lib/php/sessions
+    healthcheck:
+      # `/` is the one route that renders without a session, so a 200 here means
+      # PHP ran and the front controller routed — not merely that Apache is up.
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1/') === false ? 1 : 0);"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  cloud-sessions:

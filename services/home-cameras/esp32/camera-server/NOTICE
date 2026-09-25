@@ -1,0 +1,18 @@
+This firmware is derived from the CameraWebServer example in Espressif's
+arduino-esp32 (https://github.com/espressif/arduino-esp32,
+libraries/ESP32/examples/Camera/CameraWebServer), and has been modified for
+home-stack: the watchdog, the board configuration and the settings described
+in BOARD_SETTINGS.md.
+
+- app_httpd.cpp: Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD,
+  licensed under the Apache License, Version 2.0
+  (http://www.apache.org/licenses/LICENSE-2.0). Modified.
+- camera-server.ino (the example's CameraWebServer.ino, much extended),
+  board_config.h, camera_index.h, camera_pins.h, partitions.csv, ci.yml and
+  sketch.yaml come from the same example and carry no header of their own.
+  They are covered by the arduino-esp32 repository's license, the GNU Lesser
+  General Public License v2.1
+  (https://github.com/espressif/arduino-esp32/blob/master/LICENSE.md), and
+  home-stack's modifications to them are offered under the same terms.
+- BOARD_SETTINGS.md and this NOTICE are home-stack's own (MIT, see the
+  repository's LICENSE).

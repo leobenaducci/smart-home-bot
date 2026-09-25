@@ -1,0 +1,425 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% if phone_code %}
+<div class="flash ok" style="font-size:1.05rem">
+  {{ t('admin.members.phone_code_result', id=person.id) }}
+  <strong class="mono" style="font-size:1.4rem;letter-spacing:.15em;margin-left:10px">{{ phone_code }}</strong>
+  <div class="help" style="margin-top:4px">{{ t('admin.members.phone_code_note') }}</div>
+</div>
+{% endif %}
+
+<p style="margin:0 0 14px">
+  <a href="{{ url_for('members') }}">&larr; {{ t('admin.members.heading') }}</a>
+</p>
+
+{# One form for everything that is a *setting*, so it saves in one write and
+   one Deploy note. The three actions below are their own forms: minting a code
+   and removing somebody are not things that should ride along with a rename. #}
+<form method="post">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+  <div class="card">
+    <h2>{{ person.display_name }} <span class="mono" style="color:var(--ink-soft);font-size:.85rem">({{ person.id }})</span></h2>
+    <div class="fields">
+      <div class="field">
+        <label for="display_name">{{ t('admin.members.display_name') }}</label>
+        <input type="text" id="display_name" name="display_name" value="{{ person.display_name }}">
+      </div>
+      <div class="field">
+        <label for="locale">{{ t('admin.members.locale') }}</label>
+        <select id="locale" name="locale">
+          {% for l in locales %}
+            <option value="{{ l.code }}" {% if l.code == person.locale %}selected{% endif %}>{{ l.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="birthdate">{{ t('admin.profile.birthdate') }}</label>
+        {# Text, not `type="date"`: that renders in the *browser's* locale, so
+           a household reading Spanish on an English-profile browser was shown
+           03/02/2000 for a birthday everybody here writes 02/03/2000. The
+           format is the locale's own, from the catalogue, and it is on screen
+           rather than assumed -- 03/04 is two different birthdays. #}
+        <input type="text" id="birthdate" name="birthdate" class="mono"
+               inputmode="numeric" autocomplete="bday"
+               value="{{ birthdate_shown }}" placeholder="{{ date_format }}">
+        <p class="help">{{ t('admin.profile.birthdate_help', format=date_format) }}</p>
+      </div>
+      <div class="field wide">
+        <label class="check-row">
+          <input type="checkbox" name="admin" {% if person.admin %}checked{% endif %}>
+          {{ t('admin.members.is_admin') }}
+        </label>
+        {# The id is not editable and never will be: it is woven through paths,
+           MQTT topics, derived tokens and backups, and the whole reason ids are
+           monotonic is that one person's can never become another's. #}
+        <label class="check-row">
+          <input type="checkbox" name="active" {% if person.get('active', True) %}checked{% endif %}>
+          {{ t('admin.profile.active') }}
+        </label>
+        <p class="help">{{ t('admin.profile.active_help') }}</p>
+        {# Per person, because a household can have more than one linked phone
+           and because this used to be one member's, written into the compose
+           file by name. Turning it on gives that member a bridge container of
+           their own; the QR code is scanned once, from the assistant. #}
+        <label class="check-row">
+          <input type="checkbox" name="whatsapp" {% if person.whatsapp %}checked{% endif %}>
+          {{ t('admin.profile.whatsapp') }}
+        </label>
+        <p class="help">{{ t('admin.profile.whatsapp_help') }}</p>
+
+        {# The Programmer profession, on opencode rather than on the assistant.
+           Per person because it costs a container and a server process each,
+           and because it decides whose projects and whose folder on the share
+           that person's coding agent can reach -- one bridge holds one
+           member's credentials and nothing lets a tool call choose another. #}
+        <label class="check-row">
+          <input type="checkbox" name="programmer" {% if person.programmer %}checked{% endif %}>
+          {{ t('admin.profile.programmer') }}
+        </label>
+        <p class="help">{{ t('admin.profile.programmer_help') }}</p>
+
+          {# Subscription rather than sending: it changes which topics that
+             person's phone listens to, and saving pushes the new list to both
+             chat proxies. The children are excluded at the ntfy server too,
+             not only here. #}
+          <label class="check-row">
+            <input type="checkbox" name="parents" {% if person.parents %}checked{% endif %}>
+            {{ t('admin.profile.parents') }}
+          </label>
+          <p class="help">{{ t('admin.profile.parents_help') }}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>{{ t('admin.profile.heading_assistant') }}</h2>
+    <p class="intro">{{ t('admin.profile.intro') }}</p>
+
+    <div class="field">
+      <label for="hobbies">{{ t('admin.profile.hobbies') }}</label>
+      <textarea id="hobbies" name="hobbies" rows="4"
+                placeholder="{{ t('admin.profile.hobbies_placeholder') }}">{{ person.hobbies or '' }}</textarea>
+      <p class="help">{{ t('admin.profile.hobbies_help') }}</p>
+    </div>
+
+    <div class="field">
+      <label for="notes">{{ t('admin.profile.notes') }}</label>
+      <textarea id="notes" name="notes" rows="3"
+                placeholder="{{ t('admin.profile.notes_placeholder') }}">{{ person.notes or '' }}</textarea>
+      <p class="help">{{ t('admin.profile.notes_help') }}</p>
+    </div>
+
+    {% if others %}
+    <h3>{{ t('admin.profile.relationships') }}</h3>
+    <p class="help" style="margin:0 0 10px">{{ t('admin.profile.relationships_help') }}</p>
+    <table class="settings">
+      <tbody>
+      {% for other in others %}
+      <tr>
+        {# The direction, with both names in it. The help text used to say the
+           opposite of what the code means and a household filled four boxes
+           the wrong way round -- a father whose own page recorded each of his
+           children as his `padre`. A label that names both people cannot be
+           read backwards. #}
+        <td class="strong">{{ t('admin.profile.rel_row',
+                 name=other.display_name, other=person.display_name) }}
+          <span class="mono muted">({{ other.id }})</span></td>
+        <td class="grow"><input type="text" name="rel:{{ other.id }}"
+                   value="{{ (person.relationships or {}).get(other.id, '') }}"
+                   placeholder="{{ t('admin.profile.relationship_placeholder') }}">
+          {# What the rest of the page already implies. Every relationship has
+             a twin on somebody else's page and the household types both, so
+             the half nobody goes back to is what makes an assistant say "your
+             sister Bo" to Bo herself. A click fills the box; nothing is written
+             until the form is saved, and a box that has something in it is
+             never offered anything. #}
+          {# Both boxes have answers and they cannot both be true. Not a
+             suggestion, and not something this page fixes on its own -- these
+             are a household's own words about their own family. What it can do
+             is put the other side's reading within reach of one click. #}
+          {% if conflicts.get(other.id) %}
+          <div class="help" style="margin-top:6px;color:var(--attn-ink)">
+            ⚠ {{ t('admin.profile.rel_conflict', name=other.display_name,
+                   expected=conflicts[other.id]|join(' / ')) }}
+            {% for term in conflicts[other.id] %}
+            <button type="button" class="ghost rel-hint chip"
+                    data-for="rel:{{ other.id }}" data-term="{{ term }}"
+                   >{{ term }}</button>
+            {% endfor %}
+            {# Either side can be the wrong one and nothing here can tell
+               which, so the other side is one click away rather than
+               something to go and find. #}
+            <a href="{{ url_for('member_profile', member_id=other.id) }}"
+               style="margin-left:8px">{{ t('admin.profile.rel_see_other',
+               name=other.display_name) }} →</a>
+          </div>
+          {% endif %}
+          {% if suggested.get(other.id) %}
+          <div class="help stack-s">
+            {{ t('admin.profile.suggested') }}
+            {% for term in suggested[other.id] %}
+            <button type="button" class="ghost rel-hint chip"
+                    data-for="rel:{{ other.id }}" data-term="{{ term }}"
+                   >{{ term }}</button>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <p class="stack-l"><button type="submit">{{ t('common.save') }}</button></p>
+    <p class="note">{{ t('admin.profile.seed_note') }}</p>
+    <script>
+      // Fills the box and gets out of the way. `type="button"`, so a click
+      // cannot submit the form -- which would save the rest of the page as a
+      // side effect of accepting a suggestion.
+      document.querySelectorAll('.rel-hint').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var box = document.querySelector('[name="' + b.dataset.for + '"]');
+          if (!box) return;
+          box.value = b.dataset.term;
+          box.focus();
+          var row = b.parentElement;
+          if (row) row.remove();
+        });
+      });
+    </script>
+  </div>
+</form>
+
+{# The one thing this page decided everything about except whether the person
+   could actually get in. `install --create-user` made one account and nothing
+   made a second, so every member added afterwards had an assistant, a folder
+   and no way to reach either. Its own form, not part of the settings above: a
+   password is not a setting, and it should not ride along with a rename. #}
+<div class="card">
+  <h2>{{ t('admin.profile.heading_login') }}</h2>
+  <p class="intro">
+    {% if account %}{{ t('admin.profile.login_intro') }}
+    {% else %}{{ t('admin.profile.login_none') }}{% endif %}
+  </p>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="portal_login">
+    <div class="fields">
+      <div class="field">
+        <label for="login">{{ t('admin.profile.login_name') }}</label>
+        <input type="text" id="login" name="login" class="mono" autocomplete="off"
+               value="{{ account.username if account else '' }}">
+      </div>
+      <div class="field">
+        <label for="password">{{ t('admin.profile.login_password') }}</label>
+        <input type="password" id="password" name="password" autocomplete="new-password"
+               placeholder="{% if account %}{{ t('admin.profile.login_password_keep') }}{% endif %}">
+        <p class="help">{{ t('admin.profile.login_password_help', n=min_password) }}</p>
+      </div>
+    </div>
+    {% if has_history %}
+      <p class="help">{{ t('admin.profile.login_rename_warn') }}</p>
+    {% endif %}
+    <p class="stack"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.profile.heading_actions') }}</h2>
+  <p class="intro">{{ t('admin.profile.actions_intro') }}</p>
+
+  <div class="action-row">
+    <form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="phone_code">
+      <button type="submit" class="ghost">📱 {{ t('admin.members.phone_code') }}</button>
+    </form>
+    <p class="help">{{ t('admin.members.phone_code_help') }}</p>
+  </div>
+
+  <div class="action-row">
+    <form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="paperless_token">
+      <button type="submit" class="ghost">📄 {{ t('admin.members.paperless_btn') }}</button>
+    </form>
+    <p class="help">{{ t('admin.members.paperless_help') }}</p>
+  </div>
+
+  {# Derived, not issued -- so unlike the button above it, nothing is written
+     anywhere. The value is recomputed from PROXY_SHARED_SECRET by the finance
+     helper on every request, so showing it is the whole operation. Present for
+     this one response and gone on the next navigation. #}
+  <div class="action-row">
+    <form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="finance_token">
+      <button type="submit" class="ghost">💰 {{ t('admin.members.finance_btn') }}</button>
+    </form>
+    <p class="help">{{ t('admin.members.finance_help') }}</p>
+    {% if finance_token %}
+      <p class="help">{{ t('admin.members.finance_shown') }}</p>
+      <input type="text" class="mono w-name" readonly value="{{ finance_token }}"
+             onclick="this.select()" style="max-width:100%">
+    {% endif %}
+  </div>
+
+  {# The pairing code lives in this card rather than one of its own: it is a
+     code for one person that takes effect the moment it is used, which is what
+     this card is for. It was a terminal job before -- the bridge draws its QR on
+     stdout, so `docker logs -f` on the host was the only way to see it -- and
+     WhatsApp expires linked devices on its own schedule, which makes this the
+     one step a household actually repeats. #}
+  {# Shown even when the person has no bridge. Hiding the whole section made the
+     feature invisible on four of five members' pages, with nothing to say that
+     the checkbox above is what turns it on -- which is exactly the failure this
+     card exists to prevent for WhatsApp itself. #}
+  {% if not wa.enabled %}
+  <div class="action-row" style="display:block">
+    <p class="help">{{ t('admin.profile.wa_off') }}</p>
+  </div>
+  {% else %}
+  <div class="action-row" style="display:block">
+    {% if wa.state == 'absent' %}
+      <p class="help">{{ t('admin.profile.wa_no_bridge') }}</p>
+    {% elif wa.linked %}
+      <p class="help"><span class="ok">●</span> {{ t('admin.profile.wa_linked') }}</p>
+    {% else %}
+      <p class="help">{{ t('admin.profile.wa_unlinked_intro') }}</p>
+        {# One control, not two. "Show the code" and "show a new code" were
+           the same errand with different wording -- and the first could only
+           ever draw a code that was already seconds from expiring, which is
+           what "couldn't link the device" was. What is left asks the bridge
+           for a fresh one and shows that. #}
+      {% endif %}
+      {# Outside the branch on purpose. The refresh button below renders in
+         both states and its handler gives up early when this box is absent
+         -- so on a bridge the page believed was linked, pressing it did
+         nothing at all. That is exactly when a new code is needed: the link
+         died, the page still reads the credentials on disk as a pairing,
+         and the one control offered is inert. #}
+    <div id="wa-area" hidden>
+      <pre class="wa-qr" id="wa-qr" aria-label="{{ t('admin.profile.wa_qr_alt') }}"></pre>
+      <p class="help">{{ t('admin.profile.wa_qr_help') }}</p>
+    </div>
+  </div>
+
+  {# In place, not a form post: asking for a fresh code is not a navigation, and
+     redirecting threw the page away to deliver one string. #}
+  <div class="action-row">
+    <button type="button" class="ghost" id="wa-new">🔄 {{ t('admin.profile.wa_restart') }}</button>
+    <p class="help">{{ t('admin.profile.wa_restart_help') }}</p>
+  </div>
+
+  {% if wa.linked %}
+  <div class="action-row">
+    <form method="post" onsubmit="return confirm('{{ t('admin.profile.wa_unlink_confirm') }}')">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="wa_unlink">
+      <button type="submit" class="ghost">🔓 {{ t('admin.profile.wa_unlink') }}</button>
+    </form>
+    <p class="help">{{ t('admin.profile.wa_unlink_help') }}</p>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
+{# Its own card, at the bottom, with the confirm on it. Removing was a fourth
+   button in a table cell beside three routine ones. #}
+<div class="card danger">
+  <h2>{{ t('admin.profile.heading_remove') }}</h2>
+  <div class="action-row">
+    <form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="remove">
+      <button type="submit" class="ghost danger js-confirm"
+              data-confirm="{{ t('admin.members.remove_confirm', name=person.display_name) }}">
+        {{ t('common.remove') }}
+      </button>
+    </form>
+    <p class="help">{{ t('admin.profile.remove_help') }}</p>
+  </div>
+</div>
+
+<script>
+  // Read from a data attribute rather than interpolated into an inline handler.
+  // A display name is user-supplied, and inside onclick="...confirm('…')" the
+  // browser HTML-decodes the attribute before the JS engine sees it, so Jinja's
+  // escaped quote turns back into a real one and closes the string literal.
+  document.querySelectorAll('.js-confirm').forEach(function (el) {
+    el.addEventListener('click', function (event) {
+      if (!window.confirm(el.dataset.confirm)) event.preventDefault();
+    });
+  });
+</script>
+
+{# This block lives *inside* `content` on purpose. A `<script>` after
+   `{% endblock %}` in a child template is discarded by Jinja without a
+   word -- the markup above rendered, the button appeared, and clicking it
+   did nothing, because the code that binds it was never sent. That is the
+   whole WhatsApp pairing UI failing while looking present. #}
+<script>
+(function () {
+  'use strict';
+  // Nothing is drawn until the button is pressed, and then the code on screen
+  // stays the one the bridge is currently offering: Baileys replaces it about
+  // every twenty seconds and the previous one is dead the moment it does.
+  var fresh = document.getElementById('wa-new');
+  var area = document.getElementById('wa-area');
+  var box  = document.getElementById('wa-qr');
+  if (!box) return;
+
+  var QR_URL = {{ url_for('member_wa_qr', member_id=person.id)|tojson }};
+  var RESTART_URL = {{ url_for('member_wa_restart', member_id=person.id)|tojson }};
+  // As a form field, not a header. `guard_state_changing_requests` reads
+  // `request.form['_csrf']`, so this POST was answered 403 -- "issued by an
+  // older page" -- every single time, and the handler below never looked at
+  // `r.ok`, so it went on polling and showed "waiting for a code" forever.
+  var CSRF = {{ csrf_token() | tojson }};
+  var LINKED = {{ t('admin.profile.wa_linked')|tojson }};
+  var WAITING = {{ t('admin.profile.wa_qr_none')|tojson }};
+  var REFUSED = {{ t('admin.profile.wa_restart_failed')|tojson }};
+  var timer = null, misses = 0;
+
+  function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+
+  function tick() {
+    fetch(QR_URL).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.linked) {
+        // Say so here rather than reloading: a reload is the page deciding to
+        // throw away whatever else somebody was doing on it.
+        stop();
+        box.textContent = '';
+        area.insertAdjacentHTML('beforeend',
+          '<div class="flash ok">' + LINKED + '</div>');
+        return;
+      }
+      if (d.qr) { box.textContent = d.qr; misses = 0; }
+      else if (++misses === 1) { box.textContent = WAITING; }
+      timer = setTimeout(tick, 7000);
+    }).catch(function () { timer = setTimeout(tick, 12000); });
+  }
+
+  if (fresh) {
+    fresh.addEventListener('click', function () {
+      fresh.disabled = true;
+      area.hidden = false;
+      box.textContent = WAITING;
+      stop();
+      fetch(RESTART_URL, {method: 'POST', body: new URLSearchParams({_csrf: CSRF})})
+        .then(function (r) {
+          if (!r.ok) throw new Error('restart refused: ' + r.status);
+          // The bridge takes a few seconds to come back and draw one.
+          misses = 0;
+          timer = setTimeout(tick, 4000);
+        })
+        .catch(function () { box.textContent = REFUSED; })
+        .finally(function () { fresh.disabled = false; });
+    });
+  }
+})();
+</script>
+{% endblock %}

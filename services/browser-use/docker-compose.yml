@@ -1,0 +1,56 @@
+# browser-use: an agent with a real Chromium. Off by default -- see
+# services/browser-use/README.md, particularly the part about it acting on
+# other people's sites as you.
+
+networks:
+  default:
+    name: nanobot-net
+    external: true
+
+services:
+  browser-use:
+    build:
+      context: .
+    image: browser-use:latest
+    container_name: browser-use
+    restart: unless-stopped
+    environment:
+      - BROWSER_USE_PORT=${BROWSER_USE_PORT:-21034}
+      # The model that decides what to click. The house's own by default; see
+      # the README before pointing this at a paid API, because every page it
+      # opens is then sent there.
+      - BROWSER_USE_MODEL=${BROWSER_USE_MODEL:-ollama:qwen3.5:4b}
+      - BROWSER_USE_BASE_URL=${BROWSER_USE_BASE_URL:-}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - BROWSER_USE_TIMEOUT_S=${BROWSER_USE_TIMEOUT_S:-150}
+      - BROWSER_USE_MAX_STEPS=${BROWSER_USE_MAX_STEPS:-25}
+      # Private ranges this may open, comma-separated. Empty on purpose, and
+      # the empty value is the safe one: the URL here is picked by a model
+      # that has just read somebody else's page, so the house LAN is the one
+      # place it must not reach. Note this is NOT `site.lan_cidr` -- that
+      # exemption is granted to the assistants, which take their instructions
+      # from a person. Set this only if you know which address you mean, and
+      # read the README first: any value here also switches off browser-use's
+      # own IP-literal block for every navigation after the first, because
+      # upstream checks that flag before any allow list.
+      - BROWSER_USE_ALLOW_CIDRS=${BROWSER_USE_ALLOW_CIDRS:-}
+    ports:
+      # 127.0.0.1: this drives a browser on request. Nothing outside this
+      # machine has business asking it to, and the assistants reach it over the
+      # container network rather than through the published port.
+      - "127.0.0.1:${BROWSER_USE_PORT:-21034}:${BROWSER_USE_PORT:-21034}"
+    extra_hosts:
+      # Ollama runs on the host, not in this network.
+      - "host.docker.internal:host-gateway"
+    # Chromium wants more shared memory than Docker's 64 MB default. Without
+    # this it crashes on ordinary pages, and the crash reads like the site
+    # being broken rather than the container being starved.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:${BROWSER_USE_PORT:-21034}/healthz', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      # Chromium and playwright take a while to be importable on a cold start.
+      start_period: 90s
+      retries: 3

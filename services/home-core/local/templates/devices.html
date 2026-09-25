@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Devices — Home</title>
+  <!-- The house faces, served by this app. See
+       HomeCore/tools/fetch-fonts.sh for where they come from and why they
+       are not fetched from the internet. -->
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2; --olive:#57633F;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: var(--plaster);
+      background-image:
+        radial-gradient(ellipse at 12% -10%, #F6F1E5 0%, transparent 55%),
+        radial-gradient(ellipse at 100% 0%, #E7DFCC 0%, transparent 45%);
+      font-family: var(--sans);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    header {
+      background: var(--wall);
+      color: var(--wall-fg);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+    header .plate {
+      width: 44px; height: 44px; flex: none; display: grid; place-items: center;
+      /* Light off the top, shadow at the bottom, both translucent: the
+         plate reads as a tile raised off the bar whatever colour the bar
+         is. It used to be literal olive, which on a pink house was a
+         green square sitting in the corner of the header. */
+      background: linear-gradient(160deg, rgba(255,255,255,.15), rgba(0,0,0,.17));
+      border: 1px solid rgba(235,212,155,.25); border-radius: 12px;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 800; letter-spacing: -.01em; color: #F3EEDF; }
+    header a {
+      color: var(--wall-fg); text-decoration: none; font-size: .82rem; font-weight: 600;
+      margin-left: auto; padding: 8px 13px; border-radius: 10px;
+      border: 1px solid rgba(218,212,194,.16); transition: background .15s;
+    }
+    header a:hover { background: rgba(255,255,255,.06); }
+
+    main { max-width: 720px; margin: 36px auto; padding: 0 24px; }
+
+    .back-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--olive); text-decoration: none; font-size: .88rem; font-weight: 650;
+      margin-bottom: 22px;
+    }
+    .back-link:hover { color: var(--honey); }
+
+    .intro { font-size: .88rem; color: var(--ink-soft); margin-bottom: 20px; line-height: 1.5; }
+
+    .device-card {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
+      padding: 16px 20px; margin-bottom: 12px;
+      box-shadow: 0 1px 0 #fff inset, 0 8px 22px -16px rgba(60,50,30,.5);
+    }
+    .device-icon { font-size: 1.5rem; flex-shrink: 0; }
+    .device-info { flex: 1; min-width: 0; }
+    .device-label { font-size: .92rem; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+    .device-current-badge {
+      font-size: .64rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+      background: rgba(87,99,63,.14); color: var(--olive); padding: 2px 8px; border-radius: 999px;
+    }
+    .device-meta { font-size: .76rem; color: var(--ink-soft); margin-top: 3px; font-family: var(--mono); }
+    .device-revoke {
+      padding: 7px 15px; border: 1px solid var(--line); border-radius: 999px;
+      background: var(--paper-2, #fff); color: var(--clay); font-size: .8rem; font-weight: 700;
+      cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s;
+    }
+    .device-revoke:hover { background: var(--clay); border-color: var(--clay); color: #fff; }
+    .device-revoke:disabled { opacity: .5; cursor: not-allowed; }
+
+    .empty { font-size: .88rem; color: var(--ink-soft); padding: 20px 0; }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+  </style>
+  <!-- This member's colours, after the house style so it wins by
+       order. Empty when nobody is logged in or nobody has a theme,
+       which leaves The House exactly as it is. -->
+  <link rel="stylesheet" href="/theme.css">
+  <script>
+    /* Pick up a theme Alfred set while this page was open. See /theme/version. */
+    (function () {
+      var link = document.querySelector('link[href^="/theme.css"]');
+      if (!link) return;
+      var seen = null, timer = null;
+      function apply(v) {
+        // Swapping href re-fetches the sheet; the old one stays until the new
+        // one parses, so the page never flashes unstyled.
+        link.href = '/theme.css?v=' + v;
+        link.addEventListener('load', tellTheApp, { once: true });
+      }
+      /* The Android app owns the status bar and the window behind this
+         WebView, and CSS cannot reach either. Read the two colours back out of
+         the computed style so this can never disagree with the sheet, and hand
+         them over; in a browser the bridge is simply absent. */
+      function tellTheApp() {
+        try {
+          if (!window.AndroidTheme || !window.AndroidTheme.apply) return;
+          var css = getComputedStyle(document.documentElement);
+          var wall = css.getPropertyValue('--wall').trim();
+          var plaster = css.getPropertyValue('--plaster').trim();
+          if (wall && plaster) window.AndroidTheme.apply(wall, plaster);
+        } catch (e) {}
+      }
+      async function check() {
+        if (document.hidden) return;
+        try {
+          var r = await fetch('/theme/version', { cache: 'no-store' });
+          if (!r.ok) return;
+          var v = (await r.json()).v;
+          if (seen === null) { seen = v; return; }   // first look: just remember
+          if (v !== seen) { seen = v; apply(v); }
+        } catch (e) { /* offline, or logged out: try again next tick */ }
+      }
+      function start() { clearInterval(timer); timer = setInterval(check, 20000); check(); }
+      tellTheApp();          // whatever theme this page loaded with
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) clearInterval(timer); else start();
+      });
+      start();
+    })();
+  </script>
+</head>
+<body>
+  <header>
+    <span class="plate">
+      <svg width="28" height="26" viewBox="0 0 140 130" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="10,72 70,10 130,72" fill="#C6892B"/>
+        <rect x="20" y="70" width="100" height="58" rx="2" fill="#EBE3CE"/>
+        <rect x="54" y="96" width="32" height="32" rx="4" fill="#3C4630"/>
+        <rect x="28" y="82" width="22" height="20" rx="3" fill="#7E8A61"/>
+        <rect x="90" y="82" width="22" height="20" rx="3" fill="#7E8A61"/>
+      </svg>
+    </span>
+    <h1>Trusted devices</h1>
+    <a href="/">{{ user }} &#x2192; Back</a>
+  </header>
+
+  <main>
+    <a href="/" class="back-link">&#8592; Main panel</a>
+
+    <p class="intro">
+      These devices can sign in without a password because you ticked
+      "Trust this device" when you signed in, and they are still on the local
+      network. If you lost a device or no longer use it, revoke it here — it
+      does not affect the others and it does not mean changing your password.
+    </p>
+
+    {% if devices %}
+      {% for d in devices %}
+      <div class="device-card" data-id="{{ d.id }}">
+        <span class="device-icon">📱</span>
+        <div class="device-info">
+          <div class="device-label">
+            {{ d.label }}
+            {% if d.is_current %}<span class="device-current-badge">This device</span>{% endif %}
+          </div>
+          <div class="device-meta">
+            Agregado: {{ d.created_at }} · Últ. actividad: {{ d.last_seen }}
+            {% if d.last_ip %} · {{ d.last_ip }}{% endif %}
+          </div>
+        </div>
+        <button class="device-revoke" onclick="revokeDevice({{ d.id }}, this)">Revocar</button>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">No trusted devices yet.</p>
+    {% endif %}
+  </main>
+
+  <script>
+    var CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
+    async function revokeDevice(id, btn) {
+      if (!confirm('Revoke this device? It will have to enter its password again.')) return;
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        var r = await fetch('/account/devices/revoke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+          body: JSON.stringify({ id: id }),
+        });
+        if (r.ok) { btn.closest('.device-card').remove(); }
+        else { btn.disabled = false; btn.textContent = 'Revocar'; }
+      } catch (e) { btn.disabled = false; btn.textContent = 'Revocar'; }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,1161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Camera Settings - HomeCameras</title>
+    <!-- The house faces, served by this app. See
+         HomeCore/tools/fetch-fonts.sh for where they come from and why they
+         are not fetched from the internet. -->
+    <link rel="stylesheet" href="{{ base }}/static/fonts/house.css">
+    <style>
+        /* ---- "The House", after dark ----------------------------------------
+           The same tokens HomeCore, finance_helper, the MQTT dashboard and the
+           SmartButton page use, in the palette's night values. The house has a
+           night mode and this is the room that lives in it: reviewing footage
+           on a lit cream page is worse, not more consistent, so the kinship is
+           carried by the palette, the type and the shapes rather than by making
+           a camera wall bright.
+
+           Names are the ones this app already used, so nothing downstream had
+           to be renamed to adopt them. `--accent` and `--warning` are both
+           honey on purpose: the house has three semantic hues — honey for
+           attention, olive for good, clay for bad — and inventing a fourth to
+           fill a slot would be the opposite of normalising. */
+        :root {
+            --bg: #16180F;
+            --surface: #1E2117;
+            --surface-2: #242819;
+            --border: #333823;
+            --text: #EBE4D2;
+            --text-muted: #9D9781;
+            --accent: #DFAA54;
+            --accent-quiet: #5C4A25;
+            --accent-hot: #EDBE71;
+            --danger: #D2705A;
+            --success: #93A46E;
+            --warning: #DFAA54;
+            --radius: 12px;
+            --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: var(--sans);
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        .nav {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 10px 20px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .nav h1 { margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--text); }
+        .nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.82rem;
+            padding: 5px 10px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .nav a:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .nav a.active { color: var(--accent); }
+        .nav .spacer { flex: 1; }
+
+        .main {
+            max-width: 1400px;
+            margin: 24px auto;
+            padding: 0 16px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .card h2 { margin: 0 0 4px 0; font-size: 0.95rem; font-weight: 600; }
+        .card p { margin: 0 0 16px 0; color: var(--text-muted); font-size: 0.82rem; }
+
+        .form-group { margin-bottom: 14px; }
+        .form-group label {
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 500;
+            margin-bottom: 4px;
+            color: var(--text);
+        }
+        .form-group input[type="text"],
+        .form-group input[type="number"],
+        .form-group select {
+            width: 100%;
+            padding: 8px 10px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.85rem;
+            transition: border-color 0.15s;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(223,170,84,0.15);
+        }
+        .form-group small {
+            display: block;
+            margin-top: 4px;
+            color: var(--text-muted);
+            font-size: 0.78rem;
+        }
+        .form-group input[type="checkbox"] { width: auto; margin-right: 8px; accent-color: var(--accent); }
+        /* Two hours and an arrow: the pair reads as one range rather than as
+           two unrelated numbers stacked in a column. */
+        .hour-pair { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .hour-pair input[type="number"] { width: 88px; }
+        .hour-sep { color: var(--text-muted); }
+        .hour-hint { font-size: .82rem; color: var(--text-muted); }
+        .form-group.checkbox label { display: flex; align-items: center; cursor: pointer; font-weight: 400; }
+
+        .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+        .btn {
+            padding: 8px 14px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.82rem;
+            font-weight: 500;
+            transition: all 0.15s;
+            background: var(--surface);
+            color: var(--text);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn:hover { background: rgba(255,255,255,0.06); }
+        .btn-accent { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+        .btn-accent:hover { background: var(--accent-hot); border-color: var(--accent-hot); }
+        .btn-danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+        .btn-danger:hover { background: rgba(210,112,90,0.1); }
+
+        .preview-section { display: flex; gap: 16px; align-items: flex-start; }
+        .video-preview-container { flex: 1; }
+        .zone-list-container { flex: 0 0 200px; }
+
+        .video-wrapper {
+            position: relative;
+            background: #000;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+        }
+        .video-wrapper.portrait { aspect-ratio: 9/16; }
+        .video-wrapper img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .video-wrapper canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+        .video-status {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: rgba(0,0,0,0.7);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            z-index: 10;
+        }
+        .video-status.loading { color: var(--warning); }
+        .video-status.connected { color: var(--success); }
+        .video-status.error { color: var(--danger); }
+
+        .zone-item {
+            background: rgba(255,255,255,0.03);
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 6px;
+            border: 1px solid var(--border);
+            font-size: 0.8rem;
+        }
+        .zone-item.selected { border-color: var(--danger); background: rgba(210,112,90,0.1); }
+
+        .camera-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text);
+        }
+        .camera-title span { color: var(--text-muted); font-size: 0.9em; }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--success);
+            color: var(--bg);
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            z-index: 1000;
+            display: none;
+            animation: slideUp 0.3s ease;
+        }
+        .toast.error { background: var(--danger); }
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .obj-class-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 16px;
+            margin-top: 8px;
+        }
+        .obj-class-grid strong {
+            width: 100%;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 8px;
+            margin-bottom: 2px;
+        }
+        .obj-class-grid label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            font-weight: 400;
+            font-size: 0.82rem;
+        }
+        .obj-class-grid input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+
+        .stuck-region-info {
+            padding: 8px;
+            background: rgba(210,112,90,0.05);
+            border: 1px solid var(--danger);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            margin-top: 8px;
+        }
+
+        @media (max-width: 900px) {
+            .main { grid-template-columns: 1fr; }
+        }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+    </style>
+    <!-- HomeCore's CSRF token on every request of ours that changes something.
+         Empty `base` means the LAN, where there is no HomeCore session to
+         protect and the file does nothing. What it covers and what it cannot
+         (socket.io, which is XHR) is written down in the file itself. -->
+    <script src="{{ base }}/static/js/csrf.js" data-base="{{ base }}"></script>
+    <!-- This member's theme, in the night register this page is written in.
+         Only reachable when the page is served through HomeCore (/camaras/),
+         which is also the only time the app knows who is looking; opened
+         straight off the LAN it 404s and the page keeps its own colours,
+         which is exactly the wanted behaviour and needs no branch. -->
+    <link rel="stylesheet" href="/theme/night.css">
+    <script>
+      /* Repaint when somebody changes their theme while this is open, the
+         same twenty seconds the house pages use. Only swaps the href, so a
+         camera feed is never reloaded by a colour change. */
+      (function () {
+        var link = document.querySelector('link[href$="/theme/night.css"]');
+        if (!link || !"{{ base }}") return;
+        var seen = null;
+        setInterval(async function () {
+          try {
+            var r = await fetch("/theme/version", { cache: 'no-store' });
+            if (!r.ok) return;
+            var v = (await r.json()).v;
+            if (seen === null) { seen = v; return; }
+            if (v !== seen) { seen = v; link.href = "/theme/night.css?v=" + v; }
+          } catch (e) { /* offline or logged out; try again next tick */ }
+        }, 20000);
+      })();
+    </script>
+</head>
+<body>
+    <nav class="nav">
+        <h1>HomeCameras</h1>
+        <a href="{{ base }}/">Dashboard</a>
+        <a href="{{ base }}/settings">Settings</a>
+        <a href="{{ base }}/recordings">Recordings</a>
+        <span class="spacer"></span>
+        <a href="{{ base }}/" class="btn">← Back</a>
+    </nav>
+
+    <div class="main">
+        <!-- Left Column: Settings Form -->
+        <div>
+            <div class="card">
+                <h2 class="camera-title">Camera: <span id="camera-ip-display"></span> <span id="camera-name-display" style="color: var(--text-muted); font-size: 0.9em;"></span></h2>
+
+                <form id="edit-settings-form">
+                    <input type="hidden" id="camera-id" name="camera_id">
+                    <input type="hidden" id="camera-ip" name="camera_ip">
+
+                    <div class="form-group">
+                        <label for="camera-name">Camera Name</label>
+                        <input type="text" id="camera-name" name="name" placeholder="Front Door, Backyard, etc.">
+                        <small>Optional friendly name for this camera</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="device-ip">Device IP Address</label>
+                        <input type="text" id="device-ip" name="device_ip" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="stream_type">Stream Type</label>
+                        <select id="stream_type" name="stream_type">
+                            <option value="rtsp">RTSP (H.264)</option>
+                            <option value="mjpeg">MJPEG (HTTP)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="rotation">Rotation</label>
+                        <select id="rotation" name="rotation">
+                            <option value="0">No Rotation (0°)</option>
+                            <option value="90">Rotate 90° Clockwise</option>
+                            <option value="180">Rotate 180°</option>
+                            <option value="270">Rotate 270° Clockwise</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="object_detection_model">Detection Model</label>
+                        <select id="object_detection_model" name="object_detection_model">
+                            <option value="">Auto (GPU: YOLO26 Medium · CPU: YOLO26 Small)</option>
+                            <optgroup label="YOLO26 — newest (2025)">
+                                <option value="models/yolo26n.pt">YOLO26 Nano (5 MB)</option>
+                                <option value="models/yolo26s.pt">YOLO26 Small (20 MB)</option>
+                                <option value="models/yolo26m.pt">YOLO26 Medium (43 MB)</option>
+                                <option value="models/yolo26l.pt">YOLO26 Large (51 MB)</option>
+                                <option value="models/yolo26x.pt">YOLO26 XLarge (114 MB)</option>
+                            </optgroup>
+                            <optgroup label="YOLO11 — 2024">
+                                <option value="models/yolo11n.pt">YOLO11 Nano (5 MB)</option>
+                                <option value="models/yolo11s.pt">YOLO11 Small (19 MB)</option>
+                                <option value="models/yolo11m.pt">YOLO11 Medium (39 MB)</option>
+                                <option value="models/yolo11l.pt">YOLO11 Large (50 MB)</option>
+                                <option value="models/yolo11x.pt">YOLO11 XLarge (110 MB)</option>
+                            </optgroup>
+                            <optgroup label="YOLOv8 — 2023">
+                                <option value="models/yolov8n.pt">YOLOv8 Nano (6 MB)</option>
+                                <option value="models/yolov8s.pt">YOLOv8 Small (22 MB)</option>
+                                <option value="models/yolov8m.pt">YOLOv8 Medium (50 MB)</option>
+                                <option value="models/yolov8l.pt">YOLOv8 Large (84 MB)</option>
+                                <option value="models/yolov8x.pt">YOLOv8 XLarge (131 MB)</option>
+                            </optgroup>
+                        </select>
+                        <small>Larger models are more accurate but use more resources</small>
+                    </div>
+
+                    <div class="form-group checkbox">
+                        <label>
+                            <input type="checkbox" id="show-all-objects" name="show_all_objects">
+                            <span>Show all YOLO detections (entire image)</span>
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="recording-duration">Recording Duration Override (seconds)</label>
+                        <input type="number" id="recording-duration" name="recording_duration" min="1" max="3600">
+                        <small>Leave empty to use global setting. Set a value to override for this camera.</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="recording-window">Recording hours</label>
+                        <select id="recording-window" name="recording_window">
+                            <option value="house">Follow the house setting</option>
+                            {%- for name, w in (recording_presets or {}).items() %}
+                            <option value="preset:{{ name }}">Follow the {{ name }} cameras
+                                ({{ '%d'|format(w.start_hour) }}–{{ '%d'|format(w.end_hour) }})</option>
+                            {%- endfor %}
+                            <option value="own">Only between these hours</option>
+                            <option value="never">Never record this camera</option>
+                        </select>
+                        <small>The house has one schedule; a camera can follow a
+                               named one shared with the others, or keep its own.
+                               A window that ends before it starts crosses midnight —
+                               22 to 7 is overnight. The named schedules are set in
+                               Settings, and changing one moves every camera on it.</small>
+                    </div>
+
+                    <div class="form-group" id="recording-window-hours" style="display:none">
+                        <label for="recording-start-hour">From / to (hour)</label>
+                        <div class="hour-pair">
+                            <input type="number" id="recording-start-hour" name="recording_start_hour"
+                                   min="0" max="23" step="1" disabled
+                                   aria-label="From hour (0-23)">
+                            <span class="hour-sep">→</span>
+                            <input type="number" id="recording-end-hour" name="recording_end_hour"
+                                   min="0" max="24" step="1" disabled
+                                   aria-label="To hour (0-24)">
+                            <span class="hour-hint" id="recording-window-hint"
+                                  aria-live="polite"></span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Detected Object Classes</label>
+                        <small>Check classes this camera should detect. Uncheck all to disable detection.</small>
+                        <div class="obj-class-grid">
+                            <strong>People</strong>
+                            <label><input type="checkbox" class="obj-class-cb" value="person"> Person</label>
+                            <strong>Animals</strong>
+                            <label><input type="checkbox" class="obj-class-cb" value="cat"> Cat</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="dog"> Dog</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="horse"> Horse</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="sheep"> Sheep</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="cow"> Cow</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="bear"> Bear</label>
+                            <strong>Vehicles</strong>
+                            <label><input type="checkbox" class="obj-class-cb" value="car"> Car</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="truck"> Truck</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="bus"> Bus</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="motorcycle"> Motorcycle</label>
+                            <label><input type="checkbox" class="obj-class-cb" value="bicycle"> Bicycle</label>
+                        </div>
+                    </div>
+
+                    <div class="btn-row">
+                        <button type="submit" class="btn btn-accent">Save Changes</button>
+                        <button type="button" class="btn" onclick="cancelEdit()">Cancel</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Stuck Camera Detection -->
+            <div class="card" style="border-color: var(--danger);">
+                <h2 style="color: var(--danger);">Stuck Camera Detection</h2>
+                <p>Draw a region on the camera feed (where the timestamp is). If this region doesn't change for 30 seconds, the camera connection will be restarted.</p>
+
+                <div class="form-group checkbox">
+                    <label>
+                        <input type="checkbox" id="stuck-region-enabled" name="stuck_region_enabled">
+                        <span>Enable stuck camera detection</span>
+                    </label>
+                </div>
+
+                <div class="btn-row">
+                    <button type="button" class="btn btn-danger" onclick="startDrawingStuckRegion()">Draw Stuck Region</button>
+                    <button type="button" class="btn" onclick="clearStuckRegion()">Clear</button>
+                </div>
+
+                <div id="stuck-region-info"></div>
+            </div>
+        </div>
+
+        <!-- Right Column: Video Preview & Zones -->
+        <div>
+            <div class="card">
+                <h2>Motion Detection Zones</h2>
+                <p>Click "Start Drawing" then click and drag on the video to create detection zones.</p>
+
+                <div class="preview-section">
+                    <div class="video-preview-container">
+                        <div class="video-wrapper" id="video-wrapper">
+                            <div id="video-status" class="video-status loading">Loading...</div>
+                            <img id="video-preview" alt="Camera stream">
+                            <canvas id="zone-canvas"></canvas>
+                        </div>
+                        <div class="btn-row" style="margin-top: 8px;">
+                            <button type="button" class="btn" onclick="startDrawingZone()">Draw Zone</button>
+                            <button type="button" class="btn" onclick="clearCanvas()">Clear All</button>
+                            <button type="button" class="btn btn-danger" onclick="deleteSelectedZone()">Delete Selected</button>
+                        </div>
+                    </div>
+                    <div class="zone-list-container">
+                        <h3 style="font-size: 0.9rem; margin: 0 0 8px 0;">Zones</h3>
+                        <div id="zone-list"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        let zones = [];
+        let isDrawing = false;
+        let startDrawPos = null;
+        let selectedZoneIndex = -1;
+        let canvasWidth = 640;
+        let canvasHeight = 480;
+        let currentCameraIp = '';
+        let stuckRegion = null;
+        let isDrawingStuckRegion = false;
+        let stuckRegionStartPos = null;
+
+        const canvas = document.getElementById('zone-canvas');
+        const ctx = canvas.getContext('2d');
+
+        /* A canvas does not resolve CSS custom properties: `ctx.strokeStyle =
+           "var(--danger)"` is an invalid colour, which the spec says to ignore,
+           so the zone outlines would have kept whatever was set before — black,
+           on a dark video still. Read the tokens once and hand the canvas the
+           values, so the detection zones stay the same colours as the buttons
+           that manage them and the palette still lives in exactly one place. */
+        const PALETTE = (() => {
+            const s = getComputedStyle(document.documentElement);
+            const read = (name, fallback) =>
+                (s.getPropertyValue(name) || '').trim() || fallback;
+            return {
+                danger: read('--danger', '#D2705A'),
+                success: read('--success', '#93A46E'),
+                text: read('--text', '#EBE4D2'),
+            };
+        })();
+
+        function showToast(msg, error) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast' + (error ? ' error' : '');
+            t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 3000);
+        }
+
+        function initCanvas() {
+            canvas.width = 640;
+            canvas.height = 480;
+            canvasWidth = 640;
+            canvasHeight = 480;
+            drawZones();
+        }
+
+        function drawZones() {
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+            zones.forEach((zone, index) => {
+                ctx.strokeStyle = index === selectedZoneIndex ? PALETTE.danger : PALETTE.success;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(zone.x, zone.y, zone.width, zone.height);
+                ctx.fillStyle = PALETTE.text;
+                ctx.font = '12px Arial';
+                ctx.fillText(zone.name, zone.x + 5, zone.y + 15);
+            });
+
+            if (stuckRegion) {
+                ctx.strokeStyle = PALETTE.danger;
+                ctx.lineWidth = 3;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(stuckRegion.x, stuckRegion.y, stuckRegion.width, stuckRegion.height);
+                ctx.setLineDash([]);
+                ctx.fillStyle = PALETTE.danger;
+                ctx.font = 'bold 12px Arial';
+                ctx.fillText('STUCK DETECTION', stuckRegion.x + 5, stuckRegion.y + 15);
+            }
+        }
+
+        function startDrawingZone() {
+            isDrawing = true;
+            isDrawingStuckRegion = false;
+            startDrawPos = null;
+            selectedZoneIndex = -1;
+            drawZones();
+        }
+
+        function clearCanvas() {
+            zones = [];
+            selectedZoneIndex = -1;
+            drawZones();
+            updateZoneList();
+        }
+
+        function deleteSelectedZone() {
+            if (selectedZoneIndex >= 0 && selectedZoneIndex < zones.length) {
+                zones.splice(selectedZoneIndex, 1);
+                selectedZoneIndex = -1;
+                drawZones();
+                updateZoneList();
+            }
+        }
+
+        function getCanvasPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (e.clientX - rect.left) * (canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (canvas.height / rect.height)
+            };
+        }
+
+        canvas.onmousedown = function(e) {
+            const pos = getCanvasPos(e);
+
+            if (isDrawingStuckRegion) {
+                stuckRegionStartPos = { x: pos.x, y: pos.y };
+                return;
+            }
+
+            if (!isDrawing) {
+                let clickedZone = -1;
+                zones.forEach((zone, index) => {
+                    if (pos.x >= zone.x && pos.x <= zone.x + zone.width &&
+                        pos.y >= zone.y && pos.y <= zone.y + zone.height) {
+                        clickedZone = index;
+                    }
+                });
+                selectedZoneIndex = clickedZone;
+                drawZones();
+                return;
+            }
+            startDrawPos = { x: pos.x, y: pos.y };
+        };
+
+        canvas.onmousemove = function(e) {
+            if (isDrawingStuckRegion && stuckRegionStartPos) {
+                const pos = getCanvasPos(e);
+                drawZones();
+                ctx.strokeStyle = PALETTE.danger;
+                ctx.lineWidth = 3;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(stuckRegionStartPos.x, stuckRegionStartPos.y,
+                    pos.x - stuckRegionStartPos.x, pos.y - stuckRegionStartPos.y);
+                ctx.setLineDash([]);
+                return;
+            }
+
+            if (!isDrawing || !startDrawPos) return;
+            const pos = getCanvasPos(e);
+            drawZones();
+            ctx.strokeStyle = PALETTE.success;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(startDrawPos.x, startDrawPos.y, pos.x - startDrawPos.x, pos.y - startDrawPos.y);
+        };
+
+        canvas.onmouseup = function(e) {
+            if (isDrawingStuckRegion && stuckRegionStartPos) {
+                const pos = getCanvasPos(e);
+                const x = Math.min(stuckRegionStartPos.x, pos.x);
+                const y = Math.min(stuckRegionStartPos.y, pos.y);
+                const width = Math.abs(pos.x - stuckRegionStartPos.x);
+                const height = Math.abs(pos.y - stuckRegionStartPos.y);
+
+                if (width > 10 && height > 10) {
+                    stuckRegion = { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+                    updateStuckRegionInfo();
+                    showToast('Stuck detection region saved! Enable the checkbox and save settings.');
+                }
+                isDrawingStuckRegion = false;
+                stuckRegionStartPos = null;
+                return;
+            }
+
+            if (!isDrawing || !startDrawPos) return;
+            const pos = getCanvasPos(e);
+            const x = Math.min(startDrawPos.x, pos.x);
+            const y = Math.min(startDrawPos.y, pos.y);
+            const width = Math.abs(pos.x - startDrawPos.x);
+            const height = Math.abs(pos.y - startDrawPos.y);
+
+            if (width > 10 && height > 10) {
+                const zone = {
+                    name: `Zone ${zones.length + 1}`,
+                    x: Math.round(x), y: Math.round(y),
+                    width: Math.round(width), height: Math.round(height),
+                    sensitivity: 0.5, min_area: 500,
+                    filter_light_changes: false, light_change_threshold: 0.35
+                };
+                zones.push(zone);
+                selectedZoneIndex = zones.length - 1;
+                drawZones();
+                updateZoneList();
+            }
+            isDrawing = false;
+            startDrawPos = null;
+        };
+
+        function updateZoneList() {
+            const list = document.getElementById('zone-list');
+            list.innerHTML = '';
+            zones.forEach((zone, index) => {
+                const item = document.createElement('div');
+                item.className = 'zone-item' + (index === selectedZoneIndex ? ' selected' : '');
+                const lightBadge = zone.filter_light_changes
+                    ? ' <span style="color:var(--accent);font-size:0.7rem;">(light filter)</span>' : '';
+                item.innerHTML = `<strong>${zone.name}${lightBadge}</strong><br>${zone.width}x${zone.height}
+                    <div style="margin-top:4px;">
+                        <label style="font-size:0.75rem;display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" class="zone-light-filter" data-index="${index}" ${zone.filter_light_changes ? 'checked' : ''}>
+                            Filter light changes
+                        </label>
+                        <div class="zone-threshold-row" style="display:${zone.filter_light_changes ? 'flex' : 'none'};align-items:center;gap:4px;margin-top:2px;">
+                            <span style="font-size:0.7rem;color:var(--text-muted);">Sensitivity:</span>
+                            <input type="range" class="zone-light-threshold" data-index="${index}" min="0.1" max="0.9" step="0.05" value="${zone.light_change_threshold || 0.35}" style="width:80px;">
+                            <span class="zone-light-val" style="font-size:0.7rem;color:var(--text-muted);">${zone.light_change_threshold || 0.35}</span>
+                        </div>
+                    </div>`;
+                item.style.cursor = 'pointer';
+                item.onclick = (e) => {
+                    if (e.target.tagName === 'INPUT') return;
+                    selectZone(index);
+                };
+                list.appendChild(item);
+            });
+            document.querySelectorAll('.zone-light-filter').forEach(cb => {
+                cb.addEventListener('change', function(e) {
+                    const idx = parseInt(this.dataset.index);
+                    zones[idx].filter_light_changes = this.checked;
+                    const row = this.parentElement.querySelector('.zone-threshold-row');
+                    row.style.display = this.checked ? 'flex' : 'none';
+                });
+            });
+            document.querySelectorAll('.zone-light-threshold').forEach(sl => {
+                sl.addEventListener('input', function(e) {
+                    const idx = parseInt(this.dataset.index);
+                    zones[idx].light_change_threshold = parseFloat(this.value);
+                    this.nextElementSibling.textContent = this.value;
+                });
+            });
+        }
+
+        function selectZone(index) {
+            selectedZoneIndex = index;
+            drawZones();
+            updateZoneList();
+        }
+
+        function updateStuckRegionInfo() {
+            const info = document.getElementById('stuck-region-info');
+            if (stuckRegion) {
+                info.innerHTML = `
+                    <div class="stuck-region-info">
+                        <strong>Region configured</strong><br>
+                        Pos: (${stuckRegion.x}, ${stuckRegion.y})<br>
+                        Size: ${stuckRegion.width}x${stuckRegion.height}<br>
+                        <span style="color: var(--danger); font-size: 0.75rem;">Restarts if unchanged for 30s</span>
+                    </div>`;
+            } else {
+                info.innerHTML = '<span style="color: var(--text-muted); font-style: italic;">No region configured</span>';
+            }
+        }
+
+        function startDrawingStuckRegion() {
+            isDrawingStuckRegion = true;
+            isDrawing = false;
+            stuckRegionStartPos = null;
+            selectedZoneIndex = -1;
+            drawZones();
+            showToast('Click and drag on the video to draw the stuck detection region');
+        }
+
+        function clearStuckRegion() {
+            stuckRegion = null;
+            isDrawingStuckRegion = false;
+            stuckRegionStartPos = null;
+            updateStuckRegionInfo();
+        }
+
+        function applyRotation(rotation) {
+            const wrapper = document.getElementById('video-wrapper');
+            if (!wrapper) return;
+
+            if (rotation === 90 || rotation === 270) {
+                canvas.width = 450;
+                canvas.height = 800;
+                canvasWidth = 450;
+                canvasHeight = 800;
+                wrapper.classList.add('portrait');
+            } else {
+                canvas.width = 800;
+                canvas.height = 450;
+                canvasWidth = 800;
+                canvasHeight = 450;
+                wrapper.classList.remove('portrait');
+            }
+            drawZones();
+        }
+
+        function startVideoStream(cameraIp) {
+            const img = document.getElementById('video-preview');
+            if (!img) return;
+
+            const statusEl = document.getElementById('video-status');
+            statusEl.className = 'video-status loading';
+            statusEl.textContent = 'Connecting...';
+
+            let connectionTimeout = setTimeout(() => {
+                if (img.complete && img.naturalWidth === 0) {
+                    statusEl.className = 'video-status error';
+                    statusEl.textContent = 'Connection failed';
+                }
+            }, 5000);
+
+            img.onload = () => {
+                clearTimeout(connectionTimeout);
+                statusEl.className = 'video-status connected';
+                statusEl.textContent = 'Connected';
+            };
+
+            img.onerror = () => {
+                clearTimeout(connectionTimeout);
+                statusEl.className = 'video-status error';
+                statusEl.textContent = 'Connection failed';
+            };
+
+            img.src = `{{ base }}/stream/${cameraIp}`;
+        }
+
+        function zonesToPercentages(zones, canvasW, canvasH) {
+            return zones.map(zone => ({
+                name: zone.name,
+                x: Math.round((zone.x / canvasW) * 10000) / 10000,
+                y: Math.round((zone.y / canvasH) * 10000) / 10000,
+                width: Math.round((zone.width / canvasW) * 10000) / 10000,
+                height: Math.round((zone.height / canvasH) * 10000) / 10000,
+                sensitivity: zone.sensitivity,
+                min_area: zone.min_area,
+                filter_light_changes: zone.filter_light_changes || false,
+                light_change_threshold: zone.light_change_threshold || 0.35
+            }));
+        }
+
+        function percentagesToZones(zoneData, canvasW, canvasH) {
+            return zoneData.map(zone => ({
+                name: zone.name,
+                x: Math.round(zone.x * canvasW),
+                y: Math.round(zone.y * canvasH),
+                width: Math.round(zone.width * canvasW),
+                height: Math.round(zone.height * canvasH),
+                sensitivity: zone.sensitivity,
+                min_area: zone.min_area,
+                filter_light_changes: zone.filter_light_changes || false,
+                light_change_threshold: zone.light_change_threshold || 0.35
+            }));
+        }
+
+        function loadCameraSettings(cameraId) {
+            currentCameraIp = cameraId;
+            document.getElementById('camera-id').value = cameraId;
+            document.getElementById('camera-ip-display').textContent = cameraId;
+
+            fetch('{{ base }}/api/cameras/' + cameraId + '/settings')
+                .then(r => r.json())
+                .then(data => {
+                    const ip = data.device_ip || cameraId;
+                    document.getElementById('camera-ip').value = ip;
+                    document.getElementById('camera-ip-display').textContent = ip;
+                    if (data.name) {
+                        document.getElementById('camera-name-display').textContent = '(' + data.name + ')';
+                    }
+                    document.getElementById('camera-name').value = data.name || '';
+                    document.getElementById('device-ip').value = data.device_ip || ip;
+                    document.getElementById('stream_type').value = data.stream_type || 'rtsp';
+                    document.getElementById('rotation').value = data.rotation || 0;
+                    document.getElementById('object_detection_model').value = data.object_detection_model || '';
+                    document.getElementById('show-all-objects').checked = data.show_all_objects || false;
+
+                    const enabledClasses = data.enabled_object_classes;
+                    document.querySelectorAll('.obj-class-cb').forEach(cb => {
+                        cb.checked = enabledClasses == null || enabledClasses.includes(cb.value);
+                    });
+
+                    applyRotation(data.rotation || 0);
+
+                    const recDuration = data.recording_duration;
+                    document.getElementById('recording-duration').value = recDuration === null || recDuration === undefined ? '' : recDuration;
+
+                    // Three states, and the absent one is the default: no
+                    // hours stored means this camera follows the house. The
+                    // hours go in the boxes whatever the mode — a camera that
+                    // is off still has a window, and it should still be there
+                    // when someone turns it back on.
+                    const mode = document.getElementById('recording-window');
+                    const hasWindow = data.recording_start_hour !== undefined
+                                   && data.recording_end_hour !== undefined;
+                    if (hasWindow) {
+                        document.getElementById('recording-start-hour').value = data.recording_start_hour;
+                        document.getElementById('recording-end-hour').value = data.recording_end_hour;
+                    }
+                    // Same order the recorder resolves them in: off, then its
+                    // own hours, then a preset, then the house. A camera can
+                    // hold both its own hours and a preset — the hours win,
+                    // and the preset is what it drops back to when they are
+                    // cleared — so "own" has to be tested before the preset or
+                    // the page would show a schedule that is not in force.
+                    const presetOption = data.recording_preset
+                        ? mode.querySelector(`option[value="preset:${data.recording_preset}"]`)
+                        : null;
+                    mode.value = data.recording_enabled === false ? 'never'
+                               : hasWindow ? 'own'
+                               : presetOption ? presetOption.value
+                               : 'house';
+                    // Only now is the form allowed to say anything about the
+                    // window: until it has been read, "follow the house" is
+                    // just the first <option>, not a decision anyone made.
+                    recordingWindowLoaded = true;
+                    syncRecordingWindow();
+
+                    const zoneData = data.motion_zones || [];
+                    if (zoneData.length > 0 && zoneData[0].x <= 1) {
+                        zones = percentagesToZones(zoneData, canvasWidth, canvasHeight);
+                    } else {
+                        zones = zoneData;
+                    }
+                    selectedZoneIndex = -1;
+                    drawZones();
+                    updateZoneList();
+
+                    const stuckRegionData = data.stuck_region;
+                    if (stuckRegionData && stuckRegionData.enabled) {
+                        document.getElementById('stuck-region-enabled').checked = true;
+                        if (stuckRegionData.x <= 1) {
+                            stuckRegion = {
+                                x: Math.round(stuckRegionData.x * canvasWidth),
+                                y: Math.round(stuckRegionData.y * canvasHeight),
+                                width: Math.round(stuckRegionData.width * canvasWidth),
+                                height: Math.round(stuckRegionData.height * canvasHeight)
+                            };
+                        } else {
+                            stuckRegion = stuckRegionData;
+                        }
+                        updateStuckRegionInfo();
+                    }
+
+                    startVideoStream(cameraId);
+                })
+                .catch(err => console.error('Error loading settings:', err));
+        }
+
+        document.getElementById('rotation').addEventListener('change', function(e) {
+            applyRotation(parseInt(e.target.value));
+        });
+
+        document.getElementById('edit-settings-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const cameraId = document.getElementById('camera-id').value;
+            const cameraIp = document.getElementById('camera-ip').value;
+            const newName = document.getElementById('camera-name').value;
+            const newIp = document.getElementById('device-ip').value;
+            const streamType = document.getElementById('stream_type').value;
+            const rotation = parseInt(document.getElementById('rotation').value);
+            const objectDetectionModel = document.getElementById('object_detection_model').value || null;
+            const showAllObjects = document.getElementById('show-all-objects').checked;
+            const recordingDuration = document.getElementById('recording-duration').value;
+
+            const zonesPercentages = zonesToPercentages(zones, canvasWidth, canvasHeight);
+
+            const allClassCbs = Array.from(document.querySelectorAll('.obj-class-cb'));
+            const checkedClasses = allClassCbs.filter(cb => cb.checked).map(cb => cb.value);
+            const enabledObjectClasses = checkedClasses.length === allClassCbs.length ? null : checkedClasses;
+
+            let stuckRegionData = null;
+            const stuckRegionEnabled = document.getElementById('stuck-region-enabled').checked;
+            if (stuckRegionEnabled && stuckRegion) {
+                stuckRegionData = {
+                    enabled: true,
+                    x: Math.round((stuckRegion.x / canvasWidth) * 10000) / 10000,
+                    y: Math.round((stuckRegion.y / canvasHeight) * 10000) / 10000,
+                    width: Math.round((stuckRegion.width / canvasWidth) * 10000) / 10000,
+                    height: Math.round((stuckRegion.height / canvasHeight) * 10000) / 10000
+                };
+            }
+
+            if (document.getElementById('recording-window').value === 'own'
+                && (document.getElementById('recording-start-hour').value === ''
+                    || document.getElementById('recording-end-hour').value === '')) {
+                showToast('Pon las dos horas: media ventana no es una ventana', true);
+                return;
+            }
+
+            const data = {
+                device_ip: newIp,
+                name: newName,
+                stream_type: streamType,
+                rotation: rotation,
+                object_detection_model: objectDetectionModel,
+                show_all_objects: showAllObjects,
+                motion_zones: zonesPercentages,
+                enabled_object_classes: enabledObjectClasses,
+                stuck_region: stuckRegionData,
+                recording_duration: recordingDuration || null,
+                ...recordingWindowPayload()
+            };
+
+            fetch('{{ base }}/api/cameras/' + cameraId + '/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    showToast('Settings updated successfully!');
+                    if (result.device_ip && result.device_ip !== cameraIp) {
+                        window.location.href = '{{ base }}/cameras/' + cameraId + '/edit_settings';
+                    }
+                } else {
+                    showToast('Error: ' + result.error, true);
+                }
+            })
+            .catch(err => showToast('Error: ' + err.message, true));
+        });
+
+        function cancelEdit() {
+            window.location.href = '{{ base }}/';
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            const pathParts = window.location.pathname.split('/');
+            const cameraKey = pathParts[pathParts.length - 2];
+
+            ['recording-window', 'recording-start-hour', 'recording-end-hour']
+                .forEach(id => document.getElementById(id)
+                    .addEventListener('input', syncRecordingWindow));
+            syncRecordingWindow();
+
+            if (cameraKey) {
+                loadCameraSettings(cameraKey);
+            } else {
+                initCanvas();
+            }
+        });
+
+        // "Follow the house" is the first <option>, so it is what the select
+        // says before anyone has chosen anything — and it is also the
+        // instruction that erases a stored window. Until the settings have been
+        // read, this form has no opinion about the window and says nothing.
+        let recordingWindowLoaded = false;
+
+        // Show the hours only when they can do anything, and say out loud what
+        // the pair means — "22 → 7" is a night, and nobody should have to work
+        // that out from two number boxes.
+        function syncRecordingWindow() {
+            const mode = document.getElementById('recording-window').value;
+            const hours = document.getElementById('recording-window-hours');
+            const from = document.getElementById('recording-start-hour');
+            const to = document.getElementById('recording-end-hour');
+            const own = mode === 'own';
+            hours.style.display = own ? '' : 'none';
+            // Disabled, not just hidden: a control hidden with display:none is
+            // still validated on submit, and the browser refuses to submit a
+            // form whose invalid field it cannot scroll to. One stale "99" left
+            // behind a closed section and the Save button stops working, with
+            // nothing on screen to say why.
+            from.disabled = to.disabled = !own;
+            if (!own) return;
+            const hint = document.getElementById('recording-window-hint');
+            if (from.value === '' || to.value === '') { hint.textContent = ''; return; }
+            const a = Number(from.value), b = Number(to.value);
+            hint.textContent = a === b ? 'all day'
+                : a < b ? `${a}:00 a ${b}:00`
+                : `${a}:00 to ${b}:00 the next day`;
+        }
+
+        function recordingWindowPayload() {
+            if (!recordingWindowLoaded) return {};
+            const mode = document.getElementById('recording-window').value;
+            if (mode === 'never') {
+                // The hours are left alone. `is_recording_enabled` stops at the
+                // flag and never reads them, so keeping them costs nothing and
+                // means the window is still there when the camera comes back.
+                return { recording_enabled: false };
+            }
+            if (mode === 'house') {
+                // null is "forget what this camera was told" — the camera goes
+                // back to the house rather than keeping its last window.
+                return { recording_enabled: null, recording_preset: null,
+                         recording_start_hour: null, recording_end_hour: null };
+            }
+            if (mode.startsWith('preset:')) {
+                // The camera's own hours are cleared as well as set: leaving
+                // them behind would win over the preset that was just chosen,
+                // and the page would go on showing "own" after a save that
+                // looked like it picked something else.
+                return { recording_enabled: null,
+                         recording_preset: mode.slice('preset:'.length),
+                         recording_start_hour: null, recording_end_hour: null };
+            }
+            const a = document.getElementById('recording-start-hour').value;
+            const b = document.getElementById('recording-end-hour').value;
+            // null, not true: an absent flag already means "recording", and
+            // clearing it is what lifts a previous "never record".
+            //
+            // The preset is cleared too. Hours chosen by hand already beat it,
+            // so keeping it would change nothing now but would quietly decide
+            // the hours later, whenever these were cleared.
+            return { recording_enabled: null, recording_preset: null,
+                     recording_start_hour: a === '' ? null : Number(a),
+                     recording_end_hour: b === '' ? null : Number(b) };
+        }
+    </script>
+</body>
+</html>

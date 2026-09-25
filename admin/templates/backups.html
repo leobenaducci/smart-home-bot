@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% if inv.error %}
+<div class="notice attn">
+  <div class="mono">{{ inv.error }}</div>
+  <p class="help">{{ t('admin.backups.error_note') }}</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>{{ t('admin.backups.heading') }}</h2>
+  <p class="intro">{{ t('admin.backups.intro') }}</p>
+  <p class="note">{{ t('admin.backups.derived_note') }}</p>
+</div>
+
+{# The key before the switch. Turning encryption on with no key makes every run
+   fail at the last step, after it has copied everything, with a message about
+   openssl. #}
+<div class="card">
+  <h2>{{ t('admin.backups.encryption') }}</h2>
+  <p class="intro">{{ t('admin.backups.encryption_intro') }}</p>
+  <div class="action-row">
+    <form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="generate_key">
+      <button type="submit" class="ghost" {% if has_key %}disabled{% endif %}>
+        🔑 {{ t('admin.backups.key_generate') }}
+      </button>
+    </form>
+    <p class="help">
+      {% if has_key %}{{ t('admin.backups.key_present') }}
+      {% else %}{{ t('admin.backups.key_absent') }}{% endif %}
+    </p>
+  </div>
+  <form method="post" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="encrypt">
+    <label class="check-row">
+      <input type="checkbox" name="encrypt" {% if encrypt %}checked{% endif %}>
+      {{ t('admin.backups.encrypt_label') }}
+    </label>
+    <p class="help">{{ t('admin.backups.key_warning') }}</p>
+    <p class="stack-s"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.backups.archives') }}</h2>
+  <p class="intro">{{ t('admin.backups.archives_intro') }}</p>
+  <div class="action-row">
+    <form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="run">
+      <button type="submit" {% if job.running %}disabled{% endif %}>
+        {{ t('admin.backups.run_now') }}
+      </button>
+    </form>
+    <p class="help">{{ t('admin.backups.run_help', path=inv.root) }}</p>
+  </div>
+
+  {% if archives %}
+  <table class="settings stack">
+    <thead>
+      <tr>
+        <th>{{ t('admin.backups.archive') }}</th>
+        <th class="num">{{ t('admin.backups.size') }}</th>
+        <th>{{ t('admin.backups.verified') }}</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for a in archives %}
+    <tr>
+      <td class="mono strong">{{ a.id }}
+        {%- if a.encrypted %} 🔒{% endif -%}
+      </td>
+      <td class="num mono">{{ (a.bytes / 1048576) | round(1) }} MB</td>
+      <td class="mono" style="font-size:.78rem;color:var(--ink-soft)">
+        {{ a.verified or t('admin.backups.never_verified') }}
+      </td>
+      <td>
+        <form method="post">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="verify">
+          <input type="hidden" name="archive" value="{{ a.id }}">
+          <button type="submit" class="ghost" {% if job.running %}disabled{% endif %}>
+            {{ t('admin.backups.verify') }}
+          </button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="help stack">{{ t('admin.backups.none_yet') }}</p>
+  {% endif %}
+</div>
+
+{% if archives %}
+{# Test, and it is the safe neighbour of the form below: it unpacks the archive
+   into a scratch directory, checks what came out, and changes nothing live.
+   So the services are ticked rather than typed -- there is no slip here for a
+   typed confirmation to protect against.
+
+   Narrowed on purpose. "Is the copy I would restore any good?" is a question
+   about one service, and answering it used to mean unpacking all 27 paths and
+   reading a wall of output about 26 you did not ask about. A narrowed run also
+   does not write the `verified` marker: "home-paperless restores" is not the
+   claim that marker makes, and letting one narrow check mark a whole archive
+   green is how a broken archive stays green. #}
+<div class="card">
+  <h2>{{ t('admin.backups.test') }}</h2>
+  <p class="intro">{{ t('admin.backups.test_intro') }}</p>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="verify">
+    <div class="fields">
+      <div class="field">
+        <label for="test_archive">{{ t('admin.backups.archive') }}</label>
+        <select id="test_archive" name="archive" class="mono">
+          {% for a in archives %}
+            <option value="{{ a.id }}">{{ a.id }}{% if a.encrypted %} 🔒{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field wide">
+        <label>{{ t('admin.backups.test_services') }}</label>
+        <div id="test_services" class="ticks">
+          {% for s in archives[0].services %}
+            <label class="check-row"><input type="checkbox" name="service" value="{{ s }}"> {{ s }}</label>
+          {% endfor %}
+        </div>
+        <p class="help">{{ t('admin.backups.test_services_help') }}</p>
+      </div>
+    </div>
+    <p class="stack">
+      <button type="submit" class="ghost" {% if job.running %}disabled{% endif %}>
+        {{ t('admin.backups.test_go') }}
+      </button>
+    </p>
+    <p class="note">{{ t('admin.backups.test_note') }}</p>
+  </form>
+</div>
+
+{# One service at a time, and the name typed rather than ticked.
+   A whole-archive restore from a web page is a single click that reverts the
+   user store and the credentials file to whatever hour that archive was made:
+   the house signed out, every setting since undone. That belongs at a
+   terminal. What somebody wants here is "the documents came back wrong". #}
+<div class="card danger">
+  <h2>{{ t('admin.backups.restore') }}</h2>
+  <p class="intro">{{ t('admin.backups.restore_intro') }}</p>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="restore">
+    <div class="fields">
+      <div class="field">
+        <label for="archive">{{ t('admin.backups.archive') }}</label>
+        <select id="archive" name="archive" class="mono">
+          {% for a in archives %}
+            <option value="{{ a.id }}">{{ a.id }}{% if a.encrypted %} 🔒{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="service">{{ t('admin.backups.restore_service') }}</label>
+        <select id="service" name="service">
+          {% for s in archives[0].services %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+        </select>
+        <p class="help">{{ t('admin.backups.restore_service_help') }}</p>
+      </div>
+      <div class="field wide">
+        <label for="confirm">{{ t('admin.backups.restore_confirm') }}</label>
+        <input type="text" id="confirm" name="confirm" class="mono" autocomplete="off"
+               placeholder="{{ t('admin.backups.restore_confirm_placeholder') }}">
+        <p class="help">{{ t('admin.backups.restore_confirm_help') }}</p>
+      </div>
+    </div>
+    <p class="stack">
+      <button type="submit" class="danger" {% if job.running %}disabled{% endif %}>
+        {{ t('admin.backups.restore_go') }}
+      </button>
+    </p>
+    <p class="note">{{ t('admin.backups.restore_note') }}</p>
+  </form>
+</div>
+
+{# The archive chosen decides which services can be restored from it -- an
+   older one may predate a service entirely. Rendered from the page's own data
+   rather than fetched, so it is right before the first interaction too. #}
+<script>
+  (function () {
+    var holds = {{ archives | map(attribute='services') | list | tojson }};
+    var ids = {{ archives | map(attribute='id') | list | tojson }};
+    function heldBy(value) {
+      var i = ids.indexOf(value);
+      return i < 0 ? [] : holds[i];
+    }
+
+    var archive = document.getElementById('archive');
+    var service = document.getElementById('service');
+    if (archive && service) {
+      archive.addEventListener('change', function () {
+        var list = heldBy(archive.value);
+        var had = service.value;
+        service.innerHTML = '';
+        list.forEach(function (name) {
+          var opt = document.createElement('option');
+          opt.value = name; opt.textContent = name;
+          if (name === had) opt.selected = true;
+          service.appendChild(opt);
+        });
+      });
+    }
+
+    // The same rule for the test form's ticks: an older archive may predate a
+    // service entirely, and offering a name it does not hold produces a run
+    // that fails on "holds no <name>" rather than one that tells you anything.
+    // What was ticked is kept ticked where the new archive still has it.
+    var testArchive = document.getElementById('test_archive');
+    var ticks = document.getElementById('test_services');
+    if (testArchive && ticks) {
+      testArchive.addEventListener('change', function () {
+        var checked = {};
+        ticks.querySelectorAll('input[name="service"]').forEach(function (box) {
+          if (box.checked) checked[box.value] = true;
+        });
+        ticks.innerHTML = '';
+        heldBy(testArchive.value).forEach(function (name) {
+          var label = document.createElement('label');
+          label.className = 'check-row';
+          var box = document.createElement('input');
+          box.type = 'checkbox';
+          box.name = 'service';
+          box.value = name;
+          box.checked = !!checked[name];
+          label.appendChild(box);
+          label.appendChild(document.createTextNode(' ' + name));
+          ticks.appendChild(label);
+        });
+      });
+    }
+  })();
+</script>
+{% endif %}
+
+{% for group in inv.groups %}
+<div class="card">
+  <h2>{{ t('admin.backups.group_' ~ group.name) }}</h2>
+  <p class="intro">{{ t('admin.backups.group_' ~ group.name ~ '_intro') }}</p>
+  <table class="settings">
+    <thead>
+      <tr>
+        <th>{{ t('admin.backups.path') }}</th>
+        <th>{{ t('admin.services.name') }}</th>
+        <th>{{ t('admin.overview.role') }}</th>
+        <th class="num">{{ t('admin.backups.size') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in group.rows %}
+    <tr>
+      <td class="mono strong">{{ row.path }}
+        {%- if row.kind == 'file' %} <span class="muted tiny">{{ t('admin.backups.one_file') }}</span>{% endif -%}
+      </td>
+      <td>{{ row.service }}</td>
+      <td class="mono">{{ row.role }}{% if not row.get('local', True) %} <span class="muted">{{ row.address }}</span>{% endif %}</td>
+      <td class="num mono">
+        {%- if row.get('bytes') is not none -%}
+          {{ (row.bytes / 1048576) | round(1) }} MB
+        {%- elif row.get('exists') is sameas false -%}
+          <span class="muted">{{ t('admin.backups.not_yet') }}</span>
+        {%- else -%}
+          <span class="muted">—</span>
+        {%- endif -%}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+
+{% if inv.uncaptured %}
+{# Named, because an archive that quietly omits somebody's assistant memory
+   reads exactly like one that does not. #}
+<div class="card danger">
+  <h2>{{ t('admin.backups.uncaptured') }}</h2>
+  <p class="intro">{{ t('admin.backups.uncaptured_intro') }}</p>
+  <table class="settings">
+    <tbody>
+    {% for u in inv.uncaptured %}
+    <tr>
+      <td class="mono strong">{{ u.path if u.path is defined else u }}</td>
+      <td>{{ u.reason if u.reason is defined else '' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>{{ t('admin.backups.own_tool') }}</h2>
+  <p class="intro">{{ t('admin.backups.own_tool_intro') }}</p>
+  <pre class="mono deploy-cmd">{% for group in inv.groups %}{% if group.name != 'skipped' %}{% for row in group.rows %}{{ row.path }}
+{% endfor %}{% endif %}{% endfor %}</pre>
+  {% if inv.root %}
+  <p class="help">{{ t('admin.backups.own_root', path=inv.root) }}</p>
+  {% endif %}
+</div>
+{% endblock %}

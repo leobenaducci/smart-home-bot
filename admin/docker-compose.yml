@@ -1,0 +1,164 @@
+# The admin page.
+#
+# Bound to the LAN. It is the one service that can change what every other
+# service does, so it never goes behind the public proxy and this file offers no
+# way to put it there.
+services:
+  admin:
+    build:
+      context: .
+      # The image is built on the machine it runs on, so it can carry an
+      # account for the id it will run as. Every OpenSSH tool calls getpwuid()
+      # and refuses a uid with no name, which is why reaching a second machine
+      # from this page never worked.
+      args:
+        DEPLOY_UID: ${DEPLOY_UID:-1000}
+        DEPLOY_GID: ${DEPLOY_GID:-1000}
+    container_name: home-stack-admin
+    restart: unless-stopped
+    # The host's own network stack, not a bridge. This is what makes Deploy
+    # work from the page on a one-machine install: every role points at
+    # 127.0.0.1, and the deployer's guard exists because inside a bridged
+    # container that address is the container -- containers would start,
+    # because the socket below is mounted, while every verify `curl` checked
+    # something else entirely. On host networking 127.0.0.1 is the machine, so
+    # the deploy and its checking are finally the same box.
+    #
+    # It also settles the Models page: the household's own Ollama is on
+    # 127.0.0.1 and is now reachable under that name, with no host-gateway
+    # alias needed.
+    # As the account that owns the state, not as root. A container deploying as
+    # root writes root-owned trees into the deploy root and the state paths --
+    # and then the same deploy run from a shell fails, because rsync cannot
+    # chgrp a directory it does not own. The two have to agree, and the account
+    # that owns everything already is the one to agree on.
+    #
+    # `group_add` is the docker socket's group. Dropping root means losing the
+    # only reason root could reach it, and a deploying user is in that group on
+    # the host for exactly the same reason.
+    user: "${DEPLOY_UID:?DEPLOY_UID must be set}:${DEPLOY_GID:?DEPLOY_GID must be set}"
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID must be set}"
+    network_mode: host
+    # No `ports:` — there is no bridge to publish from. Who may reach this page
+    # is decided by ADMIN_BIND, which the app binds to directly (see the tail
+    # of app.py). That used to be the host side of a port publish and is now
+    # the only address involved; it still defaults to loopback, because this
+    # page edits the household's credentials and starts deploys, and publishing
+    # it to 0.0.0.0 is how it once ended up reachable from the internet with
+    # nothing but its own setup screen in the way.
+    #
+    # Reach it over ssh (`ssh -L 21002:127.0.0.1:21002 <host>`), or set
+    # `services.admin.bind` to 0.0.0.0 if the machine is only on a network you
+    # trust.
+    volumes:
+      # Only state is mounted. The package itself -- i18n, the manifest, the
+      # deployer -- is staged into the image at build time, so there is no host
+      # path to get wrong. An earlier version mounted ${HOME_STACK_ROOT} and set
+      # the same variable to the *container* path, which mounted a nonexistent
+      # host directory over everything the app needed to import.
+      #
+      # The config and the credentials are deliberately NOT mounted as files.
+      # A single-file bind mount pins the inode it found at start, so anything
+      # on the host that replaces the file by rename -- an editor's save,
+      # `sed -i` -- leaves this container reading and writing a file the host
+      # has deleted. The page shows its own saves back, so it looks saved, and
+      # the deployer reads the host file. On 2026-09-11 the config was replaced
+      # on the host at 19:15 and model roles saved here at 22:15 went into the
+      # orphan; a deploy would have shipped the old ones. It had happened twice
+      # before, over `plugins:` and `paths.plugins`. Both files live in
+      # HOME_STACK_CONFIG_DIR, mounted below at the same path, and the page
+      # opens them there by their host path (HOME_STACK_CONFIG/_SECRETS).
+      #
+      # Somewhere writable for what this page caches. A directory, not the
+      # file: the cache is written to `models.json.tmp` and renamed, and an
+      # atomic rename needs its temporary on the same filesystem. /state is a
+      # directory in the image owned by root, and this container is the
+      # deploying user -- so before this the Models page raised
+      # PermissionError and returned a 500.
+      - ${HOME_STACK_ADMIN_CACHE_DIR:-/var/lib/home-stack/state/admin}:/cache
+      # ssh keys for reaching the other hosts. Under $HOME, which is
+      # /deployer rather than /root -- see the Dockerfile. ssh looks there and
+      # nowhere else.
+      #
+      # Writable, and it was `:ro`. That is why this directory started empty
+      # and stayed empty: nothing could mint a key or record a host key, so a
+      # split install worked from a terminal and not from this page, and the
+      # reason arrived as an ssh error inside a deploy log. The Access screen
+      # manages it now -- generate a key, show its public half, and say what
+      # each host's key is against what is trusted.
+      - ${SSH_KEY_DIR:-/root/.ssh}:/deployer/.ssh
+      # The docker socket, so Deploy can drive compose on this host.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The state tree and the deploy root, each at the *same* path inside as
+      # out. Same path is the requirement, not merely present: the deployer
+      # writes a service's tree here and then compose bind-mounts paths out of
+      # it, and compose's mounts are resolved by the daemon against the host.
+      # A tree written at one path and mounted from another is the silent-green
+      # failure the container guard exists to prevent.
+      - ${HOME_STACK_CONFIG_DIR:-/var/lib/home-stack/config}:${HOME_STACK_CONFIG_DIR:-/var/lib/home-stack/config}
+      - ${HOME_STACK_STATE_DIR:-/var/lib/home-stack/state}:${HOME_STACK_STATE_DIR:-/var/lib/home-stack/state}
+      - ${HOME_STACK_MEDIA_DIR:-/var/lib/home-stack/media}:${HOME_STACK_MEDIA_DIR:-/var/lib/home-stack/media}
+      - ${HOME_STACK_BACKUPS_DIR:-/var/lib/home-stack/backups}:${HOME_STACK_BACKUPS_DIR:-/var/lib/home-stack/backups}
+      - ${HOME_STACK_PLUGINS_DIR:-/var/lib/home-stack/plugins}:${HOME_STACK_PLUGINS_DIR:-/var/lib/home-stack/plugins}
+      - ${HOME_STACK_DEPLOY_ROOT:-/root/.local/share/home-stack}:${HOME_STACK_DEPLOY_ROOT:-/root/.local/share/home-stack}
+    environment:
+      ADMIN_SECRET_KEY: ${ADMIN_SECRET_KEY:?the admin page refuses to start without a session key}
+      # With host networking these are the real address and the real port: there
+      # is no publish to translate between a container side and a host side, so
+      # the app binds exactly what somebody types. ADMIN_PORT was pinned to 8099
+      # while a `ports:` line mapped it; leaving it there would have bound the
+      # page to a port nothing forwards to any more.
+      ADMIN_BIND_INSIDE: ${ADMIN_BIND:-127.0.0.1}
+      ADMIN_PORT: ${ADMIN_PORT:-21002}
+      HOME_STACK_ROOT: /app/admin
+      # Host paths, valid in here because HOME_STACK_CONFIG_DIR is mounted at
+      # the same path -- see the note on `volumes:`. Both must live inside it.
+      HOME_STACK_CONFIG: ${ADMIN_CONFIG_FILE:-/var/lib/home-stack/config/home-stack.yml}
+      HOME_STACK_SECRETS: ${ADMIN_SECRETS_FILE:-/var/lib/home-stack/config/smart-home-bot.env}
+      # The five `paths:` directories, *inside* the container as well as on the
+      # mounts above -- and they are the same string on both sides, which is
+      # what the identical-path mounts are for.
+      #
+      # These were interpolated into `volumes:` and never put here, so the
+      # manifest exported them, compose mounted the right directories, and the
+      # process could not name any of them: `HOME_STACK_STATE_DIR` was unset in
+      # here and every path derived from it fell back to
+      # /var/lib/home-stack/state. That is the old default, and after `paths:`
+      # was moved to a second disk it is a root-owned leftover -- so the page
+      # read the user store from a file that does not exist (every member shown
+      # as having no portal account) and writing one raised PermissionError on
+      # a directory it may not create. A declaration that reaches the mount and
+      # not the process is the same decorative-export bug the contract check
+      # exists for, one layer further in.
+      HOME_STACK_CONFIG_DIR: ${HOME_STACK_CONFIG_DIR:-/var/lib/home-stack/config}
+      HOME_STACK_STATE_DIR: ${HOME_STACK_STATE_DIR:-/var/lib/home-stack/state}
+      HOME_STACK_MEDIA_DIR: ${HOME_STACK_MEDIA_DIR:-/var/lib/home-stack/media}
+      HOME_STACK_BACKUPS_DIR: ${HOME_STACK_BACKUPS_DIR:-/var/lib/home-stack/backups}
+      HOME_STACK_PLUGINS_DIR: ${HOME_STACK_PLUGINS_DIR:-/var/lib/home-stack/plugins}
+      # The in-container path, not the host one the mount above names.
+      HOME_STACK_MODELS_CACHE: /cache/models.json
+      TZ: ${TZ:-UTC}
+      # This container really does share the host's network and paths -- see
+      # `network_mode: host` and the two identical-path mounts above -- so a
+      # loopback role is genuinely this machine and the deployer may treat it
+      # as local. The guard stays in deploy.py for every container that is not
+      # set up this way; this is the one that is.
+      HOME_STACK_ALLOW_CONTAINER_LOCAL: "1"
+      # Where the deployer rsyncs a service's tree. Pinned to the host's path
+      # rather than left to `$HOME`, which is /root in here and somebody else
+      # out there -- and the two have to be the same string.
+      HOME_STACK_DEPLOY_ROOT: ${HOME_STACK_DEPLOY_ROOT:-/root/.local/share/home-stack}
+      # So the page knows 127.0.0.1 means the host and does not rewrite it to
+      # host.docker.internal, which host networking does not resolve.
+      HOME_STACK_HOST_NETWORK: "1"
+    healthcheck:
+      # The port the app is actually on, which is now the configured one. And
+      # 127.0.0.1 here reaches the host, so this is the same check somebody
+      # else on the machine would make -- unlike before, when it curled the
+      # container's own loopback and reported healthy for a page bound
+      # somewhere unreachable.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${ADMIN_PORT:-21002}/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,129 @@
+# The house's own search, and the answering engine that reads for you.
+#
+# Two services, and both of them deploy. There is no profile and no flag that
+# leaves Vane out:
+#
+#   searxng  metasearch. Asks the upstream engines and returns their results
+#            together, so a family question carries no account out of the LAN.
+#            This is also Vane's dependency, so it comes first either way.
+#   vane     an answering engine on top of searxng: it reads the pages and
+#            writes an answer with its sources cited. It needs a chat model AND
+#            an embedding model or every /api/search answers 400, so `test/
+#            check.py` asks for both rather than going green on a Vane nobody
+#            can ask.
+#
+# Role `compute`, not `hub`. Nothing here needs to be near the assistants --
+# they reach in over HTTP, so the only coupling is an address -- and on a split
+# install the hub is the small machine. On the default single-box install every
+# role is 127.0.0.1 and this is just a note.
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      # 8888, not SearXNG's own 8080. Published ports collide per host, and
+      # 8080 is the number most likely to already mean something else on a
+      # machine somebody also runs a stack on. Only the host side moves -- the
+      # container still listens on 8080, and SEARXNG_PORT is deliberately not
+      # passed into it, because the image's entrypoint reads that name to
+      # choose its INTERNAL bind port. If this ever moves, it and
+      # `services.home-search.port` move together: a skill pointed at the wrong
+      # port fails as "SearXNG did not answer".
+      - "${SEARXNG_PORT:-21032}:8080"
+    volumes:
+      # The live config, under `paths.config` and never inside the deploy tree
+      # -- the deployer rsyncs that with --delete. Seeded from
+      # settings.example.yml on the first deploy and edited in place after, so
+      # `guard_state_paths()` and docs/backups.md both have to know about it.
+      #
+      # An absolute default, and one that matches the manifest's `state:` entry.
+      # A relative one would resolve inside the pushed tree, which is the exact
+      # shape `--check-contract` refuses: SearXNG would find no settings.yml,
+      # write its own from the image template -- which sets only
+      # use_default_settings, secret_key and image_proxy, so `search.formats`
+      # inherits the packaged default of `[html]` -- and come up healthy while
+      # every skill call gets 403.
+      - ${SEARCH_CONFIG_DIR:-/var/lib/home-stack/config/home-search}/searxng:/etc/searxng:rw
+    environment:
+      # What SearXNG believes it is reachable at. Only used for the URLs it
+      # prints about itself; the skill uses its own SEARXNG_BASE_URL.
+      - SEARXNG_BASE_URL=${SEARXNG_SELF_URL:-http://127.0.0.1:21032/}
+      # Without this the deploy works exactly ONCE. The image runs as root (it
+      # declares no USER) and its entrypoint calls setup_ownership on the config
+      # path: when FORCE_OWNERSHIP is unset-or-true and it is uid 0, it runs
+      # `chown -R searxng:searxng` on the bind-mounted host directory, taking it
+      # to an unmapped uid. The next deploy then cannot write the settings file
+      # it exists to install: EPERM, and a red deploy whose whole job was
+      # replacing that file.
+      #
+      # false, and not a chown-back afterwards: the config directory belongs to
+      # the deploy, and a container that seizes it is the bug. SearXNG only
+      # warns ("directory is not owned by searxng:searxng") and needs nothing
+      # more.
+      - FORCE_OWNERSHIP=false
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  vane:
+    image: itzcrazykns1337/vane:latest
+    container_name: vane
+    restart: unless-stopped
+    ports:
+      # 3080 on the host, not Vane's own 3000: `homepage` is on by
+      # default and publishes 3000, and every role is 127.0.0.1 on a
+      # single-box install. Only the host side moves.
+      - "${VANE_PORT:-21033}:3000"
+    # OLLAMA_URL comes from `derived.ollama_url`, which on a single-box install
+    # is host.docker.internal -- the assistants reach the host's Ollama the same
+    # way. Without this mapping that name does not resolve and Vane comes up
+    # with no chat model, which is the state where every /api/search answers 400
+    # behind a healthy container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Vane's own search history and uploads. A named volume rather than a bind
+      # mount: nothing outside Vane reads it, and it is not worth a path to get
+      # wrong. It is in docs/backups.md under "do not bother" for that reason.
+      - vane-data:/home/vane/data
+    environment:
+      # Over the compose network, so Vane's searches never leave this box
+      # either. The service name resolves; the published port need not.
+      - SEARXNG_API_URL=http://searxng:8080
+      # Whichever model answers. Defaults to the same Ollama the assistants use,
+      # supplied by the deployer from `derived.ollama_url` -- a second copy of a
+      # model on this box would earn nothing.
+      #
+      # **OLLAMA_BASE_URL, not OLLAMA_HOST.** Vane's README says OLLAMA_HOST and
+      # that is also the name Ollama itself uses, so it is the obvious guess and
+      # it is wrong: the app reads OLLAMA_BASE_URL. With the wrong name Vane
+      # boots with only its built-in Transformers provider -- embeddings and no
+      # chat model -- and every /api/search 400s while the container looks
+      # healthy. The authority is GET /api/providers, which `test/check.py`
+      # reads for exactly that reason.
+      # host.docker.internal, not 127.0.0.1: `derived.ollama_url` is the
+      # empty string when the local Ollama is off, and `:-` substitutes
+      # for empty as well as unset -- so a loopback default sends this
+      # bridge-networked container at itself. The siblings
+      # (home-cameras, home-paperless) default the same way.
+      - OLLAMA_BASE_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+    depends_on:
+      - searxng
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  vane-data:

@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  camera-registry:
+    build: .
+    container_name: camera-registry
+    ports:
+      # Driven from `services.home-cameras.registry_port`, for the same reason
+      # as the wall above.
+      - "${CAMERAS_REGISTRY_PORT:-21021}:5001"
+    volumes:
+      - camera_registry_data:/app/data/camera_registry
+      - camera_registry_logs:/app/logs
+    environment:
+      - FLASK_ENV=production
+      - REGISTRY_DATA_DIR=/app/data/camera_registry
+    restart: unless-stopped
+    tty: true
+
+volumes:
+  camera_registry_data:
+  camera_registry_logs:
+
+networks:
+  default:
+    name: homecameras-net
+    external: true

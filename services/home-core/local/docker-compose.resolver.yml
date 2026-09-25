@@ -1,0 +1,24 @@
+# Ask one named resolver directly, instead of whatever the host would hand out.
+#
+# Applied only when `site.resolver` is set. The reason it exists, from the
+# house this package came from:
+#
+# Going through Tailscale's MagicDNS meant tailscaled forwarded every lookup to
+# Pi-hole from *the host's own tailnet address*, so this container, every other
+# container on the box and every tailnet device arrived as one Pi-hole client
+# sharing a single rate-limit bucket (1000 queries/60s by default). When the
+# camera dashboard's snapshot polling blew through that budget Pi-hole answered
+# REFUSED to everything wearing that address, and the cameras page died on a
+# name that had resolved a minute earlier. Asking the resolver directly makes
+# this container its own client: a noisy neighbour cannot starve it and it
+# cannot starve anyone else.
+#
+# Docker honours this under `network_mode: host` -- verified on that daemon --
+# even though it is documented as network-mode dependent.
+#
+# Leave `site.resolver` unset unless you have that problem. An address that is
+# wrong here is not a slow lookup, it is no lookups at all.
+services:
+  web:
+    dns:
+      - ${HOMECORE_RESOLVER}

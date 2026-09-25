@@ -1,0 +1,74 @@
+#!/bin/sh
+# Usage: ntfy-send <Topic> <Message> [Title] [Options]
+#
+# [Options] is a pipe-separated list of answers — "Sí|No", "Sí|No|Después" —
+# and turns the push into a question the user can answer from the lock screen.
+# Each option becomes a notification button that posts its own label back to
+# HomeCore (/chat/ask-answer), which drops it into the chat as if they had typed
+# it, and the notification clears itself once that lands.
+#
+# Without [Options] the behaviour is exactly what it always was: a plain push,
+# sent with headers. Keep that path — every existing caller uses it.
+#
+# ntfy allows at most 3 action buttons per message; extra options are dropped.
+TOPIC="${1:?Usage: ntfy-send <Topic> <Message> [Title] [Options]}"
+MESSAGE="${2:?Usage: ntfy-send <Topic> <Message> [Title] [Options]}"
+TITLE="${3:-Alfred}"
+OPTIONS="${4:-}"
+
+# Both were hardcoded `.home` names, in a stack where those names are
+# optional and resolve nowhere unless the household runs local DNS. Every
+# notification the assistant sent depended on a Pi-hole existing. The deployer
+# supplies both addresses; these are the fallbacks for running the script by
+# hand, and they are still names rather than addresses because a script run by
+# hand is run by a person who has one.
+NTFY_URL="${NTFY_BASE_URL:-https://ntfy.home}"
+ANSWER_URL="${HOMECORE_URL:-https://chat.home}/chat/ask-answer"
+
+if [ -z "$OPTIONS" ]; then
+  RESPONSE=$(curl -s --max-time 10 \
+    -u "$NTFY_CREDENTIALS" \
+    -H "Title: $TITLE" \
+    -H "Priority: default" \
+    -d "$MESSAGE" \
+    "$NTFY_URL/$TOPIC")
+else
+  # Structured publish: the only way to attach actions. Built with python3
+  # rather than string-glued JSON — a message containing a quote or a newline
+  # would otherwise produce a broken body that ntfy rejects with a 400, and
+  # Alfred's messages are free text in Spanish.
+  BODY=$(TOPIC="$TOPIC" MESSAGE="$MESSAGE" TITLE="$TITLE" \
+         OPTIONS="$OPTIONS" ANSWER_URL="$ANSWER_URL" python3 -c '
+import json, os
+opts = [o.strip() for o in os.environ["OPTIONS"].split("|") if o.strip()][:3]
+msg = os.environ["MESSAGE"]
+print(json.dumps({
+    "topic": os.environ["TOPIC"],
+    "title": os.environ["TITLE"],
+    "message": msg,
+    "actions": [{
+        "action": "http",
+        "label": o,
+        "method": "POST",
+        "url": os.environ["ANSWER_URL"],
+        "body": json.dumps({"answer": o, "question": msg[:300]}),
+        "clear": True,
+    } for o in opts],
+}, ensure_ascii=False))
+')
+  if [ -z "$BODY" ]; then
+    echo "Error: could not build the notification payload" >&2
+    exit 1
+  fi
+  RESPONSE=$(curl -s --max-time 10 \
+    -u "$NTFY_CREDENTIALS" \
+    -H "Content-Type: application/json" \
+    -d "$BODY" \
+    "$NTFY_URL")
+fi
+
+if echo "$RESPONSE" | grep -q '"error"'; then
+  echo "Error: $RESPONSE" >&2
+  exit 1
+fi
+echo "OK"

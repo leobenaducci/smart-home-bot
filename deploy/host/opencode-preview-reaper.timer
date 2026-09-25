@@ -1,0 +1,16 @@
+[Unit]
+Description=Check for preview servers the Programmer left behind
+
+[Timer]
+# Every quarter of an hour, against a two-hour age limit: the check is cheap
+# (one readlink per process) and the limit is what decides anything, so a
+# shorter interval only shortens how long a server outlives its limit.
+OnBootSec=10min
+OnUnitActiveSec=15min
+# The reaper is a cleanup, not a deadline. Persistent= would make a laptop that
+# was asleep run it at once on waking, which is exactly when somebody is about
+# to look at the preview they left open.
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

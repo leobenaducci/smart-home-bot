@@ -1,0 +1,79 @@
+{
+  "_comment": [
+    "What each room's blaster knows how to send. THE LIVE COPY IS NOT IN THE",
+    "REPO and is not in /config either: the gateway writes this file itself,",
+    "every time a code is learned off a remote or confirmed as working, so it",
+    "is state rather than configuration. It lives at",
+    "/home/homestack/home-lab/state/home-voice/ir-codes.json on compute,",
+    "which docker-compose.yml mounts writable at /state.",
+    "",
+    "This example exists to document the shape. You should never need to write",
+    "one by hand — say 'Alfred, aprende el botón de encender de la tele' and",
+    "point the remote at the puck.",
+    "",
+    "A command has one of three shapes, and all three replay:",
+    "",
+    "  protocol + code + bits   a remote the library recognises. Most of them.",
+    "  protocol + state         an air conditioner: the whole state in one",
+    "                           frame, because there is no 'warmer' button on",
+    "                           the wire, only 'cool, 23, fan auto, on'.",
+    "  raw + khz                timings, for a remote nothing recognised. Still",
+    "                           perfectly sendable; it just cannot be reasoned",
+    "                           about, so 'a bit warmer' is not available.",
+    "",
+    "`ac_protocol` on a device is the better way to run an air conditioner:",
+    "with it set, POST /v1/ir/send {ac:{...}} builds any state on demand, so a",
+    "temperature nobody ever captured still works. Stored commands are the",
+    "fallback for a unit the library cannot encode.",
+    "",
+    "`confirmed` is whether a person actually watched it work. A code from a",
+    "web lookup starts false and is set true once somebody says the television",
+    "turned on. Both are sendable; the flag is there so Alfred can say 'creo",
+    "que es este' instead of 'este es'."
+  ],
+  "version": 1,
+  "rooms": {
+    "living": {
+      "devices": {
+        "tele": {
+          "brand": "LG",
+          "commands": {
+            "encender": {
+              "protocol": "NEC",
+              "code": 551489775,
+              "bits": 32,
+              "source": "learned",
+              "confirmed": true,
+              "updated": 1786600000
+            },
+            "volumen-mas": {
+              "protocol": "NEC",
+              "code": 551502015,
+              "bits": 32,
+              "source": "lookup",
+              "confirmed": false,
+              "updated": 1786600000
+            }
+          }
+        },
+        "aire": {
+          "brand": "Midea",
+          "ac_protocol": "COOLIX",
+          "commands": {}
+        },
+        "ventilador": {
+          "brand": "sin marca",
+          "commands": {
+            "encender": {
+              "raw": [1300, 400, 1300, 400, 450, 1250, 450, 1250],
+              "khz": 38,
+              "source": "learned",
+              "confirmed": true,
+              "updated": 1786600000
+            }
+          }
+        }
+      }
+    }
+  }
+}

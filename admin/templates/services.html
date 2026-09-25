@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+<div class="card">
+  <h2>{{ t('admin.services.heading') }}</h2>
+  <p class="intro">{{ t('admin.services.intro') }}</p>
+  <table>
+    <tr>
+      <th>{{ t('admin.services.state') }}</th>
+      <th>{{ t('admin.services.name') }}</th>
+      <th class="nowrap">{{ t('admin.services.host') }}</th>
+      <th>{{ t('admin.services.port') }}</th>
+      <th>{{ t('admin.services.description') }}</th>
+    </tr>
+    {% for row in rows %}
+    <tr>
+      <td>
+        <span class="breaker">
+          <input type="hidden" name="scope:{{ row.name }}" value="1">
+          <input type="checkbox" name="enabled:{{ row.name }}"
+                 id="s-{{ row.name }}" {% if row.enabled %}checked{% endif %}
+                 {% if row.locked %}disabled title="{{ t('admin.services.always_on') }}"{% endif %}>
+          <span class="body"></span>
+        </span>
+      </td>
+      <td>
+        <label for="s-{{ row.name }}" style="margin:0">{{ row.name }}</label>
+        {% if row.locked %}<span class="lockout">{{ t('admin.services.always_on') }}</span>{% endif %}
+      </td>
+      <td class="mono">{{ row.host }}</td>
+      <td>
+        {% for key, value in row.ports.items() %}
+          <div class="portline">
+            <span class="mono muted tiny">{{ key }}</span>
+            <input type="text" name="port:{{ row.name }}:{{ key }}" value="{{ value }}"
+                   class="w-num mono">
+          </div>
+        {% else %}—{% endfor %}
+      </td>
+        <td class="muted">
+          {{ row.description }}
+          {# Offered only where it does something. The switch works by keeping a
+             prefix off the public copy of the proxy, so it means nothing for a
+             service linked by address and port -- those are house-only whatever
+             anybody ticks, because the VPS forwards the portal and nothing else. #}
+          {% if row.house_only_applies %}
+          <div class="stack-s">
+            <label class="check-row" style="margin:0">
+              <input type="checkbox" name="house_only:{{ row.name }}"
+                     {% if row.house_only %}checked{% endif %}>
+              <span class="tiny">{{ t('admin.services.house_only') }}</span>
+            </label>
+            <div class="help tiny">{{ t('admin.services.house_only_help') }}</div>
+          </div>
+          {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="stack-l"><button type="submit">{{ t('common.save') }}</button></p>
+  <p class="note">{{ t('admin.deploy.intro') }}</p>
+</div>
+</form>
+
+{# The household's own service definitions. A plugin is a directory outside
+   this package with a plugin.yml in it, using the manifest's own schema -- so
+   what it declares is deployed, verified and backed up like anything shipped.
+   Editing `plugins:` by hand in the config file is the one thing the rest of
+   this page exists to avoid. #}
+<div class="card">
+  <h2>{{ t('admin.plugins.heading') }}</h2>
+  <p class="intro">{{ t('admin.plugins.intro') }}</p>
+
+  {% if plugins %}
+  <table class="settings">
+    <thead>
+      <tr>
+        <th>{{ t('admin.plugins.name') }}</th>
+        <th>{{ t('admin.plugins.contributes') }}</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in plugins %}
+    <tr>
+      <td>
+        <strong class="strong">{{ p.name }}</strong>
+        <div class="help mono" style="font-size:.78rem">{{ p.path }}</div>
+        {% if p.error %}
+        <div class="help" style="color:var(--attn-ink)">⚠ {{ p.error }}</div>
+        {% endif %}
+      </td>
+      <td>
+        {% if p.services %}<div>{{ t('admin.plugins.services') }}:
+          <span class="mono">{{ p.services|join(', ') }}</span></div>{% endif %}
+        {% if p.tiles %}<div class="help">{{ t('admin.plugins.tiles') }}:
+          {{ p.tiles|join(', ') }}</div>{% endif %}
+        {% if not p.services and not p.tiles and not p.error %}
+          <span class="help">{{ t('admin.plugins.contributes_nothing') }}</span>
+        {% endif %}
+      </td>
+      <td>
+        {# Edit before Remove, and a <details> rather than a script: the path
+           is the one thing about a plugin this page can fix, and until now
+           fixing it meant removing the entry and typing it again from
+           memory -- with the old value gone from the screen at the moment you
+           needed it. A moved directory is also the failure `plugins_view`
+           exists for: it makes `load_plugins` refuse the *whole* list, so the
+           row that needs this edit is usually the one showing an error. #}
+        <details>
+          <summary class="reveal">{{ t('common.edit') }}</summary>
+          <form method="post" class="stack-s">
+            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="edit_plugin">
+            <input type="hidden" name="plugin" value="{{ p.entry }}">
+            <label for="entry-{{ loop.index }}">{{ t('admin.plugins.edit_label') }}</label>
+            <input type="text" id="entry-{{ loop.index }}" name="entry"
+                   class="mono w-path" value="{{ p.entry }}">
+            <p class="help">{{ t('admin.plugins.edit_help') }}</p>
+            <p class="stack-s"><button type="submit">{{ t('common.save') }}</button></p>
+          </form>
+        </details>
+        {# `|tojson`, not a quoted `{{ }}`: a plugin whose name carries an
+           apostrophe -- and the name comes out of somebody's own plugin.yml --
+           ended the string early and left the button doing nothing. #}
+        <form method="post" class="stack-s"
+              onsubmit='return confirm({{ t("admin.plugins.remove_confirm", name=p.name) | tojson }})'>
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="remove_plugin">
+          <input type="hidden" name="plugin" value="{{ p.entry }}">
+          <button type="submit" class="ghost">{{ t('common.remove') }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="help">{{ t('admin.plugins.none') }}</p>
+  {% endif %}
+
+  {% if plugin_services %}
+  {# The same switch the included services have, in the card that says where
+     these came from. Rendered here rather than in that list because "what the
+     package brings" and "what this house added" are two questions, and one
+     list answered them as though they were the same. #}
+  <h3 class="stack">{{ t('admin.plugins.services_heading') }}</h3>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="toggle">
+    <table class="settings">
+      <tbody>
+      {% for svc in plugin_services %}
+      {# The same breaker the bundled list uses. These were a bare checkbox,
+         which made a plugin's service read as a lesser kind of thing than one
+         the package ships -- and it is not: the deployer treats the two
+         identically, so the control for them should look identical too.
+
+         `title` on the name carries what the plugin registers: its units,
+         what they listen on, what they write and what proves they came up.
+         That is in somebody else's plugin.yml, which is the one file a person
+         reading this page cannot see. #}
+      <tr>
+        <td>
+          <span class="breaker">
+            <input type="hidden" name="scope:{{ svc.name }}" value="1">
+            <input type="checkbox" id="svc-{{ svc.name }}" name="enabled:{{ svc.name }}"
+                   {% if svc.enabled %}checked{% endif %}>
+            <span class="body"></span>
+          </span>
+        </td>
+        <td>
+          <label class="registers" for="svc-{{ svc.name }}" title="{{ svc.detail }}">{{ svc.name }}</label>
+          {% if svc.description %}<div class="help">{{ svc.description }}</div>{% endif %}
+        </td>
+        {# A port is an input only where the plugin reads it back out of
+           `services:`. Where it writes the number literally, editing this
+           would change the config and not the container -- so the number is
+           shown and the reason given, rather than offering a control that
+           quietly does nothing. #}
+        <td>
+          {% for key, value in svc.ports.items() %}
+            <div class="portline">
+              <span class="mono muted tiny">{{ key }}</span>
+              <input type="text" name="port:{{ svc.name }}:{{ key }}" value="{{ value }}"
+                     class="w-num mono">
+            </div>
+          {% endfor %}
+          {% if not svc.ports %}
+            {% if svc.fixed_ports %}
+              <span class="mono muted tiny">{{ svc.fixed_ports|join(', ') }}</span>
+              <div class="help">{{ t('admin.plugins.port_fixed') }}</div>
+            {% else %}—{% endif %}
+          {% endif %}
+        </td>
+        <td class="muted tiny mono">{{ svc.plugin }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="stack-s"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+  {% endif %}
+
+  <form method="post" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add_plugin">
+    <div class="fields">
+      <div class="field wide">
+        <label for="plugin">{{ t('admin.plugins.add_label') }}</label>
+        <input type="text" id="plugin" name="plugin" class="mono"
+               placeholder="{{ t('admin.plugins.add_placeholder') }}">
+        <p class="help">{{ t('admin.plugins.add_help') }}</p>
+      </div>
+    </div>
+    <p class="stack-s"><button type="submit">{{ t('admin.plugins.add') }}</button></p>
+  </form>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.custom.heading') }}</h2>
+  <p class="intro">{{ t('admin.custom.intro') }}</p>
+
+  {% if custom %}
+  <table>
+    <tr>
+      <th>{{ t('admin.custom.name') }}</th>
+      <th>{{ t('admin.custom.url') }}</th>
+      <th>{{ t('admin.custom.reach') }}</th>
+      <th></th>
+    </tr>
+    {% for c in custom %}
+    <tr>
+      <td><strong>{{ c.icon or '🔌' }} {{ c.name }}</strong>
+        {%- if c.description %}<div class="help">{{ c.description }}</div>{% endif -%}
+      </td>
+      <td class="mono">{{ c.url }}</td>
+      <td>{{ t('admin.custom.reach_house') if c.lan_only else t('admin.custom.reach_anywhere') }}</td>
+      <td>
+        {# A typed URL is removed here. A plugin's is declared in a file this
+           page does not own, so it says where it comes from instead of
+           offering a button that cannot work. #}
+        {% if c.removable %}
+        <form method="post" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="remove_custom">
+          <input type="hidden" name="name" value="{{ c.name }}">
+          <button type="submit" class="ghost">{{ t('common.remove') }}</button>
+        </form>
+        {% else %}
+        <span class="mono muted tiny">{{ c.source }}</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <form method="post" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add_custom">
+    <div class="field">
+      <label for="cs-name">{{ t('admin.custom.name') }}</label>
+      <input type="text" id="cs-name" name="name" placeholder="NAS" required>
+    </div>
+    <div class="field">
+      <label for="cs-url">{{ t('admin.custom.url') }}</label>
+      <input type="text" id="cs-url" name="url" placeholder="http://192.168.1.20:5000" required>
+    </div>
+    <div class="field">
+      <label for="cs-desc">{{ t('admin.custom.description') }}</label>
+      <input type="text" id="cs-desc" name="description"
+             placeholder="{{ t('admin.custom.description_placeholder') }}">
+    </div>
+    <div class="field">
+      <label for="cs-icon">{{ t('admin.custom.icon') }}</label>
+      <input type="text" id="cs-icon" name="icon" maxlength="4" class="mono"
+             style="max-width:6rem" placeholder="🗄">
+      <p class="help">{{ t('admin.custom.icon_help') }}</p>
+    </div>
+    {# The dashboard hides house-only tiles from a request that came in over
+       the VPS rather than drawing a link it knows will not open. This stack
+       cannot know that about an address somebody typed, so it asks. #}
+    <div class="field">
+      <label class="check-row">
+        <input type="checkbox" name="lan_only"> {{ t('admin.custom.lan_only') }}
+      </label>
+      <p class="help">{{ t('admin.custom.lan_only_help') }}</p>
+        {# A link written as http://<address>:<port> is house-only whatever this
+           box says: the deployer forces it, because the cloud proxy forwards the
+           portal and nothing else. Said here rather than leaving somebody to
+           untick it and wonder why the tile still hides. #}
+        <p class="help">{{ t('admin.custom.lan_only_forced') }}</p>
+    </div>
+
+    {# What the box does and, more usefully, what it does not. It was described
+       only as "the dashboard leaves it out", which reads as though ticking it
+       were what keeps the service private. It is not -- the address is. Left
+       unticked on a private address you get a dead link, not an exposed
+       service, and that is worth saying to somebody deciding whether to tick
+       it. #}
+    <details class="field">
+      <summary class="help">{{ t('admin.custom.lan_only_more') }}</summary>
+      <p class="help">{{ t('admin.custom.lan_only_note_what') }}</p>
+      <p class="help">{{ t('admin.custom.lan_only_note_where') }}</p>
+      <p class="help">{{ t('admin.custom.lan_only_note_app') }}</p>
+    </details>
+    <button type="submit" class="ghost">{{ t('common.add') }}</button>
+  </form>
+</div>
+{% endblock %}

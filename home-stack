@@ -1,0 +1,398 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# home-stack — the one script you run
+# ---------------------------------------------------------------------------
+# Two things happen to a machine here and they are deliberately separate. The
+# installer prepares one: config, credentials, state directories, the first
+# passwords. The deployer ships services onto it and proves each one answers.
+# Keeping them apart is what lets you re-run either without the other — deploy
+# a hundred times without touching a credential, regenerate a key without
+# restarting a container.
+#
+# This is the front door to both, so there is one thing to remember.
+#
+#   ./home-stack install                 first-time setup, asking as it goes
+#   ./home-stack install --check         prerequisites only, change nothing
+#   ./home-stack install --create-user   admin password and the first login
+#   ./home-stack install --help          the rest of its options
+#
+#   ./home-stack plan                    the full plan, changing nothing
+#   ./home-stack plan admin              the plan for one service
+#   ./home-stack deploy                  everything enabled, in order
+#   ./home-stack deploy admin            one service
+#   ./home-stack deploy --bg             in the background; `logs` to watch
+#   ./home-stack logs                    follow a run already going
+#
+#   ./home-stack list                    what exists, where, whether it is on
+#   ./home-stack check                   every compose variable is supplied
+#
+# Anything after the verb is passed through, so the deployer's own options
+# still work: ./home-stack deploy home-core --only proxy
+#
+# A push is not a deploy. Nothing here is triggered by a commit — a change is
+# merged and waiting until this has run.
+# ---------------------------------------------------------------------------
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+LOG="${HOME_STACK_DEPLOY_LOG:-$ROOT/deploy-last.log}"
+
+if [ -t 1 ]; then
+    C_STEP=$'\033[36m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_OFF=$'\033[0m'
+else
+    C_STEP=""; C_OK=""; C_ERR=""; C_OFF=""
+fi
+step() { printf '%s==> %s%s\n' "$C_STEP" "$1" "$C_OFF"; }
+ok()   { printf '%s    ok  %s%s\n' "$C_OK" "$1" "$C_OFF"; }
+warn() { printf '%s    warn %s%s\n' "$C_ERR" "$1" "$C_OFF"; }
+die()  { printf '%s    FAIL %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
+
+usage() {
+    # Written out rather than sliced from the header by line number: install.sh
+    # did that, the numbers drifted, and --help ended by printing shell at you.
+    cat <<'EOF'
+  home-stack -- the one script you run
+
+    ./home-stack install                 first-time setup, asking as it goes
+    ./home-stack install --create-user   admin password and the first login
+    ./home-stack install --check         prerequisites only, change nothing
+
+    ./home-stack plan [service ...]      the full plan, changing nothing
+    ./home-stack deploy [service ...]    everything enabled, or just these
+    ./home-stack deploy --bg             in the background; `logs` to watch
+    ./home-stack logs                    follow a run already going
+
+    ./home-stack list                    what exists, where, whether it is on
+    ./home-stack check                   every compose variable is supplied
+    ./home-stack models                  every model on the gateway, and its state
+    ./home-stack models --roles          only the ones a role points at
+
+    ./home-stack ollama                  the GPUs, the Ollama servers, what would change
+    ./home-stack ollama --import         list the servers running now in the config
+    ./home-stack ollama --apply          make them match the list (sudo, restarts)
+    ./home-stack llamacpp                which llama.cpp builds exist
+    ./home-stack llamacpp build [flavor] compile vanilla or prism (or both) for these cards
+    sudo ./home-stack ollama --install-trigger   once: let the admin page apply it
+
+    ./home-stack backup                  one archive of everything that matters
+    ./home-stack backup --with-media     include recordings and documents
+    ./home-stack backup --export         refresh the mirror, write no archive
+    ./home-stack backup --auto           mirror now, archive when one is due
+    ./home-stack backup --list           what exists, and whether it verified
+    ./home-stack backup --verify [id]    unpack it and check what came out
+    ./home-stack backup --verify [id] --only S   check just those services
+    ./home-stack restore <id>            what it would overwrite, and no more
+    ./home-stack restore <id> --confirm  put it back
+    ./home-stack restore <id> --only S   put back just one service
+
+    ./home-stack k8s render [member ...] the assistant's Kubernetes objects
+    ./home-stack k8s apply  [member ...] render and kubectl apply them
+    ./home-stack k8s status              what is running, and is it ready
+
+  Anything after the verb passes through:
+    ./home-stack deploy home-core --only proxy
+    ./home-stack install --help
+
+  A push is not a deploy. A change is merged and waiting until this has run.
+EOF
+}
+
+# --- what state is this machine in ----------------------------------------
+#
+# Cheap checks only. The menu leads with whatever is actually next, so somebody
+# who has just cloned this is offered the installer and somebody who has
+# deployed twice is offered a deploy -- rather than the same list either way.
+
+have_config() { [ -f config/home-stack.yml ]; }
+have_secrets() { [ -f secrets/smart-home-bot.env ]; }
+secret_set() {
+    have_secrets && grep -qE "^$1=.+" secrets/smart-home-bot.env
+}
+pending_count() {
+    local f=config/pending-deploy.json
+    [ -f "$f" ] || { echo 0; return; }
+    python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))))" "$f" 2>/dev/null || echo 0
+}
+
+status_lines() {
+    if ! have_config; then
+        printf '  %sNothing is set up on this machine yet.%s\n' "$C_STEP" "$C_OFF"
+        printf '  The installer creates the config, generates the credentials it can,\n'
+        printf '  and asks for the two passwords it will not generate for you.\n'
+        return
+    fi
+    local name
+    name="$(sed -n 's/^  name: *//p' config/home-stack.yml | head -1)"
+    # The YAML value may be quoted; the menu should not show the quotes.
+    name="${name%\"}"; name="${name#\"}"
+    name="${name%\'}"; name="${name#\'}"
+    printf '  %s%s%s\n' "$C_OK" "${name:-this house}" "$C_OFF"
+    # The old name still counts: the key did not change when the endpoint did,
+    # and deploy.py's SECRET_ALIASES reads it. Saying "no model API key" over a
+    # file the deployer is happily using is the front door calling a working
+    # household broken.
+    secret_set OPENCODE_API_KEY || secret_set OPENCODE_GO_API_KEY \
+        || printf '  %s!%s  no model API key yet -- the assistant cannot answer\n' "$C_ERR" "$C_OFF"
+    secret_set ADMIN_PASSWORD_HASH \
+        || printf '  %s!%s  no admin password -- whoever opens the page first sets it\n' "$C_ERR" "$C_OFF"
+    local n; n="$(pending_count)"
+    [ "$n" -gt 0 ] 2>/dev/null \
+        && printf '  %s*%s  %s service(s) changed but not deployed\n' "$C_STEP" "$C_OFF" "$n"
+    [ -f "$LOG" ] && printf '     last run: %s\n' "$(stat -c %y "$LOG" | cut -d. -f1)"
+    return 0
+}
+
+# --- one switch for "there is no graphics card in this machine" ------------
+#
+# Three settings decide it and nobody should have to remember all three. Two
+# are here; the third needs no setting at all -- the TTS bench sits behind a
+# compose profile nothing enables, so it never asks for a card unless you ask
+# for it by name.
+#
+# Written into the config rather than passed to a deploy, because a deploy-time
+# override is invisible the next time somebody looks at why whisper is slow.
+gpu_state() {
+    have_config || { echo unknown; return; }
+    "$ROOT/.venv/bin/python" - config/home-stack.yml <<'GPU_PY' 2>/dev/null || echo unknown
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+svc = cfg.get("services") or {}
+w = (svc.get("faster-whisper") or {}).get("device", "cuda")
+c = (svc.get("home-cameras") or {}).get("gpu", True)
+print("on" if (w == "cuda" or c) else "off")
+GPU_PY
+}
+
+set_gpu() {
+    have_config || die "config/home-stack.yml does not exist. Run ./home-stack install first."
+    local want="$1"
+    case "$want" in
+        on|off) ;;
+        "") printf '  GPU use is currently: %s\n' "$(gpu_state)"
+            printf '  ./home-stack gpu off   run everything on the CPU\n'
+            printf '  ./home-stack gpu on    use the NVIDIA card\n'; return 0 ;;
+        *) die "./home-stack gpu on|off" ;;
+    esac
+    "$ROOT/.venv/bin/python" - config/home-stack.yml "$want" <<'SET_PY'
+import sys
+from ruamel.yaml import YAML
+y = YAML(); y.preserve_quotes = True
+path, want = sys.argv[1], sys.argv[2]
+cfg = y.load(open(path))
+svc = cfg.setdefault("services", {})
+w = svc.setdefault("faster-whisper", {})
+if want == "off":
+    w["device"], w["compute_type"] = "cpu", "int8"
+    # large-v3-turbo on a CPU is not wrong, only slow enough that a voice turn
+    # stops feeling like a reply.
+    if w.get("model") in (None, "large-v3", "large-v3-turbo"):
+        w["model"] = "small"
+else:
+    w["device"], w["compute_type"] = "cuda", "float16"
+    if w.get("model") in (None, "small", "base", "tiny"):
+        w["model"] = "large-v3-turbo"
+svc.setdefault("home-cameras", {})["gpu"] = (want == "on")
+y.dump(cfg, open(path, "w"))
+SET_PY
+    if [ "$want" = "off" ]; then
+        ok "everything set to run on the CPU"
+        printf '     whisper: cpu / int8 / small, camera wall: no GPU reservation\n'
+        printf '     the TTS bench never needed a setting -- it is opt-in already\n'
+    else
+        ok "GPU use switched on"
+        printf '     whisper: cuda / float16 / large-v3-turbo, camera wall: reserved\n'
+        printf '     this needs an NVIDIA driver on the machine that runs them\n'
+    fi
+    warn "saved, not applied -- ./home-stack deploy faster-whisper home-cameras"
+}
+
+menu() {
+    printf '\n  %shome-stack%s\n\n' "$C_STEP" "$C_OFF"
+    status_lines
+    echo
+    if have_config; then
+        # GPUSTATE is substituted rather than interpolated, so the heredoc can
+        # stay quoted and the rest of it cannot be expanded by accident.
+        menu_body | sed "s/GPUSTATE/$(gpu_state)/"
+    else
+        cat <<'EOF'
+    1  Install -- set this machine up
+    2  Check prerequisites only, change nothing
+EOF
+    fi
+    printf '\n    h  the full command list        q  quit\n\n'
+    printf '  > '
+}
+
+menu_body() {
+        cat <<'EOF'
+    1  Plan a deploy -- show what would happen, change nothing
+    2  Deploy everything that is enabled
+    3  Deploy one service
+    4  What exists, where it runs, whether it is on
+    5  Check that every setting a container reads is supplied
+    6  Set the admin password / add the first login
+    7  Re-run the installer (safe; it leaves what exists alone)
+    8  GPU use -- currently GPUSTATE
+    9  New plugin -- scaffold one of your own services
+EOF
+}
+
+choose() {
+    local pick svc
+    while :; do
+        menu
+        read -r pick </dev/tty || { echo; exit 0; }
+        echo
+        if have_config; then
+            case "$pick" in
+                1) exec "$0" plan ;;
+                2) exec "$0" deploy ;;
+                3) ./deploy/deploy.py list
+                   printf '\n  which service? (blank to go back) > '
+                   read -r svc </dev/tty || exit 0
+                   [ -n "$svc" ] && exec "$0" deploy "$svc"
+                   ;;
+                4) ./deploy/deploy.py list ;;
+                5) exec "$0" check ;;
+                6) exec ./deploy/install.sh --create-user ;;
+                7) exec ./deploy/install.sh ;;
+                9) exec ./deploy/new-plugin.sh ;;
+                8) printf '  1 use the GPU   2 run on the CPU   (blank to go back) > '
+                   read -r svc </dev/tty || exit 0
+                   [ "$svc" = "1" ] && set_gpu on
+                   [ "$svc" = "2" ] && set_gpu off
+                   ;;
+                h|H) usage ;;
+                q|Q|"") exit 0 ;;
+                *) printf '  %snot one of the options%s\n' "$C_ERR" "$C_OFF" ;;
+            esac
+        else
+            case "$pick" in
+                1) exec ./deploy/install.sh ;;
+                2) exec ./deploy/install.sh --check ;;
+                h|H) usage ;;
+                q|Q|"") exit 0 ;;
+                *) printf '  %snot one of the options%s\n' "$C_ERR" "$C_OFF" ;;
+            esac
+        fi
+        printf '\n  -- press enter --'; read -r _ </dev/tty || exit 0
+    done
+}
+
+verb="${1:-}"
+[ $# -gt 0 ] && shift || true
+
+case "$verb" in
+    "")
+        # No arguments and a person watching: offer the menu. Piped or in a
+        # script there is nobody to answer it, so print the commands instead --
+        # a prompt nothing can reply to is a hang, not a help.
+        if [ -t 0 ] && [ -t 1 ]; then choose; else usage; fi
+        exit 0 ;;
+    -h|--help|help) usage; exit 0 ;;
+    install)           exec ./deploy/install.sh "$@" ;;
+    gpu)               set_gpu "${1:-}"; exit 0 ;;
+    plugin)            exec ./deploy/new-plugin.sh "$@" ;;
+    backup)            exec ./.venv/bin/python ./deploy/backup.py "$@" ;;
+    restore)           exec ./.venv/bin/python ./deploy/backup.py restore "$@" ;;
+    k8s)               exec ./.venv/bin/python ./deploy/kubernetes.py "$@" ;;
+    list)              exec ./deploy/deploy.py list ;;
+    models)            exec ./.venv/bin/python ./deploy/models.py "$@" ;;
+    ollama)            exec ./.venv/bin/python ./deploy/ollama_host.py "$@" ;;
+    llamacpp)          exec ./.venv/bin/python ./deploy/llamacpp.py "$@" ;;
+    check)             exec ./deploy/deploy.py all --check-contract ;;
+    logs)
+        [ -f "$LOG" ] || die "no log at $LOG yet"
+        exec tail -f "$LOG" ;;
+    plan|deploy)       ;;   # handled below
+    *) die "unknown command: $verb  (try ./home-stack --help)" ;;
+esac
+
+# --- plan and deploy -------------------------------------------------------
+
+[ -f config/home-stack.yml ] \
+    || die "config/home-stack.yml does not exist. Run ./home-stack install first."
+
+background=0
+args=()
+[ "$verb" = "plan" ] && args+=(--dry-run)
+for arg in "$@"; do
+    case "$arg" in
+        --bg|--background) background=1 ;;
+        --plan|--dry-run)  args+=(--dry-run) ;;
+        *)                 args+=("$arg") ;;
+    esac
+done
+
+# `${args[@]+"${args[@]}"}` and not `"${args[@]:-}"`: under `set -u` the latter
+# expands an *empty* array to one empty-string word, which the target scan below
+# then counts as a service name. That is what `deploy` with no arguments was --
+# targets=1, the `all` fallback never fired, and deploy.py got no services at
+# all, printed its usage and exited 2. Under `--bg` that was a green no-op.
+planning=0
+for a in ${args[@]+"${args[@]}"}; do [ "$a" = "--dry-run" ] && planning=1; done
+
+# A flag's *value* is not a service either: `deploy --only proxy` means every
+# service, one unit -- not the service "proxy".
+targets=()
+skip=0
+for a in ${args[@]+"${args[@]}"}; do
+    if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+    case "$a" in
+        --only|--remote-root) skip=1 ;;
+        -*)                        ;;
+        *)                    targets+=("$a") ;;
+    esac
+done
+[ ${#targets[@]} -gt 0 ] || args=(all ${args[@]+"${args[@]}"})
+
+# The contract first, always. It is what catches a compose variable nothing
+# supplies -- which `docker compose config -q` exits 0 on, and which is the
+# shape of four separate outages in the stack this came from. It changes
+# nothing, so there is no reason to skip it.
+step "checking the contract"
+if ./deploy/deploy.py all --check-contract; then
+    :
+elif [ "$planning" -eq 1 ]; then
+    # A plan changes nothing, and refusing to *show* it is how somebody ends up
+    # guessing. Say it is broken and print the plan anyway.
+    printf '%s    the contract is failing -- the plan below is what would run,%s\n' \
+        "$C_ERR" "$C_OFF" >&2
+    printf '    and some of it would not have the settings it needs.\n' >&2
+else
+    die "contract check failed -- fix that first, or you deploy a service that cannot read its own settings. See the plan anyway with: ./home-stack plan"
+fi
+
+printf -v shown '%s ' "${args[@]}"
+if [ "$background" -eq 1 ]; then
+    step "deploying in the background: ${shown% }"
+    nohup ./deploy/deploy.py "${args[@]}" > "$LOG" 2>&1 &
+    printf '    pid %s, logging to %s\n' "$!" "$LOG"
+    printf '    watch it:   ./home-stack logs\n'
+    printf '    summary:    grep -E "done in|FAIL" %s\n' "$LOG"
+    exit 0
+fi
+
+step "${verb}: ${shown% }"
+# tee, so a run you watched is also one you can go back to. The exit status has
+# to be the deployer's, not tee's.
+set +e
+./deploy/deploy.py "${args[@]}" 2>&1 | tee "$LOG"
+status=${PIPESTATUS[0]}
+set -e
+
+echo
+if [ "$status" -eq 0 ] && [ "$planning" -eq 1 ]; then
+    printf '%s    plan only -- nothing was changed. log: %s%s\n' "$C_OK" "$LOG" "$C_OFF"
+elif [ "$status" -eq 0 ]; then
+    printf '%s    deployed. log: %s%s\n' "$C_OK" "$LOG" "$C_OFF"
+else
+    printf '%s    FAIL deploy exited %s. What failed:%s\n' "$C_ERR" "$status" "$C_OFF" >&2
+    grep -E "FAIL" "$LOG" | tail -10 >&2 || true
+    printf '    full log: %s\n' "$LOG" >&2
+    printf '    a verify that failed after "containers up" means the new\n' >&2
+    printf '    containers are live -- `docker logs <name>` before rolling back.\n' >&2
+fi
+exit "$status"

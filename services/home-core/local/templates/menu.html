@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Home — Menu</title>
+  <!-- The house faces, served by this app. See
+       HomeCore/tools/fetch-fonts.sh for where they come from and why they
+       are not fetched from the internet. -->
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --paper-2:#fff;
+      --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2;
+      --olive:#57633F; --olive-2:#7E8A61;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh; background: var(--plaster);
+      background-image:
+        radial-gradient(ellipse at 12% -10%, #F6F1E5 0%, transparent 55%),
+        radial-gradient(ellipse at 100% 0%, #E7DFCC 0%, transparent 45%);
+      font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased;
+    }
+    header {
+      background: var(--wall); color: var(--wall-fg);
+      padding: 14px 20px; display: flex; align-items: center; gap: 13px;
+    }
+    header .plate {
+      width: 40px; height: 40px; flex: none; display: grid; place-items: center;
+      /* Light off the top, shadow at the bottom, both translucent: the
+         plate reads as a tile raised off the bar whatever colour the bar
+         is. It used to be literal olive, which on a pink house was a
+         green square sitting in the corner of the header. */
+      background: linear-gradient(160deg, rgba(255,255,255,.15), rgba(0,0,0,.17));
+      border: 1px solid rgba(235,212,155,.25); border-radius: 12px; font-size: 1.3rem;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 800; letter-spacing: -.01em; color: #F3EEDF; }
+    header p { font-size: .6rem; text-transform: uppercase; letter-spacing: .22em; color: var(--wall-dim, #ABB296); margin-top: 2px; }
+    header .hlink {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--wall-fg); text-decoration: none; font-size: .8rem; font-weight: 600;
+      padding: 7px 11px; border-radius: 10px; border: 1px solid rgba(218,212,194,.16);
+    }
+    header .hlink:first-of-type { margin-left: auto; }
+    header .hlink:hover { background: rgba(255,255,255,.06); }
+
+    main { max-width: 720px; margin: 22px auto 80px; padding: 0 16px; }
+
+    .section-title {
+      display: flex; align-items: center; gap: 12px;
+      font-size: .7rem; color: var(--olive); text-transform: uppercase;
+      letter-spacing: .18em; font-weight: 700; margin: 26px 0 12px;
+    }
+    .section-title .rule { flex: 1; height: 1px; background: var(--line); }
+
+    /* week bar */
+    .weekbar {
+      display: flex; align-items: center; gap: 10px; background: var(--paper-2);
+      border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px;
+    }
+    .weekbar .label { flex: 1; text-align: center; font-size: .88rem; font-weight: 700; }
+    .weekbar .label small { display: block; font-weight: 600; font-size: .68rem; color: var(--ink-soft); margin-top: 2px; }
+    .weekbar button {
+      border: 1px solid var(--line); background: var(--paper); color: var(--olive);
+      font: inherit; font-size: .95rem; font-weight: 700; width: 36px; height: 36px;
+      border-radius: 10px; cursor: pointer; flex: none;
+    }
+    .weekbar button:hover { border-color: var(--honey); color: var(--honey); }
+    #btn-today {
+      width: auto; padding: 0 12px; font-size: .74rem; font-weight: 700;
+    }
+
+    /* days */
+    .day {
+      background: var(--paper-2); border: 1px solid var(--line); border-radius: 16px;
+      padding: 12px 14px; margin-bottom: 10px;
+    }
+    .day.today { border-color: var(--honey); box-shadow: 0 0 0 3px rgba(198,137,43,.10); }
+    .day-head {
+      display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;
+    }
+    .day-head .wd { font-weight: 800; font-size: .95rem; }
+    .day-head .dt { font-size: .72rem; color: var(--ink-soft); }
+    .day-head .badge {
+      margin-left: auto; font-size: .62rem; font-weight: 800; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--honey); background: rgba(198,137,43,.14);
+      padding: 3px 8px; border-radius: 999px;
+    }
+    .slot {
+      display: flex; align-items: center; gap: 10px; padding: 8px 0;
+      border-top: 1px solid var(--line);
+    }
+    .slot .meal {
+      flex: none; width: 96px; font-size: .74rem; font-weight: 700; color: var(--olive-2);
+    }
+    .slot .dish { flex: 1; min-width: 0; font-size: .92rem; }
+    .slot .dish .note { display: block; font-size: .72rem; color: var(--ink-soft); margin-top: 2px; }
+    .slot .dish.empty { color: #A99C86; font-style: italic; }
+    .slot button.edit, .slot button.x {
+      border: none; background: none; color: #c3b8a4; font-size: 1rem; cursor: pointer;
+      padding: 4px 6px; border-radius: 8px; flex: none;
+    }
+    .slot button.edit:hover { color: var(--olive); background: var(--paper); }
+    .slot button.x:hover { color: var(--clay); background: var(--paper); }
+
+    /* requests */
+    .item {
+      display: flex; align-items: center; gap: 11px; background: var(--paper-2);
+      border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 7px;
+    }
+    .item .body { flex: 1; min-width: 0; }
+    .item .name { font-weight: 600; font-size: .95rem; }
+    .item .sub { font-size: .74rem; color: var(--ink-soft); margin-top: 1px; }
+    .item .x { border: none; background: none; color: #c3b8a4; font-size: 1.1rem; cursor: pointer; padding: 2px 4px; }
+    .item .x:hover { color: var(--clay); }
+    .item .req-chip {
+      font-size: .64rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--honey); background: rgba(198,137,43,.12); padding: 3px 8px; border-radius: 999px;
+    }
+    .item .act { border: 1px solid var(--line); background: var(--paper); color: var(--olive);
+      font: inherit; font-size: .78rem; font-weight: 700; padding: 6px 11px; border-radius: 8px; cursor: pointer; }
+    .item .act.ok { background: var(--olive); border-color: var(--olive); color: #fff; }
+    .item .act.no:hover { border-color: var(--clay); color: var(--clay); }
+
+    /* add / request card */
+    .add-card {
+      background: var(--paper-2); border: 1px solid var(--line); border-radius: 16px;
+      padding: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+    .add-card input, .add-card select {
+      font: inherit; padding: 10px 12px; border: 1px solid var(--line);
+      border-radius: 10px; background: #fff; color: var(--ink); width: 100%;
+    }
+    .add-card input:focus, .add-card select:focus { outline: 2px solid var(--honey-lt); border-color: var(--honey); }
+    .add-card .full { grid-column: 1 / -1; }
+    .add-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+    .add-actions button {
+      flex: 1; font: inherit; font-weight: 700; padding: 10px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--paper); color: var(--olive); cursor: pointer;
+    }
+    .add-actions button.primary { background: var(--olive); border-color: var(--olive); color: #fff; }
+    .add-actions button:hover { filter: brightness(.97); }
+
+    #suggestions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+      background: var(--paper-2); border: 1px dashed var(--honey-lt); color: var(--ink-soft);
+      font-size: .8rem; font-weight: 600; padding: 5px 11px; border-radius: 999px;
+    }
+    .chip:hover { border-style: solid; border-color: var(--honey); color: var(--honey); }
+    .chip .plus { color: var(--honey); font-weight: 800; }
+
+    .empty { text-align: center; color: var(--ink-soft); font-size: .85rem; padding: 22px 0; }
+    .toast {
+      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+      background: var(--wall); color: #fff; padding: 10px 18px; border-radius: 999px;
+      font-size: .85rem; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20;
+    }
+    .toast.show { opacity: 1; }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+  </style>
+  <!-- This member's colours, after the house style so it wins by
+       order. Empty when nobody is logged in or nobody has a theme,
+       which leaves The House exactly as it is. -->
+  <link rel="stylesheet" href="/theme.css">
+  <script>
+    /* Pick up a theme Alfred set while this page was open. See /theme/version. */
+    (function () {
+      var link = document.querySelector('link[href^="/theme.css"]');
+      if (!link) return;
+      var seen = null, timer = null;
+      function apply(v) {
+        // Swapping href re-fetches the sheet; the old one stays until the new
+        // one parses, so the page never flashes unstyled.
+        link.href = '/theme.css?v=' + v;
+        link.addEventListener('load', tellTheApp, { once: true });
+      }
+      /* The Android app owns the status bar and the window behind this
+         WebView, and CSS cannot reach either. Read the two colours back out of
+         the computed style so this can never disagree with the sheet, and hand
+         them over; in a browser the bridge is simply absent. */
+      function tellTheApp() {
+        try {
+          if (!window.AndroidTheme || !window.AndroidTheme.apply) return;
+          var css = getComputedStyle(document.documentElement);
+          var wall = css.getPropertyValue('--wall').trim();
+          var plaster = css.getPropertyValue('--plaster').trim();
+          if (wall && plaster) window.AndroidTheme.apply(wall, plaster);
+        } catch (e) {}
+      }
+      async function check() {
+        if (document.hidden) return;
+        try {
+          var r = await fetch('/theme/version', { cache: 'no-store' });
+          if (!r.ok) return;
+          var v = (await r.json()).v;
+          if (seen === null) { seen = v; return; }   // first look: just remember
+          if (v !== seen) { seen = v; apply(v); }
+        } catch (e) { /* offline, or logged out: try again next tick */ }
+      }
+      function start() { clearInterval(timer); timer = setInterval(check, 20000); check(); }
+      tellTheApp();          // whatever theme this page loaded with
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) clearInterval(timer); else start();
+      });
+      start();
+    })();
+  </script>
+</head>
+<body>
+  {% set app_icon = '🍽️' %}
+  {% set app_title = t('common.menu') %}
+  {% set current = 'menu' %}
+  {% include '_app_header.html' %}
+
+  <main>
+    <div class="weekbar">
+      <button id="btn-prev" title="Previous week">‹</button>
+      <div class="label"><span id="week-label">…</span><small id="week-range"></small></div>
+      <button id="btn-today" title="Back to this week">Today</button>
+      <button id="btn-next" title="Next week">›</button>
+    </div>
+
+    <div id="requests-wrap" style="display:none">
+      <div class="section-title"><span>Solicitudes</span><span class="rule"></span></div>
+      <div id="requests-list"></div>
+    </div>
+
+    <div class="section-title"><span>The week</span><span class="rule"></span></div>
+    <div id="days"><div class="empty">Loading…</div></div>
+
+    <div class="section-title"><span>{% if is_admin %}Add to the menu{% else %}Ask for a dish{% endif %}</span><span class="rule"></span></div>
+    <div class="add-card">
+      <input id="add-dish" class="full" placeholder="Plato… (ej: pollo al horno)" autocomplete="off">
+      <select id="add-day"></select>
+      <select id="add-meal"></select>
+      <div class="add-actions">
+        {% if is_admin %}
+        <button id="btn-add" class="primary">Put on the menu</button>
+        <button id="btn-request">Pedir</button>
+        {% else %}
+        <button id="btn-request" class="primary">Pedir plato</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <div id="suggestions"></div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+    const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+    const ME = {{ user | tojson }};
+    let WEEK = null;          // Monday of the week on screen (ISO)
+    let DATA = null;
+
+    async function api(path, method = 'GET', body = null) {
+      const opts = { method, headers: {} };
+      if (body !== null) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      if (method !== 'GET') opts.headers['X-CSRF-Token'] = CSRF;
+      const r = await fetch(path, opts);
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok) throw new Error(j.error || 'Something went wrong');
+      return j;
+    }
+    function el(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    }
+    let toastTimer = null;
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg; t.classList.add('show');
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+    }
+    // Build the Date from parts: `new Date('2026-07-27')` is parsed as UTC and
+    // renders as the day before in Chile.
+    function dmy(iso) {
+      const p = iso.split('-');
+      return new Date(+p[0], +p[1] - 1, +p[2]);
+    }
+    function shortDate(iso) {
+      return dmy(iso).toLocaleDateString('es', { day: 'numeric', month: 'short' });
+    }
+
+    const dishInput = document.getElementById('add-dish');
+    const daySelect = document.getElementById('add-day');
+    const mealSelect = document.getElementById('add-meal');
+
+    function fillSelectors() {
+      daySelect.innerHTML = '';
+      const anyDay = el('option', null, IS_ADMIN ? '— day —' : 'Any day');
+      anyDay.value = ''; daySelect.appendChild(anyDay);
+      (DATA.days || []).forEach(d => {
+        const o = el('option', null, d.weekday + ' ' + shortDate(d.date));
+        o.value = d.date;
+        if (d.is_today) o.textContent += ' (hoy)';
+        daySelect.appendChild(o);
+      });
+      mealSelect.innerHTML = '';
+      const anyMeal = el('option', null, IS_ADMIN ? '— comida —' : 'Cualquier comida');
+      anyMeal.value = ''; mealSelect.appendChild(anyMeal);
+      (DATA.meals || []).forEach(m => {
+        const o = el('option', null, m.icon + ' ' + m.label); o.value = m.key;
+        mealSelect.appendChild(o);
+      });
+    }
+
+    async function submitDish(asRequest, preset) {
+      const dish = (preset && preset.dish) || dishInput.value.trim();
+      if (!dish) { dishInput.focus(); return; }
+      const body = { dish, week: WEEK, request: asRequest || undefined };
+      const day = (preset && preset.day) || daySelect.value;
+      const meal = (preset && preset.meal) || mealSelect.value;
+      if (day) body.day = day;
+      if (meal) body.meal = meal;
+      if (!asRequest && !(day && meal)) { toast('Choose the day and the meal'); return; }
+      try {
+        const r = await api('/menu/api/set', 'POST', body);
+        toast(r.requested ? 'Request sent 🙋' : 'Anotado 🍽️');
+        if (!preset) { dishInput.value = ''; dishInput.focus(); }
+        load();
+      } catch (e) { toast(e.message); }
+    }
+
+    document.getElementById('btn-request').addEventListener('click', () => submitDish(true));
+    const addBtn = document.getElementById('btn-add');
+    if (addBtn) addBtn.addEventListener('click', () => submitDish(false));
+    dishInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitDish(!IS_ADMIN); });
+
+    function slotRow(day, m) {
+      const row = el('div', 'slot');
+      row.appendChild(el('div', 'meal', m.icon + ' ' + m.label));
+      const dish = el('div', 'dish' + (m.entry ? '' : ' empty'));
+      if (m.entry) {
+        dish.appendChild(document.createTextNode(m.entry.dish));
+        if (m.entry.note) dish.appendChild(el('span', 'note', m.entry.note));
+      } else {
+        dish.textContent = IS_ADMIN ? 'not decided — tap ✎' : 'not decided';
+      }
+      row.appendChild(dish);
+      if (IS_ADMIN) {
+        const edit = el('button', 'edit', '✎');
+        edit.title = m.entry ? 'Cambiar' : 'Set a dish';
+        edit.addEventListener('click', () => {
+          dishInput.value = m.entry ? m.entry.dish : '';
+          daySelect.value = day.date; mealSelect.value = m.meal;
+          dishInput.focus(); dishInput.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        });
+        row.appendChild(edit);
+        if (m.entry) {
+          const x = el('button', 'x', '✕'); x.title = 'Vaciar';
+          x.addEventListener('click', async () => {
+            try { await api('/menu/api/clear', 'POST', { day: day.date, meal: m.meal }); load(); }
+            catch (e) { toast(e.message); }
+          });
+          row.appendChild(x);
+        }
+      }
+      return row;
+    }
+
+    function dayCard(d) {
+      const card = el('div', 'day' + (d.is_today ? ' today' : ''));
+      const head = el('div', 'day-head');
+      head.appendChild(el('span', 'wd', d.weekday));
+      head.appendChild(el('span', 'dt', shortDate(d.date)));
+      if (d.is_today) head.appendChild(el('span', 'badge', 'hoy'));
+      card.appendChild(head);
+      d.meals.forEach(m => card.appendChild(slotRow(d, m)));
+      return card;
+    }
+
+    function whenText(r) {
+      const bits = [];
+      if (r.day) {
+        const d = (DATA.days || []).find(x => x.date === r.day);
+        bits.push(d ? d.weekday.toLowerCase() : shortDate(r.day));
+      }
+      if (r.meal_label) bits.push(r.meal_label.toLowerCase());
+      return bits.length ? bits.join(' · ') : 'any day';
+    }
+
+    function requestRow(r) {
+      const row = el('div', 'item');
+      const body = el('div', 'body');
+      body.appendChild(el('div', 'name', r.dish));
+      const sub = ['requested by ' + (r.requested_by || '—'), whenText(r)];
+      if (r.note) sub.push('“' + r.note + '”');
+      body.appendChild(el('div', 'sub', sub.join('  ·  ')));
+      row.appendChild(body);
+      if (IS_ADMIN) {
+        const ok = el('button', 'act ok', 'Accept');
+        ok.addEventListener('click', async () => {
+          let day = r.day, meal = r.meal;
+          // A loose request needs a slot before it can go on the menu; the
+          // selectors above are the least surprising place to say which.
+          if (!day) day = daySelect.value;
+          if (!meal) meal = mealSelect.value;
+          if (!day || !meal) { toast('Choose the day and the meal above, then accept again'); return; }
+          try { await api('/menu/api/approve', 'POST', { id: r.id, day, meal }); toast('On the menu ✓'); load(); }
+          catch (e) { toast(e.message); }
+        });
+        const no = el('button', 'act no', 'Reject');
+        no.addEventListener('click', async () => {
+          try { await api('/menu/api/reject', 'POST', { id: r.id }); load(); }
+          catch (e) { toast(e.message); }
+        });
+        row.appendChild(ok); row.appendChild(no);
+      } else {
+        row.appendChild(el('span', 'req-chip', 'esperando'));
+        if (r.requested_by_id === ME) {
+          const x = el('button', 'x', '✕'); x.title = 'Cancel my request';
+          x.addEventListener('click', async () => {
+            try { await api('/menu/api/remove', 'POST', { id: r.id }); load(); }
+            catch (e) { toast(e.message); }
+          });
+          row.appendChild(x);
+        }
+      }
+      return row;
+    }
+
+    function renderSuggestions(sug) {
+      const box = document.getElementById('suggestions');
+      box.innerHTML = '';
+      (sug || []).forEach(s => {
+        const chip = el('div', 'chip');
+        chip.appendChild(el('span', 'plus', '+'));
+        chip.appendChild(document.createTextNode(s.dish));
+        chip.title = 'Cooked often (' + s.count + '×)';
+        chip.addEventListener('click', () => { dishInput.value = s.dish; dishInput.focus(); });
+        box.appendChild(chip);
+      });
+    }
+
+    async function load() {
+      try { DATA = await api('/menu/api/list' + (WEEK ? '?week=' + WEEK : '')); }
+      catch (e) { document.getElementById('days').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; return; }
+      WEEK = DATA.week;
+      fillSelectors();
+      renderSuggestions(DATA.suggestions);
+
+      const isThisWeek = (DATA.days || []).some(d => d.is_today);
+      document.getElementById('week-label').textContent = isThisWeek ? 'This week' : 'Week of ' + shortDate(DATA.week);
+      document.getElementById('week-range').textContent =
+        shortDate(DATA.week) + ' — ' + shortDate(DATA.week_end);
+      document.getElementById('btn-today').style.visibility = isThisWeek ? 'hidden' : '';
+
+      const rWrap = document.getElementById('requests-wrap');
+      const rList = document.getElementById('requests-list');
+      const reqs = DATA.requests || [];
+      rList.innerHTML = '';   // clear even when hiding, so no stale row survives
+      rWrap.style.display = reqs.length ? '' : 'none';
+      reqs.forEach(r => rList.appendChild(requestRow(r)));
+
+      const box = document.getElementById('days');
+      box.innerHTML = '';
+      (DATA.days || []).forEach(d => box.appendChild(dayCard(d)));
+    }
+
+    document.getElementById('btn-prev').addEventListener('click', () => { WEEK = DATA.prev_week; load(); });
+    document.getElementById('btn-next').addEventListener('click', () => { WEEK = DATA.next_week; load(); });
+    document.getElementById('btn-today').addEventListener('click', () => { WEEK = null; load(); });
+
+    load();
+  </script>
+</body>
+</html>

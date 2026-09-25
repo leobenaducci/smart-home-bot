@@ -1,0 +1,35 @@
+{# The cards as _gpu_view draws them: each card's use in one line, a bar, and
+   one row per thing on it -- the house's servers by name and model, then the
+   other services that hold memory there. The Models page includes this and
+   its Preview returns it for the form as it stands, so the two read the same. #}
+<div class="gpu-cards">
+  {% for g in gpu_view %}
+  <div class="gpu-card{{ '' if g.fits else ' over' }}">
+    <div class="gpu-head"><b>GPU{{ g.index }}</b> <span class="muted small">{{ g.name }}</span></div>
+    <div class="gpu-use small">
+      {% if g.fits %}{{ t('admin.models.ollama_gpu_used', used=g.used_gib, total=g.total_gib, free=g.free_gib) }}
+      {% else %}<b class="warn">{{ t('admin.models.ollama_gpu_over_by', over=g.over_gib, total=g.total_gib) }}</b>{% endif %}
+    </div>
+    <div class="gpu-bar">
+      {% for r in g.instances %}<span class="seg inst" data-i="{{ loop.index0 % 4 }}" style="width: {{ [r.pct, 100]|min }}%" title="{{ r.name }} · {{ r.gib }} GiB"></span>{% endfor %}
+      {% for o in g.others %}<span class="seg other" style="width: {{ o.pct }}%" title="{{ o.owner }} · {{ o.gib }} GiB"></span>{% endfor %}
+    </div>
+    <table class="gpu-rows small">
+      {% for r in g.instances %}
+      <tr title="{{ r.name }}">
+        <td><i class="dot inst" data-i="{{ loop.index0 % 4 }}"></i><b>{{ r.label }}</b>{% if r.model %} <span class="muted">{{ r.model }}</span>{% endif %}{% if r.split %} <span class="muted">({{ t('admin.models.ollama_split') }})</span>{% endif %}</td>
+        <td class="num">{{ r.gib }} GiB</td>
+        <td class="muted">{{ t('admin.models.ollama_how_' ~ r.how) }}</td>
+      </tr>
+      {% endfor %}
+      {% for o in g.others %}
+      <tr class="muted">
+        <td><i class="dot other"></i>{{ o.owner | replace('container ', '') | replace('unit ', '') | replace('-web-homecameras-1', '') }}</td>
+        <td class="num">{{ o.gib }} GiB</td>
+        <td>{{ t('admin.models.ollama_gpu_other') }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endfor %}
+</div>

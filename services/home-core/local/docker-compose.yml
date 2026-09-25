@@ -1,0 +1,195 @@
+services:
+  web:
+    build: .
+    network_mode: host
+    restart: unless-stopped
+    # No `dns:` here. It used to pin one, and the address it pinned was
+    # `192.168.1.10` -- which is not a resolver, it is the *placeholder*
+    # `deploy/sanitize.py` writes when it redacts a household's own. This file
+    # is bind-mounted verbatim and never rendered, so the placeholder shipped
+    # as an operational value and every name this container looked up failed:
+    # notifications to an external ntfy died on `Temporary failure in name
+    # resolution`, once per member, logged as a push failure rather than as a
+    # DNS one. Same shape as the Caddyfile that answered to two names nobody
+    # had, and found the same way -- by asking the running container.
+    #
+    # Unset, Docker hands the container the host's own resolver, which is the
+    # right answer for almost every house. `site.resolver` puts one back, and
+    # docker-compose.resolver.yml is where the reason to lives.
+    # There is deliberately no `extra_hosts:` here. It used to carry four
+    # names pinned to fixed addresses -- a third copy of a map that already
+    # lives in `hosts:` and in the resolver, and it went stale the way a
+    # third copy does: the names were ones this house does not use, pointed
+    # at a /24 it no longer runs on. A name resolving to the wrong box is
+    # harder to diagnose than one that does not resolve, and internal traffic
+    # here uses the addresses under `hosts:` anyway, so there was nothing
+    # left for it to answer.
+    # Per-member NTFY_TOPIC_* values, staged by the deployer. `required: false`
+    # because a household whose members' topics match their ids needs no file
+    # and the deploy writes none. Compose interpolation cannot carry a set
+    # whose names are not known until the members are read.
+    env_file:
+      - path: member-topics.env
+        required: false
+    environment:
+      - PORT=${PORT:-21001}
+      # Where the per-member assistants answer. Bases, not per-instance
+      # ports: the portal adds the member's index. These were literals in
+      # app.py and the renumbering left them behind.
+      # Who reads the portal in what language, and which languages this house
+      # ships. Without these the container ran on the hardcoded defaults and
+      # `_pick_locale` had no member preference to consult.
+      - MEMBER_LOCALES=${MEMBER_LOCALES:-}
+      - HOME_STACK_DEFAULT_LOCALE=${HOME_STACK_DEFAULT_LOCALE:-es}
+      - HOME_STACK_LOCALES=${HOME_STACK_LOCALES:-es,en}
+      - CAMERAS_APP_URL=${CAMERAS_APP_URL:-http://127.0.0.1:21020}
+      - NANOBOT_HOST=${NANOBOT_HOST:-127.0.0.1}
+      - NANOBOT_API_PORT_BASE=${NANOBOT_API_PORT_BASE:-21301}
+      - NANOBOT_WEBSOCKET_PORT_BASE=${NANOBOT_WEBSOCKET_PORT_BASE:-21201}
+      - HOUSE_ONLY_APPS=${HOUSE_ONLY_APPS:-cameras}
+      # Who lives here. `HOMECORE_MEMBER_FOLDERS` is `user1:ana,user2:bo` --
+      # member id to the folder on the share, which is what the house calls
+      # that person. No defaults on purpose: an empty member list gives
+      # everybody a folder named after their member id, and a default written
+      # here would be one household's answer shipped to every other one, which
+      # is the bug this replaces.
+      - HOMECORE_MEMBERS=${HOMECORE_MEMBERS:-}
+      - HOMECORE_ADMIN_MEMBERS=${HOMECORE_ADMIN_MEMBERS:-}
+      - HOMECORE_MEMBER_FOLDERS=${HOMECORE_MEMBER_FOLDERS:-}
+      # Read by app.py, and until now exported by the deployer and listed
+      # nowhere -- so the container never saw any of them and each fell back to
+      # the module default. WHISPER_URL's was a hostname on :8000,
+      # a name nothing in this stack resolves: the portal's transcription has
+      # been pointed at DNS that does not answer, which is the exact failure
+      # `hosts:` addresses exist to avoid.
+      #
+      # Real defaults, not `${VAR:-}`. Compose substitutes the empty string for
+      # an unset name, and `os.environ.get(NAME, fallback)` treats
+      # present-but-empty as present -- so `${WHISPER_URL:-}` does not fall
+      # through to app.py's default, it replaces it with "". The deployer
+      # always exports all three, so this only bites a hand-run
+      # `docker compose up`; the camera wall's compose file carries the same
+      # warning three lines long, and this one walked into it anyway.
+      #
+      # This service is on host networking, so loopback here is the host.
+      - WHISPER_URL=${WHISPER_URL:-http://127.0.0.1:21010/transcribe}
+      - OLLAMA_URL=${OLLAMA_URL:-http://127.0.0.1:11434}
+      # Empty is meaningful for this one: app.py falls back to /chat.
+      - HOMEPAGE_URL=${HOMEPAGE_URL:-}
+      - SMB_HOST=${SMB_HOST:-}
+      - SMB_SHARE=${SMB_SHARE:-share}
+      - SMB_USERNAME=${SMB_USERNAME:-share}
+      - SMB_PASSWORD=${SMB_PASSWORD:-}
+      - NTFY_BASE_URL=${NTFY_BASE_URL:-}
+      # Basic-auth "user:pass" for the ntfy host — same credential Alfred's
+      # ntfy-send uses. Required for task/share pushes to actually deliver.
+      - NTFY_CREDENTIALS=${NTFY_CREDENTIALS:-}
+      - NANOBOT_API_SECRET_USER_1=${NANOBOT_API_SECRET_USER_1:-}
+      - NANOBOT_API_SECRET_USER_2=${NANOBOT_API_SECRET_USER_2:-}
+      - NANOBOT_API_SECRET_USER_3=${NANOBOT_API_SECRET_USER_3:-}
+      - NANOBOT_API_SECRET_USER_4=${NANOBOT_API_SECRET_USER_4:-}
+      - NANOBOT_API_SECRET_USER_5=${NANOBOT_API_SECRET_USER_5:-}
+      - NTFY_TOKEN=${NTFY_TOKEN:-}
+      # The voice gateway on compute, for the TTS bench in the chat's debug
+      # menu — hearing Alfred's replies in the browser is the only way to
+      # compare voices while no puck exists. Unset simply hides the option.
+      - VOICE_GATEWAY_URL=${VOICE_GATEWAY_URL:-http://voice.home:21011}
+      - VOICE_GATEWAY_TOKEN=${VOICE_GATEWAY_TOKEN:-}
+      # Where a tapped task notification opens (ntfy Click target). Defaults to
+      # the Tailscale URL of this app; set to the cloud proxy (chat.home)
+      # to make taps work off-VPN.
+      - HOMECORE_PUBLIC_URL=${HOMECORE_PUBLIC_URL:-https://portal.home:21001}
+      # Empty on purpose: no budget set means the stats page draws spend
+      # with no ceiling. See assistant.spend_budget.
+      - USAGE_BUDGET_5H=${USAGE_BUDGET_5H:-}
+      - USAGE_BUDGET_WEEK=${USAGE_BUDGET_WEEK:-}
+      - USAGE_BUDGET_MONTH=${USAGE_BUDGET_MONTH:-}
+      # The card, for the graph on /stats. Empty is the shipped state and
+      # means the page has no card section at all -- there is no sensible
+      # default, because an address here is somebody else's machine.
+      - GPU_EXPORTER_URL=${GPU_EXPORTER_URL:-}
+      # Shared secret with the home-chat cloud proxy (VPS). Enables trusted-proxy
+      # auth on the chat endpoints. Leave unset to disable proxy auth entirely.
+      - PROXY_SHARED_SECRET=${PROXY_SHARED_SECRET:-}
+      # Read-only, and only for /alfred/profile: HomeCore adds it to the
+      # panel's data call so the browser never carries it.
+      - NANOBOT_DEBUG_SECRET=${NANOBOT_DEBUG_SECRET:-}
+      # Encrypts project credentials at rest. Unset, the registry refuses to
+      # store one rather than quietly keeping it in plaintext.
+      - PROJECTS_KEY=${PROJECTS_KEY:-}
+      # The one door a project credential leaves by: the code broker, and no
+      # browser session however admin it is.
+      - PROJECTS_BROKER_TOKEN=${PROJECTS_BROKER_TOKEN:-}
+      # Kitchen e-ink panel (home-chat/esp32/menu). Its own token rather than a
+      # users.json entry, so the wall panel never appears as a family member in
+      # task assignment or share pickers. Unset = /menu/api/render.* is
+      # session-only, which still allows browser preview.
+      - MENU_DEVICE_TOKEN=${MENU_DEVICE_TOKEN:-}
+      # Panel poll cadence and overnight quiet window, in TASKS_TZ. The device
+      # obeys whatever these produce, so changing them retunes battery life
+      # without touching the firmware.
+      - MENU_POLL_MINUTES=${MENU_POLL_MINUTES:-60}
+      - MENU_QUIET_START=${MENU_QUIET_START:-23}
+      - MENU_QUIET_END=${MENU_QUIET_END:-6}
+      # The household's zone -- the TASKS_TZ those three are measured in.
+      # Container clocks are UTC on purpose; this is what turns a UTC clock into
+      # the hour a person sees on a chore. Unset, `TASKS_TZ` falls back to
+      # `Etc/UTC` in app.py and every timed task fires at the wrong hour.
+      - TASKS_TZ=${TASKS_TZ:-Etc/UTC}
+      - TZ=${TZ:-Etc/UTC}
+      # Flask session signing key and /debug/* endpoint key. No insecure fallback -
+      # app.py refuses to start without these actually being set.
+      - SECRET_KEY=${SECRET_KEY}
+      - DEBUG_API_KEY=${DEBUG_API_KEY}
+      # Which account /debug/* acts as when it is called with the key above.
+      # A **login id** -- the number a person signs in with -- not a member id
+      # like `user1`. Empty by default: the endpoints then say so rather than
+      # answering 404 about an account nobody named.
+      - DEBUG_USER=${DEBUG_USER:-}
+      # Naming finished conversations for the history sidebar. Just the
+      # transcript and a one-line instruction, sent straight to the model —
+      # not through Alfred, who would attach his whole system prompt to it.
+      # With no key set it falls back to the local Ollama; override the URL and
+      # model to point anywhere OpenAI-compatible.
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY:-}
+      - CHAT_TITLE_URL=${CHAT_TITLE_URL:-}
+      - CHAT_TITLE_MODEL=${CHAT_TITLE_MODEL:-}
+      - CHAT_TITLE_KEY=${CHAT_TITLE_KEY:-}
+      # The Programmer profession, when it runs on opencode instead of the
+      # assistant. `<member>=<url>` pairs, one server per member who has it
+      # switched on -- each holds that person's MCP token and nobody else's, and
+      # the profession spaces are open to the whole household. Empty means
+      # nobody, and the space falls back to the assistant.
+      #
+      # Loopback addresses, and correct as such: this service is
+      # `network_mode: host`, so it shares the host's namespace and 127.0.0.1
+      # IS the host. `host.docker.internal` -- right for every bridge-networked
+      # consumer in this stack -- resolves nowhere here. It is also the only
+      # reason anything can reach an opencode bound to loopback, which is the
+      # whole boundary in front of an agent that has a shell.
+      - OPENCODE_SERVERS=${OPENCODE_SERVERS:-}
+      - CODE_NAME=${CODE_NAME:-}
+      # `v1` or `v2` -- the two HTTP surfaces the same opencode serves.
+      # `v2` is the `/api/*` routes on the OpenCode 1 binary, not OpenCode 2
+      # (a separate program this stack has never run). v1 is not the timid
+      # pick: on 1.18.27 an `/api` session mounts none of the MCP tools, so
+      # the Programmer loses the broker, the share and delegation and keeps
+      # `bash` -- git without the broker. Empty means v1, which is what
+      # shipped.
+      - OPENCODE_API=${OPENCODE_API:-}
+      - OPENCODE_WORKSPACE_ROOT=${OPENCODE_WORKSPACE_ROOT:-}
+    volumes:
+      # All four are state, so all four come from an absolute path the
+      # deployer supplies. They used to be relative, which put them inside
+      # the directory a deploy replaces wholesale.
+      - ${HOMECORE_USERS_FILE:-/var/lib/home-stack/state/home-core/users.json}:/app/users.json:ro
+      # Which tiles the dashboard shows. Generated by the deployer from the
+      # enabled services plus the admin page's custom services.
+      - ${HOMECORE_SERVICES_FILE_HOST:-/var/lib/home-stack/config/home-core/services.json}:/app/services.json:ro
+      # Who lives here, written by the deployer from the admin page's
+      # member list. Read-only: this is a copy of what that page says,
+      # and the directory's own tables hold everything it does not.
+      - ${HOMECORE_FAMILY_FILE_HOST:-/var/lib/home-stack/config/home-core/family.json}:/app/family.json:ro
+      - ${HOMECORE_HISTORY_DIR:-/var/lib/home-stack/state/home-core/history}:/app/history
+      - ${HOMECORE_CERTS_DIR:-/var/lib/home-stack/state/home-core/certs}:/certs/
+      - ${HOMECORE_DATA_DIR:-/var/lib/home-stack/state/home-core/data}:/app/backup_data

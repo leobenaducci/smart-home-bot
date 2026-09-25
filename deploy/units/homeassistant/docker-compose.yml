@@ -1,0 +1,50 @@
+# Home Assistant: the thing that actually holds the house's devices.
+#
+# Upstream's image and one directory. `/config` is everything -- the YAML
+# somebody wrote, `secrets.yaml`, `.storage` (the device and entity registries,
+# every integration's tokens), the recorder database and, if ZHA is in use,
+# `zigbee.db` with the network key every paired device is joined on.
+#
+# **The radio is hardware.** ZHA talks to a USB coordinator, and a coordinator
+# lives in one machine at a time. Moving Home Assistant between hosts without
+# moving that stick leaves every Zigbee device in the house `unavailable` --
+# the integration loads, the entities exist, and none of them answer. There is
+# no configuration for this; somebody has to walk over and unplug it.
+services:
+  homeassistant:
+    image: ${HOMEASSISTANT_IMAGE:-homeassistant/home-assistant:stable}
+    container_name: homeassistant
+    restart: unless-stopped
+    # Root, and deliberately: the image's own supervisor sets up its user, and
+    # `/config` carries files it must own. This is the one service here that
+    # is not run as the deploying user, which is worth knowing before you
+    # wonder why the directory changes hands.
+    privileged: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${HOMEASSISTANT_PORT:-21062}:8123"
+    volumes:
+      - ${HOMEASSISTANT_CONFIG_DIR:-/var/lib/home-stack/state/homeassistant}:/config
+      # Read-only, so a clock skew inside the container is visible rather than
+      # silently corrected against a different zone than the house uses.
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      TZ: ${TZ:-UTC}
+    # No `devices:` here. The Zigbee coordinator is an overlay
+    # (docker-compose.zigbee.yml, applied when services.homeassistant.zigbee is
+    # on) for the same reason the camera wall's GPU is one: a device that is
+    # not in the machine is not a hint, it is `up` failing outright with "error
+    # gathering device information". A radio is an attribute of the box.
+    healthcheck:
+      # `/` is a 200 with the onboarding shell long before the integrations
+      # have loaded. The manifest's verify asks something with an answer in it.
+      # The sentinel is the manifest's `name`, which is "Home Assistant" --
+      # spaced and capitalised. The hyphenated "home-assistant" appears nowhere
+      # in manifest.json, so the old check could never match: curl returned 200,
+      # grep found nothing, and the container sat `unhealthy` while HA was fine.
+      test: ["CMD-SHELL",
+             "curl -sf http://127.0.0.1:8123/manifest.json | grep -q 'Home Assistant'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

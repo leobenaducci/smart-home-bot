@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>{{ t('admin.access.heading') }}</h2>
+  <p class="intro">{{ t('admin.access.intro') }}</p>
+  <p class="note">{{ t('admin.access.two_identities', dir=ssh_dir) }}</p>
+</div>
+
+{# The key first: without one, nothing below can be reached at all. #}
+<div class="card">
+  <h2>{{ t('admin.access.key_heading') }}</h2>
+  {% if key.present %}
+    <p class="intro">{{ t('admin.access.key_present') }}</p>
+    <p class="help mono" style="margin-bottom:10px">{{ key.fingerprint }}</p>
+    {# The public half, and only that. Somebody has to get this onto the other
+       machine, and a page that says "a key exists" without showing it has
+       described the problem rather than helped with it. #}
+    <pre class="mono deploy-cmd" style="white-space:pre-wrap;word-break:break-all">{{ key.public }}</pre>
+    <p class="help">{{ t('admin.access.key_install_help') }}</p>
+  {% else %}
+    <p class="intro">{{ t('admin.access.key_absent') }}</p>
+    <form method="post" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="generate_key">
+      <button type="submit">🔑 {{ t('admin.access.key_generate') }}</button>
+    </form>
+  {% endif %}
+
+  {# Importing matters more than generating when a machine already trusts a
+     key: a fresh one has to be authorised there first, and the only way in may
+     be the key you are replacing. #}
+  <details class="stack">
+    <summary style="cursor:pointer">{{ t('admin.access.key_import') }}</summary>
+    <form method="post" class="stack-s">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="import_key">
+      <div class="field">
+        <textarea name="private_key" rows="8" class="mono" autocomplete="off"
+                  spellcheck="false" style="width:100%"
+                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+        <p class="help">{{ t('admin.access.key_import_help') }}</p>
+        {% if key.present %}
+          <p class="help">{{ t('admin.access.key_import_replaces') }}</p>
+        {% endif %}
+      </div>
+      <p><button type="submit" class="ghost">{{ t('admin.access.key_import_go') }}</button></p>
+    </form>
+  </details>
+</div>
+
+{% if roles %}
+{% for r in roles %}
+<div class="card{% if r.state == 'changed' %} danger{% endif %}">
+  <h2>{{ r.role }} <span class="mono" style="color:var(--ink-soft);font-size:.85rem">{{ r.user }}@{{ r.address }}</span></h2>
+
+  {# The account, beside the machine it applies to -- which is where somebody
+     is standing when the question occurs to them. #}
+  <form method="post" style="margin-bottom:14px">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="set_user">
+    <input type="hidden" name="role" value="{{ r.role }}">
+    <div class="field">
+      <label for="u-{{ r.role }}">{{ t('admin.access.user') }}</label>
+      <input type="text" id="u-{{ r.role }}" name="user" class="mono"
+             value="{{ r.user }}" style="max-width:16rem">
+      <p class="help">{{ t('admin.access.user_help') }}</p>
+    </div>
+    <p><button type="submit" class="ghost">{{ t('common.save') }}</button></p>
+  </form>
+
+  {% if r.state == 'unreachable' %}
+    <p class="intro">{{ t('admin.access.unreachable', address=r.address) }}</p>
+    {% if r.detail %}<p class="help mono">{{ r.detail|join(' ') }}</p>{% endif %}
+
+  {% elif r.state == 'trusted' %}
+    <p class="intro">✓ {{ t('admin.access.trusted') }}</p>
+    <p class="help mono">{{ r.fingerprint }}</p>
+
+  {% else %}
+    {% if r.state == 'changed' %}
+      {# Two fingerprints, both shown. Either the machine was rebuilt or
+         somebody is in the middle, and this page will not guess which. #}
+      <p class="intro">{{ t('admin.access.changed') }}</p>
+      <table class="settings" style="margin-bottom:12px">
+        <tr><td>{{ t('admin.access.was') }}</td>
+            <td class="mono grow">{{ r.trusted_fingerprint }}</td></tr>
+        <tr><td>{{ t('admin.access.now') }}</td>
+            <td class="mono grow">{{ r.fingerprint }}</td></tr>
+      </table>
+      <p class="help">{{ t('admin.access.changed_help') }}</p>
+    {% else %}
+      <p class="intro">{{ t('admin.access.unknown') }}</p>
+      <p class="help mono">{{ r.fingerprint }}</p>
+      <p class="help">{{ t('admin.access.unknown_help') }}</p>
+    {% endif %}
+
+    <form method="post" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="trust">
+      <input type="hidden" name="address" value="{{ r.address }}">
+      <div class="field">
+        <label for="c-{{ r.role }}">{{ t('admin.access.confirm') }}</label>
+        <input type="text" id="c-{{ r.role }}" name="confirm" class="mono"
+               autocomplete="off" placeholder="SHA256:…">
+        <p class="help">{{ t('admin.access.confirm_help') }}</p>
+      </div>
+      <p class="stack">
+        <button type="submit" {% if r.state == 'changed' %}class="danger"{% endif %}>
+          {{ t('admin.access.trust') }}
+        </button>
+      </p>
+    </form>
+  {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+  <p class="intro">{{ t('admin.access.no_remotes') }}</p>
+</div>
+{% endif %}
+{% endblock %}

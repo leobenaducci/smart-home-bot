@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Camera Settings</title>
+    <!-- The house faces, served by this app. See
+         HomeCore/tools/fetch-fonts.sh for where they come from and why they
+         are not fetched from the internet. -->
+    <link rel="stylesheet" href="{{ base }}/static/fonts/house.css">
+    <style>
+        /* ---- "The House", after dark ----------------------------------------
+           The same tokens HomeCore, finance_helper, the MQTT dashboard and the
+           SmartButton page use, in the palette's night values. The house has a
+           night mode and this is the room that lives in it: reviewing footage
+           on a lit cream page is worse, not more consistent, so the kinship is
+           carried by the palette, the type and the shapes rather than by making
+           a camera wall bright.
+
+           Names are the ones this app already used, so nothing downstream had
+           to be renamed to adopt them. `--accent` and `--warning` are both
+           honey on purpose: the house has three semantic hues — honey for
+           attention, olive for good, clay for bad — and inventing a fourth to
+           fill a slot would be the opposite of normalising. */
+        :root {
+            --bg: #16180F;
+            --surface: #1E2117;
+            --surface-2: #242819;
+            --border: #333823;
+            --text: #EBE4D2;
+            --text-muted: #9D9781;
+            --accent: #DFAA54;
+            --accent-quiet: #5C4A25;
+            --accent-hot: #EDBE71;
+            --danger: #D2705A;
+            --success: #93A46E;
+            --warning: #DFAA54;
+            --radius: 12px;
+            --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+      /* ── The House, the house style ──
+         The palette was already shared by every app here; the type, the edges
+         and the focus ring were not, which is why the ledger looked designed
+         and everything else looked like a browser default wearing the right
+         colours. Declared after whatever this page defined above, so those
+         win where they still make sense and these win where they conflict.
+
+         Fraunces names things, IBM Plex Sans is what you read, IBM Plex Mono
+         is anything you count. Each keeps a system stack behind it, so a house
+         with no way out to the internet gets the same page in other faces. */
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+      /* The deep ends of the same hues, for type too small to carry the light
+         ones — honey at .7rem on paper is a suggestion, not a word. */
+      --ink-deep: #17140F; --olive-deep: #3E4A2B;
+      --clay-deep: #8B3826; --honey-deep: #8A5E17;
+      /* Sheets, controls, chips: the three sizes anything in the house is. */
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+      --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(60,50,30,.75);
+      --ring: 0 0 0 3px color-mix(in srgb, var(--honey, #C6892B) 22%, transparent);
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: var(--sans);
+            background: var(--bg);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .login-container {
+            background-color: var(--surface);
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            box-shadow: 0 18px 40px -28px #000;
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .login-header h1 {
+            color: var(--text);
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        .login-header p {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: var(--text);
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--sans);
+            font-size: 14px;
+            transition: border-color 0.15s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        .btn-primary {
+            background-color: var(--accent);
+            color: var(--bg);
+        }
+        .btn-primary:hover {
+            background-color: var(--accent-hot);
+        }
+        .error-message {
+            background-color: rgba(210,112,90,0.12);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+            padding: 12px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: none;
+            font-size: 14px;
+        }
+        .error-message.show {
+            display: block;
+        }
+        .back-link {
+            text-align: center;
+            margin-top: 20px;
+        }
+        .back-link a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .back-link a:hover {
+            color: var(--accent);
+        }
+    /* ── The House: what every app in the house has in common ──
+       Appended last on purpose. It adds three things and touches nothing else:
+
+       1. The hand-ruled edge. Olive, honey, clay — money in, what wants your
+          attention, money out. Under the header of the portal, the chat, the
+          cameras and the broker, it is the one mark that
+          says at a glance that these are the same house. It is also the only
+          ornament here; everything else below is type and focus.
+       2. Fraunces on the line that names the page, and nowhere else. A serif
+          on a button would be costume; on the title it is the house's voice.
+       3. One focus ring. There were six, and in some places none at all,
+          which is the same as telling somebody on a keyboard to guess.
+          `outline` rather than a shadow, so it follows the corner radius each
+          page already chose and never replaces a card's own shadow. */
+    :where(header, .nav, .topbar) { position: relative; }
+    header::after, .nav::after, .topbar::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: linear-gradient(90deg,
+        var(--olive-2, #7E8A61) 0 22%, var(--honey, #C6892B) 22% 62%, var(--clay, #AC4B36) 62% 100%);
+      opacity: .85; pointer-events: none;
+    }
+    h1, .hero .hello {
+      font-family: var(--display);
+      font-weight: 700; font-variation-settings: "opsz" 96; letter-spacing: -.012em;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--honey, #C6892B); outline-offset: 2px;
+    }
+    </style>
+    <!-- HomeCore's CSRF token on every request of ours that changes something.
+         Empty `base` means the LAN, where there is no HomeCore session to
+         protect and the file does nothing. What it covers and what it cannot
+         (socket.io, which is XHR) is written down in the file itself. -->
+    <script src="{{ base }}/static/js/csrf.js" data-base="{{ base }}"></script>
+    <!-- This member's theme, in the night register this page is written in.
+         Only reachable when the page is served through HomeCore (/camaras/),
+         which is also the only time the app knows who is looking; opened
+         straight off the LAN it 404s and the page keeps its own colours,
+         which is exactly the wanted behaviour and needs no branch. -->
+    <link rel="stylesheet" href="/theme/night.css">
+    <script>
+      /* Repaint when somebody changes their theme while this is open, the
+         same twenty seconds the house pages use. Only swaps the href, so a
+         camera feed is never reloaded by a colour change. */
+      (function () {
+        var link = document.querySelector('link[href$="/theme/night.css"]');
+        if (!link || !"{{ base }}") return;
+        var seen = null;
+        setInterval(async function () {
+          try {
+            var r = await fetch("/theme/version", { cache: 'no-store' });
+            if (!r.ok) return;
+            var v = (await r.json()).v;
+            if (seen === null) { seen = v; return; }
+            if (v !== seen) { seen = v; link.href = "/theme/night.css?v=" + v; }
+          } catch (e) { /* offline or logged out; try again next tick */ }
+        }, 20000);
+      })();
+    </script>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1>Camera Settings</h1>
+            <p>{% if error %}You cannot come in this way{% else %}Please enter admin password to access settings{% endif %}</p>
+        </div>
+        
+        {# Rendered server-side as well as filled by the JS below. The node was
+           static and hidden, so a page served *with* an explanation showed an
+           ordinary empty password box and the reader learned nothing until
+           they had typed a password and submitted it. #}
+        <div id="error-message" class="error-message{% if error %} show{% endif %}">
+          {{ error if error else '' }}</div>
+
+        {% if not error %}
+        <form id="login-form">
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required autofocus>
+            </div>
+            <button type="submit" class="btn btn-primary">Login</button>
+        </form>
+        {% endif %}
+        
+        <div class="back-link">
+            <a href="{{ base }}/">Back to Dashboard</a>
+        </div>
+    </div>
+
+    <!-- Served from this app, not a CDN. Same reason the fonts are:
+         a house that cannot reach the internet must still get its
+         pages, and this one is load-bearing - see the guard below. -->
+    <script src="{{ base }}/static/js/socket.io.js"></script>
+    <script>
+        document.getElementById('login-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const password = document.getElementById('password').value;
+            const errorMessage = document.getElementById('error-message');
+            
+            try {
+                // Get the 'next' parameter from the URL
+                const nextUrl = new URLSearchParams(window.location.search).get('next');
+                
+                const response = await fetch('{{ base }}/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ password: password, next: nextUrl })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Redirect to the original page or settings page
+                    // Use the redirect URL from the server response
+                    window.location.href = data.redirect || '{{ base }}/settings';
+                } else {
+                    errorMessage.textContent = data.error || 'Invalid password';
+                    errorMessage.classList.add('show');
+                }
+            } catch (error) {
+                errorMessage.textContent = 'Error connecting to server';
+                errorMessage.classList.add('show');
+            }
+        });
+    </script>
+</body>
+</html>

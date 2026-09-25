@@ -1,0 +1,359 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+<div class="card">
+  <h2>{{ t('admin.site.heading') }}</h2>
+
+  <div class="fields">
+  <div class="field">
+    <label for="name">{{ t('admin.site.name') }}</label>
+    <input type="text" id="name" name="name" value="{{ cfg.site.name }}">
+    <p class="help">{{ t('admin.site.name_help') }}</p>
+  </div>
+
+  <div class="field">
+    <label for="assistant_name">{{ t('admin.site.assistant_name') }}</label>
+    <input type="text" id="assistant_name" name="assistant_name"
+           value="{{ cfg.site.assistant_name or 'Alfred' }}">
+    <p class="help">{{ t('admin.site.assistant_name_help') }}</p>
+  </div>
+
+  <div class="field">
+    <label for="domain">{{ t('admin.site.domain') }}</label>
+    <input type="text" id="domain" name="domain" value="{{ cfg.site.domain }}">
+    <p class="help">{{ t('admin.site.domain_help') }}</p>
+  </div>
+
+  <div class="field">
+    <label for="timezone">{{ t('admin.site.timezone') }}</label>
+    <select id="timezone" name="timezone">
+      {% set current = cfg.site.timezone %}
+      {% set known = [] %}
+      {% for region, zones in timezones.items() %}
+        <optgroup label="{{ region }}">
+          {% for zone in zones %}
+            {% if known.append(zone) %}{% endif %}
+            <option value="{{ zone }}" {% if zone == current %}selected{% endif %}>{{ zone }}</option>
+          {% endfor %}
+        </optgroup>
+      {% endfor %}
+      {# Whatever is configured stays selectable even if it is not in the list
+         above — a hand-edited config must never be silently rewritten by
+         opening this page. #}
+      {% if current and current not in known %}
+        <optgroup label="—"><option value="{{ current }}" selected>{{ current }}</option></optgroup>
+      {% endif %}
+    </select>
+    <p class="help">{{ t('admin.site.timezone_help') }}</p>
+  </div>
+
+  <div class="field">
+    <label for="default_locale">{{ t('admin.site.default_locale') }}</label>
+    <select id="default_locale" name="default_locale">
+      {% for l in all_locales %}
+        <option value="{{ l.code }}" {% if l.code == cfg.locale.default %}selected{% endif %}>{{ l.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  {# The whole row: eleven checkboxes wrapped inside a 280px grid cell read as
+     a column of names rather than a set to choose from. #}
+  <div class="field wide">
+    <label>{{ t('admin.site.available_locales') }}</label>
+    {% for l in all_locales %}
+      <label style="display:inline-flex;gap:6px;align-items:center;font-weight:400;margin:0 16px 6px 0">
+        <input type="checkbox" name="available" value="{{ l.code }}"
+               {% if l.code in cfg.locale.available %}checked{% endif %}>
+        {{ l.name }}
+      </label>
+    {% endfor %}
+  </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.site.hosts_heading') }}</h2>
+  <p class="intro">{{ t('admin.site.hosts_intro') }}</p>
+  <table class="settings">
+    <thead>
+      <tr><th>{{ t('admin.overview.role') }}</th><th>{{ t('admin.overview.address') }}</th><th>{{ t('common.username') }}</th></tr>
+    </thead>
+    <tbody>
+    {% for role, host in cfg.hosts.items() %}
+    <tr>
+      <td><strong class="strong">{{ role }}</strong></td>
+      <td class="grow-sm"><input type="text" name="host:{{ role }}" value="{{ host.address }}" class="mono"></td>
+      <td class="grow-sm"><input type="text" name="host_user:{{ role }}" value="{{ host.user }}" class="mono"></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.site.dns_heading') }}</h2>
+  <p class="intro">{{ t('admin.site.dns_intro') }}</p>
+  <table class="settings">
+    <thead>
+      <tr>
+        <th>{{ t('admin.site.dns_alias') }}</th>
+        <th>{{ t('admin.site.dns_name') }}</th>
+        <th>{{ t('admin.site.dns_points_at') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for alias, name in cfg.dns.items() %}
+    {% set target = cfg.dns_targets.get(alias) %}
+    {# A name for a service nobody deploys is a line somebody copies into their
+       resolver for an address where nothing answers. Dimmed and said out loud
+       rather than hidden: the name is still theirs, still saved, and still
+       right the moment they switch the service back on. #}
+    <tr{% if target and not target.live %} style="opacity:.55"{% endif %}>
+      <td class="mono">{{ alias }}</td>
+      <td class="grow">
+        <input type="text" name="dns:{{ alias }}" value="{{ name }}" class="mono">
+        {% if target and not target.live %}
+          <p class="help">{{ t('admin.site.dns_service_off', service=target.service) }}</p>
+        {% endif %}
+      </td>
+      {# Read-only: this is not a setting, it is what `hosts:` already says.
+         An input here would look editable and silently disagree with the row
+         above it. #}
+      <td class="mono" style="color:var(--ink-soft);white-space:nowrap">
+        {% if target and target.address and target.live %}
+          {{ target.address }}
+          <span style="font-size:.78rem;opacity:.75">({{ target.role }})</span>
+        {% else %}
+          <span style="opacity:.6">—</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="note">{{ t('admin.site.dns_resolver_note') }}</p>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.site.paths_heading') }}</h2>
+  <p class="intro">{{ t('admin.site.paths_intro') }}</p>
+  {# A machine, then its five directories.
+
+     It was five paths and, under them, a grid of the same five by four
+     machines: twenty boxes, nearly every one repeating the row above. A table
+     that wide says the usual case is "every machine keeps things somewhere
+     else" when the usual case is that none of them do.
+
+     So one machine is on screen at a time. `all` is the set every machine uses
+     unless it says otherwise, and is what a single-PC household ever touches;
+     the rest are there for the day one of them gets its own disk. Every group
+     is rendered and posts, so switching the combo cannot lose an edit -- it
+     only decides what is visible. #}
+  <div class="field">
+    <label for="paths-machine">{{ t('admin.site.paths_machine') }}</label>
+    <select id="paths-machine">
+      <option value="all">{{ t('admin.site.paths_all') }}</option>
+      {% for role in path_roles %}
+        <option value="{{ role }}">{{ role }}{% if role in cfg.paths_differ %} · {{ t('admin.site.paths_own') }}{% endif %}</option>
+      {% endfor %}
+    </select>
+    <p class="help">{{ t('admin.site.paths_machine_help') }}</p>
+  </div>
+
+  <div class="paths-group" data-machine="all">
+    <table class="settings">
+      <tbody>
+      {% for kind in path_kinds %}
+      <tr>
+        <td class="mono"><label for="path-{{ kind }}" style="margin:0;font-weight:400">{{ kind }}</label></td>
+        <td class="grow w-path">
+          <input type="text" id="path-{{ kind }}" name="path:{{ kind }}"
+                 value="{{ cfg.paths[kind] }}" class="mono">
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% for role in path_roles %}
+  <div class="paths-group" data-machine="{{ role }}" hidden>
+    <table class="settings">
+      <tbody>
+      {% for kind in path_kinds %}
+      <tr>
+        <td class="mono"><label for="path-{{ role }}-{{ kind }}" style="margin:0;font-weight:400">{{ kind }}</label></td>
+        <td class="grow w-path">
+          <input type="text" id="path-{{ role }}-{{ kind }}" name="path:{{ role }}:{{ kind }}"
+                 value="{{ cfg.paths_by_host[role][kind] }}" class="mono">
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="help">{{ t('admin.site.paths_role_help', role=role) }}</p>
+  </div>
+  {% endfor %}
+
+  <script>
+    // No navigation: every group is already in the page and already posts, so
+    // switching machines cannot discard something typed on another one.
+    (function () {
+      var pick = document.getElementById('paths-machine');
+      if (!pick) return;
+      var groups = document.querySelectorAll('.paths-group');
+      function show() {
+        groups.forEach(function (g) {
+          g.hidden = g.dataset.machine !== pick.value;
+        });
+      }
+      pick.addEventListener('change', show);
+      show();
+    })();
+  </script>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.cloud.heading') }}</h2>
+  <p class="intro">{{ t('admin.cloud.intro') }}</p>
+
+  <div class="field">
+    <label class="row-tight">
+      <input type="checkbox" name="vps" {% if cfg.cloud.vps.enabled %}checked{% endif %}>
+      {{ t('admin.cloud.vps') }}
+    </label>
+    <p class="help">{{ t('admin.cloud.vps_help') }}</p>
+    <div class="fields" style="margin:10px 0 0 24px;padding:0">
+      <div class="field">
+        <label for="vps_host">{{ t('admin.overview.address') }}</label>
+        <input type="text" id="vps_host" name="vps_host" value="{{ cfg.cloud.vps.host }}"
+               class="mono" placeholder="chat.example.com">
+      </div>
+      <div class="field">
+        <label for="vps_user">{{ t('common.username') }}</label>
+        <input type="text" id="vps_user" name="vps_user" value="{{ cfg.cloud.vps.user }}"
+               class="mono">
+      </div>
+
+      {# Answering "can this machine actually reach that one" here, where the
+         address and the login are typed. It was only ever answered inside a
+         deploy log, after a deploy had already begun and failed -- and the
+         three ways it fails need three different things done about them, so
+         they are named rather than collapsed into "error". The key itself is
+         not settable here: there is one for the whole stack and it lives on
+         the Access page, and a second place to set one thing is how two
+         copies drift apart. #}
+      <div class="field wide">
+        <p>
+          <button type="button" class="ghost" id="vps-test">
+            🔌 {{ t('admin.cloud.vps_test') }}</button>
+          <span id="vps-test-out" class="help" style="margin-left:8px"></span>
+        </p>
+        <p class="help">{{ t('admin.cloud.vps_test_help') }}
+          <a href="{{ url_for('access') }}">{{ t('admin.nav.access') }} &rarr;</a></p>
+      </div>
+
+    {# Separate from the switch above on purpose. "There is a VPS" and "this
+       stack deploys it" are different facts, and a household whose VPS was set
+       up by hand usually has an account that can hold a tunnel open and
+       nothing else. #}
+    <div class="field">
+      <label class="check-row">
+        <input type="checkbox" name="vps_managed"
+               {% if cfg.cloud.vps.managed %}checked{% endif %}>
+        {{ t('admin.cloud.vps_managed') }}
+      </label>
+      <p class="help">{{ t('admin.cloud.vps_managed_help') }}</p>
+    </div>
+      <div class="field">
+        <label for="vps_tunnel_port">{{ t('admin.cloud.tunnel_port') }}</label>
+        <input type="text" id="vps_tunnel_port" name="vps_tunnel_port"
+               value="{{ cfg.cloud.vps.tunnel_port }}" class="mono">
+        <p class="help">{{ t('admin.cloud.tunnel_port_help') }}</p>
+      </div>
+      <div class="field wide">
+        <label style="display:inline-flex;gap:8px;align-items:center;font-weight:400;margin:0">
+          <input type="checkbox" name="vps_entry_page"
+                 {% if cfg.cloud.vps.serve_entry_page %}checked{% endif %}>
+          {{ t('admin.cloud.vps_entry_page') }}
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="fields">
+  <div class="field">
+    <label for="notifications">{{ t('admin.cloud.notifications') }}</label>
+    <select id="notifications" name="notifications">
+      {% set mode = cfg.cloud.notifications.mode %}
+      <option value="local"    {% if mode=='local' %}selected{% endif %}>{{ t('admin.cloud.notifications_local') }}</option>
+      <option value="external" {% if mode=='external' %}selected{% endif %}>{{ t('admin.cloud.notifications_external') }}</option>
+      <option value="off"      {% if mode=='off' %}selected{% endif %}>{{ t('admin.cloud.notifications_off') }}</option>
+    </select>
+    <input type="text" name="notifications_url" value="{{ cfg.cloud.notifications.external_url }}"
+           class="mono stack-s" placeholder="https://ntfy.example.com">
+  </div>
+
+  <div class="field">
+    <label for="certificates">{{ t('admin.cloud.certificates') }}</label>
+    <select id="certificates" name="certificates">
+      {% set cmode = cfg.cloud.certificates.mode %}
+      <option value="local-ca" {% if cmode=='local-ca' %}selected{% endif %}>{{ t('admin.cloud.certificates_local') }}</option>
+      <option value="acme-dns" {% if cmode=='acme-dns' %}selected{% endif %}>{{ t('admin.cloud.certificates_acme') }}</option>
+    </select>
+    <input type="text" name="acme_provider" value="{{ cfg.cloud.certificates.acme_dns_provider }}"
+           class="mono stack-s" placeholder="dns_cf">
+    <p class="help">{{ t('admin.cloud.acme_provider_help') }}</p>
+  </div>
+  </div>
+
+  <p class="stack-l"><button type="submit">{{ t('common.save') }}</button></p>
+</div>
+</form>
+
+{% set vps_says = {
+     'ok':          t('admin.cloud.vps_test_ok'),
+     'auth':        t('admin.cloud.vps_test_auth'),
+     'hostkey':     t('admin.cloud.vps_test_hostkey'),
+     'unreachable': t('admin.cloud.vps_test_unreachable'),
+     'nokey':       t('admin.cloud.vps_test_nokey'),
+     'unset':       t('admin.cloud.vps_test_unset'),
+     'testing':     t('admin.cloud.vps_testing')} %}
+<script>
+(function () {
+  'use strict';
+  var btn = document.getElementById('vps-test');
+  var out = document.getElementById('vps-test-out');
+  if (!btn || !out) return;
+  // Every sentence the answer can be, handed over as one JSON value. A raw
+  // interpolation into a script is what admin/test_templates.py refuses, and
+  // rightly: a translation with an apostrophe in it ends the string literal
+  // and takes the rest of the page with it.
+  var SAYS = {{ vps_says | tojson }};
+  var URL_ = {{ url_for('cloud_vps_test') | tojson }};
+  var CSRF = {{ csrf_token() | tojson }};
+
+  btn.addEventListener('click', function () {
+    btn.disabled = true;
+    out.className = 'help';
+    out.textContent = SAYS.testing;
+    fetch(URL_, {method: 'POST', body: new URLSearchParams({_csrf: CSRF})})
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        out.textContent = SAYS[d.state] || d.state;
+        out.className = d.state === 'ok' ? 'help ok' : 'help warn';
+      })
+      .catch(function () {
+        out.textContent = SAYS.unreachable;
+        out.className = 'help warn';
+      })
+      .finally(function () { btn.disabled = false; });
+  });
+})();
+</script>
+
+{% endblock %}

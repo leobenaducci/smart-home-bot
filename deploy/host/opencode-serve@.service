@@ -1,0 +1,104 @@
+[Unit]
+Description=OpenCode server and web interface for %i (the Programmer space)
+Documentation=https://opencode.ai/docs/server/
+Documentation=https://opencode.ai/docs/web/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Port and binary path, overridable without editing a shipped file. The
+# EnvironmentFile is optional (`-`): a household that never wrote one gets the
+# defaults, and `./home-stack install` only writes it when the port differs
+# from the shipped 4096.
+Environment=OPENCODE_SERVE_PORT=4096
+Environment=OPENCODE_BIN=%h/.opencode/bin/opencode
+# A template unit, instantiated once per member: opencode-serve@user1,
+# opencode-serve@user2. `%i` is that member id.
+#
+# One server each, and not for scale. opencode holds a single MCP block, so a
+# shared server would authenticate every member's household tools as whoever it
+# was configured for -- and the profession spaces are open to the whole
+# household. That is a second person getting the first one's projects and their
+# folder on the share, with nothing failing.
+#
+# This file carries the port and the config directory for %i; the deployer
+# writes it when it writes that member's opencode configuration.
+EnvironmentFile=-%h/.config/home-stack/opencode-serve-%i.env
+# The household's own provider keys, written by the deployer. Separate file
+# because the two have different owners and different lifetimes: the one above
+# is settled once at install, this one changes whenever somebody edits a
+# credential on the admin page.
+#
+# opencode discovers providers from the environment on its own -- no `provider`
+# block is needed in its config, and none is written. Measured: the same binary
+# lists two providers as a service with no keys and three when started from a
+# shell that has TOGETHER_API_KEY.
+EnvironmentFile=-%h/.config/home-stack/opencode-providers.env
+
+# A neutral directory, deliberately not $HOME and deliberately not the deploy
+# tree. Real work names its own: HomeCore creates every session with
+# `?directory=<the broker's checkout>`, so this is only where a session that
+# named nothing would land. $HOME would make that session's `read` and `bash`
+# tools start life pointed at the whole account; the deploy directory would put
+# it somewhere the deployer rsyncs with --delete.
+#
+# StateDirectory rather than an ExecStartPre that makes it: WorkingDirectory
+# applies to ExecStartPre as well, so a `mkdir -p` of the very directory being
+# changed into cannot run -- systemd fails the unit with 200/CHDIR before the
+# mkdir starts. StateDirectory is created during unit setup, ahead of every
+# exec, which is the ordering this needs.
+StateDirectory=opencode-serve/%i
+WorkingDirectory=%S/opencode-serve/%i
+
+# `serve`, and the browser interface comes with it. Measured on 1.18.27: `serve`
+# and `web` register the same 162 routes and return the same bytes at `/` --
+# the interface is not something `web` adds. What `web` adds is the *opening*:
+# it shells out to xdg-open on every start, which a service manager must not
+# do. It is not suppressible either -- BROWSER=/bin/true does not stop it --
+# and this unit is WantedBy=default.target with Restart=on-failure, so a
+# desktop session that has imported DISPLAY into the user manager gets one
+# browser window per member instance at login, per deploy restart, and every
+# five seconds while a broken server is restarting.
+#
+# 127.0.0.1, and this is the security boundary rather than a default worth
+# tidying. This is an agent with a shell: anything that can reach the port can
+# run `bash` as whoever started the unit, with no authentication in front of
+# it. The interface makes that plainer, not different -- on startup the binary
+# itself says `OPENCODE_SERVER_PASSWORD is not set; server is unsecured`, and
+# that password is basic auth over plain HTTP, which is not a substitute for
+# not listening. Nothing proxies this port: the portal drives the *API* from
+# the host side and serves no route to the interface, so reaching `/` already
+# means being on this machine. The containers reach the same loopback through
+# host.docker.internal.
+ExecStart=/bin/sh -c 'exec "$OPENCODE_BIN" serve \
+  --hostname 127.0.0.1 \
+  --port "$OPENCODE_SERVE_PORT" \
+  --print-logs \
+  --log-level INFO'
+
+# Ready means it answers, not that the port is open and not that it returned a
+# 200: the port opens before the server will serve a session, and `curl -sf`
+# passes on any of them. %E is the user's configuration root, where
+# `./home-stack install --opencode` puts the script beside this unit.
+#
+# A script rather than an inline shell line, and that is load-bearing. Written
+# inline, systemd's unescaping turns `\"healthy\"` into `""healthy"`, which the
+# shell concatenates into a pattern that cannot match `{"healthy":true}` -- so
+# the unit failed for a minute against a server that had been answering the
+# whole time. See the comment at the top of opencode-health.sh.
+ExecStartPost=%E/home-stack/opencode-health.sh ${OPENCODE_SERVE_PORT} 60
+
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+# Unlike the FreeToken unit this replaced in spirit, this one is wanted at
+# login: it holds no GPU, loads no weights and costs a few tens of MB of RSS
+# idle, so there is nothing to free by stopping it -- and the Programmer space
+# is opened by a person who should not have to wait for a cold start.
+WantedBy=default.target

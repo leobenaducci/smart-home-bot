@@ -1,0 +1,106 @@
+# Project-specific
+.worktrees/
+.assets
+.docs
+.env
+.web
+.orion
+
+# webui (monorepo frontend)
+webui/node_modules/
+# Built in the image (Dockerfile's bridge-build stage) and .dockerignore'd, but
+# anyone type-checking the bridge locally has to `npm install` first — and 74
+# packages of it showed up as untracked the first time somebody did.
+bridge/node_modules/
+webui/dist/
+webui/coverage/
+webui/.vite/
+*.tsbuildinfo
+
+# Python bytecode & caches
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+__pycache__/
+*.egg-info/
+*.egg
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.dmypy.json
+dmypy.json
+.tox/
+.nox/
+.hypothesis/
+
+# Build & packaging
+dist/
+build/
+*.manifest
+*.spec
+pip-wheel-metadata/
+share/python-wheels/
+
+# Test & coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# Lock files (project policy)
+poetry.lock
+uv.lock
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+.directory
+
+# Editors & IDEs (local workspace / user settings)
+.vscode/
+.cursor/
+.idea/
+.fleet/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+nano.*.save
+
+# Environment & secrets (keep examples tracked if needed)
+.env.*
+!.env.example
+
+# Logs & temp
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# Written by build-multiuser.sh to detect config.json changes between deploys.
+.deploy-config.sha
+
+# Runtime data dir. On Windows get_config_path() resolves to the package root
+# (nanobot/config/loader.py), so get_media_dir() lands here instead of under
+# ~/.nanobot — running the test suite leaves media/qq/*.png in the working tree.
+media/
