@@ -131,6 +131,7 @@ thing to run for any other.
 ./i18n/check.py --unused                  keys nothing references
 ./deploy/sanitize.py --check              assert no household data is present
 ./deploy/sanitize.py --selftest           verify the sanitizer's own rules
+./deploy/publish_check.py                 refuse to publish household data (see Publishing)
 
 ./home-stack backup                       archive state (recordings excluded)
 ./home-stack backup --export              refresh the mirror, write no archive
@@ -150,6 +151,7 @@ scripts, take no arguments, and run from the root under the same interpreter
 ./.venv/bin/python deploy/test_backup.py    archive a tree, damage it, restore it
 ./.venv/bin/python deploy/test_plugins.py   plugins, and the exemptions they lack
 ./.venv/bin/python deploy/test_ollama.py    the Ollama servers list, its units, the old shape
+./.venv/bin/python deploy/test_publish_check.py  what the publish gate treats as a secret
 ./deploy/test_install.sh                    the installer, on a throwaway tree
 ./.venv/bin/python admin/test_templates.py  one class per tag, no bare {{ }} in a script
 ./.venv/bin/python admin/test_ollama.py     "Runs on", the servers card, the VRAM estimate
@@ -384,6 +386,56 @@ household using it. These cost real outages and are not obvious from the code:
   sets its own; one has deleted real accounts. Point `HOME_STACK_*` at a
   scratch directory when a suite you write touches config or state, and render
   admin pages against a copy of the live state -- a scratch config hid a 500.
+
+## Publishing
+
+The repository is public, and the machine it deploys to is somebody's home.
+Two clones of it, with different jobs:
+
+| Clone | Job | Pushes |
+|---|---|---|
+| **working checkout** (e.g. `~/smart-home-bot`) | Where changes are made, tested and deployed from | **Never.** Its push URL is disabled and a `pre-push` hook refuses. |
+| **publishing clone** (the same name + `-main`) | Where fixes become pull requests | Branches only, through the gate below |
+
+**Household data never enters git.** The household's config, credentials,
+members and models live in the live config directory; its own services and
+custom skills are plugins in `paths.plugins`; per-member skills and memory are
+state; bench device names map through `/shared-state/bench-house-names.json`;
+the identifiers the sanitizer hunts for are in the gitignored
+`deploy/sanitize-rules.local.py`. So a commit in the working checkout is
+generic by construction. When a change only makes sense for this house, it
+belongs in one of those places -- not in the tree. The rare exception that must
+be in the tree is its own commit with a subject starting `house:`, and it is
+never published.
+
+**To publish a fix**, in the publishing clone:
+
+```bash
+git fetch --multiple origin work        # `work` is a remote pointing at the working checkout
+git switch -c fix/<name> origin/main
+git cherry-pick <commits>               # from work/main; never a `house:` commit
+./deploy/publish_check.py               # the gate; the pre-push hook runs it too
+git push -u origin fix/<name>           # then open the PR (gh pr create, or the link printed)
+```
+
+After the PR is merged, the working checkout catches up with
+`git pull --rebase origin main`; the published commits drop out as already
+applied, and `house:` commits stay on top.
+
+**The gate** (`deploy/publish_check.py`) reads this machine's real values and
+fails if any of them is in what would be pushed: every credential in the live
+and seed env files, every login id, email and phone in the portal's user store,
+the sanitizer's identifiers (with the local rules -- without them it warns that
+it cannot see the household's names), key-shaped strings, and any commit whose
+author or committer email is not `git config publish.email` (a GitHub no-reply
+address; a personal one was once published this way). It prints the kind of
+value and the file, never the value. The publishing clone needs the working
+checkout's `.venv`, `config/home-stack.yml` seed and
+`deploy/sanitize-rules.local.py` linked in, all gitignored.
+
+Rules that follow: **a push goes after the check with `&&`, never `;`** -- a
+chain that carried on after a failed commit once pushed the wrong one. **A
+force-push to `main` is only ever to undo a leak**, and only after asking.
 
 ## Plans
 
