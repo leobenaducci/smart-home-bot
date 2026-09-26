@@ -855,6 +855,35 @@ _QWEN35_PARAM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# DeepSeek's own tool-call markup ("DSML"), written as text instead of sent as a
+# structured call. deepseek-v4-flash ended the morning greeting of 2026-09-26
+# with it, and the markup was published verbatim in two people's chats:
+#   <｜DSML｜tool_calls>
+#   <｜DSML｜invoke name="weather">
+#   <｜DSML｜parameter name="action" string="true">get_forecast</｜DSML｜parameter>
+#   </｜DSML｜invoke>
+#   </｜DSML｜tool_calls>
+# It carries what the Qwen3.5 format carries, so it is rewritten into that one
+# and every Qwen path -- a tool, a skill by name, the stripping -- applies.
+_DSML = r"<\s*/?\s*[｜|]\s*DSML\s*[｜|]\s*"
+_DSML_REWRITES = (
+    (re.compile(_DSML.replace("/?", "") + r"invoke\s+name\s*=\s*\"([^\"]+)\"\s*>", re.I), r"<function=\1>"),
+    (re.compile(r"<\s*/\s*[｜|]\s*DSML\s*[｜|]\s*invoke\s*>", re.I), "</function>"),
+    (re.compile(_DSML.replace("/?", "") + r"parameter\s+name\s*=\s*\"(\w+)\"[^>]*>", re.I), r"<parameter=\1>"),
+    (re.compile(r"<\s*/\s*[｜|]\s*DSML\s*[｜|]\s*parameter\s*>", re.I), "</parameter>"),
+    (re.compile(_DSML + r"(?:tool_calls|function_calls)\s*>", re.I), ""),
+)
+
+
+def _dsml_as_qwen35(text: str) -> str:
+    """DeepSeek's DSML tool-call markup rewritten as the Qwen3.5 format."""
+    if not text or "DSML" not in text:
+        return text
+    for rx, repl in _DSML_REWRITES:
+        text = rx.sub(repl, text)
+    return text
+
+
 # Matches <tool_call>{"name": "...", "arguments": {...}}</tool_call> (Qwen3/Hermes style)
 _HERMES_TOOL_CALL_RE = re.compile(
     r"<tool_call>\s*([\s\S]*?)\s*</tool_call>",
@@ -2678,6 +2707,8 @@ class AgentRunner:
         """
         if response.finish_reason == "error":
             return _without_skill_invocation_text(response)
+        if response.content and "DSML" in response.content:
+            response = dataclasses.replace(response, content=_dsml_as_qwen35(response.content))
         if response.has_tool_calls:
             response = _lift_echoed_skill_blocks(response, spec.session_key)
         if response.has_tool_calls:
