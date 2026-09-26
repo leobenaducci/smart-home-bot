@@ -9,6 +9,7 @@ their message.
 
 Plain script, like the other suites here: `python3 test_event_context.py`.
 """
+import functools
 import os
 import shutil
 import sys
@@ -58,7 +59,15 @@ history = [
      "ts": NOW - 2 * MIN, "ev": "ev-task-4"},
     {"role": "user", "text": "No puedo", "ts": NOW, "conv": 2},
 ]
-A.load_user_history = lambda *a, **k: list(history)
+
+
+def on_today(msgs, yesterday=()):
+    """load_user_history, with `msgs` filed under today and `yesterday` before it."""
+    today = A._tasks_today().isoformat()
+    return lambda user, day=None, *a, **k: list(msgs if day == today else yesterday)
+
+
+A.load_user_history = on_today(history)
 block = A._event_context_block("999000111", "No puedo", now_ms=NOW + 1000)
 
 print("what Alfred is shown")
@@ -81,12 +90,26 @@ check("inside a profession, nothing: it keeps its own history",
       A._event_context_block("999000111", "No puedo", space="teacher") == "")
 old = [{"role": "bot", "text": "reminder", "ts": NOW - 10 * 3600 * 1000, "ev": "ev-task"},
        {"role": "user", "text": "hola", "ts": NOW, "conv": 3}]
-A.load_user_history = lambda *a, **k: list(old)
+A.load_user_history = on_today(old)
 check("a reminder from hours ago is not dragged in",
       A._event_context_block("999000111", "hola", now_ms=NOW + 1000) == "")
+# A conversation that runs past midnight stays filed under the day it started;
+# the reminder fired after midnight is filed under the new day. The answer the
+# person already gave, in yesterday's file, is what Alfred saw last.
+A.load_user_history = on_today(
+    [{"role": "bot", "text": "¿Lavaste la loza?", "ts": NOW - 20 * MIN, "ev": "ev-task-4"}],
+    yesterday=[{"role": "user", "text": "hola", "ts": NOW - 60 * MIN, "conv": 4},
+               {"role": "user", "text": "no puedo, mañana", "ts": NOW - 10 * MIN, "conv": 4},
+               {"role": "bot", "text": "Dale, mañana.", "ts": NOW - 9 * MIN, "conv": 4},
+               {"role": "user", "text": "gracias", "ts": NOW, "conv": 4}])
+check("past midnight, a reminder already answered in yesterday's file is not repeated",
+      A._event_context_block("999000111", "gracias", now_ms=NOW + 1000) == "")
 
 print("\nand it reaches the turn")
-A.load_user_history = lambda *a, **k: list(history[:7])
+A.load_user_history = on_today(history[:7])
+# The composer takes no clock, so pin the one the block reads; the fixture's
+# times would otherwise leave the window six hours after they were written.
+A._event_context_block = functools.partial(A._event_context_block, now_ms=NOW + 1000)
 text = A._compose_turn_content("999000111", "No puedo", [], [], None)
 check("the composed turn carries the reminder above the words",
       text.find("lavar la loza") < text.find("No puedo") and "background task" in text, text[:300])
