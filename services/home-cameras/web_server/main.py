@@ -8,6 +8,10 @@ import os
 import argparse
 import logging
 
+# Before anything logs: a camera's stream address carries its password.
+import log_redact
+log_redact.install()
+
 from web_server import app, socketio
 from settings_manager import SettingsManager
 
