@@ -1294,6 +1294,7 @@
   "admin.models.fit_best": "La que mejor entra: {quant}.",
   "admin.models.fit_none": "Ninguna entra con esta ventana: probá una ventana menor, caché q4_0 u otra tarjeta.",
   "admin.models.fit_template_raises": "La plantilla de chat de este archivo falla con resultados de herramientas; importalo a Ollama, que la reemplaza.",
+  "admin.models.fit_template_raises_no_fix": "La plantilla de chat de este archivo falla con resultados de herramientas y no hay reemplazo para esta familia de modelos: las llamadas a herramientas después de la primera van a fallar, importado o no.",
   "admin.models.fit_split": "Dividida en varios archivos, no se ofrece: {quants}.",
   "admin.models.fit_budget_is": "{gib} GiB disponibles.",
   "admin.models.fit_download": "Descargar y probar",

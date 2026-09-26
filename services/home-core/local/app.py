@@ -6011,15 +6011,23 @@ def _event_context_block(username, content, space=None, now_ms=None):
     """
     if space:
         return ''                      # a profession keeps its own history
-    try:
-        msgs = load_user_history(username)
-    except Exception:
-        return ''
+    # Today and yesterday, merged by time: a conversation that runs past
+    # midnight stays filed under the day it started (_writing_day), while an
+    # event is filed under the day it fired. Reading only today would miss the
+    # person's own post-midnight messages and resurface a reminder they had
+    # already answered. The window is shorter than a day, so two files cover it.
+    today = _tasks_today()
+    msgs = []
+    for d in ((today - timedelta(days=1)).isoformat(), today.isoformat()):
+        try:
+            msgs.extend(m for m in (load_user_history(username, d) or [])
+                        if isinstance(m, dict))
+        except Exception:
+            pass
+    msgs.sort(key=lambda m: int(m.get('ts') or 0))
     now_ms = now_ms or int(time.time() * 1000)
     found, skipping_own = [], True
-    for m in reversed(msgs or []):
-        if not isinstance(m, dict):
-            continue
+    for m in reversed(msgs):
         if skipping_own and m.get('role') == 'user' and (m.get('text') or '').strip() == content.strip():
             continue                   # the message being sent, saved by the page first
         skipping_own = False
@@ -16596,7 +16604,7 @@ def _notif_deliver(username, nid, label, title, text, can_reply, rules):
         return  # nothing worth the user's attention
     # Only now is it worth keeping: saved to the chat, and pushed if they're away.
     append_user_history(username, {'role': 'bot', 'text': reply,
-                                   'ts': int(time.time() * 1000)})
+                                   'ts': int(time.time() * 1000), 'ev': scope})
     if _user_watching(username):
         return
     topic = _ntfy_topic(username)

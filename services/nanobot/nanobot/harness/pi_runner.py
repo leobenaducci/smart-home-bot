@@ -345,12 +345,15 @@ async def _pi(message: str, *, agent: Path, workdir: Path, env: dict[str, str], 
     """One pi run. (final text, tool calls, assistant turns, error)."""
     args = [str(PI_BIN), "-p", "--provider", "house", "--model", model,
             "--thinking", thinking, "--session-dir", str(workdir / ".pi-sessions"),
-            "--no-context-files", "--no-extensions", "-e", str(EXTENSION),
+            "--no-context-files", "--no-skills", "--no-extensions", "-e", str(EXTENSION),
             "--no-prompt-templates", "--tools", TOOLS, "--mode", "json"]
-    # Only the household's skills: no discovery in the agent directory or the
-    # task's, which hold nothing of ours.
+    # Only the household's skills. --no-skills turns off pi's own discovery (the
+    # agent directory, the task's .pi/skills and .agents/skills -- where a model
+    # could have written one itself in an earlier run); a path given with
+    # --skill still loads under it (pi 0.73.1, resource-loader.js).
     skills = workdir / ".pi-skills"
-    args += ["--skill", str(skills)] if skills.is_dir() else ["--no-skills"]
+    if skills.is_dir():
+        args += ["--skill", str(skills)]
     if not first:
         args.append("--continue")
     args.append(message)

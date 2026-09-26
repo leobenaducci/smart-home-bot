@@ -1292,6 +1292,7 @@
   "admin.models.fit_best": "Best fit: {quant}.",
   "admin.models.fit_none": "No quant fits at this window: try a smaller window, a q4_0 cache or another card.",
   "admin.models.fit_template_raises": "This file's chat template breaks on tool results; import it into Ollama, which replaces the template.",
+  "admin.models.fit_template_raises_no_fix": "This file's chat template breaks on tool results, and there is no replacement for this model family: tool calls after the first will fail, imported or not.",
   "admin.models.fit_split": "Split into several files and not offered: {quants}.",
   "admin.models.fit_budget_is": "{gib} GiB to fit in.",
   "admin.models.fit_download": "Download and test",

@@ -370,3 +370,21 @@ def test_the_households_skills_become_pi_skills(tmp_path, monkeypatch):
     assert "The shared shopping list." in md and "skill tool" in md
     assert "Actions: add_grocery, list_groceries" in md and "# Shopping list" in md
     assert str(root).startswith(str(tmp_path / "task"))           # inside what `read` may open
+
+
+def test_pi_loads_only_the_households_skills(fake_pi, tmp_path, monkeypatch):
+    # --no-skills stays: it stops pi's own discovery (the agent directory, the
+    # task's .pi/skills and .agents/skills, where a model could have written one
+    # in an earlier run) while the --skill path is still loaded under it.
+    from nanobot.harness import alfred_skill as A
+    src = tmp_path / "src" / "grocery"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\nname: grocery\ndescription: list\n---\n\nbody\n")
+    monkeypatch.setattr(A, "list_skills", lambda: [
+        {"skill": "grocery", "actions": [], "description": "list"}])
+    monkeypatch.setattr(A, "find", lambda n: src / "SKILL.md")
+    state = fake_pi({"tools": [], "text": "listo"})
+    run(tmp_path)
+    argv = calls(state)[0]["argv"]
+    assert "--no-skills" in argv
+    assert argv[argv.index("--skill") + 1] == str(tmp_path / "work" / ".pi-skills")

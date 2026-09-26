@@ -2175,6 +2175,7 @@
     var FT = {fits: {{ t('admin.models.fit_fits')|tojson }}, no: {{ t('admin.models.fit_too_big')|tojson }},
               best: {{ t('admin.models.fit_best')|tojson }}, none: {{ t('admin.models.fit_none')|tojson }},
               raises: {{ t('admin.models.fit_template_raises')|tojson }},
+              raisesNoFix: {{ t('admin.models.fit_template_raises_no_fix')|tojson }},
               split: {{ t('admin.models.fit_split')|tojson }}, budget: {{ t('admin.models.fit_budget_is')|tojson }},
               download: {{ t('admin.models.fit_download')|tojson }}, imp: {{ t('admin.models.fit_import')|tojson }},
               setup: {{ t('admin.models.fit_setup')|tojson }}, failed: {{ t('admin.models.library_hf_failed')|tojson }}};
@@ -2203,7 +2204,8 @@
           if (!d.ok) { fitNote.textContent = d.error || FT.failed; return; }
           var notes = [FT.budget.replace('{gib}', d.budget_gib)];
           notes.push(d.recommended ? FT.best.replace('{quant}', d.rows.filter(function (r) { return r.path === d.recommended; })[0].quant) : FT.none);
-          if (d.template_raises) notes.push(FT.raises);
+          // Only a family with an Ollama renderer gets its template replaced.
+          if (d.template_raises) notes.push(d.renderer ? FT.raises : FT.raisesNoFix);
           if (d.split.length) notes.push(FT.split.replace('{quants}', d.split.join(', ')));
           fitNote.textContent = notes.join(' ');
           var body = fitTable.querySelector('tbody'); body.textContent = '';
