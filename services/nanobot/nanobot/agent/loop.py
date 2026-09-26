@@ -1556,6 +1556,16 @@ class AgentLoop:
                 and delegate.may_delegate(channel, chat_id, session.key if session else None)):
             return await self._delegate_turn(initial_messages, session, channel, chat_id,
                                              "long", route)
+        # Long tasks on pi, when the household asks for it (`harness.longTasks`):
+        # a `long` turn goes where a `background` one does rather than being
+        # planned here. Only where pi can take it now -- otherwise the plan
+        # runs in the chat as it always has.
+        if (route.label == "long" and self._routing.mode == "active"
+                and not (use_vision or profile or powerful)
+                and delegate.may_delegate(channel, chat_id, session.key if session else None)
+                and self.subagents.harness_takes_long_tasks()):
+            return await self._delegate_turn(initial_messages, session, channel, chat_id,
+                                             "long", route)
         if use_vision:
             runner, turn_model = self._vision_runner, self._vision_model
         elif profile and profile in self._profiles:

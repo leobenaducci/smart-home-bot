@@ -845,6 +845,11 @@
       </label>
       <p class="help">{{ t('admin.models.harness_intro') }}</p>
       <label class="row-tight">
+        <input type="checkbox" name="harness_long_tasks" {% if harness.long_tasks %}checked{% endif %}>
+        {{ t('admin.models.harness_long_tasks') }}
+      </label>
+      <p class="help">{{ t('admin.models.harness_long_tasks_help') }}</p>
+      <label class="row-tight">
         <input type="checkbox" name="harness_allow_go" {% if harness.allow_go %}checked{% endif %}>
         {{ t('admin.models.harness_allow_go') }}
       </label>

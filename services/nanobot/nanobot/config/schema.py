@@ -148,6 +148,12 @@ class HarnessConfig(Base):
     # person at the keyboard and says unattended traffic can get the account
     # blocked; this is the household's explicit exception, for pi only.
     allow_go: bool = False
+    # Long tasks too: a turn the classifier labels `long` goes to a sub-agent
+    # on pi instead of being planned in the chat. Off by default -- a plan in
+    # the chat asks the person as it goes, keeps read-only steps read-only and
+    # is quicker for short multi-step work; pi is for work that ends in a
+    # document. `background` turns go to pi either way.
+    long_tasks: bool = False
     # Optional override. Empty: pi runs the sub-agent's own model (and the
     # powerful sub-agent's, for a complex task), reached as nanobot reaches it.
     base_url: str = ""

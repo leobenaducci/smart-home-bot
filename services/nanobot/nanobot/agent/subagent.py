@@ -257,6 +257,10 @@ class SubagentManager:
             and result.stop_reason in set(self.routing.escalate_on)
         )
 
+    def harness_takes_long_tasks(self) -> bool:
+        """The household sends `long` turns to pi, and pi can run one now."""
+        return bool(self.harness.long_tasks) and self._harness_endpoint() is not None
+
     def _harness_endpoint(self, powerful: bool = False):
         """pi's endpoint for this task, or None when it may not run there.
 

@@ -1301,5 +1301,7 @@
   "admin.models.fit_import": "Importar a Ollama",
   "admin.models.fit_setup": "Usar en una configuración nueva",
   "admin.models.fit_no_card": "El equipo todavía no informó sus tarjetas.",
-  "admin.models.fit_no_gguf": "{repo} no tiene cuantizaciones GGUF de un solo archivo."
+  "admin.models.fit_no_gguf": "{repo} no tiene cuantizaciones GGUF de un solo archivo.",
+  "admin.models.harness_long_tasks": "Hacer también las tareas largas en pi",
+  "admin.models.harness_long_tasks_help": "Apagado, un pedido de varios pasos se planifica acá en el chat: puede preguntarte sobre la marcha y los pasos que solo leen no cambian nada. Encendido, va a pi en segundo plano, como una tarea de fondo, y responde en esta conversación al terminar: mejor para trabajo que termina en un documento, más lento para revisiones cortas. Necesita el entorno de arriba."
 }
