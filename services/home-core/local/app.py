@@ -14279,13 +14279,18 @@ def _geo_deliver(notify_user, target_user, text, place_name, direction):
                   f'in your own words: "{text}". Don\'t forward it to anybody else.'
                   + _EVENT_REPLY_IS_THE_MESSAGE)
         fallback = f'{who} {verb} {place_name}: {text}'
+    # A shopping-list reminder is for the list: tapping it opens the chat with
+    # the grocery panel up, not the bare conversation.
+    grocery = _geo_is_grocery(text)
     delivered = _alfred_notify(notify_user, prompt, scope=_event_scope('ev-geo'), profile=EVENT_PROFILE)
     if delivered:
         if not _user_watching(notify_user):
-            _notify_user(notify_user, delivered[:300], title='Alfred', tags='round_pushpin')
+            _notify_user(notify_user, delivered[:300], title='Alfred', tags='round_pushpin',
+                         click=_grocery_chat_link() if grocery else None)
     else:
         _notify_user(notify_user, fallback, title='📍 Recordatorio',
-                     tags='round_pushpin', click=chat_link(welcome=fallback))
+                     tags='round_pushpin',
+                     click=_grocery_chat_link() if grocery else chat_link(welcome=fallback))
 
 
 # --- Collapsing movement alerts ----------------------------------------------
@@ -15436,6 +15441,13 @@ GROCERY_GEOFENCE_TEXT = (
     'pendientes y nombra algunos (consulta la lista con la skill grocery / '
     'list_groceries). If nothing is pending, tell me anyway.'
 )
+
+
+def _geo_is_grocery(text):
+    """Is this reminder the seeded shopping-list one? Matched on the tool it
+    names rather than the whole text: the text has been reworded once already,
+    and rows seeded under the old wording are still live in geo.db."""
+    return 'list_groceries' in (text or '')
 
 
 def seed_grocery_geofences():
