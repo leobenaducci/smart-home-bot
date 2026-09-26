@@ -2979,6 +2979,12 @@ def models_test():
     if role not in chosen and role not in model_catalogue.IMAGE_SLOTS:
         return jsonify({"ok": False, "error": t("admin.models.test_unknown_role")}), 400
     raw = chosen.get(role)
+    # The picker's current value, saved or not: the page sends what it shows,
+    # so a model can be tried before it is chosen. Absent (an older page, a
+    # script), the saved one is tested as before.
+    asked = [v.strip() for v in request.form.getlist("model") if v.strip()]
+    if asked:
+        raw = asked if len(asked) > 1 or isinstance(raw, list) else asked[0]
     if isinstance(raw, list):
         return jsonify(_probe_chain(cfg, role, [str(v).strip() for v in raw if str(v or "").strip()])), 200
     value = str(raw or "").strip()

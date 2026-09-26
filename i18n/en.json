@@ -586,6 +586,7 @@
   "admin.models.test_running": "Testing…",
   "admin.models.test_skipped": "Not checked",
   "admin.models.test_standing": "last score {score}/{max}",
+  "admin.models.test_tested": "Model tested: {model}",
   "admin.models.test_unknown_role": "That is not a role on this page.",
   "admin.models.tokens": "tokens",
   "admin.models.type_careful": "a careful reader",

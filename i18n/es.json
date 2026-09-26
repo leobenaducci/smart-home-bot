@@ -588,6 +588,7 @@
   "admin.models.test_running": "Probando…",
   "admin.models.test_skipped": "Sin verificar",
   "admin.models.test_standing": "última nota {score}/{max}",
+  "admin.models.test_tested": "Modelo probado: {model}",
   "admin.models.test_unknown_role": "Esa no es una persona de esta página.",
   "admin.models.tokens": "tokens",
   "admin.models.type_careful": "que lea con cuidado",
