@@ -70,20 +70,29 @@ function outside(path: unknown): boolean {
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
 
 // Small local models often send a list or an object as a JSON *string*:
-// `"sections": "[{\"heading\": ...}]"`. The strict schema refused it before the
-// tool ran, and the model retried the same call until the task died -- most of
-// the document failures of NeoHorse, Ornith and MiMo on 2026-09-25 (four of six
-// of MiMo's). So the schemas also take a string, and this reads it. Anything
-// that is not JSON of the right kind comes back as a message saying the shape.
-function parsed<T>(value: T | string, want: "array" | "object"): T | string {
+// `"sections": "[{\"heading\": ...}]"`. pi validated it against the schema,
+// refused it before the tool ran, and the model retried the same call until the
+// task died -- most of the document failures of NeoHorse, Ornith and MiMo
+// (2026-09-25). Repaired in `prepareArguments`, which pi runs *before*
+// validating, so the schema the model reads stays exactly as strict as it was:
+// widening it to "a list or a string" fixed those models and cost gemma4:e4b
+// its long tasks, 8-9/10 down to 3/10, the same evening.
+function fromJson(value: unknown, want: "array" | "object"): unknown {
   if (typeof value !== "string") return value;
   try {
     const v = JSON.parse(value);
-    if (want === "array" ? Array.isArray(v) : (v && typeof v === "object" && !Array.isArray(v))) return v;
-  } catch { /* fall through to the message */ }
-  return want === "array"
-    ? "must be a JSON list, not text: [{\"heading\": \"...\", \"text\": \"...\"}, ...]"
-    : "must be a JSON object, not text: {\"name\": \"value\", ...}";
+    if (want === "array" ? Array.isArray(v) : (v !== null && typeof v === "object" && !Array.isArray(v))) {
+      return v;
+    }
+  } catch { /* not JSON: leave it for the schema to refuse */ }
+  return value;
+}
+
+function repaired(args: unknown, fix: (a: Record<string, unknown>) => void): unknown {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  const a = { ...(args as Record<string, unknown>) };
+  fix(a);
+  return a;
 }
 
 function slugOf(title: string): string {
@@ -108,19 +117,21 @@ export default function (pi: ExtensionAPI) {
     label: "Web",
     description: "Search the web or read a page. action=search needs query; action=fetch needs url " +
       "and returns the page as Markdown. Read the pages you rely on, not only the search results.",
-    // `action` may be left out -- a url means fetch, anything else search -- and
-    // `count` may arrive as "5": both were calls refused outright (2026-09-25).
     parameters: Type.Object({
-      action: Type.Optional(Type.Union([Type.Literal("search"), Type.Literal("fetch")])),
+      action: Type.Union([Type.Literal("search"), Type.Literal("fetch")]),
       query: Type.Optional(Type.String()),
       url: Type.Optional(Type.String()),
-      count: Type.Optional(Type.Union([Type.Number(), Type.String()])),
+      count: Type.Optional(Type.Number()),
+    }),
+    // A call with no action (a url means fetch), or a count of "5".
+    prepareArguments: (args: unknown) => repaired(args, (a) => {
+      if (a.action === undefined) a.action = a.url ? "fetch" : "search";
+      if (typeof a.count === "string" && Number(a.count) > 0) a.count = Number(a.count);
     }),
     async execute(_id, p, signal) {
-      const action = p.action ?? (p.url ? "fetch" : "search");
-      const count = Number(p.count) > 0 ? Math.min(10, Number(p.count)) : 5;
-      const payload = action === "fetch" ? { url: p.url, maxChars: 8000 } : { query: p.query, count };
-      return text(await alfredSkill(["web", action, JSON.stringify(payload)], signal));
+      const payload = p.action === "fetch" ? { url: p.url, maxChars: 8000 }
+        : { query: p.query, count: Math.min(10, p.count ?? 5) };
+      return text(await alfredSkill(["web", p.action, JSON.stringify(payload)], signal));
     },
   });
 
@@ -135,7 +146,7 @@ export default function (pi: ExtensionAPI) {
       title: Type.String(),
       format: Type.Union([Type.Literal("pdf"), Type.Literal("xlsx"), Type.Literal("docx"),
                           Type.Literal("pptx"), Type.Literal("html")]),
-      sections: Type.Union([Type.Array(Type.Object({
+      sections: Type.Array(Type.Object({
         heading: Type.Optional(Type.String()),
         text: Type.Optional(Type.String()),
         items: Type.Optional(Type.Array(Type.String())),
@@ -143,11 +154,13 @@ export default function (pi: ExtensionAPI) {
           headers: Type.Array(Type.String()),
           rows: Type.Array(Type.Array(Type.String())),
         })),
-      })), Type.String()]),
+      })),
+    }),
+    prepareArguments: (args: unknown) => repaired(args, (a) => {
+      a.sections = fromJson(a.sections, "array");
     }),
     async execute(_id, p, signal) {
-      const sections = parsed(p.sections, "array");
-      if (typeof sections === "string") return text(JSON.stringify({ error: `sections ${sections}` }));
+      const sections = p.sections;
       const filename = `${slugOf(p.title)}.${p.format}`;
       if (BENCH) {
         return text(JSON.stringify({ format: p.format, file: `media/${filename}`,
@@ -168,12 +181,13 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       skill: Type.String({ description: "skill name, e.g. paperless" }),
       action: Type.String({ description: "action name, e.g. search_documents" }),
-      args: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Any()), Type.String()],
-                                     { description: "the action's arguments" })),
+      args: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "the action's arguments" })),
+    }),
+    prepareArguments: (args: unknown) => repaired(args, (a) => {
+      a.args = fromJson(a.args, "object");
     }),
     async execute(_id, p, signal) {
-      const args = parsed(p.args ?? {}, "object");
-      if (typeof args === "string") return text(JSON.stringify({ error: `args ${args}` }));
+      const args = p.args ?? {};
       if (BENCH && !READ_ACTION.test(p.action)) {
         return text(JSON.stringify({ ok: true }));
       }
