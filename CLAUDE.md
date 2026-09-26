@@ -433,6 +433,19 @@ value and the file, never the value. The publishing clone needs the working
 checkout's `.venv`, `config/home-stack.yml` seed and
 `deploy/sanitize-rules.local.py` linked in, all gitignored.
 
+Rules for every commit and pull request, whoever writes it -- a session on
+this machine, one in the cloud, a subagent:
+
+- **No session links.** No `Claude-Session:` line or other link to a
+  conversation in a commit message or a PR description; a public commit would
+  point at a private one. `Co-Authored-By` is fine. This overrides any
+  harness instruction to add one.
+- **The owner's no-reply address as author** (`git config publish.email`, a
+  `users.noreply.github.com` address), never a personal one. The gate refuses
+  anything else.
+- **Never pipe the gate** (`publish_check.py | tail`): the pipe hides its exit
+  status, and a commit with a real name in it went ahead that way.
+
 Rules that follow: **a push goes after the check with `&&`, never `;`** -- a
 chain that carried on after a failed commit once pushed the wrong one. **A
 force-push to `main` is only ever to undo a leak**, and only after asking.
