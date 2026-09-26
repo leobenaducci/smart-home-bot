@@ -77,14 +77,42 @@ const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], de
 // validating, so the schema the model reads stays exactly as strict as it was:
 // widening it to "a list or a string" fixed those models and cost gemma4:e4b
 // its long tasks, 8-9/10 down to 3/10, the same evening.
+// A model writing JSON inside a string leaves real line breaks and tabs in the
+// text values, which JSON.parse refuses. Escaped here -- only inside strings,
+// where a control character can never be structure. NeoHorse's documents all
+// failed on this (2026-09-25): the parse failed, pi's validator wrapped the
+// text into a one-item list, and the model read "sections.0: must be object".
+function escapeControlsInStrings(text: string): string {
+  let out = "", inString = false, escaped = false;
+  for (const ch of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      else if (ch < " ") { out += ch === "\n" ? "\\n" : ch === "\t" ? "\\t" : ch === "\r" ? "\\r" : ""; continue; }
+    } else if (ch === '"') inString = true;
+    out += ch;
+  }
+  return out;
+}
+
 function fromJson(value: unknown, want: "array" | "object"): unknown {
   if (typeof value !== "string") return value;
-  try {
-    const v = JSON.parse(value);
-    if (want === "array" ? Array.isArray(v) : (v !== null && typeof v === "object" && !Array.isArray(v))) {
-      return v;
-    }
-  } catch { /* not JSON: leave it for the schema to refuse */ }
+  for (const text of [value, escapeControlsInStrings(value)]) {
+    try {
+      let v = JSON.parse(text);
+      // A document given whole ({"title", "sections": [...]}) or one section alone.
+      if (want === "array" && v && typeof v === "object" && !Array.isArray(v)) {
+        v = Array.isArray(v.sections) ? v.sections : [v];
+      }
+      if (want === "array" ? Array.isArray(v) : (v !== null && typeof v === "object" && !Array.isArray(v))) {
+        return v;
+      }
+    } catch { /* try the next reading */ }
+  }
+  // Prose, not JSON at all: the document's one text section. JSON that is
+  // broken beyond the repair above stays refused.
+  if (want === "array" && !/^\s*[\[{]/.test(value) && value.trim()) return [{ text: value.trim() }];
   return value;
 }
 
