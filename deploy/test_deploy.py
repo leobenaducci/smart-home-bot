@@ -1157,6 +1157,18 @@ for _models, _why in (
 # The entry has to carry its provider, because a bare name means "the provider
 # serving the role" and always has. base.py can only route to another client
 # when it is told which one.
+# The assistants keep their schedules in their own config's zone, and nothing
+# wrote the household's in: the morning greeting came at 04:00 (2026-09-26).
+_tz_doc = _json.dumps({"agents": {"defaults": {"timezone": "Etc/UTC", "model": "m"}}})
+_tz = json.loads(D.apply_site_timezone(_tz_doc, {"site": {"timezone": "America/Santiago"}}))
+check("site.timezone reaches the assistants' config",
+      _tz["agents"]["defaults"]["timezone"] == "America/Santiago"
+      and _tz["agents"]["defaults"]["model"] == "m", _tz)
+check("  an unknown zone is not written",
+      D.apply_site_timezone(_tz_doc, {"site": {"timezone": "Mars/Olympus"}}) == _tz_doc)
+check("  no zone set leaves the file as it is",
+      D.apply_site_timezone(_tz_doc, {"site": {}}) == _tz_doc)
+
 _x = json.loads(D.apply_model_choices(_json.dumps(_PROVIDERS_DOC), {"assistant": {"models": {
     "everyday": "freetoken:local-moe",
     "fallback": "together:meta-models/Muse-Glimmer-30B"}}}))

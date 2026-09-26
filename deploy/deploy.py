@@ -3906,6 +3906,32 @@ def harness_settings(harness: dict, cfg: dict) -> dict:
     return out
 
 
+def apply_site_timezone(config_json: str, cfg: dict) -> str:
+    """Write `site.timezone` into a nanobot config's `agents.defaults.timezone`.
+
+    The assistants read their zone from their own config, and the shipped file
+    says Etc/UTC; nothing wrote the household's in. So every schedule they
+    keep ran on UTC: the morning greeting, `0 7 * * *`, arrived at 04:00 in
+    Santiago every day (found 2026-09-26), and so did "remind me at 9" set
+    through the cron tool. An unknown zone is left alone rather than written:
+    nanobot would refuse to register a schedule with it.
+    """
+    tz = str((cfg.get("site") or {}).get("timezone") or "").strip()
+    if not tz:
+        return config_json
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(tz)
+    except Exception:                                    # noqa: BLE001
+        return config_json
+    doc = json.loads(config_json)
+    defaults = doc.setdefault("agents", {}).setdefault("defaults", {})
+    if defaults.get("timezone") == tz:
+        return config_json
+    defaults["timezone"] = tz
+    return json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
+
+
 def apply_model_choices(config_json: str, cfg: dict) -> str:
     """Write `assistant.models` into a nanobot config, returning the new text.
 
@@ -6124,6 +6150,7 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                     patched = apply_service_wiring(
                         patched, unit.get("when_service") or {}, cfg)
                     patched = apply_household_language(patched, cfg)
+                    patched = apply_site_timezone(patched, cfg)
                     target_file.write_text(patched, encoding="utf-8")
                 # The prompt files beside it. They are shipped English and
                 # redistributable, so the language cannot be written into them
