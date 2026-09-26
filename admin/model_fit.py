@@ -96,7 +96,7 @@ def inspect(url: str) -> dict:
 def need(info: dict, size: int, context: int, parallel: int, kv_cache: str, engine: str) -> float:
     facts = V.facts_from_info(info, size)
     overhead = V.LLAMACPP_OVERHEAD if engine in ("llamacpp", "prism") else V.DEFAULT_OVERHEAD
-    return facts["file"] + V.kv_bytes(facts, context, parallel, kv_cache) + overhead
+    return facts["file"] + V.kv_bytes(facts, context, V.slots(facts, parallel, engine), kv_cache) + overhead
 
 
 def max_context(info: dict, size: int, budget: float, parallel: int, kv_cache: str,

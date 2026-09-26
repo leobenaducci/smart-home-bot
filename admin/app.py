@@ -7637,6 +7637,51 @@ def _ollama_needs(cfg: dict, insts: list[dict], users: dict | None = None,
     return needs
 
 
+# What decides how much memory a server takes. The card is not in it: moving a
+# server moves the same bytes.
+_SIZING = ("model", "context", "parallel", "kv_cache", "engine", "max_models", "cpu")
+
+
+def _keep_live_sizes(before: dict, insts: list[dict], needs: dict[str, dict],
+                     gpus: list[dict]) -> dict[str, dict]:
+    """*needs*, with each running server whose sizing is unchanged drawn at
+    what it holds now instead of at the estimate.
+
+    The page drew a card from the host's reading and a Preview from the
+    formula, so moving the Text setup from GPU1 to GPU0 -- nothing else --
+    showed it at 8.8 GiB before and 11.4 after (2026-09-26). Same server, same
+    bytes: the estimate is for what a change makes new, and a move makes
+    nothing new.
+
+    A reading under half the estimate is taken as a server that is loading or
+    has unloaded its model, and the estimate stands: that is what it will hold
+    once it answers.
+    """
+    import ollama_vram
+    try:
+        old = {i["id"]: i for i in OI.instances(before, enabled_only=False)}
+    except OI.InstanceError:
+        return needs
+    old_needs = _ollama_needs(before, list(old.values()))
+    live: dict[str, int] = {}
+    for g in gpus:
+        for t in g.get("tenants") or []:
+            owner = str(t.get("owner", ""))
+            if owner.startswith("unit "):
+                live[owner[len("unit "):]] = live.get(owner[len("unit "):], 0) + int(t.get("mib") or 0)
+    out = dict(needs)
+    for inst in insts:
+        was = old.get(inst["id"])
+        if (not was or inst["id"] not in needs or was.get("unit") != inst.get("unit")
+                or any(was.get(k) != inst.get(k) for k in _SIZING)
+                or old_needs.get(inst["id"], {}).get("resident") != needs[inst["id"]].get("resident")):
+            continue
+        held = live.get(inst.get("unit") or "", 0) * 1024 * 1024
+        if held and held >= needs[inst["id"]]["bytes"] / 2:
+            out[inst["id"]] = {**needs[inst["id"]], "bytes": float(held), "how": "measured"}
+    return out
+
+
 def _next_ollama_port(insts: list[dict], start: int = 11437) -> int:
     used = {i["port"] for i in insts}
     port = start
@@ -8034,8 +8079,9 @@ def ollama_save():
     # room"); a preview says the same things its own way.
     placement_notes: list[str] = []
     if any(i["gpu_mode"] == "auto" for i in insts):
-        needs = {k: v["bytes"] for k, v in _ollama_needs(cfg, insts).items()}
         gpus = _gpus_with_tenants(cfg)
+        needs = {k: v["bytes"] for k, v in
+                 _keep_live_sizes(before, insts, _ollama_needs(cfg, insts), gpus).items()}
         if gpus:
             placed = ollama_vram.place(gpus, insts, needs)
             for sid, cards in placed["gpus"].items():
@@ -8064,8 +8110,9 @@ def ollama_save():
             enabled = [i for i in OI.instances(cfg) if i["enabled"]]
         except OI.InstanceError as exc:
             return jsonify(ok=False, errors=[str(exc)], warnings=warnings)
-        needs = _ollama_needs(cfg, enabled)
-        view = _gpu_view(_gpus_with_tenants(cfg), enabled, needs, measured=False)
+        gpus = _gpus_with_tenants(cfg)
+        needs = _keep_live_sizes(before, enabled, _ollama_needs(cfg, enabled), gpus)
+        view = _gpu_view(gpus, enabled, needs, measured=False)
         if not view:
             warnings.append(_t_or("admin.models.ollama_no_gpus",
                                   "The cards are not known yet. Run ./home-stack ollama on the "

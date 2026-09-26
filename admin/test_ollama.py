@@ -264,6 +264,58 @@ _p = V.gpu_view(_units, [_chat], {"chat": {"bytes": 9 * V.GIB, "how": "estimated
 check("  the preview draws the estimate: what it shows is not running yet",
       _p["instances"][0]["how"] == "estimated")
 
+
+print("\nslots Ollama will not run are not counted")
+# qwen3.5:9b as /api/show describes it: 8 attention layers of 32, 4 KV heads, 256 wide.
+_q35 = {"arch": "qwen35", "file": 6594474711, "window": 0, "layers": [("full", 4, 256, 256)] * 8}
+_one = V.kv_bytes(_q35, 131072, 1, "q8_0")
+check("  one slot at 128k q8_0 is the 2,176 MiB Ollama logged",
+      round(_one / 2 ** 20) == 2176, round(_one / 2 ** 20))
+_text = {"id": "text", "context": 131072, "parallel": 3, "kv_cache": "q8_0", "max_models": 1}
+_n = V.instance_need(_text, ["qwen3.5:9b"], {"qwen3.5:9b": _q35}, {})["bytes"]
+check("  three configured slots on Ollama estimate as one: under the 12 GB card",
+      _n == V.instance_need({**_text, "parallel": 1}, ["qwen3.5:9b"], {"qwen3.5:9b": _q35}, {})["bytes"]
+      and _n < 10 * V.GIB, round(_n / V.GIB, 1))
+_n_cpp = V.instance_need({**_text, "engine": "llamacpp"}, ["qwen3.5:9b"], {"qwen3.5:9b": _q35}, {})["bytes"]
+check("  llama.cpp does run them in parallel, so there all three count",
+      _n_cpp - V.LLAMACPP_OVERHEAD > _n - V.DEFAULT_OVERHEAD + 2 * _one - 1, round(_n_cpp / V.GIB, 1))
+_gem = {"arch": "gemma4", "file": 3 * V.GIB, "window": 0, "layers": [("full", 2, 256, 256)] * 4}
+check("  a model Ollama does parallelise still counts every slot",
+      V.kv_bytes(_gem, 8192, V.slots(_gem, 2), "q4_0") == 2 * V.kv_bytes(_gem, 8192, 1, "q4_0"))
+
+
+print("\na server that only moves keeps the size it has")
+_TCFG = {"hosts": {"hub": {"address": "127.0.0.1"}},
+         "assistant": {"models": {"notifications": "ollama-text:qwen3.5:9b"}},
+         "cloud": {"ollama": {"instances": CFG["cloud"]["ollama"]["instances"],
+                              "setups": [{"id": "text", "name": "Text", "model": "qwen3.5:9b",
+                                          "context": 131072, "parallel": 2, "kv_cache": "q8_0",
+                                          "port": 11437, "gpus": [1]}]}}}
+_host = [{"index": 0, "total_mib": 12288, "tenants": []},
+         {"index": 1, "total_mib": 12288, "tenants": [{"owner": "unit ollama-text", "mib": 9036}]}]
+_real_needs = A._ollama_needs
+A._ollama_needs = lambda cfg, insts, *a, **k: {
+    i["id"]: {"id": i["id"], "bytes": 11.4 * V.GIB, "how": "estimated",
+              "resident": [i["model"]] if i.get("model") else []} for i in insts}
+try:
+    import copy
+    _after = copy.deepcopy(_TCFG)
+    _after["cloud"]["ollama"]["setups"][0]["gpus"] = [0]
+    _ins = [i for i in A.OI.instances(_after) if i["id"] == "text"]
+    _k = A._keep_live_sizes(_TCFG, _ins, A._ollama_needs(_after, _ins), _host)["text"]
+    check("  moved to GPU0, drawn at the 9,036 MiB it holds on GPU1",
+          _k["bytes"] == 9036 * 2 ** 20 and _k["how"] == "measured", _k)
+    _after["cloud"]["ollama"]["setups"][0]["context"] = 65536
+    _ins = [i for i in A.OI.instances(_after) if i["id"] == "text"]
+    _k = A._keep_live_sizes(_TCFG, _ins, A._ollama_needs(_after, _ins), _host)["text"]
+    check("  a new window is a new size, so it is estimated", _k["how"] == "estimated", _k)
+    _ins = [i for i in A.OI.instances(_TCFG) if i["id"] == "text"]
+    _loading = [_host[0], {**_host[1], "tenants": [{"owner": "unit ollama-text", "mib": 300}]}]
+    _k = A._keep_live_sizes(_TCFG, _ins, A._ollama_needs(_TCFG, _ins), _loading)["text"]
+    check("  a server still loading is not taken at its 300 MiB", _k["how"] == "estimated", _k)
+finally:
+    A._ollama_needs = _real_needs
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))
