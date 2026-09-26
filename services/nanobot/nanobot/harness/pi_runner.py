@@ -288,6 +288,54 @@ def _die_with_parent() -> None:
         pass           # not Linux, or no libc by that name: the finally still covers the rest
 
 
+def _skills_dir(workdir: Path) -> Path | None:
+    """The household's skills as pi skills, for pi to list and read itself.
+
+    pi ran with --no-skills, so a model learned which skills exist only by
+    calling `skill_guide list` -- and a small one mostly did not, and reached
+    for the shell or for nothing (2026-09-25). Each skill the member has (their
+    own workspace skills, those a service serves, the built-ins, less the ones
+    their config switches off: alfred_skill's discovery) becomes a pi skill with
+    its own name, description and guide, so pi puts every one in the prompt.
+
+    Calling one stays the typed `skill` tool, not a shell command: a small model
+    given a command to run reached for a tool of that name instead (2026-09-23).
+    Written inside the task's directory, because the harness lets `read` open
+    nothing else.
+    """
+    from nanobot.harness import alfred_skill as A
+    try:
+        skills = [s for s in A.list_skills() if s["skill"] != "web"]
+    except Exception:                                      # noqa: BLE001 -- no skills is not fatal
+        return None
+    root = workdir / ".pi-skills"
+    for s in skills:
+        name = s["skill"]
+        md = A.find(name)
+        if md is None or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+            continue                     # pi's names: lower case, digits, hyphens
+        body = md.read_text(encoding="utf-8")
+        m = A._FRONT.match(body)
+        body = body[m.end():] if m else body
+        # The catalogue's descriptions open with nanobot's own calling
+        # convention ("Invoke with JSON: {...}."), which is not how pi calls it.
+        desc = re.sub(r"^Invoke with JSON:.*?\}\.?\s*", "", s.get("description") or name)
+        desc = desc.replace("\n", " ")[:900] or name
+        actions = ", ".join(s.get("actions") or [])
+        d = root / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {json.dumps(desc + f' Use it with the skill tool, skill={name}.', ensure_ascii=False)}\n---\n\n"
+            f"# {name}\n\n"
+            f"Call it with the **skill** tool -- `skill: \"{name}\"`, `action`, `args` -- never "
+            f"from bash. Where the guide below writes "
+            f"`{{\"skill\": \"{name}\", \"action\": \"x\", \"a\": 1}}`, call the skill tool "
+            f"with action \"x\" and args {{\"a\": 1}}.\n\n"
+            + (f"Actions: {actions}\n\n" if actions else "") + body.strip() + "\n",
+            encoding="utf-8")
+    return root if any(root.glob("*/SKILL.md")) else None
+
+
 async def _pi(message: str, *, agent: Path, workdir: Path, env: dict[str, str], model: str,
               first: bool, thinking: str, timeout: float,
               on_tool: Callable[[ToolCall], Awaitable[None]] | None,
@@ -299,6 +347,13 @@ async def _pi(message: str, *, agent: Path, workdir: Path, env: dict[str, str], 
             "--thinking", thinking, "--session-dir", str(workdir / ".pi-sessions"),
             "--no-context-files", "--no-skills", "--no-extensions", "-e", str(EXTENSION),
             "--no-prompt-templates", "--tools", TOOLS, "--mode", "json"]
+    # Only the household's skills. --no-skills turns off pi's own discovery (the
+    # agent directory, the task's .pi/skills and .agents/skills -- where a model
+    # could have written one itself in an earlier run); a path given with
+    # --skill still loads under it (pi 0.73.1, resource-loader.js).
+    skills = workdir / ".pi-skills"
+    if skills.is_dir():
+        args += ["--skill", str(skills)]
     if not first:
         args.append("--continue")
     args.append(message)
@@ -403,6 +458,7 @@ async def run(task: str, endpoint: Endpoint, workdir: Path, *, context: str | No
         return HarnessResult(text="", links=[], error=f"pi is not installed at {PI_HOME}")
     workdir.mkdir(parents=True, exist_ok=True)
     agent = _agent_dir(workdir, endpoint)
+    _skills_dir(workdir)
     skill_env = _skill_env_file()
     env = _env(agent, endpoint, bench, skill_env)
     need_file = wants_file(task) if want_file is None else want_file

@@ -311,6 +311,19 @@ for bad, why in (({"op": "rm -rf", "model": "x:1"}, "unknown"),
         check(f"  refuses {bad['op']} {bad['model']!r}", why in str(exc), str(exc))
 check("  keeps only engines that exist",
       ML.check_job({"op": "test", "model": "x:1", "engines": ["prism", "vllm"]})["engines"] == ["prism"])
+_imp = {"op": "import", "model": "hf:bartowski/M-GGUF/M-Q4_K_M.gguf", "name": "m:q4_k_m",
+        "renderer": "qwen3.5"}
+check("  an import takes a downloaded file, a name:tag and a known renderer",
+      ML.check_job(_imp)["name"] == "m:q4_k_m" and ML.check_job(_imp)["renderer"] == "qwen3.5")
+for _bad in ({**_imp, "renderer": "{{ .Evil }}"}, {**_imp, "name": "m"}, {**_imp, "name": "/tmp/x:y"},
+             {**_imp, "name": "hf:o/r/f.gguf"}, {**_imp, "model": "qwen3.5:4b"},
+             {**_imp, "model": "hf:o/r/../../etc/passwd.gguf"}):
+    _diff = {k: v for k, v in _bad.items() if v != _imp.get(k)}
+    try:
+        ML.check_job(_bad)
+        check(f"    an import with {_diff} is refused", False)
+    except ML.LibraryError:
+        check(f"    an import with {_diff} is refused", True)
 _md = pathlib.Path(tempfile.mkdtemp())
 (_md / "hf/prism-ml/Bonsai-gguf").mkdir(parents=True)
 (_md / "hf/prism-ml/Bonsai-gguf/Bonsai-PQ2_0.gguf").write_bytes(b"x")

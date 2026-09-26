@@ -344,3 +344,47 @@ def test_the_event_log_is_written_as_it_goes(fake_pi, tmp_path):
         seen.append((tmp_path / "w" / "events.jsonl").read_text().count("tool_execution_end"))
     asyncio.run(H.run(TASK, EP, tmp_path / "w", on_tool=on_tool))
     assert seen == [1]
+
+
+def test_the_households_skills_become_pi_skills(tmp_path, monkeypatch):
+    # pi ran with --no-skills, so a small model learned which skills exist only
+    # by calling skill_guide list, and mostly did not (2026-09-25).
+    from nanobot.harness import alfred_skill as A
+    src = tmp_path / "src" / "grocery"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text('---\nname: grocery\ndescription: "Invoke with JSON: '
+                                  '{\\"skill\\":\\"grocery\\"}. The shared shopping list."\n---\n\n'
+                                  "# Shopping list\n\nAdd with add_grocery.\n")
+    monkeypatch.setattr(A, "list_skills", lambda: [
+        {"skill": "web", "actions": ["search"], "description": "web"},
+        {"skill": "grocery", "actions": ["add_grocery", "list_groceries"],
+         "description": 'Invoke with JSON: {"skill":"grocery"}. The shared shopping list.'},
+        {"skill": "Bad_Name", "actions": [], "description": "x"}])
+    monkeypatch.setattr(A, "find", lambda n: src / "SKILL.md" if n == "grocery" else None)
+    root = H._skills_dir(tmp_path / "task")
+    made = sorted(p.parent.name for p in root.glob("*/SKILL.md"))
+    assert made == ["grocery"]                  # web is a tool; a name pi refuses is skipped
+    md = (root / "grocery" / "SKILL.md").read_text()
+    assert md.startswith("---\nname: grocery\n")
+    assert "Invoke with JSON" not in md.split("---")[1]          # nanobot's convention, not pi's
+    assert "The shared shopping list." in md and "skill tool" in md
+    assert "Actions: add_grocery, list_groceries" in md and "# Shopping list" in md
+    assert str(root).startswith(str(tmp_path / "task"))           # inside what `read` may open
+
+
+def test_pi_loads_only_the_households_skills(fake_pi, tmp_path, monkeypatch):
+    # --no-skills stays: it stops pi's own discovery (the agent directory, the
+    # task's .pi/skills and .agents/skills, where a model could have written one
+    # in an earlier run) while the --skill path is still loaded under it.
+    from nanobot.harness import alfred_skill as A
+    src = tmp_path / "src" / "grocery"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\nname: grocery\ndescription: list\n---\n\nbody\n")
+    monkeypatch.setattr(A, "list_skills", lambda: [
+        {"skill": "grocery", "actions": [], "description": "list"}])
+    monkeypatch.setattr(A, "find", lambda n: src / "SKILL.md")
+    state = fake_pi({"tools": [], "text": "listo"})
+    run(tmp_path)
+    argv = calls(state)[0]["argv"]
+    assert "--no-skills" in argv
+    assert argv[argv.index("--skill") + 1] == str(tmp_path / "work" / ".pi-skills")

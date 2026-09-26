@@ -373,9 +373,9 @@ household using it. These cost real outages and are not obvious from the code:
 - **One deploy at a time.** Two builds race on `alfred-nanobot:latest`, and a
   deploy started from the admin page ships *admin's* copy of the code (see
   `docs/admin.md`). Check for one with
-  `ps -eo args | grep "[p]ython.*/app/admin/deploy/deploy.py"` -- a plain
-  `pgrep -f` matches its own shell -- and deploy `admin` after shipping
-  services, so the page's copy is current.
+  `pgrep -af '^/usr/local/bin/python /app/admin/deploy/deploy\.py'` -- anchored,
+  because an unanchored pattern also matches the shell running the check --
+  and deploy `admin` after shipping services, so the page's copy is current.
 - **Confirm a deploy by what the container runs**: grep a string you just
   added inside it (`docker exec <c> grep -c '<new text>' /app/...`). "Deployed
   and answering" only says a container started.

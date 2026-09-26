@@ -185,6 +185,8 @@
   .lib-table th, .lib-table td { text-align: left; padding: 5px 8px 5px 0; vertical-align: top; }
   .lib-table td.num, .lib-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .lib-table tbody tr + tr td { border-top: 1px solid var(--edge); }
+  /* The fit panel's recommendation: the largest quant that fits. */
+  .lib-table tr[aria-current="true"] td { background: var(--row-on); }
   .lib-engine { white-space: nowrap; margin-right: 12px; }
   .lib-engine[data-state="untested"] { color: var(--ink-soft); }
   .lib-engine[data-state="fail"] .lib-mark { color: var(--attn-ink); font-weight: 700; }
@@ -950,6 +952,38 @@
         <p class="small" id="lib-hf-note" role="status"></p>
       </form>
     </div>
+    {# Fit a model to a card (admin/model_fit.py): every GGUF quant of a
+       Hugging Face repo, sized for one card at the context, cache and slots
+       asked for, with the largest that fits marked. Reads the file list and
+       one file's header; downloads nothing until a button says so. #}
+    <h3 id="fit">{{ t('admin.models.fit_heading') }}</h3>
+    <p class="help">{{ t('admin.models.fit_help') }}</p>
+    <form class="lib-add-form" id="fit-form" data-url="{{ url_for('model_fit_view') }}"
+          data-queue="{{ url_for('library_queue') }}" data-setup="{{ url_for('models_page') }}"
+          data-csrf="{{ csrf_token() }}">
+      <label>{{ t('admin.models.library_hf') }}
+        <input type="text" name="repo" placeholder="bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF" maxlength="200" required></label>
+      <label>{{ t('admin.models.ollama_gpu') }}
+        <select name="gpu">{% for g in ollama.gpus %}<option value="{{ g.index }}">GPU{{ g.index }} · {{ (g.total_mib / 1024)|round(1) }} GiB</option>{% endfor %}</select></label>
+      <label>{{ t('admin.models.fit_budget') }}
+        <select name="budget">
+          <option value="card">{{ t('admin.models.fit_budget_card') }}</option>
+          <option value="free">{{ t('admin.models.fit_budget_free') }}</option>
+        </select></label>
+      <label>{{ t('admin.models.ollama_context') }}
+        <select name="context">{% for c in (8192, 16384, 32768, 65536, 131072, 262144) %}<option value="{{ c }}"{% if c == 131072 %} selected{% endif %}>{{ c // 1024 }}k</option>{% endfor %}</select></label>
+      <label>{{ t('admin.models.ollama_kv') }}
+        <select name="kv">{% for k in ollama.kv_types %}<option value="{{ k }}">{{ k }}</option>{% endfor %}</select></label>
+      <label>{{ t('admin.models.ollama_parallel') }}<input type="number" name="parallel" value="1" min="1" max="8"></label>
+      <label>{{ t('admin.models.setup_engine') }}
+        <select name="engine">{% for e, label in ollama.engines %}<option value="{{ e }}">{{ label }}</option>{% endfor %}</select></label>
+      <button type="submit">{{ t('admin.models.fit_go') }}</button>
+      <p class="small" id="fit-note" role="status"></p>
+    </form>
+    <div class="scroll"><table class="lib-table small" id="fit-table" hidden>
+      <thead><tr><th>{{ t('admin.models.fit_quant') }}</th><th class="num">GiB</th>
+        <th class="num">{{ t('admin.models.fit_needs') }}</th><th class="num">{{ t('admin.models.fit_max_ctx') }}</th><th></th></tr></thead>
+      <tbody></tbody></table></div>
   </details>
 
   <form method="post" action="{{ url_for('ollama_save') }}">
@@ -1032,7 +1066,7 @@
       </fieldset>
     {% endfor %}
       {% if not ollama.setups %}<p class="help">{{ t('admin.models.setups_none') }}</p>{% endif %}
-      <details class="oi oi-new"{% if not ollama.setups %} open{% endif %}>
+      <details class="oi oi-new"{% if not ollama.setups or ollama.setup_prefilled %} open{% endif %}>
         <summary>{{ t('admin.models.ollama_add') }}</summary>
         {{ su_row(ollama.setups|length, ollama.setup_blank, True) }}
       </details>
@@ -2132,6 +2166,84 @@
           hfNote.textContent = (d.files || []).length ? '' : {{ t('admin.models.library_hf_none')|tojson }};
         })
         .catch(function () { hfNote.textContent = {{ t('admin.models.library_hf_failed')|tojson }}; });
+    });
+  }
+  // Fit a model to a card: ask, draw every quant, offer the three next steps.
+  var fit = document.getElementById('fit-form');
+  if (fit) {
+    var fitNote = document.getElementById('fit-note'), fitTable = document.getElementById('fit-table');
+    var FT = {fits: {{ t('admin.models.fit_fits')|tojson }}, no: {{ t('admin.models.fit_too_big')|tojson }},
+              best: {{ t('admin.models.fit_best')|tojson }}, none: {{ t('admin.models.fit_none')|tojson }},
+              raises: {{ t('admin.models.fit_template_raises')|tojson }},
+              raisesNoFix: {{ t('admin.models.fit_template_raises_no_fix')|tojson }},
+              split: {{ t('admin.models.fit_split')|tojson }}, budget: {{ t('admin.models.fit_budget_is')|tojson }},
+              download: {{ t('admin.models.fit_download')|tojson }}, imp: {{ t('admin.models.fit_import')|tojson }},
+              setup: {{ t('admin.models.fit_setup')|tojson }}, failed: {{ t('admin.models.library_hf_failed')|tojson }}};
+    function post(fields) {
+      var f = document.createElement('form');
+      f.method = 'post'; f.action = fit.getAttribute('data-queue');
+      fields._csrf = fit.getAttribute('data-csrf');
+      Object.keys(fields).forEach(function (k) {
+        var i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = fields[k]; f.appendChild(i);
+      });
+      document.body.appendChild(f); f.submit();
+    }
+    function button(label, onClick) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'ghost small-btn'; b.textContent = label;
+      b.addEventListener('click', onClick);
+      return b;
+    }
+    fit.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var q = new URLSearchParams(new FormData(fit));
+      fitNote.textContent = '…'; fitTable.hidden = true;
+      fetch(fit.getAttribute('data-url') + '?' + q.toString())
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d.ok) { fitNote.textContent = d.error || FT.failed; return; }
+          var notes = [FT.budget.replace('{gib}', d.budget_gib)];
+          notes.push(d.recommended ? FT.best.replace('{quant}', d.rows.filter(function (r) { return r.path === d.recommended; })[0].quant) : FT.none);
+          // Only a family with an Ollama renderer gets its template replaced.
+          if (d.template_raises) notes.push(d.renderer ? FT.raises : FT.raisesNoFix);
+          if (d.split.length) notes.push(FT.split.replace('{quants}', d.split.join(', ')));
+          fitNote.textContent = notes.join(' ');
+          var body = fitTable.querySelector('tbody'); body.textContent = '';
+          d.rows.forEach(function (r) {
+            var tr = document.createElement('tr');
+            if (r.path === d.recommended) tr.setAttribute('aria-current', 'true');
+            var name = document.createElement('td'), b = document.createElement('b');
+            b.textContent = r.quant; name.appendChild(b);
+            var sub = document.createElement('div'); sub.className = 'muted'; sub.textContent = r.path + (r.engine !== d.engine ? ' · ' + r.engine : '');
+            name.appendChild(sub);
+            var gib = document.createElement('td'); gib.className = 'num'; gib.textContent = r.gib;
+            var need = document.createElement('td'); need.className = 'num';
+            need.textContent = r.need_gib + ' · ' + (r.fits ? FT.fits : FT.no);
+            var ctx = document.createElement('td'); ctx.className = 'num';
+            ctx.textContent = r.max_context ? (r.max_context / 1024) + 'k' : '—';
+            var act = document.createElement('td');
+            act.appendChild(button(FT.download, function () {
+              post({op: 'download', model: r.model, engine: r.engine === 'ollama' ? 'llamacpp' : r.engine});
+            }));
+            var target = r.model;
+            if (r.engine === 'ollama') {
+              target = r.ollama_name;
+              act.appendChild(button(FT.imp, function () {
+                post({op: 'import', model: r.model, name: r.ollama_name, renderer: d.renderer, engine: 'ollama'});
+              }));
+            }
+            act.appendChild(button(FT.setup, function () {
+              var s = new URLSearchParams({fit_model: target, fit_name: r.quant, fit_ctx: d.context,
+                                           fit_kv: d.kv_cache, fit_slots: d.parallel, fit_gpu: d.gpu,
+                                           fit_engine: r.engine});
+              location.href = fit.getAttribute('data-setup') + '?' + s.toString() + '#ollama';
+            }));
+            [name, gib, need, ctx, act].forEach(function (c) { tr.appendChild(c); });
+            body.appendChild(tr);
+          });
+          fitTable.hidden = false;
+        })
+        .catch(function () { fitNote.textContent = FT.failed; });
     });
   }
   // After "Save and apply": follow the host until it has done it.

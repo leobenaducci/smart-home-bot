@@ -34,7 +34,7 @@ PURPOSES = ("", "bench")
 # The root-owned copy the page's Apply button runs (ollama_host.py
 # --install-trigger). Bump when either file changes in a way the copy must
 # follow, and the page will ask for the trigger to be installed again.
-HELPER_VERSION = 7
+HELPER_VERSION = 8
 UNIT_RE = re.compile(r"ollama(-[a-z][a-z0-9]{0,15})?|llamacpp-[a-z][a-z0-9]{0,15}")
 # What serves a setup. Ollama applies window, slots and cache per server;
 # llama.cpp takes them per server too but runs one model per process, reads

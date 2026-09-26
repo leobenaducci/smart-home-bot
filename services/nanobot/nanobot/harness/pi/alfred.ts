@@ -69,6 +69,32 @@ function outside(path: unknown): boolean {
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
 
+// Small local models often send a list or an object as a JSON *string*:
+// `"sections": "[{\"heading\": ...}]"`. pi validated it against the schema,
+// refused it before the tool ran, and the model retried the same call until the
+// task died -- most of the document failures of NeoHorse, Ornith and MiMo
+// (2026-09-25). Repaired in `prepareArguments`, which pi runs *before*
+// validating, so the schema the model reads stays exactly as strict as it was:
+// widening it to "a list or a string" fixed those models and cost gemma4:e4b
+// its long tasks, 8-9/10 down to 3/10, the same evening.
+function fromJson(value: unknown, want: "array" | "object"): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    const v = JSON.parse(value);
+    if (want === "array" ? Array.isArray(v) : (v !== null && typeof v === "object" && !Array.isArray(v))) {
+      return v;
+    }
+  } catch { /* not JSON: leave it for the schema to refuse */ }
+  return value;
+}
+
+function repaired(args: unknown, fix: (a: Record<string, unknown>) => void): unknown {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  const a = { ...(args as Record<string, unknown>) };
+  fix(a);
+  return a;
+}
+
 function slugOf(title: string): string {
   return title.normalize("NFKD").replace(/[̀-ͯ]/g, "")
     .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "documento";
@@ -97,8 +123,14 @@ export default function (pi: ExtensionAPI) {
       url: Type.Optional(Type.String()),
       count: Type.Optional(Type.Number()),
     }),
+    // A call with no action (a url means fetch), or a count of "5".
+    prepareArguments: (args: unknown) => repaired(args, (a) => {
+      if (a.action === undefined) a.action = a.url ? "fetch" : "search";
+      if (typeof a.count === "string" && Number(a.count) > 0) a.count = Number(a.count);
+    }),
     async execute(_id, p, signal) {
-      const payload = p.action === "fetch" ? { url: p.url, maxChars: 8000 } : { query: p.query, count: p.count ?? 5 };
+      const payload = p.action === "fetch" ? { url: p.url, maxChars: 8000 }
+        : { query: p.query, count: Math.min(10, p.count ?? 5) };
       return text(await alfredSkill(["web", p.action, JSON.stringify(payload)], signal));
     },
   });
@@ -124,14 +156,18 @@ export default function (pi: ExtensionAPI) {
         })),
       })),
     }),
+    prepareArguments: (args: unknown) => repaired(args, (a) => {
+      a.sections = fromJson(a.sections, "array");
+    }),
     async execute(_id, p, signal) {
+      const sections = p.sections;
       const filename = `${slugOf(p.title)}.${p.format}`;
       if (BENCH) {
         return text(JSON.stringify({ format: p.format, file: `media/${filename}`,
           share_path: `bench/${filename}`, link: `download:bench/${filename}`,
-          sections: p.sections.length }, null, 2));
+          sections: sections.length }, null, 2));
       }
-      const payload = { format: p.format, filename, title: p.title, sections: p.sections };
+      const payload = { format: p.format, filename, title: p.title, sections };
       return text(await alfredSkill(["document", "create", JSON.stringify(payload)], signal));
     },
   });
@@ -147,11 +183,15 @@ export default function (pi: ExtensionAPI) {
       action: Type.String({ description: "action name, e.g. search_documents" }),
       args: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "the action's arguments" })),
     }),
+    prepareArguments: (args: unknown) => repaired(args, (a) => {
+      a.args = fromJson(a.args, "object");
+    }),
     async execute(_id, p, signal) {
+      const args = p.args ?? {};
       if (BENCH && !READ_ACTION.test(p.action)) {
         return text(JSON.stringify({ ok: true }));
       }
-      return text(await alfredSkill([p.skill, p.action, JSON.stringify(p.args ?? {})], signal));
+      return text(await alfredSkill([p.skill, p.action, JSON.stringify(args)], signal));
     },
   });
 

@@ -46,7 +46,15 @@ OLLAMA_URL = os.environ.get("HOME_STACK_OLLAMA_URL", "http://127.0.0.1:11434")
 TEST_PORT = 18931
 TEST_CTX = 2048
 LOAD_TIMEOUT_S = 300
-OPS = ("pull", "download", "delete", "test")
+OPS = ("pull", "download", "delete", "test", "import")
+# What an import may put in front of a GGUF instead of the template it carries.
+# `qwen3.5` is Ollama's own renderer for the family: some Hugging Face files'
+# templates refuse a conversation ending in tool results ("No user query found
+# in messages"), and every tool call after the first failed with a 500
+# (NeoHorse, Ornith, 2026-09-25). The admin page reads the file and decides.
+RENDERERS = ("", "qwen3.5")
+QWEN35_PARAMS = (("temperature", "1"), ("top_k", "20"), ("top_p", "0.95"),
+                 ("presence_penalty", "1.5"))
 # The engine a flavour's builds serve (ollama_instances.ENGINES).
 FLAVOR_OF = {"llamacpp": "vanilla", "prism": "prism"}
 
@@ -157,6 +165,18 @@ def check_job(job: dict) -> dict:
     elif not (OI.HF_RE.fullmatch(model) or (OI.MODEL_RE.fullmatch(model) and not model.startswith("/"))):
         raise LibraryError(f"{model!r} is not a library model")
     engines = [e for e in (job.get("engines") or []) if e in OI.ENGINES]
+    if op == "import":
+        # A downloaded file, into Ollama under a plain name.
+        name = str(job.get("name") or "").strip()
+        renderer = str(job.get("renderer") or "")
+        if not OI.HF_RE.fullmatch(model):
+            raise LibraryError(f"{model!r}: an import is of hf:owner/repo/file.gguf")
+        if (not OI.MODEL_RE.fullmatch(name) or name.startswith(("hf:", "hf.co/", "/"))
+                or ":" not in name):
+            raise LibraryError(f"{name!r} is not a name for an Ollama model (name:tag)")
+        if renderer not in RENDERERS:
+            raise LibraryError(f"unknown renderer {renderer!r}")
+        return {"op": op, "model": model, "engines": engines, "name": name, "renderer": renderer}
     return {"op": op, "model": model, "engines": engines}
 
 
@@ -228,6 +248,39 @@ def download(model: str) -> str:
     except (OSError, ValueError) as exc:
         part.unlink(missing_ok=True)
         return f"download failed: {exc}"
+
+
+def import_to_ollama(model: str, name: str, renderer: str) -> str:
+    """Create *name* in Ollama from the downloaded file, downloading it first
+    if it is not here. "" or why not."""
+    m = OI.HF_RE.fullmatch(model)
+    path = Path(OI.MODELS_DIR) / "hf" / m.group(1) / m.group(2) / m.group(3)
+    if not path.is_file():
+        why = download(model)
+        if why:
+            return why
+    lines = [f"FROM {path}"]
+    if renderer:
+        lines += ["TEMPLATE {{ .Prompt }}", f"RENDERER {renderer}", f"PARSER {renderer}"]
+        lines += [f"PARAMETER {k} {v}" for k, v in QWEN35_PARAMS]
+    print(f"  importing {model} into Ollama as {name}"
+          + (f" (renderer {renderer})" if renderer else "") + " ...")
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".Modelfile", delete=False) as fh:
+        fh.write("\n".join(lines) + "\n")
+        modelfile = fh.name
+    try:
+        host = OLLAMA_URL.split("://", 1)[-1]
+        r = subprocess.run(["ollama", "create", name, "-f", modelfile], capture_output=True,
+                           text=True, timeout=3600, env={**os.environ, "OLLAMA_HOST": host})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return str(exc)
+    finally:
+        Path(modelfile).unlink(missing_ok=True)
+    if r.returncode != 0:
+        said = (r.stderr or r.stdout or "").strip()
+        return said.splitlines()[-1][:300] if said else f"ollama create exited {r.returncode}"
+    return ""
 
 
 def delete(model: str, used: set[str]) -> str:
@@ -387,12 +440,15 @@ def run_queue(config_dir: Path, cfg: dict, ollama_blob) -> int:
             why = download(model)
         elif op == "delete":
             why = delete(model, used_models(cfg))
+        elif op == "import":
+            why = import_to_ollama(model, job["name"], job["renderer"])
+            model = job["name"]             # what gets tested is the Ollama model
         if why:
             print(f"  {op} {model}: {why}")
             failed += 1
             continue
         doc = refresh(config_dir)
-        if op in ("pull", "download", "test"):
+        if op in ("pull", "download", "test", "import"):
             entry = next((m for m in doc["models"] if m["id"] == model), None)
             if entry is None:
                 print(f"  {model} is not in the library")

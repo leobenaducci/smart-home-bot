@@ -5986,6 +5986,72 @@ def _reply_block(quoted):
     return f'[Replying to {who}]\n> {quoted["text"]}'
 
 
+# Machine events -- chore reminders, geofences, relayed notifications -- are
+# phrased by Alfred in an isolated `ev-*` session (_alfred_notify) and shown in
+# the chat, but they are not in the conversation's own session. So a person
+# answering one was answering something Alfred had never seen: a chore reminder
+# at 21:30, "No puedo" at 21:32, and Alfred asked "¿Qué no podés?" (2026-09-25).
+# What was shown since the person last spoke goes above their message, marked
+# as Alfred's own background messages.
+EVENT_CONTEXT_MAX = 3
+EVENT_CONTEXT_WINDOW_MS = 6 * 3600 * 1000
+EVENT_KINDS = {'ev-task': 'chore reminder', 'ev-geo': 'location alert',
+               'ev-notif': 'phone notification', 'ev-ask': 'message from the family'}
+
+
+def _event_context_block(username, content, space=None, now_ms=None):
+    """The background messages on screen since the person last wrote, or ''.
+
+    A message Alfred sent inside the conversation carries its `conv`; one it
+    sent from an event session does not (_alfred_notify persists it without),
+    and that is the one the conversation's session has no record of. Walking
+    back from the newest: the person's own message being sent now is skipped,
+    and the first message of the conversation proper ends the walk -- Alfred
+    has seen everything before it.
+    """
+    if space:
+        return ''                      # a profession keeps its own history
+    # Today and yesterday, merged by time: a conversation that runs past
+    # midnight stays filed under the day it started (_writing_day), while an
+    # event is filed under the day it fired. Reading only today would miss the
+    # person's own post-midnight messages and resurface a reminder they had
+    # already answered. The window is shorter than a day, so two files cover it.
+    today = _tasks_today()
+    msgs = []
+    for d in ((today - timedelta(days=1)).isoformat(), today.isoformat()):
+        try:
+            msgs.extend(m for m in (load_user_history(username, d) or [])
+                        if isinstance(m, dict))
+        except Exception:
+            pass
+    msgs.sort(key=lambda m: int(m.get('ts') or 0))
+    now_ms = now_ms or int(time.time() * 1000)
+    found, skipping_own = [], True
+    for m in reversed(msgs):
+        if skipping_own and m.get('role') == 'user' and (m.get('text') or '').strip() == content.strip():
+            continue                   # the message being sent, saved by the page first
+        skipping_own = False
+        if m.get('role') != 'bot' or m.get('conv'):
+            break                      # the conversation itself: Alfred saw it
+        if now_ms - int(m.get('ts') or 0) > EVENT_CONTEXT_WINDOW_MS:
+            break
+        found.append(m)
+        if len(found) >= EVENT_CONTEXT_MAX:
+            break
+    if not found:
+        return ''
+    lines = []
+    for m in reversed(found):
+        when = datetime.fromtimestamp(int(m.get("ts") or 0) / 1000, TASKS_TZ).strftime("%H:%M")
+        kind = EVENT_KINDS.get(re.sub(r'-\d+$', '', m.get('ev') or ''), 'background message')
+        text = re.sub(r'\s+', ' ', m.get('text') or '').strip()[:600]
+        lines.append(f'- {when} ({kind}): {text}')
+    return ('[Shown in this chat since the person last wrote: messages you (Alfred) sent from '
+            'a background task, which you have no other record of. What they write next may be '
+            'an answer to them -- for a chore reminder, "ya lo hice", "no puedo" or '
+            '"recordame más tarde" is about that chore.]\n' + '\n'.join(lines))
+
+
 def _compose_turn_content(username, content, images, docs, space, seed=None,
                           project=None, reply_to=None):
     """What nanobot is actually sent for one turn.
@@ -6013,6 +6079,11 @@ def _compose_turn_content(username, content, images, docs, space, seed=None,
     reply_block = _reply_block(reply_to)
     if reply_block:
         text = f'{reply_block}\n\n{text}' if text else reply_block
+    # Above that, what Alfred sent from the background since they last wrote:
+    # a reminder is what "No puedo" is about.
+    events_block = '' if seed else _event_context_block(username, content, space)
+    if events_block:
+        text = f'{events_block}\n\n{text}' if text else events_block
     # Attachments first, the person's question last: what they actually asked
     # should sit next to the answer, not sixty thousand characters above it.
     doc_block = _documents_block(docs)
@@ -10560,6 +10631,8 @@ def _alfred_notify(username, prompt, day=None, persist=True, scope=None,
         entry = {'role': 'bot', 'text': text, 'ts': ts}
         if conv:
             entry['conv'] = conv
+        if scope:
+            entry['ev'] = scope        # what kind of event, for _event_context_block
         # Machine events (scope set) carry no conv on purpose: they run in an
         # isolated ev-* model session but still belong, for display, to
         # whatever conversation is on screen — so they inherit it rather than
@@ -16531,7 +16604,7 @@ def _notif_deliver(username, nid, label, title, text, can_reply, rules):
         return  # nothing worth the user's attention
     # Only now is it worth keeping: saved to the chat, and pushed if they're away.
     append_user_history(username, {'role': 'bot', 'text': reply,
-                                   'ts': int(time.time() * 1000)})
+                                   'ts': int(time.time() * 1000), 'ev': scope})
     if _user_watching(username):
         return
     topic = _ntfy_topic(username)
