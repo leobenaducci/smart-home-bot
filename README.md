@@ -43,7 +43,8 @@ reverse proxy on a VPS you own, which forwards traffic home and stores nothing.
 - **Local models on your own GPUs** — Ollama or llama.cpp (including PrismML's
   build for ternary models), several servers pinned to cards, a model library
   that tests each model before you can pick it, a VRAM preview, and a
-  benchmark with a per-role Test button. See
+  benchmark with a per-role Test button. On a 12 GB card, **gemma4:e4b** is
+  the tested pick for the local roles; see the recommended models in
   [docs/local-ollama.md](docs/local-ollama.md).
 - **A document archive** (Paperless-ngx), **your own notifications** (ntfy),
   **your own web search** (SearXNG) and page reader (crawl4ai).

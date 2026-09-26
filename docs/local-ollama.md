@@ -33,6 +33,31 @@ host, the difference being CUDA context and compute buffers -- 1.3 GiB for
 gemma4 at 40k x 1). The sections below are the measurements that shaped the
 layout before it was a list, kept for their reasoning.
 
+## Recommended local models
+
+Measured on one RTX 3060 12 GB, 2026-09-25/26, with the house's own
+benchmark (`services/nanobot/bench/`): ten long tasks (research, then a PDF,
+spreadsheet or page, through the pi harness) and six plan steps (one exact
+step each, through the step runner). Scores are cases passed.
+
+| Model | Long tasks | Plan steps | Use it for |
+|---|---|---|---|
+| **gemma4:e4b** (Ollama library) | 8/10, ~30 s a case | 6/6, ~6 s a step | **Everything local.** The default: accurate, fast, and small on the card -- most of its file is a per-layer table Ollama keeps in RAM. |
+| **NeoHorse-1-9B** (`TokenRhythm/NeoHorse-1-9B-GGUF`, Q4_K_M) | 8–9/10, ~120–150 s | 3/6 | Long tasks only, as the alternative to gemma4:e4b; about four times slower per case. Import it into Ollama from the fit panel: its own template breaks on tool results, and the import puts Ollama's qwen3.5 renderer in its place. |
+| **gemma4:12b** (Ollama library) | 5/10 | 6/6 | Plan steps, if you want a larger step model; ~8.5–9.5 GB at 128k. |
+
+Tested and not recommended for these roles: granite4.2:8b (8/10 on long tasks
+but about nine times slower than gemma4:e4b), MiMo-V2.6-Distill-Qwen-9B,
+Ornith-1.5-9B, LFM2.5-8B-A1B (5/10 each), Spark-X2.5-4B (6/10, but 1/6 on plan
+steps), Bonsai 2 27B ternary (wanders between tools in plan steps).
+
+Two things any new model needs before its score means anything: the
+benchmark server's window has to be large (`context: 65536` on the `bench`
+instance -- at 2048 every long task failed), and a Hugging Face file's chat
+template has to survive tool results (the fit panel flags one that does not).
+Vendor benchmark scores did not predict these results: by them gemma4:e4b
+should lose to qwen3.5, and for this house it wins.
+
 ## Setups, engines and the model library
 
 **A setup** (`cloud.ollama.setups`, "Local models" on the Models page) is a
