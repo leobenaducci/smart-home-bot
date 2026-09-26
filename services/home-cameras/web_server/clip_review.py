@@ -60,6 +60,23 @@ REVIEW_MODEL = os.environ.get('CLIP_REVIEW_MODEL', 'qwen3-vl:8b')
 # Off by default so a deployment that cannot reach Ollama keeps its recordings
 # where they have always been rather than silently filling a review tray.
 REVIEW_ENABLED = os.environ.get('CLIP_REVIEW_ENABLED', '1') not in ('0', 'false', '')
+# The Settings page's switch, once somebody has used it. The environment is
+# the deploy's default (`services.home-cameras.clip_review`); this is the
+# household's answer, and it takes effect on the next clip rather than on the
+# next deploy -- giving the card back to Ollama for an afternoon should not
+# need one. None means nobody has chosen, and the default stands.
+_enabled_choice = None
+
+
+def review_enabled() -> bool:
+    """Whether the next clip goes through the vision model."""
+    return REVIEW_ENABLED if _enabled_choice is None else _enabled_choice
+
+
+def set_review_enabled(value) -> None:
+    """The page's switch: True, False, or None to fall back to the default."""
+    global _enabled_choice
+    _enabled_choice = None if value is None else bool(value)
 REVIEW_TIMEOUT_S = int(os.environ.get('CLIP_REVIEW_TIMEOUT', '180'))
 REVIEW_MAX_AGE_DAYS = int(os.environ.get('CLIP_REVIEW_MAX_AGE_DAYS', '15'))
 # How many frames of the clip the model sees: one a second, between a floor and
@@ -926,7 +943,7 @@ class ClipReviewQueue:
         # one sent every recording in the house to the tray — where the fifteen
         # day purge would have deleted the lot. Off means keep, as it always
         # has.
-        if REVIEW_ENABLED:
+        if review_enabled():
             # Lowest-priority inference in the house: let anything else on the
             # card go first. Nothing here branches on the outcome -- the clip
             # is reviewed either way -- it is recorded so the page can say

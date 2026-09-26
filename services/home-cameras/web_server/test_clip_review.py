@@ -206,6 +206,27 @@ try:
 finally:
     clip_review.REVIEW_ENABLED = _was
 
+# The Settings page's switch beats the deploy's default, both ways, and
+# clearing it hands the decision back.
+print("\nthe Settings page's switch overrides the deploy's default")
+_was = clip_review.REVIEW_ENABLED
+try:
+    clip_review.REVIEW_ENABLED = False
+    clip_review.set_review_enabled(True)
+    check("  on over a default of off", clip_review.review_enabled() is True)
+    clip_review.REVIEW_ENABLED = True
+    clip_review.set_review_enabled(False)
+    check("  off over a default of on", clip_review.review_enabled() is False)
+    filed = run_queue(None, "2026-08-08_12-85-00_patio.mp4", ask=False)
+    check("  and off really skips the model: kept, not to the tray",
+          filed and filed[0][2].get("outcome") == "keep"
+          and clip_review.REVIEW_DIRNAME not in filed[0][1], filed)
+    clip_review.set_review_enabled(None)
+    check("  cleared, the default stands again", clip_review.review_enabled() is True)
+finally:
+    clip_review.set_review_enabled(None)
+    clip_review.REVIEW_ENABLED = _was
+
 print("\nand a real 'nothing happened' still goes to the tray as before")
 filed = run_queue({'keep': False, 'what': 'leaves in the wind', 'certainty': 'high',
                    'error': None}, "2026-08-08_12-90-00_patio.mp4")

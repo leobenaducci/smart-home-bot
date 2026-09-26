@@ -1197,6 +1197,9 @@ services:
           # every recording -- off is not a purge, and clip_review.py says so
           # in as many words. Supplied as "1"/"0"; see derived above for why
           # it cannot be the config's own bool.
+          # This is the default only: the wall's Settings page has the switch
+          # (Recording Settings), and once saved there, its choice wins and
+          # takes effect without a deploy.
           CLIP_REVIEW_ENABLED: "{derived.clip_review_enabled}"
           # The clip reviewer is the heaviest user of this household's card --
           # every recorded clip is three frames through a vision model -- and

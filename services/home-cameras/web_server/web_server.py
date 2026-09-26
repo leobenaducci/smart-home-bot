@@ -249,6 +249,15 @@ def init_mqtt_client():
 
 init_mqtt_client()
 
+
+def apply_review_choice():
+    """The Settings page's clip-review switch, if it has ever been saved."""
+    choice = settings_manager.get_global_settings().get('clip_review_enabled')
+    rec_module.clip_review.set_review_enabled(choice if isinstance(choice, bool) else None)
+
+
+apply_review_choice()
+
 # Track active recording metadata (filename / tags) so we can publish MQTT when done
 _camera_recording_info: dict = {}
 
@@ -3126,7 +3135,11 @@ def trigger_recording(camera_key: str):
 @require_auth
 def get_global_settings():
     """Get global application settings"""
-    settings = settings_manager.get_global_settings()
+    settings = dict(settings_manager.get_global_settings())
+    # What the reviewer is doing now, which is the saved choice or, until
+    # somebody saves one, the deploy's default -- so the switch opens showing
+    # the truth rather than whatever an absent key reads as.
+    settings['clip_review_enabled'] = rec_module.clip_review.review_enabled()
     return jsonify(settings)
 
 
@@ -3173,11 +3186,15 @@ def update_global_settings():
                 return jsonify({'error': f'{name}: {e}'}), 400
         data['recording_presets'] = clean
 
+    if 'clip_review_enabled' in data and not isinstance(data['clip_review_enabled'], bool):
+        return jsonify({'error': 'clip_review_enabled has to be true or false'}), 400
+
     # Load current settings and update with new values
     current = settings_manager.get_global_settings()
     current.update(data)
 
     if settings_manager.save_global_settings(current):
+        apply_review_choice()
         return jsonify({'success': True, 'message': 'Global settings updated'})
     else:
         return jsonify({'error': 'Failed to save global settings'}), 500
