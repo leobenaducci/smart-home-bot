@@ -3886,7 +3886,10 @@ def harness_settings(harness: dict, cfg: dict) -> dict:
     then be a local engine.
     """
     enabled = bool(harness.get("enabled"))
-    out = {"enabled": enabled, "engine": "pi", "allowGo": bool(harness.get("allow_go"))}
+    # `long_tasks` sends turns labelled `long` there too, instead of planning
+    # them in the chat.
+    out = {"enabled": enabled, "engine": "pi", "allowGo": bool(harness.get("allow_go")),
+           "longTasks": bool(harness.get("long_tasks"))}
     model = str(harness.get("model") or "").strip()
     if model:
         prefix, sep, name = model.partition(":")

@@ -1299,5 +1299,7 @@
   "admin.models.fit_import": "Import into Ollama",
   "admin.models.fit_setup": "Use in a new setup",
   "admin.models.fit_no_card": "The host has not reported its cards yet.",
-  "admin.models.fit_no_gguf": "{repo} has no single-file GGUF quants."
+  "admin.models.fit_no_gguf": "{repo} has no single-file GGUF quants.",
+  "admin.models.harness_long_tasks": "Run long tasks on pi too",
+  "admin.models.harness_long_tasks_help": "Off, a request of several steps is planned here in the chat: it can ask you as it goes, and steps that only read stay read-only. On, it goes to pi in the background like a background task and answers in this conversation when done -- better for work that ends in a document, slower for short checks. Needs the harness above."
 }

@@ -178,6 +178,36 @@ async def test_background_work_on_voice_runs_here(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_long_work_goes_to_pi_when_the_household_asks(tmp_path, monkeypatch):
+    # `harness.longTasks` on: a `long` turn is handed off like a `background`
+    # one, so it runs on pi rather than being planned in the chat.
+    loop = _loop(tmp_path, "long")
+    loop.subagents.harness.long_tasks = True
+    monkeypatch.setattr(loop.subagents, "_harness_endpoint", lambda powerful=False: object())
+    run = AsyncMock()
+    monkeypatch.setattr(loop.runner, "run", run)
+    _r, _t, _m, stop, _i = await loop._run_agent_loop(
+        _msgs(), session=Session(key=f"websocket:{CHAT}"), channel="websocket", chat_id=CHAT)
+    assert stop == "delegated" and not run.called and loop.subagents.spawn.called
+
+
+@pytest.mark.asyncio
+async def test_long_work_stays_here_when_pi_cannot_take_it(tmp_path, monkeypatch):
+    # On, but pi is not reachable (not installed, harness off, no endpoint):
+    # the plan runs in the chat as before rather than failing in the background.
+    loop = _loop(tmp_path, "long")
+    loop.subagents.harness.long_tasks = True
+    monkeypatch.setattr(loop.subagents, "_harness_endpoint", lambda powerful=False: None)
+
+    async def run(spec):
+        return AgentRunResult(final_content="listo", messages=list(spec.initial_messages))
+    monkeypatch.setattr(loop.runner, "run", run)
+    reply, *_ = await loop._run_agent_loop(_msgs(), session=Session(key=f"websocket:{CHAT}"),
+                                           channel="websocket", chat_id=CHAT)
+    assert reply == "listo" and not loop.subagents.spawn.called
+
+
+@pytest.mark.asyncio
 async def test_long_work_stays_in_the_chat_with_a_plan(tmp_path, monkeypatch):
     loop = _loop(tmp_path, "long")
     seen = {}

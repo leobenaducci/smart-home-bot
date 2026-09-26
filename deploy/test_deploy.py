@@ -1157,6 +1157,10 @@ for _models, _why in (
 # The entry has to carry its provider, because a bare name means "the provider
 # serving the role" and always has. base.py can only route to another client
 # when it is told which one.
+check("harness.long_tasks reaches the assistants as longTasks",
+      D.harness_settings({"enabled": True, "long_tasks": True}, {})["longTasks"] is True
+      and D.harness_settings({"enabled": True}, {})["longTasks"] is False)
+
 # The assistants keep their schedules in their own config's zone, and nothing
 # wrote the household's in: the morning greeting came at 04:00 (2026-09-26).
 _tz_doc = _json.dumps({"agents": {"defaults": {"timezone": "Etc/UTC", "model": "m"}}})
@@ -4289,7 +4293,7 @@ print("\nassistant.harness: background tasks on pi, with the sub-agent models")
 _h = json.loads(D.apply_model_choices('{"agents": {"defaults": {}}}',
                 {"assistant": {"harness": {"enabled": True}}}))["agents"]["defaults"]["harness"]
 check("  on, with no model: pi runs the sub-agent models, Go not allowed",
-      _h == {"enabled": True, "engine": "pi", "allowGo": False}, _h)
+      _h == {"enabled": True, "engine": "pi", "allowGo": False, "longTasks": False}, _h)
 _h = D.harness_settings({"enabled": True, "allow_go": True}, {})
 check("  allow_go is passed through", _h["allowGo"] is True, _h)
 _h = D.harness_settings({"enabled": True, "model": "ollama:gemma4:e4b"},

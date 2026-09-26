@@ -3442,6 +3442,7 @@ def models_page():
             harness = assistant.setdefault("harness", {})
             harness["enabled"] = request.form.get("harness_enabled") == "on"
             harness["allow_go"] = request.form.get("harness_allow_go") == "on"
+            harness["long_tasks"] = request.form.get("harness_long_tasks") == "on"
 
         if request.form.get("scope:sources"):
             cloud = cfg.setdefault("cloud", {})
@@ -3816,7 +3817,8 @@ def models_page():
         view=view,
         speech=speech,
         harness={"enabled": bool(_harness.get("enabled")),
-                 "allow_go": bool(_harness.get("allow_go"))},
+                 "allow_go": bool(_harness.get("allow_go")),
+                 "long_tasks": bool(_harness.get("long_tasks"))},
         bench_runs=bench_views,
         ollama=_ollama_card(cfg),
         local_instances=[{"id": i["id"], "display": OI.display(i)}
