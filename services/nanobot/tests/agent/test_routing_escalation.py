@@ -371,3 +371,59 @@ async def test_each_attempt_is_billed_to_the_provider_it_ran_on(tmp_path, monkey
     seen = _reports(monkeypatch)
     await loop._run_agent_loop(HOLA, session=Session(key="api:y"))
     assert seen[-1][1]["provider"] == "together_ai"
+
+
+@pytest.mark.asyncio
+async def test_the_standing_context_is_not_the_persons_message(tmp_path):
+    """A "hola" opening a new chat arrives behind the portal's standing context
+    (the professions on offer...), and that block alone is past
+    long_message_chars: on 2026-09-27 the greeting was routed `long` and handed
+    to a background sub-agent. The route is decided on what the person wrote."""
+    from nanobot.utils import standing_context
+    loop = _loop(tmp_path, label="chat")
+    raw = standing_context.wrap("[Professions available]\n" + "x" * 900) + "\n\nhola"
+    msgs = [{"role": "user", "content": standing_context.for_prompt(raw)}]
+    kw = dict(session=None, chat_id="x", powerful=False, profile=None, use_vision=False)
+    before = await loop._route_turn(msgs, **kw)
+    assert before.label == "long" and before.source == "fast_path"     # what happened
+    after = await loop._route_turn(msgs, route_text=standing_context.for_history(raw), **kw)
+    assert after.label == "chat" and after.source != "fast_path"
+    # ...and a message that really is long still takes the shortcut.
+    real = await loop._route_turn([{"role": "user", "content": "y" * 900}], route_text="y" * 900, **kw)
+    assert real.label == "long"
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_task_is_the_persons_words(tmp_path, monkeypatch):
+    """The task a sub-agent gets -- and the title the chat shows for it -- was
+    the start of the standing context ("[Professions available] Beside...")."""
+    from nanobot.agent.classify import TurnClass
+    from nanobot.utils import standing_context
+    loop = _loop(tmp_path, label="background")
+    spawned = {}
+
+    async def spawn(**kw):
+        spawned.update(kw)
+        return "x"
+    monkeypatch.setattr(loop.subagents, "spawn", spawn)
+    monkeypatch.setattr(loop.subagents, "is_running_task", lambda *a, **k: False)
+    raw = standing_context.wrap("[Professions available]\n" + "x" * 900) + "\n\ninvestigá esto a fondo"
+    msgs = [{"role": "user", "content": standing_context.for_prompt(raw)}]
+    await loop._delegate_turn(msgs, None, "websocket", "c", "long",
+                              TurnClass("long", "everyday", "t", "model"),
+                              said=standing_context.for_history(raw))
+    assert spawned["task"].startswith("investigá esto a fondo"), spawned.get("task", "")[:60]
+
+
+def test_a_picture_sent_with_the_words_stays_in_them():
+    """An image swapped for its path is a text block in the built message, not
+    part of what the person typed: the route and a delegated task keep it."""
+    from nanobot.agent.loop import _with_image_placeholders
+    last = {"role": "user", "content": [
+        {"type": "text", "text": "[Runtime Context]\nx\n[/Runtime Context]"},
+        {"type": "text", "text": "[image: /tmp/a.jpg]"},
+        {"type": "text", "text": "qué es esto"},
+    ]}
+    assert _with_image_placeholders(last, "qué es esto") == "[image: /tmp/a.jpg] qué es esto"
+    assert _with_image_placeholders(last, "") == "[image: /tmp/a.jpg]"
+    assert _with_image_placeholders({"role": "user", "content": "hola"}, "hola") == "hola"

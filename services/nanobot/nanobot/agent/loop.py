@@ -27,7 +27,6 @@ from nanobot.utils.profiling import PROFILER
 from nanobot.agent.classify import (
     TurnClass,
     TurnClassifier,
-    _text_of,
     continuation_messages,
     previous_assistant_text,
 )
@@ -267,6 +266,24 @@ def _messages_have_image(messages: list) -> bool:
         ):
             return True
     return False
+
+
+def _with_image_placeholders(message: dict, said: str) -> str:
+    """*said* with the ``[image: path]`` blocks the turn's user message carries.
+
+    The words the person wrote come from their message with the standing
+    context removed, and an image is not in it: `_swap_images_for_paths` puts
+    it into the built message as a text block. Without this, a photo sent with
+    a request was routed on the words alone -- a photo with no words on ""
+    -- and a sub-agent handed the turn got a task with no picture in it.
+    """
+    content = message.get("content") if message.get("role") == "user" else None
+    if not isinstance(content, list):
+        return said
+    images = [str(b.get("text") or "").strip() for b in content
+              if isinstance(b, dict) and b.get("type") == "text"
+              and _IMAGE_PLACEHOLDER_RE.fullmatch(str(b.get("text") or "").strip())]
+    return " ".join(images + ([said] if said else [])) if images else said
 
 
 def _swap_images_for_paths(messages: list) -> bool:
@@ -1116,6 +1133,7 @@ class AgentLoop:
         powerful: bool,
         profile: str | None,
         use_vision: bool,
+        route_text: str | None = None,
     ) -> TurnClass:
         """Which tier this turn starts on, and who decided.
 
@@ -1137,7 +1155,19 @@ class AgentLoop:
                 session.metadata["sticky_powerful"] = left - 1
                 return TurnClass("sticky", "powerful", f"{left} sticky turns left", "sticky")
         last = initial_messages[-1] if initial_messages else {}
-        text = _text_of(last.get("content")) if last.get("role") == "user" else ""
+        # task_text, not the whole message: build_messages puts Recent History
+        # and the Runtime Context block in front of it, and they are the turn's
+        # context, not something the person wrote -- a turn with no route_text
+        # (a job firing, a system turn) was measured with them too.
+        text = delegate.task_text(last.get("content")) if last.get("role") == "user" else ""
+        # What the person wrote, not what the model reads. The model gets the
+        # portal's standing context (the professions on offer, and so on) in
+        # front of the message, and that block alone is past
+        # `long_message_chars`: on 2026-09-27 a "hola" opening a new chat was
+        # read as work handed over and sent to a background sub-agent. The
+        # caller passes the words with the block removed (`for_history`).
+        if route_text is not None and last.get("role") == "user":
+            text = route_text
         attachments = sum(
             1 for b in (last.get("content") if isinstance(last.get("content"), list) else [])
             if isinstance(b, dict) and b.get("type") in ("image_url", "image", "file")
@@ -1313,7 +1343,8 @@ class AgentLoop:
     async def _delegate_turn(self, initial_messages: list[dict], session: "Session | None",
                              channel: str, chat_id: str, kind: str, route: TurnClass,
                              done: str | None = None,
-                             lead: str | None = None) -> tuple[str | None, list[str], list[dict], str, bool]:
+                             lead: str | None = None,
+                             said: str | None = None) -> tuple[str | None, list[str], list[dict], str, bool]:
         """Hand this turn to a sub-agent and answer with one line.
 
         The task is what the person wrote; the context is what was being said
@@ -1322,6 +1353,13 @@ class AgentLoop:
         """
         last = initial_messages[-1] if initial_messages else {}
         text = delegate.task_text(last.get("content")) if last.get("role") == "user" else ""
+        # The person's words, without the portal's standing context in front:
+        # otherwise the task -- and its title in the chat -- was the start of
+        # that block ("[Professions available] Beside...", 2026-09-27).
+        # `is not None`, as `_route_turn` has it: a message that was only the
+        # block is "" here, and falling back would make the block the task.
+        if said is not None and last.get("role") == "user":
+            text = delegate.task_text(said)
         key = session.key if session else f"{channel}:{chat_id}"
         if kind == "long" and text and self.subagents.is_running_task(key, text):
             reply = delegate.ack("already")
@@ -1411,6 +1449,7 @@ class AgentLoop:
         pending_queue: asyncio.Queue | None = None,
         powerful: bool = False,
         profile: str | None = None,
+        route_text: str | None = None,
     ) -> tuple[str | None, list[str], list[dict], str, bool]:
         """Run the agent iteration loop.
 
@@ -1546,9 +1585,12 @@ class AgentLoop:
         # Which tier this turn *starts* on -- the caller's flags, a recent
         # escalation in this session, or the classifier's label, in that
         # order. `forced` and `sticky` never ask the model. See classify.py.
+        if route_text is not None and initial_messages:
+            route_text = _with_image_placeholders(initial_messages[-1], route_text)
         route = await self._route_turn(
             initial_messages, session=session, chat_id=chat_id,
             powerful=powerful, profile=profile, use_vision=use_vision,
+            route_text=route_text,
         )
         # Work that takes minutes goes to a sub-agent, and this turn only says
         # so (delegate.py). Not an image turn, a profession or a caller's
@@ -1558,7 +1600,7 @@ class AgentLoop:
                 and not (use_vision or profile or powerful)
                 and delegate.may_delegate(channel, chat_id, session.key if session else None)):
             return await self._delegate_turn(initial_messages, session, channel, chat_id,
-                                             "long", route)
+                                             "long", route, said=route_text)
         # Long tasks on pi, when the household asks for it (`harness.longTasks`):
         # a `long` turn goes where a `background` one does rather than being
         # planned here. Only where pi can take it now -- otherwise the plan
@@ -1568,7 +1610,7 @@ class AgentLoop:
                 and delegate.may_delegate(channel, chat_id, session.key if session else None)
                 and self.subagents.harness_takes_long_tasks()):
             return await self._delegate_turn(initial_messages, session, channel, chat_id,
-                                             "long", route)
+                                             "long", route, said=route_text)
         if use_vision:
             runner, turn_model = self._vision_runner, self._vision_model
         elif profile and profile in self._profiles:
@@ -1751,7 +1793,7 @@ class AgentLoop:
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "continue", route,
                     done="\n\n".join(x for x in (plan_note, delegate.already_done(result.messages)) if x),
-                    lead=result.final_content)
+                    lead=result.final_content, said=route_text)
             if (self._should_escalate_any(result, route, runner) and can_hand_off):
                 route.escalated_from = result.stop_reason
                 report_usage(session.key if session else None,
@@ -1760,7 +1802,8 @@ class AgentLoop:
                              provider=_billed_provider(result))
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "dead_end", route,
-                    done="\n\n".join(x for x in (plan_note, delegate.already_done(result.messages)) if x))
+                    done="\n\n".join(x for x in (plan_note, delegate.already_done(result.messages)) if x),
+                    said=route_text)
             if self._should_escalate(result, route, runner):
                 first_attempt = result
                 reason = result.stop_reason
@@ -2330,6 +2373,7 @@ class AgentLoop:
             pending_queue=pending_queue,
             powerful=powerful,
             profile=profile,
+            route_text=stored_text if isinstance(msg.content, str) else None,
         )
 
         if final_content is None or not final_content.strip():
