@@ -274,6 +274,23 @@ check("  but a parked car does not save it",
       whereabouts("2026-08-08_16-13-00_patio_car_car_car.mp4") == 'gone',
       whereabouts("2026-08-08_16-13-00_patio_car_car_car.mp4"))
 
+print("\nunless the household keeps vehicles too (CLIP_REVIEW_KEEP_TAGS)")
+_was_tags = clip_review.PROTECTING_TAGS
+clip_review.PROTECTING_TAGS = clip_review.LIVING_TAGS | {'car', 'truck'}
+try:
+    run_queue(STATIC, "2026-08-08_16-14-00_patio_car.mp4")
+    check("  a car in frame now keeps it",
+          whereabouts("2026-08-08_16-14-00_patio_car.mp4") != 'gone',
+          whereabouts("2026-08-08_16-14-00_patio_car.mp4"))
+    run_queue(STATIC, "2026-08-08_16-15-00_patio.mp4")
+    check("  and a clip with nothing in it still goes",
+          whereabouts("2026-08-08_16-15-00_patio.mp4") == 'gone',
+          whereabouts("2026-08-08_16-15-00_patio.mp4"))
+finally:
+    clip_review.PROTECTING_TAGS = _was_tags
+check("  the setting only adds: people and animals protect whatever it says",
+      clip_review.LIVING_TAGS <= clip_review.PROTECTING_TAGS)
+
 print("\nand for the other ways a camera notices its own scene")
 # These used to go to the tray and age out fifteen days later. A light
 # switching, weather and an insect on the lens are the camera noticing itself,

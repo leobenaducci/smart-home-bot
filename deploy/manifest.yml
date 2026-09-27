@@ -1201,6 +1201,13 @@ services:
           # (Recording Settings), and once saved there, its choice wins and
           # takes effect without a deploy.
           CLIP_REVIEW_ENABLED: "{derived.clip_review_enabled}"
+          # What the reviewer may bin, and when. Each can only make the bin
+          # smaller than clip_review.py's own floor -- see the compose file.
+          # The household's say over them, rather than compose defaults
+          # nothing could reach: these were read and never exported.
+          CLIP_REVIEW_DELETE_KINDS: "{services.home-cameras.review_delete_kinds}"
+          CLIP_REVIEW_TRUST_OVER_HEDGE: "{services.home-cameras.review_trust_over_hedge}"
+          CLIP_REVIEW_KEEP_TAGS: "{services.home-cameras.review_keep_tags}"
           # The clip reviewer is the heaviest user of this household's card --
           # every recorded clip is three frames through a vision model -- and
           # it was the one part of Alfred's work that appeared nowhere on the

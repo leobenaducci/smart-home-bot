@@ -80,6 +80,10 @@ services:
       # second opinion. `static` stays hedged on purpose: "nothing moved" is
       # a judgement about the whole scene and `keep` is a real check on it.
       - CLIP_REVIEW_TRUST_OVER_HEDGE=${CLIP_REVIEW_TRUST_OVER_HEDGE:-clock}
+      # Detector tags that keep a clip whatever the reviewer called it, on top
+      # of people and animals (which always do). Empty adds nothing; `car`,
+      # `truck`, `bus`, `motorcycle`, `bicycle` are what it can add.
+      - CLIP_REVIEW_KEEP_TAGS=${CLIP_REVIEW_KEEP_TAGS:-}
       # Reviewing a clip is the lowest-priority inference in the house, so it
       # waits for a quiet card before asking the vision model anything. Busy
       # is above BUSY_PCT; free is that many consecutive samples below it,

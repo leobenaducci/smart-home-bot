@@ -4410,6 +4410,13 @@ CONFIG_DEFAULTS = {
     # switching this on before that mirror is known to work deletes the sole
     # copy of everything past the cutoff.
     "services.home-cameras.recording_retention_days": 0,
+    # What the clip reviewer bins unwatched, which kinds it bins even when the
+    # model hedged, and which detector tags beyond people and animals keep a
+    # clip regardless. These are clip_review.py's own defaults, written here so
+    # a household can reach them; each can narrow the bin and never widen it.
+    "services.home-cameras.review_delete_kinds": "bug,clock,light,static,weather",
+    "services.home-cameras.review_trust_over_hedge": "clock",
+    "services.home-cameras.review_keep_tags": "",
     # Where Home Assistant actually is, for households that do not run it in
     # this stack. Empty means "there isn't one", which is the shipped state.
     #

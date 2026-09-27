@@ -338,6 +338,15 @@ LIVING_TAGS = frozenset(('person', 'dog', 'cat', 'bird', 'horse', 'sheep',
 DETECTOR_TAGS = LIVING_TAGS | frozenset(
     ('car', 'truck', 'bus', 'motorcycle', 'bicycle'))
 
+# What the detector may name to keep a clip out of the bin. Living things
+# always; a household may add vehicles (CLIP_REVIEW_KEEP_TAGS) when a car in
+# frame is worth a recording to it -- security cameras on a driveway -- and
+# accepts the parked-car clips that come with that. The setting can only add:
+# like DELETE_KINDS it may make the bin smaller, never larger.
+PROTECTING_TAGS = LIVING_TAGS | frozenset(
+    t.strip().lower() for t in os.environ.get('CLIP_REVIEW_KEEP_TAGS', '').split(',')
+    if t.strip()) & DETECTOR_TAGS
+
 
 def detector_tags_in(filename: str) -> list:
     """Everything the recorder's detector named in this clip, in order, once each.
@@ -750,6 +759,13 @@ def living_tags_in(filename: str) -> set:
     return LIVING_TAGS.intersection(p.lower() for p in parts[3:])
 
 
+def protecting_tags_in(filename: str) -> set:
+    """What the detector saw that keeps this clip out of the bin: the living
+    tags, plus whatever the household added in PROTECTING_TAGS."""
+    parts = os.path.splitext(os.path.basename(filename))[0].split('_')
+    return PROTECTING_TAGS.intersection(p.lower() for p in parts[3:])
+
+
 def keep_from(answer: dict) -> bool:
     """The model's `keep`, and only if it actually answered the question.
 
@@ -835,7 +851,7 @@ def is_just_a_static_scene(verdict: dict, filename: str) -> bool:
     # to remove.
     if kind not in HEDGE_TRUSTED_KINDS and verdict.get('keep'):
         return False
-    living = living_tags_in(filename)
+    living = protecting_tags_in(filename)
     if living:
         logger.info("clip review: %s says nothing happened, but the detector "
                     "saw %s — keeping it for a person", filename,
