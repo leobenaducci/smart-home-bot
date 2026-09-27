@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import hashlib
 import httpx
 import importlib.util
@@ -448,6 +449,37 @@ class OpenAICompatProvider(LLMProvider):
     # gpt-5 or o3, so every turn on it failed and no name check would have
     # caught it. Once a model says so, it is not asked again this process.
     _NO_TEMPERATURE: set[str] = set()
+    # The thinking levels a model accepts, once it has said. NanoGPT names them
+    # in the refusal ("Supported values are: none, high") and they differ per
+    # model: on 2026-09-26 the planner sent the everyday level, "low", to
+    # xiaomi/mimo-v2.6-flash, and every multi-step request in the house failed
+    # on a setting nobody chose for that model.
+    _EFFORTS_ACCEPTED: dict[str, tuple[str, ...]] = {}
+    _EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+    @staticmethod
+    def _accepted_efforts(error: Exception) -> tuple[str, ...] | None:
+        """The levels a refusal of `reasoning_effort` says are allowed, or None."""
+        text = str(error)
+        if "reasoning_effort" not in text:
+            return None
+        m = re.search(r"[Ss]upported values are:?\s*([a-z][a-z ,]*)", text)
+        if not m:
+            return None
+        levels = tuple(v.strip() for v in m.group(1).split(",") if v.strip())
+        return levels or None
+
+    @classmethod
+    def _nearest_effort(cls, want: str, accepted: tuple[str, ...]) -> str:
+        """The accepted level closest to *want*; on a tie, the higher one --
+        a role that asked for some thinking should not silently get none."""
+        if want in accepted:
+            return want
+        order = cls._EFFORT_ORDER
+        at = order.index(want) if want in order else order.index("low")
+        known = [a for a in accepted if a in order] or list(accepted)
+        return min(known, key=lambda a: (abs(order.index(a) - at) if a in order else 99,
+                                         -(order.index(a) if a in order else 0)))
 
     @staticmethod
     def _rejected_temperature(error: Exception) -> bool:
@@ -559,6 +591,9 @@ class OpenAICompatProvider(LLMProvider):
             # DashScope accepts none/minimum/low/medium/high/xhigh; "minimal" 400s.
             wire_effort = "minimum"
 
+        accepted = self._EFFORTS_ACCEPTED.get(str(model_name or "").lower())
+        if wire_effort and accepted and wire_effort.lower() not in accepted:
+            wire_effort = self._nearest_effort(wire_effort.lower(), accepted)
         if wire_effort:
             kwargs["reasoning_effort"] = wire_effort
 
@@ -1264,6 +1299,17 @@ class OpenAICompatProvider(LLMProvider):
                         reasoning_effort=reasoning_effort,
                         tool_choice=tool_choice,
                     )
+                accepted = self._accepted_efforts(first)
+                if accepted and 'reasoning_effort' in kwargs:
+                    name = (model or self.default_model or '').lower()
+                    self._EFFORTS_ACCEPTED[name] = accepted
+                    kwargs = self._build_kwargs(
+                        messages, tools, model, max_tokens, temperature,
+                        reasoning_effort, tool_choice,
+                    )
+                    logger.info("provider: {} accepts reasoning_effort {} only; sending {}",
+                                name, ", ".join(accepted), kwargs.get("reasoning_effort"))
+                    return self._parse(await self._client.chat.completions.create(**kwargs))
                 # "only 1 is allowed for this model". Send it again without the
                 # parameter it objected to rather than handing the person an
                 # error about a setting they did not choose and cannot see.
@@ -1345,13 +1391,27 @@ class OpenAICompatProvider(LLMProvider):
                 # Same again on the streaming path, which is the one the chat
                 # actually uses — fixing only the other would have left every
                 # real turn failing.
-                if not (self._rejected_temperature(first) and 'temperature' in kwargs):
+                accepted = self._accepted_efforts(first)
+                if accepted and 'reasoning_effort' in kwargs:
+                    name = (model or self.default_model or '').lower()
+                    self._EFFORTS_ACCEPTED[name] = accepted
+                    kwargs = self._build_kwargs(
+                        messages, tools, model, max_tokens, temperature,
+                        reasoning_effort, tool_choice,
+                    )
+                    kwargs["stream"] = True
+                    kwargs["stream_options"] = {"include_usage": True}
+                    logger.info("provider: {} accepts reasoning_effort {} only; sending {}",
+                                name, ", ".join(accepted), kwargs.get("reasoning_effort"))
+                    stream = await self._client.chat.completions.create(**kwargs)
+                elif not (self._rejected_temperature(first) and 'temperature' in kwargs):
                     raise
-                self._NO_TEMPERATURE.add((model or self.default_model or '').lower())
-                logger.info("provider: {} refuses temperature; retrying without it",
-                            model or self.default_model)
-                kwargs.pop('temperature', None)
-                stream = await self._client.chat.completions.create(**kwargs)
+                else:
+                    self._NO_TEMPERATURE.add((model or self.default_model or '').lower())
+                    logger.info("provider: {} refuses temperature; retrying without it",
+                                model or self.default_model)
+                    kwargs.pop('temperature', None)
+                    stream = await self._client.chat.completions.create(**kwargs)
             chunks: list[Any] = []
             stream_iter = stream.__aiter__()
             while True:
