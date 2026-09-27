@@ -146,6 +146,7 @@ def member_env(cfg: dict, mid: str, index: int) -> list[str]:
         "FREETOKEN_API_KEY=${FREETOKEN_API_KEY:-disabled}",
         "OPENAI_COMPATIBLE_API_KEY=${OPENAI_COMPATIBLE_API_KEY:-disabled}",
         "OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}",
+        "NANOGPT_API_KEY=${NANOGPT_API_KEY:-}",
         "OPENAI_API_KEY=${OPENAI_API_KEY:-}",
         "TOGETHER_API_KEY=${TOGETHER_API_KEY:-}",
         # The two image slots, chosen on the admin page's Models tab and

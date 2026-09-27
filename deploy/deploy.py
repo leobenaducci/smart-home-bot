@@ -431,6 +431,7 @@ MODEL_PROVIDERS = {
     "ollama-cloud": "ollama_cloud",  # ollama.com
     "openrouter": "openrouter",      # openrouter.ai, one key for many models
     "together": "together_ai",       # together.ai
+    "nanogpt": "nanogpt",            # nano-gpt.com, one key for many models
     "openai": "openai",              # OpenAI itself
     # Anything that speaks the OpenAI API at a URL you give it: a vLLM or
     # llama.cpp server on the LAN, LM Studio, or a provider this package has
@@ -544,6 +545,7 @@ HOSTED_API_BASE = {
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     "together_ai": ("https://api.together.xyz/v1", "TOGETHER_API_KEY"),
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "nanogpt": ("https://nano-gpt.com/api/v1", "NANOGPT_API_KEY"),
 }
 
 
@@ -1100,6 +1102,7 @@ PROVIDER_REQUIREMENT = {
     "ollama_cloud": "the OLLAMA_API_KEY credential",
     "openrouter": "the OPENROUTER_API_KEY credential",
     "together_ai": "the TOGETHER_API_KEY credential",
+    "nanogpt": "the NANOGPT_API_KEY credential",
     "openai": "the OPENAI_API_KEY credential",
     "openai_compatible": "cloud.openai_compatible",
     "freetoken": "cloud.freetoken",
@@ -1321,7 +1324,8 @@ def enabled_providers(cfg: dict, secrets: dict, endpoints: dict) -> set[str]:
     on.add("custom")                      # OpenCode Zen, required for the unit
     for provider, key in (("openrouter", "OPENROUTER_API_KEY"),
                           ("together_ai", "TOGETHER_API_KEY"),
-                          ("openai", "OPENAI_API_KEY")):
+                          ("openai", "OPENAI_API_KEY"),
+                          ("nanogpt", "NANOGPT_API_KEY")):
         if secrets.get(key, ""):
             on.add(provider)
     if openai_compatible_endpoint(cfg, secrets)[0]:

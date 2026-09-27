@@ -837,7 +837,7 @@ services:
                  # `--check-contract` exists for. Empty is fine for an
                  # endpoint that answers whoever asks.
                  IMAGE_API_KEY,
-                 OPENROUTER_API_KEY, OPENAI_API_KEY]
+                 OPENROUTER_API_KEY, OPENAI_API_KEY, NANOGPT_API_KEY]
       per_member: ["NANOBOT_API_SECRET_{M}", "HOMECORE_PROXY_TOKEN_{M}",
                    "PAPERLESS_API_TOKEN_{M}"]
 

@@ -204,7 +204,7 @@
   "admin.models.invalid_url": "そのアドレスは呼び出せる URL ではありません。http:// または https:// とホスト名が必要です（例: http://192.168.1.20:8000/v1）。何も保存していません。",
   "admin.models.key_set": "キーあり",
   "admin.models.key_unset": "キーなし — 選べません",
-  "admin.models.keyed_sources_note": "OpenRouter、Together AI、OpenAI は認証情報にキーを入れた時点で選択肢に出て、消せば消えます。ほかに設定はありません — アカウントが届くか届かないか、それだけです。",
+  "admin.models.keyed_sources_note": "OpenRouter、Together AI、NanoGPT、OpenAI は認証情報にキーを入れた時点で選択肢に出て、消せば消えます。ほかに設定はありません — アカウントが届くか届かないか、それだけです。",
   "admin.models.local_preferred": "ここではローカルが正解",
   "admin.models.max_output": "最大出力",
   "admin.models.measured": "ここでの実測：",

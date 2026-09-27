@@ -1276,6 +1276,9 @@ SECRET_IMPACT = {
     "CRAWL4AI_API_TOKEN": ["crawl4ai", "nanobot"],
     "CRAWL4AI_SECRET_KEY": ["crawl4ai"],
     "TOGETHER_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
+    # Not nanobot-house: the room assistant's config does not list NanoGPT,
+    # so it never receives the key.
+    "NANOGPT_API_KEY": ["nanobot", "home-core", "home-paperless"],
     "OPENAI_COMPATIBLE_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "FREETOKEN_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     # Read by ./home-stack backup on the host, not by any container.
@@ -2683,6 +2686,7 @@ MODEL_GROUPS = (
     {"provider": "opencode_zen", "key": "admin.models.source_opencode_zen"},
     {"provider": "openrouter", "key": "admin.models.source_openrouter"},
     {"provider": "together", "key": "admin.models.source_together"},
+    {"provider": "nanogpt", "key": "admin.models.source_nanogpt"},
     {"provider": "openai", "key": "admin.models.source_openai"},
     {"provider": "ollama", "key": "admin.models.source_ollama_local"},
     {"provider": "ollama_vision", "key": "admin.models.source_ollama_vision"},
@@ -2697,6 +2701,7 @@ MODEL_GROUPS = (
 KEYED_SOURCES = (
     ("openrouter", "OPENROUTER_API_KEY"),
     ("together", "TOGETHER_API_KEY"),
+    ("nanogpt", "NANOGPT_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
     # Zen's catalogue comes from models.dev and needs no key, but deciding
     # which of it *this* account can route does: models.dev lists the whole
@@ -2911,6 +2916,7 @@ _PROBE_BASES = {
     "opencode_zen": model_catalogue.ZEN_API_BASE,
     "together": "https://api.together.xyz/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "nanogpt": "https://nano-gpt.com/api/v1",
     "openai": "https://api.openai.com/v1",
     "ollama_cloud": "https://ollama.com/v1",
 }
@@ -2937,7 +2943,7 @@ def _responses_only_for(role: str, value: str) -> bool:
 
 _PROBE_PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "openrouter": "openrouter",
-    "together": "together", "openai": "openai",
+    "together": "together", "openai": "openai", "nanogpt": "nanogpt",
     "openai-compatible": "openai_compatible", "freetoken": "freetoken",
     # The second ollama. Without it `ollama-vision:x` fell through to
     # OpenCode Zen, and the Test button failed every vision/documents model.
@@ -5913,7 +5919,7 @@ def secrets_page():
         # can be blocked for it. None of the rest is required, and a local
         # Ollama needs no key at all.
         "models": ["OPENCODE_API_KEY", "OPENROUTER_API_KEY",
-                   "OLLAMA_API_KEY", "TOGETHER_API_KEY"],
+                   "OLLAMA_API_KEY", "TOGETHER_API_KEY", "NANOGPT_API_KEY"],
         "required": [],
         "generated": [
             "HOMECORE_SECRET_KEY", "HOMECORE_DEBUG_API_KEY", "ADMIN_SECRET_KEY",
