@@ -4336,6 +4336,30 @@ check("  a config that never mentions it is left alone",
       "harness" not in json.loads(D.apply_model_choices('{"agents": {"defaults": {}}}',
                                   {"assistant": {"models": {"everyday": "x"}}}))["agents"]["defaults"])
 
+print("\nfamily chat: groups and phones reach family.json")
+_fc = {"members": [
+    {"id": "user1", "display_name": "Tomi", "parents": True, "phone": "+15550100"},
+    {"id": "user2", "display_name": "Mora", "parents": True},
+    {"id": "user3", "display_name": "Juana"},
+    {"id": "user4", "display_name": "Pili", "active": False, "parents": True}],
+    "family_chat": {"groups": [
+        {"id": "g1", "name": "Kids", "members": ["user3", "user4"]},
+        {"id": "g2", "name": "Gone", "members": ["user4"]},
+        {"id": "parents", "name": "Impostor", "members": ["user3"]}]}}
+_g = {g["id"]: g for g in D.family_chat_groups(_fc)}
+check("  Family is every active member", _g["family"]["members"] == ["user1", "user2", "user3"], _g["family"])
+check("  Parents follows the box, active members only", _g["parents"]["members"] == ["user1", "user2"], _g["parents"])
+check("  a custom group keeps its active members", _g["g1"]["members"] == ["user3"], _g.get("g1"))
+check("  one left empty is dropped", "g2" not in _g, list(_g))
+check("  a custom group cannot take a preset's id", _g["parents"].get("preset") is True, _g["parents"])
+_doc = json.loads(D.build_family_directory({**_fc, "members": _fc["members"][:3],
+                                           "services": {"nanobot": {"members": ["user1", "user2", "user3"]}}}))
+_p = {x["member"]: x for x in _doc["people"]}
+check("  the phone and the parents flag are in the directory",
+      _p["user1"]["phone"] == "+15550100" and _p["user1"]["parents"] is True
+      and _p["user3"]["phone"] == "" and _p["user3"]["parents"] is False, _p.get("user1"))
+check("  and the groups are too", [g["id"] for g in _doc["groups"]][:2] == ["family", "parents"], _doc.get("groups"))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

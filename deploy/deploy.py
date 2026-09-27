@@ -3707,9 +3707,36 @@ def build_family_directory(cfg: dict) -> str:
                           if h.strip().lstrip("-").strip()],
             "notes": str(member.get("notes") or "").strip(),
             "relations": relations,
+            # The family chat: who is in the Parents group, and the number its
+            # SMS fallback dials.
+            "parents": bool(member.get("parents")),
+            "phone": str(member.get("phone") or "").strip(),
         })
-    return json.dumps({"people": people, "generated_by": "deploy/deploy.py"},
+    return json.dumps({"people": people, "groups": family_chat_groups(cfg),
+                       "generated_by": "deploy/deploy.py"},
                       ensure_ascii=False, indent=2) + "\n"
+
+
+def family_chat_groups(cfg: dict) -> list[dict]:
+    """The family chat's groups, by member id: `family` (every active member)
+    and `parents` (the active members with the Parents box) -- the same two the
+    phones' ntfy topics are, so they follow the members instead of being
+    stored -- then the household's own from `family_chat.groups`. A member
+    who is gone or inactive is dropped from every group, and a group left with
+    nobody in it is dropped too."""
+    active = [str(m.get("id") or "").strip() for m in (cfg.get("members") or [])
+              if str(m.get("id") or "").strip() and m.get("active", True)]
+    parents = [str(m.get("id")).strip() for m in (cfg.get("members") or [])
+               if str(m.get("id") or "").strip() in active and m.get("parents")]
+    groups = [{"id": "family", "name": "Family", "preset": True, "members": active}]
+    if parents:
+        groups.append({"id": "parents", "name": "Parents", "preset": True, "members": parents})
+    for g in ((cfg.get("family_chat") or {}).get("groups") or []):
+        gid = str(g.get("id") or "").strip()
+        members = [m for m in (g.get("members") or []) if m in active]
+        if gid and gid not in ("family", "parents") and members:
+            groups.append({"id": gid, "name": str(g.get("name") or gid)[:40], "members": members})
+    return groups
 
 
 def build_member_profile(cfg: dict, member: dict) -> str:

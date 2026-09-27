@@ -1303,5 +1303,16 @@
   "admin.models.fit_no_card": "El equipo todavía no informó sus tarjetas.",
   "admin.models.fit_no_gguf": "{repo} no tiene cuantizaciones GGUF de un solo archivo.",
   "admin.models.harness_long_tasks": "Hacer también las tareas largas en pi",
-  "admin.models.harness_long_tasks_help": "Apagado, un pedido de varios pasos se planifica acá en el chat: puede preguntarte sobre la marcha y los pasos que solo leen no cambian nada. Encendido, va a pi en segundo plano, como una tarea de fondo, y responde en esta conversación al terminar: mejor para trabajo que termina en un documento, más lento para revisiones cortas. Necesita el entorno de arriba."
+  "admin.models.harness_long_tasks_help": "Apagado, un pedido de varios pasos se planifica acá en el chat: puede preguntarte sobre la marcha y los pasos que solo leen no cambian nada. Encendido, va a pi en segundo plano, como una tarea de fondo, y responde en esta conversación al terminar: mejor para trabajo que termina en un documento, más lento para revisiones cortas. Necesita el entorno de arriba.",
+  "admin.profile.phone": "Teléfono (para SMS)",
+  "admin.profile.phone_help": "Lo usa el chat familiar cuando no hay datos: un mensaje que no se entrega en unos minutos sale como SMS desde el teléfono de quien lo mandó, y un teléfono que solo tiene SMS lo recibe igual. Incluí el código de país. Los teléfonos lo reciben con la próxima compilación de la app.",
+  "admin.profile.phone_invalid": "Eso no es un número de teléfono: usá dígitos, con el código de país (un + al principio está bien).",
+  "admin.members.groups": "Grupos del chat familiar",
+  "admin.members.groups_intro": "A quiénes se les puede escribir juntos en el chat familiar. Todos y los padres están siempre; agregá los tuyos abajo.",
+  "admin.members.group_family": "Familia (todos)",
+  "admin.members.group_parents": "Padres",
+  "admin.members.group_parents_none": "nadie tiene marcada la casilla de Padres",
+  "admin.members.group_remove": "Quitar",
+  "admin.members.group_new": "Nombre del grupo nuevo",
+  "admin.members.groups_help": "Al guardar, el portal lo toma en su próximo despliegue; los teléfonos reciben los grupos nuevos con la próxima compilación de la app."
 }

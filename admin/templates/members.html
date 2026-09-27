@@ -48,6 +48,49 @@
   <p class="help">{{ t('admin.members.id_help') }}</p>
 </div>
 
+{# The family chat's groups. The two preset ones follow the members and are
+   the same two the phones' ntfy topics are; the rest are the household's. #}
+<div class="card" id="groups">
+  <h2>{{ t('admin.members.groups') }}</h2>
+  <p class="intro">{{ t('admin.members.groups_intro') }}</p>
+  <table class="settings">
+    <tbody>
+      <tr><td class="strong">{{ t('admin.members.group_family') }}</td>
+          <td>{{ people | selectattr('active', 'ne', false) | map(attribute='display_name') | join(', ') }}</td></tr>
+      <tr><td class="strong">{{ t('admin.members.group_parents') }}</td>
+          <td>{{ people | selectattr('parents') | map(attribute='display_name') | join(', ') or t('admin.members.group_parents_none') }}</td></tr>
+    </tbody>
+  </table>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="groups">
+    <input type="hidden" name="grp-count" value="{{ chat_groups | length }}">
+    {% for g in chat_groups %}{% set n = loop.index0 %}
+    <fieldset class="field">
+      <input type="hidden" name="grp-{{ n }}-id" value="{{ g.id }}">
+      <input type="text" name="grp-{{ n }}-name" value="{{ g.name }}" maxlength="40" style="max-width:220px">
+      {% for p in people %}
+        <label class="check-row" style="display:inline-flex;margin-right:12px">
+          <input type="checkbox" name="grp-{{ n }}-members" value="{{ p.id }}" {% if p.id in g.members %}checked{% endif %}>
+          {{ p.display_name }}</label>
+      {% endfor %}
+      <label class="check-row" style="display:inline-flex"><input type="checkbox" name="grp-{{ n }}-remove">
+        {{ t('admin.members.group_remove') }}</label>
+    </fieldset>
+    {% endfor %}
+    <fieldset class="field">
+      <input type="text" name="grp-new-name" maxlength="40" style="max-width:220px"
+             placeholder="{{ t('admin.members.group_new') }}">
+      {% for p in people %}
+        <label class="check-row" style="display:inline-flex;margin-right:12px">
+          <input type="checkbox" name="grp-new-members" value="{{ p.id }}"> {{ p.display_name }}</label>
+      {% endfor %}
+    </fieldset>
+    <p class="help">{{ t('admin.members.groups_help') }}</p>
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
+</div>
+
 <div class="card">
   <h2>{{ t('admin.members.add') }}</h2>
   <form method="post">

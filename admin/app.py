@@ -1177,6 +1177,9 @@ IMPACT = {
     # home-paperless because each member's locale is one of the languages its
     # OCR reads scans in (ocr_language() in the deployer).
     "members": ["nanobot", "nanobot-house", "home-core", "alfred-mcp", "home-paperless"],
+    # The family chat's groups: the portal reads them from family.json. The
+    # phones carry a copy too, which reaches them with the next APK build.
+    "family_chat": ["home-core"],
     # Which model answers as which persona. The Models page saved and marked
     # nothing pending, so a household that changed the everyday model -- or the
     # programmer the coding harness runs as CODE_HARNESS_MODEL -- got "saved"
@@ -4697,6 +4700,33 @@ def members():
         # per member and four buttons in the last column, and every
         # irreversible action one misclick from the row above it.
 
+        if action == "groups":
+            # The family chat's own groups. `family` (everyone) and `parents`
+            # (whoever has the Parents box) are not stored: they follow the
+            # members, the same two groups the phones' ntfy topics are. These
+            # are the ones the household adds -- "the kids", "grandparents".
+            fc = cfg.setdefault("family_chat", {})
+            seq = int(fc.get("next_group_seq") or 0)
+            known = {p.get("id") for p in people}
+            groups = []
+            count = min(int(request.form.get("grp-count") or 0), 50)
+            for n in list(range(count)) + ["new"]:
+                name = (request.form.get(f"grp-{n}-name") or "").strip()[:40]
+                if not name or request.form.get(f"grp-{n}-remove") == "on":
+                    continue
+                gid = (request.form.get(f"grp-{n}-id") or "").strip()
+                if n == "new" or not gid:
+                    seq += 1
+                    gid = f"g{seq}"
+                chosen = [m for m in request.form.getlist(f"grp-{n}-members") if m in known]
+                groups.append({"id": gid, "name": name, "members": chosen})
+            fc["groups"] = groups
+            fc["next_group_seq"] = seq
+            save_config(cfg)
+            note_pending(services_affected(before, cfg))
+            flash("saved", "ok")
+            return redirect(url_for("members") + "#groups")
+
         cfg["members"] = people
         # One assistant instance per *active* member. The two lists have to
         # agree, or the deployer allocates ports and credentials for people who
@@ -4712,6 +4742,7 @@ def members():
     return render_template(
         "members.html",
         people=cfg.get("members", []) or [],
+        chat_groups=((cfg.get("family_chat") or {}).get("groups") or []),
         # The list shows a language rather than offering one, so it needs the
         # names and not the options.
         locale_names={c: translator.name_of(c) for c in translator.available},
@@ -5777,6 +5808,19 @@ def member_profile(member_id):
             # sending: it changes what that phone listens to, so it is pushed
             # to the chat proxies rather than only written to the config.
             person["parents"] = request.form.get("parents") == "on"
+            # The family chat's SMS fallback. Stored as dialled: digits and an
+            # optional leading +, the spacing people type removed. Something
+            # that is not a number is refused rather than stored, because an
+            # SMS sent to it in an emergency fails silently.
+            _phone = re.sub(r"[\s\-().]", "", request.form.get("phone", person.get("phone", "")) or "")
+            if _phone and not re.fullmatch(r"\+?[0-9]{6,15}", _phone):
+                flash(translator("admin.profile.phone_invalid",
+                                 locale=current_locale(cfg)), "error")
+                return redirect(url_for("member_profile", member_id=member_id))
+            if _phone:
+                person["phone"] = _phone
+            else:
+                person.pop("phone", None)
 
             # What the assistant is told.
             #
