@@ -964,6 +964,10 @@ def fetch_nanogpt(api_key: str) -> tuple[list[dict], str]:
             "reasoning": bool(caps.get("reasoning")),
             "vision": bool(caps.get("vision")) or "image" in (arch.get("input_modalities") or []),
             "audio": bool(caps.get("audio_input")),
+            # Covered by the flat NanoGPT subscription rather than billed per
+            # token. The page lists the two apart: the same price column means
+            # a bill for one and nothing for the other.
+            "subscription": bool((m.get("subscription") or {}).get("included")),
         })
     return sorted(out, key=lambda m: m["name"]), ""
 
@@ -1651,6 +1655,8 @@ def price_roles(catalogue: dict, state_dir: str) -> dict:
                 # exactly what the old filter had hidden, minus the reason.
                 {"id": m["id"], "provider": m.get("provider", ""), "cost": cost,
                  **({"note": m["note"]} if m.get("note") else {}),
+                 # Which NanoGPT heading it goes under (app._picker_group).
+                 **({"subscription": True} if m.get("subscription") else {}),
                  **advise(m, spec, volume or ASSUMED_VOLUME, cheapest)}
                 for cost, m in priced
             ],

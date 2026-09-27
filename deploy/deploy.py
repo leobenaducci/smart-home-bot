@@ -4270,6 +4270,33 @@ def apply_model_choices(config_json: str, cfg: dict) -> str:
                  f"which is neither `powerful` nor a profession this "
                  f"assistant declares -- the setting will not reach a turn.")
 
+    # The fallback check above, for every other role. A role on a provider this
+    # file does not declare is written in and fails on every turn: on
+    # 2026-09-26 `everyday` moved to NanoGPT and the room assistant, whose
+    # config lists fewer providers on purpose, would have been deployed green
+    # with a model it could not reach. Refused here, where someone is looking.
+    declared = {k for k in (doc.get("providers") or {}) if not k.startswith("_")}
+    # The fields that name a provider: `provider`, `providerPowerful`, and the
+    # `<role>Provider` ones. Not every `provider*` key -- `providerRetryMode`
+    # is a retry policy, not a place to send a turn.
+    named = {key: val for key, val in defaults.items()
+             if isinstance(val, str) and val
+             and (key in ("provider", "providerPowerful") or key.endswith("Provider"))}
+    named.update({f"providerProfiles.{k}": v for k, v in (defaults.get("providerProfiles") or {}).items()
+                  if isinstance(v, str) and v})
+    # Only a file that lists its providers can be held to them; every shipped
+    # config does, and a fragment without the section is not a config to judge.
+    missing = sorted({(v, k) for k, v in named.items() if v not in declared and v != "auto"}
+                     ) if "providers" in doc else []
+    if missing:
+        raise DeployError(
+            "this assistant's config does not declare "
+            + ", ".join(sorted({v for v, _ in missing}))
+            + f", but {', '.join(k for _, k in missing)} would run on it.\n"
+            f"    Every turn on it would fail. Add the provider block (and pass its "
+            f"credential to that container), or choose a model on one of: "
+            f"{', '.join(sorted(declared)) or 'nothing'}.")
+
     return json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
 
 

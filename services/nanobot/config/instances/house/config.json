@@ -59,6 +59,11 @@
       "apiKey": "${TOGETHER_API_KEY}",
       "apiBase": "https://api.together.xyz/v1"
     },
+    "_comment_nanogpt": "nano-gpt.com, for a model written `nanogpt:<vendor/model>`. Here since 2026-09-26, when the household moved `everyday` to its subscription: the room assistant runs the everyday model, so it has to be able to reach it.",
+    "nanogpt": {
+      "apiKey": "${NANOGPT_API_KEY}",
+      "apiBase": "https://nano-gpt.com/api/v1"
+    },
     "ollama": {
       "apiKey": "${OLLAMA_API_KEY}",
       "apiBase": "${OLLAMA_URL}/v1"
@@ -119,7 +124,10 @@
       "100.64.0.0/10"
     ],
     "_comment_disabled": "Same as the base config: built-in tools nobody here uses, whose schemas are in every prompt anyway. grep stays for the memory skill.",
-    "disabled": ["glob", "notebook_edit"],
+    "disabled": [
+      "glob",
+      "notebook_edit"
+    ],
     "_comment_mcpServers": "homeassistant only — no brightdata: its token isn't passed to this container, and a room assistant has no business scraping the web on request from an unauthenticated voice. NOTE: this comment lives at the `tools` level on purpose — `mcpServers` is a map of server-name to server-config, so a `_comment` key inside it parses as a server named `_comment` and the container refuses to start.",
     "mcpServers": {
       "homeassistant": {

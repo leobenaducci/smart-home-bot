@@ -1276,9 +1276,7 @@ SECRET_IMPACT = {
     "CRAWL4AI_API_TOKEN": ["crawl4ai", "nanobot"],
     "CRAWL4AI_SECRET_KEY": ["crawl4ai"],
     "TOGETHER_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
-    # Not nanobot-house: the room assistant's config does not list NanoGPT,
-    # so it never receives the key.
-    "NANOGPT_API_KEY": ["nanobot", "home-core", "home-paperless"],
+    "NANOGPT_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "OPENAI_COMPATIBLE_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "FREETOKEN_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     # Read by ./home-stack backup on the host, not by any container.
@@ -2686,6 +2684,10 @@ MODEL_GROUPS = (
     {"provider": "opencode_zen", "key": "admin.models.source_opencode_zen"},
     {"provider": "openrouter", "key": "admin.models.source_openrouter"},
     {"provider": "together", "key": "admin.models.source_together"},
+    # NanoGPT, split: what the subscription covers, and what it bills per
+    # token on top. `nanogpt_sub` is a heading, not a provider -- the models
+    # under it are still `nanogpt:` (see _picker_group).
+    {"provider": "nanogpt_sub", "key": "admin.models.source_nanogpt_sub"},
     {"provider": "nanogpt", "key": "admin.models.source_nanogpt"},
     {"provider": "openai", "key": "admin.models.source_openai"},
     {"provider": "ollama", "key": "admin.models.source_ollama_local"},
@@ -2709,6 +2711,14 @@ KEYED_SOURCES = (
     # say which. `fetch_opencode_zen` asks, once per model, and caches.
     ("opencode_zen", "OPENCODE_API_KEY"),
 )
+
+
+def _picker_group(m: dict) -> str:
+    """The heading a model is listed under: its provider, except that NanoGPT's
+    subscription models get their own."""
+    if m.get("provider") == "nanogpt" and m.get("subscription"):
+        return "nanogpt_sub"
+    return m.get("provider") or ""
 
 
 def model_groups(cfg: dict) -> list[dict]:
@@ -3623,7 +3633,10 @@ def models_page():
             # for has a model that fits.
             "by_provider": [
                 {"source": src,
-                 "label": _t_or(f"admin.models.source_{src}", src),
+                 # All of NanoGPT here, both halves of the split the pickers
+                 # show, so its label is the provider's and not "pay per token".
+                 "label": ("NanoGPT" if src == "nanogpt"
+                           else _t_or(f"admin.models.source_{src}", src)),
                  "models": group["picks"],
                  # False when the provider publishes nothing to rank on, so
                  # the page can say "price is all this one tells us" rather
@@ -3710,7 +3723,7 @@ def models_page():
         models = advice.get("models") or []
         by_provider: dict = {}
         for m in models:
-            by_provider.setdefault(m["provider"], []).append(m)
+            by_provider.setdefault(_picker_group(m), []).append(m)
         if row["id"] in DIRECT_ROLES:
             # Offered only what the consumer can call -- see _responses_only_for.
             by_provider = {p: [m for m in ms
@@ -3847,7 +3860,11 @@ def models_page():
         image_slots=image_slots,
         image_choices=image_choices,
         in_use=in_use,
-        options=sorted(every.values(), key=lambda m: (m["provider"], m["id"])),
+        # `group` is the heading a model is listed under, which is its provider
+        # except for NanoGPT's subscription models (_picker_group). The table
+        # filters on it, so "NanoGPT -- pay per token" matches only those.
+        options=sorted(({**m, "group": _picker_group(m)} for m in every.values()),
+                       key=lambda m: (m["provider"], m["id"])),
         model_groups=groups,
         provider_labels={g["provider"]: g["label"] for g in groups},
         sources=_source_settings(cfg),

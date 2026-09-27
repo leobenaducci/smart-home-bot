@@ -1013,7 +1013,7 @@ services:
       # exporting it.
       optional: [HOMEASSISTANT_TOKEN, VOICE_GATEWAY_TOKEN, NTFY_CREDENTIALS,
                  TOGETHER_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY,
-                 IMAGE_API_KEY]
+                 IMAGE_API_KEY, NANOGPT_API_KEY]
       # Deliberately no per_member block. `docker compose up` re-interpolates
       # the whole environment, so anything absent here is blank in the
       # container, which for this service is the point.

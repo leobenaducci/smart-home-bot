@@ -1461,6 +1461,27 @@ try:
 except D.DeployError as _exc:
     check("  refused", "does not declare" in str(_exc), _exc)
 
+# The same for every other role: the main model moved to NanoGPT on
+# 2026-09-26 and the room assistant, which lists fewer providers, would have
+# been deployed with a model it could not reach.
+print("\nany role on a provider the config lacks is refused, not only the fallback")
+try:
+    D.apply_model_choices(_house, {"assistant": {"models": {"everyday": "openrouter:some/model"}}})
+    check("  everyday on an undeclared provider: refused", False, "written in, failing every turn")
+except D.DeployError as _exc:
+    check("  everyday on an undeclared provider: refused",
+          "does not declare openrouter" in str(_exc) and "provider" in str(_exc), _exc)
+try:
+    D.apply_model_choices(_house, {"assistant": {"models": {
+        "everyday": "gpt-6-luna", "classifier": "openai:gpt-x"}}})
+    check("  a lesser role too (classifier on openai)", False, "written in")
+except D.DeployError as _exc:
+    check("  a lesser role too (classifier on openai)", "classifierProvider" in str(_exc), _exc)
+_house_ng = _json.loads(D.apply_model_choices(_house, {"assistant": {"models": {
+    "everyday": "nanogpt:deepseek/deepseek-v4.1-flash"}}}))["agents"]["defaults"]
+check("  the house can run everyday on NanoGPT now that it declares it",
+      _house_ng.get("provider") == "nanogpt", _house_ng.get("provider"))
+
 # And the one this household actually runs has to be buildable in BOTH configs,
 # because both get the same fallback written into them.
 for _which, _path in (("base", "services/nanobot/config/config.json"),

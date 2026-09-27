@@ -1385,7 +1385,7 @@
       <select id="f-provider">
         <option value="">{{ t('admin.models.filter_all') }}</option>
         {% for group in model_groups %}
-          {% if options | selectattr('provider', 'equalto', group.provider) | list %}
+          {% if options | selectattr('group', 'equalto', group.provider) | list %}
             <option value="{{ group.provider }}">{{ group.label }}</option>
           {% endif %}
         {% endfor %}
@@ -1451,7 +1451,7 @@
     {# A row this house is on is marked rather than moved: the sort order is
        the reader's, and hoisting the twelve models in use to the top would
        fight whichever column they just clicked. #}
-    <tr data-provider="{{ m.provider }}"
+    <tr data-provider="{{ m.group }}"
         data-reasoning="{{ 1 if m.reasoning else 0 }}"
         data-vision="{{ 1 if m.vision else 0 }}"
         data-audio="{{ 1 if m.audio else 0 }}"
