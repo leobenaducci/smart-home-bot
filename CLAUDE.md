@@ -35,9 +35,10 @@ It was extracted from a live household's multi-repo setup — the services are r
 their own histories; the packaging layer around them (`home-stack`, `deploy/`,
 `admin/`, `i18n/`, `config/`, `secrets/`) was built for this repository.
 
-Everything runs on one PC by default. `OPENCODE_API_KEY` is the only
-credential that leaves the network, and the optional VPS proxy is the only
-thing that runs off that machine.
+Everything runs on one PC by default. The model providers' keys are the only
+credentials that leave the network -- `OPENCODE_API_KEY` by default, and any the
+household adds (NanoGPT, OpenRouter, Together; `docs/nanogpt.md`) -- and the
+optional VPS proxy is the only thing that runs off that machine.
 
 **Go belongs to the coding harness. Everything else uses Zen.** One account
 opens both — `https://opencode.ai/zen/v1` is Zen, per token; `/zen/go/v1` is the
