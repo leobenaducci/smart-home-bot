@@ -380,6 +380,18 @@ async def test_a_fallback_turn_says_which_model_actually_answered():
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hola"}])
 
     assert response.served_by_model == "deepseek-v4-flash"
+    # ...and where it ran, which the usage page counts by. A same-provider
+    # fallback names this provider; it is still a fact, not a blank.
+    assert response.served_by_provider == provider.provider_label()
+
+
+def test_a_provider_names_itself_and_where_a_call_would_go():
+    """The per-provider usage view reads these for turns no fallback touched."""
+    provider = RecordingProvider([LLMResponse(content="ok")])
+    provider._spec = type("Spec", (), {"name": "nanogpt"})()
+    assert provider.provider_label() == "nanogpt"
+    assert provider.serving_route("deepseek/deepseek-v4.1-flash") == (
+        "deepseek/deepseek-v4.1-flash", "nanogpt")
 
 
 @pytest.mark.asyncio
@@ -391,6 +403,7 @@ async def test_an_ordinary_answer_is_not_labelled_as_a_fallback():
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hola"}])
 
     assert response.served_by_model is None
+    assert response.served_by_provider is None
 
 
 class StreamingProvider(LLMProvider):

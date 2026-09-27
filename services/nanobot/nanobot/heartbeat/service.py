@@ -140,7 +140,9 @@ class HeartbeatService:
         # goes through `on_execute` and the agent loop, which reports it
         # already. Reporting both would count one heartbeat twice.
         report_usage("ev-heartbeat", self.model,
-                     getattr(response, "usage", None), 0)
+                     getattr(response, "usage", None), 0,
+                     provider=getattr(response, "served_by_provider", None)
+                     or self.provider.serving_route(self.model)[1])
 
         if not response.should_execute_tools:
             if response.has_tool_calls:

@@ -1289,11 +1289,14 @@ class AgentLoop:
             if res is None:
                 res = await attempt(back_runner, back_model, msgs)
                 by = by if by.startswith(back_model) else back_model
+            ran_on = step_provider if by == step_model else back_runner.provider
             report_usage(session.key if session else None, by.split(" ")[0], res.usage,
                          res.tools_used or [], route={"tier": "plan-step", "label": f"step {k}",
                                                       "source": "plan", "classifier_ms": 0,
                                                       "escalated": by.startswith(back_model) and local,
-                                                      "escalated_from": ""})
+                                                      "escalated_from": ""},
+                         provider=res.served_by_provider
+                         or ran_on.serving_route(by.split(" ")[0])[1])
             text = res.final_content or ""
             if refused:
                 # Said to the planner, not left to the step's own words: a
@@ -1610,6 +1613,13 @@ class AgentLoop:
         # asked for; the window it opens makes every turn after it correct.
         serving, displaced = runner.provider.serving_model(turn_model)
         turn_route = (serving, displaced)
+        # Which provider this turn is billed to: the rescue's when a fallback
+        # answered, otherwise wherever the turn was routed. Re-pointed below if
+        # the turn escalates to the powerful model's runner.
+        bill_via, bill_model = runner.provider, turn_model
+
+        def _billed_provider(res):
+            return res.served_by_provider or bill_via.serving_route(bill_model)[1]
         loop_hook.turn_model = serving
         loop_hook.turn_effort = turn_effort
         self.context.annotate_runtime_model(initial_messages, serving, displaced)
@@ -1735,7 +1745,8 @@ class AgentLoop:
                 # the steps left continue in the background.
                 report_usage(session.key if session else None,
                              result.served_by_model or serving, result.usage,
-                             result.tools_used or [], route=route.as_record())
+                             result.tools_used or [], route=route.as_record(),
+                             provider=_billed_provider(result))
                 await plan_tool.say(turn_plan, "handoff")
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "continue", route,
@@ -1745,7 +1756,8 @@ class AgentLoop:
                 route.escalated_from = result.stop_reason
                 report_usage(session.key if session else None,
                              result.served_by_model or serving, result.usage,
-                             result.tools_used or [], route=route.as_record())
+                             result.tools_used or [], route=route.as_record(),
+                             provider=_billed_provider(result))
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "dead_end", route,
                     done="\n\n".join(x for x in (plan_note, delegate.already_done(result.messages)) if x))
@@ -1758,8 +1770,10 @@ class AgentLoop:
                 report_usage(session.key if session else None,
                              first_attempt.served_by_model or serving,
                              first_attempt.usage, first_attempt.tools_used or [],
-                             route=route.as_record())
+                             route=route.as_record(),
+                             provider=_billed_provider(first_attempt))
                 serving, displaced = self._powerful_runner.provider.serving_model(self.powerful_model)
+                bill_via, bill_model = self._powerful_runner.provider, self.powerful_model
                 loop_hook.turn_model = serving
                 loop_hook.turn_effort = self._powerful_effort
                 cont = continuation_messages(
@@ -1815,7 +1829,8 @@ class AgentLoop:
                 serving, result.served_by_model,
             )
         report_usage(session.key if session else None, billed,
-                     result.usage, result.tools_used or [], route=route.as_record())
+                     result.usage, result.tools_used or [], route=route.as_record(),
+                     provider=_billed_provider(result))
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
             # Push final content through stream so streaming channels (e.g. Feishu)

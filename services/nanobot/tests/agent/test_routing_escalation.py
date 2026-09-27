@@ -347,3 +347,27 @@ async def test_running_out_of_the_cheap_budget_escalates(tmp_path, monkeypatch):
     await loop._run_agent_loop(HOLA)
     assert [r[0] for r in runs] == ["fast", "pro"]
     assert runs[1][1].max_iterations == max(loop.max_iterations, 80)
+
+
+@pytest.mark.asyncio
+async def test_each_attempt_is_billed_to_the_provider_it_ran_on(tmp_path, monkeypatch):
+    """The usage page counts by provider: an escalated turn is two rows, one
+    on each provider -- and a rescued attempt goes to the rescue's provider."""
+    loop = _loop(tmp_path, label="action")
+    loop.runner.provider.serving_route = lambda m: (m, "nanogpt")
+    loop._powerful_runner.provider.serving_route = lambda m: (m, "custom")
+    failed = AgentRunResult(final_content="[…]", messages=HOLA + [{"role": "assistant", "content": "[…]"}],
+                            stop_reason="bad_invocation", usage={"prompt_tokens": 10})
+    _capture_runs(loop, monkeypatch, fast_result=failed)
+    seen = _reports(monkeypatch)
+    await loop._run_agent_loop(HOLA, session=Session(key="api:x"))
+    assert [kw["provider"] for _a, kw in seen] == ["nanogpt", "custom"]
+
+    loop = _loop(tmp_path, label="action")
+    loop.runner.provider.serving_route = lambda m: (m, "nanogpt")
+    rescued = AgentRunResult(final_content="ok", messages=list(HOLA), usage={"prompt_tokens": 5},
+                             served_by_model="Qwen/Qwen3.8-Flash", served_by_provider="together_ai")
+    _capture_runs(loop, monkeypatch, fast_result=rescued)
+    seen = _reports(monkeypatch)
+    await loop._run_agent_loop(HOLA, session=Session(key="api:y"))
+    assert seen[-1][1]["provider"] == "together_ai"

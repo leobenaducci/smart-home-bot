@@ -17728,6 +17728,13 @@ def init_usage_db():
     for _col in ('tier', 'label', 'route_source'):
         if _col not in cols:
             conn.execute(f"ALTER TABLE token_usage ADD COLUMN {_col} TEXT NOT NULL DEFAULT ''")
+    # Which provider answered, 2026-09-27: `nanogpt`, `custom` (OpenCode Zen),
+    # `together_ai`, `ollama_text`... as nanobot's config names them. A model
+    # name does not say it -- `deepseek-v4-flash` runs on Zen and on NanoGPT --
+    # and a rescued turn runs somewhere other than where it was sent. Blank on
+    # every row before this, shown as "not recorded" rather than guessed.
+    if 'provider' not in cols:
+        conn.execute("ALTER TABLE token_usage ADD COLUMN provider TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -17958,12 +17965,14 @@ def usage_ingest():
     route = data.get('route') if isinstance(data.get('route'), dict) else {}
     row = row + (str(route.get('tier') or '')[:16], str(route.get('label') or '')[:16],
                  str(route.get('source') or '')[:24])
+    row = row + (re.sub(r'[^a-z0-9_]', '', str(data.get('provider') or '').lower())[:32],)
     conn = _usage_conn()
     try:
         conn.execute(
             'INSERT INTO token_usage (username, ts, day, scope, model, prompt_tokens, '
             'cached_tokens, completion_tokens, reasoning_tokens, tools, tool_names, '
-            'cost_usd, tier, label, route_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
+            'cost_usd, tier, label, route_source, provider) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
         # Cheap enough to do inline and it keeps the file from being a surprise
         # in a year; the index makes it a range delete.
         if row[1] % 200 == 0:
@@ -18508,6 +18517,32 @@ def stats_gpu():
                    **_gpu_series(hours), breakdown=_gpu_breakdown(hours))
 
 
+# Providers as the household reads them. The key is nanobot's own name for the
+# provider block, which is what the usage row stores; anything not listed here
+# is shown under that name rather than hidden.
+USAGE_PROVIDER_LABELS = {
+    'custom': 'OpenCode Zen', 'nanogpt': 'NanoGPT', 'together_ai': 'Together AI',
+    'openrouter': 'OpenRouter', 'openai': 'OpenAI', 'ollama_cloud': 'Ollama cloud',
+    'ollama': 'Local Ollama', 'ollama_vision': 'Local Ollama (vision)',
+    'freetoken': 'FreeToken', 'openai_compatible': 'OpenAI-compatible server',
+}
+
+
+def _usage_provider_label(key):
+    """(label, icon) for a provider key; '' is a row from before providers
+    were recorded (2026-09-27), and says so instead of guessing from a model
+    name that more than one provider serves."""
+    if not key:
+        return 'Not recorded (before 2026-09-27)', '·'
+    if key in USAGE_PROVIDER_LABELS:
+        label = USAGE_PROVIDER_LABELS[key]
+    elif key.startswith('ollama_'):
+        label = f"Local Ollama ({key[len('ollama_'):]})"
+    else:
+        label = key
+    return label, ('🏠' if key.startswith('ollama') and key != 'ollama_cloud' else '☁️')
+
+
 def _usage_rows(days):
     since = (_tasks_today() - timedelta(days=days - 1)).isoformat()
     conn = _usage_conn()
@@ -18515,7 +18550,7 @@ def _usage_rows(days):
         return conn.execute(
             'SELECT username, day, scope, model, prompt_tokens, cached_tokens, '
             'completion_tokens, reasoning_tokens, tools, tool_names, cost_usd, '
-            'tier, label, route_source '
+            'tier, label, route_source, provider '
             'FROM token_usage WHERE day >= ? ORDER BY day', (since,)).fetchall()
     finally:
         conn.close()
@@ -18583,11 +18618,13 @@ def stats_summary():
     rows = _usage_rows(days)
 
     by_scope, by_model, by_user, by_day, by_route = {}, {}, {}, {}, {}
+    by_provider = {}
     total = _usage_bucket()
     for r in rows:
         username, day, scope, model = r[0], r[1], r[2], r[3]
+        provider = r[14] if len(r) > 14 else ''
         for coll, key in ((by_scope, scope), (by_model, model or '(sin modelo)'),
-                          (by_user, username), (by_day, day)):
+                          (by_user, username), (by_day, day), (by_provider, provider or '')):
             _usage_add(coll.setdefault(key, _usage_bucket()), r)
         _usage_add(total, r)
         # Routing: `tier/label` is the row. An escalation is two rows -- the
@@ -18652,6 +18689,11 @@ def stats_summary():
         by_scope=_out(by_scope, _usage_label),
         by_route=_out(by_route, lambda k: (k, '🧭')),
         by_model=_out(by_model),
+        # Where the tokens went, by who served them -- the subscription, the
+        # per-token providers and the house's own hardware apart. Cost is what
+        # the rate table prices; a subscription's turns cost what it says, not
+        # what the table would charge per token.
+        by_provider=_out(by_provider, _usage_provider_label),
         by_user=_out(by_user, lambda u: (_tasks_display_name(u), '👤')),
         by_day=sorted(({'key': k, **b} for k, b in by_day.items()),
                       key=lambda x: x['key']),

@@ -1780,6 +1780,7 @@ class AgentRunResult:
     # turn was already sent by then and says the model that was asked for; this
     # is how anything downstream (the cost ledger) can still file it correctly.
     served_by_model: str | None = None
+    served_by_provider: str | None = None
 
 
 class AgentRunner:
@@ -1931,6 +1932,7 @@ class AgentRunner:
         had_injections = False
         injection_cycles = 0
         served_by_model: str | None = None
+        served_by_provider: str | None = None
         tool_call_counts: dict[tuple[str, str], int] = {}
 
         for iteration in _budget(spec):
@@ -1968,6 +1970,7 @@ class AgentRunner:
             context.tool_calls = list(response.tool_calls)
             self._accumulate_usage(usage, raw_usage)
             served_by_model = response.served_by_model or served_by_model
+            served_by_provider = response.served_by_provider or served_by_provider
 
             if response.should_execute_tools:
                 # Is this turn going round in circles? Same tool, same
@@ -2012,6 +2015,7 @@ class AgentRunner:
                         self._accumulate_usage(usage, fin_usage)
                         raw_usage = self._merge_usage(raw_usage, fin_usage)
                         served_by_model = finalised.served_by_model or served_by_model
+                        served_by_provider = finalised.served_by_provider or served_by_provider
                         context.response = finalised
                         context.usage = dict(raw_usage)
                         fin_clean = hook.finalize_content(context, finalised.content)
@@ -2200,6 +2204,7 @@ class AgentRunner:
                 retry_usage = self._usage_dict(response.usage)
                 self._accumulate_usage(usage, retry_usage)
                 served_by_model = response.served_by_model or served_by_model
+                served_by_provider = response.served_by_provider or served_by_provider
                 raw_usage = self._merge_usage(raw_usage, retry_usage)
                 context.response = response
                 context.usage = dict(raw_usage)
@@ -2352,6 +2357,7 @@ class AgentRunner:
             tool_events=tool_events,
             had_injections=had_injections,
             served_by_model=served_by_model,
+            served_by_provider=served_by_provider,
         )
 
     def _build_request_kwargs(

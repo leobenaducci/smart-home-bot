@@ -79,6 +79,10 @@ class LLMResponse:
     # that is the diagnosis, while "error" is only what we did about it.
     # Appended last, for the same reason as the field above.
     model_finish_reason: str | None = None
+    # Which provider answered, set with `served_by_model` when a fallback or an
+    # outage reroute served the turn -- the usage page counts by provider, and
+    # a rescued turn is billed where it ran, not where it was sent.
+    served_by_provider: str | None = None
 
     @property
     def has_tool_calls(self) -> bool:
@@ -1075,6 +1079,17 @@ class LLMProvider(ABC):
             int(self._MODEL_OUTAGE_COOLDOWN_S),
         )
 
+    def provider_label(self) -> str:
+        """This provider's name as the config knows it (`nanogpt`, `custom`,
+        `ollama_text`...), for the usage page's per-provider view."""
+        spec = getattr(self, "_spec", None)
+        return str(getattr(spec, "name", "") or type(self).__name__)
+
+    def serving_route(self, model: str | None = None) -> tuple[str, str]:
+        """`(model, provider)` a call for *model* would reach right now."""
+        serving, provider, _displaced = self._serving_route(model)
+        return serving, provider or self.provider_label()
+
     def serving_model(self, model: str | None = None) -> tuple[str, str | None]:
         """The model a call for *model* would reach if it were made right now.
 
@@ -1336,6 +1351,7 @@ class LLMProvider(ABC):
             self._mark_model_down(current)
         logger.info("Fallback model {} answered in place of {}", fallback, current)
         result.served_by_model = fallback
+        result.served_by_provider = provider or self.provider_label()
         return result
 
     @staticmethod
@@ -1562,6 +1578,7 @@ class LLMProvider(ABC):
             if response.finish_reason != "error":
                 if rerouted_from is not None:
                     response.served_by_model = kw.get("model")
+                    response.served_by_provider = rerouted_to or self.provider_label()
                 return response
             error_key = ((response.content or "").strip().lower() or None)
             if error_key and error_key == last_error_key:
