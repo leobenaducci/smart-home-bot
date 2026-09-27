@@ -81,3 +81,39 @@ def test_a_skill_script_run_by_hand_is_a_write():
     cmd = "python3 /app/nanobot/skills/document/create_doc.py '{\"format\": \"pdf\"}'"
     assert MB.EXEC_WRITE_RE.search(cmd)
     assert not MB.EXEC_WRITE_RE.search("cat /app/nanobot/skills/document/SKILL.md")
+
+
+# A failed call is reported as one, not graded. On 2026-09-26 every NanoGPT
+# case failed "answered in English": the reply was OpenCode Zen's English
+# refusal of a name it did not know, and NanoGPT was never asked.
+ES_CASE = {"id": "greet", "reply": {"nonempty": True, "lang": "es", "contains_any": ["hola"]}}
+ZEN_REFUSAL = "Error: {'type': 'server_error', 'message': 'Upstream request failed: Model is unavailable.'}"
+
+
+def test_a_failed_call_is_the_only_finding():
+    r = rec()
+    r.llm_errors = [ZEN_REFUSAL]
+    assert MB.judge(ES_CASE, ZEN_REFUSAL, r, None) == [f"the model call failed: {ZEN_REFUSAL}"]
+
+
+def test_a_real_english_answer_is_still_caught():
+    assert "answered in English" in MB.judge(
+        ES_CASE, "Hello there, how can I help you with the house today?", rec(), None)
+
+
+def test_the_recorder_notes_an_error_response():
+    import asyncio
+
+    class Provider:
+        async def chat_with_retry(self, *a, **kw):
+            return SimpleNamespace(content="Error: 401 Invalid session", finish_reason="error", usage={})
+
+        async def chat_stream_with_retry(self, *a, **kw):
+            return SimpleNamespace(content="hola", finish_reason="stop", usage={})
+
+    p, r = Provider(), MB.Recorder()
+    MB.instrument_provider(p, r)
+    asyncio.run(p.chat_stream_with_retry())
+    assert r.llm_errors == []
+    asyncio.run(p.chat_with_retry())
+    assert r.llm_errors == ["Error: 401 Invalid session"]
