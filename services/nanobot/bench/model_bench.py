@@ -47,6 +47,7 @@ HERE = Path(__file__).resolve().parent
 PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "ollama-vision": "ollama_vision",
     "openrouter": "openrouter", "together": "together_ai", "openai": "openai",
+    "nanogpt": "nanogpt",
     "openai-compatible": "openai_compatible", "freetoken": "freetoken",
     # The llama.cpp router on the host, which is what cloud.openai_compatible
     # points at here. Its own name so a result says what it ran on.
