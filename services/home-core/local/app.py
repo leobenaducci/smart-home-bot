@@ -19877,42 +19877,6 @@ def credentials_page():
 
 
 # ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-# Daily geofence reconcile: re-push geofence_sync to every device with active
-# geofence reminders. Belt-and-suspenders — ntfy control messages have no
-# offline replay, so a phone that was offline when a reminder changed catches
-# up here within a day even if the app is never reopened. Silent (the app
-# intercepts geofence_sync and reloads; it is never shown as a notification).
-GEO_SYNC_INTERVAL_S = 24 * 3600
-
-# Every route is declared by now, so the one thing `_register_space_routes`
-# cannot check for itself can be checked here: a profession whose `url` shadows
-# an existing /chat/* view. Module level, not inside `__main__`, so it also
-# fires under a WSGI server that only imports this file.
-_assert_no_space_route_collisions()
-
-
-def _geo_sync_worker():
-    time.sleep(60)  # brief warmup so it doesn't fire mid-startup
-    while True:
-        try:
-            conn = _geo_conn()
-            try:
-                targets = [r[0] for r in conn.execute(
-                    'SELECT DISTINCT target_user FROM geofence_reminders WHERE active = 1'
-                ).fetchall()]
-            finally:
-                conn.close()
-            for user in targets:
-                _geo_notify_sync(user)
-        except Exception:
-            pass
-        time.sleep(GEO_SYNC_INTERVAL_S)
-
-
-
-# ---------------------------------------------------------------------------
 # Nanobot profiles: how each member's Alfred is set up
 #
 # Until now this lived in files nobody edited: `config.userN.json` beside the
@@ -20690,6 +20654,41 @@ def profiles_api_export():
     return jsonify(_profiles_export(instance, redact=redact))
 
 # ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+# Daily geofence reconcile: re-push geofence_sync to every device with active
+# geofence reminders. Belt-and-suspenders — ntfy control messages have no
+# offline replay, so a phone that was offline when a reminder changed catches
+# up here within a day even if the app is never reopened. Silent (the app
+# intercepts geofence_sync and reloads; it is never shown as a notification).
+GEO_SYNC_INTERVAL_S = 24 * 3600
+
+# Every route is declared by now, so the one thing `_register_space_routes`
+# cannot check for itself can be checked here: a profession whose `url` shadows
+# an existing /chat/* view. Module level, not inside `__main__`, so it also
+# fires under a WSGI server that only imports this file.
+_assert_no_space_route_collisions()
+
+
+def _geo_sync_worker():
+    time.sleep(60)  # brief warmup so it doesn't fire mid-startup
+    while True:
+        try:
+            conn = _geo_conn()
+            try:
+                targets = [r[0] for r in conn.execute(
+                    'SELECT DISTINCT target_user FROM geofence_reminders WHERE active = 1'
+                ).fetchall()]
+            finally:
+                conn.close()
+            for user in targets:
+                _geo_notify_sync(user)
+        except Exception:
+            pass
+        time.sleep(GEO_SYNC_INTERVAL_S)
+
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
     # No init_backup_db(). It was called here and defined nowhere: the backup
     # history it set up belongs to `home-backups`, a service upstream ships and
@@ -20739,104 +20738,43 @@ if __name__ == '__main__':
     threading.Thread(target=_chat_title_worker, daemon=True).start()
 
     main_port = int(os.environ.get('PORT', '8443'))
-    backup_port = int(os.environ.get('BACKUP_PORT', '5020'))
 
-    from werkzeug.serving import make_server
+    import faulthandler
+    import signal
+    import ssl
+    from werkzeug.serving import WSGIRequestHandler, make_server
 
-    main_server = make_server(
-        '0.0.0.0', main_port, app, threaded=True,
-        ssl_context=('/certs/cert.pem', '/certs/key.pem'),
-    )
-    backup_server = make_server(
-        '0.0.0.0', backup_port, app, threaded=True,
-    )
+    # `docker kill -s USR1 <container>` writes every thread's stack to the log.
+    # The portal hung on 2026-09-27 with its accept queue full and one thread
+    # blocked on a socket, and there was no way to see where without this.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
 
-    t1 = threading.Thread(target=main_server.serve_forever, daemon=True)
-    t2 = threading.Thread(target=backup_server.serve_forever, daemon=True)
-
-    t1.start()
-    t2.start()
-
-    try:
-        while True:
-            time.sleep(3600)
-    except KeyboardInterrupt:
-        main_server.shutdown()
-        backup_server.shutdown()
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-# Daily geofence reconcile: re-push geofence_sync to every device with active
-# geofence reminders. Belt-and-suspenders — ntfy control messages have no
-# offline replay, so a phone that was offline when a reminder changed catches
-# up here within a day even if the app is never reopened. Silent (the app
-# intercepts geofence_sync and reloads; it is never shown as a notification).
-GEO_SYNC_INTERVAL_S = 24 * 3600
-
-# Every route is declared by now, so the one thing `_register_space_routes`
-# cannot check for itself can be checked here: a profession whose `url` shadows
-# an existing /chat/* view. Module level, not inside `__main__`, so it also
-# fires under a WSGI server that only imports this file.
-_assert_no_space_route_collisions()
-
-
-def _geo_sync_worker():
-    time.sleep(60)  # brief warmup so it doesn't fire mid-startup
-    while True:
-        try:
-            conn = _geo_conn()
-            try:
-                targets = [r[0] for r in conn.execute(
-                    'SELECT DISTINCT target_user FROM geofence_reminders WHERE active = 1'
-                ).fetchall()]
-            finally:
-                conn.close()
-            for user in targets:
-                _geo_notify_sync(user)
-        except Exception:
-            pass
-        time.sleep(GEO_SYNC_INTERVAL_S)
-
-
-# ---------------------------------------------------------------------------
-if __name__ == '__main__':
-    init_shares_db()
-    init_device_db()
-    init_tasks_db()
-    init_geo_db()
-    init_grocery_db()
-    init_menu_db()
-    init_notif_db()
-    init_wa_db()
-    init_usage_db()
-    start_gpu_sampler()
-    init_bgtask_db()
-    init_persona_db()
-    init_theme_db()
-    init_chat_titles_db()
-    init_family_db()
-    # Once, and then never again: the pre-per-day archive is filed under the
-    # days it happened on and renamed aside. See migrate_legacy_history.
-    migrate_legacy_history()
-    seed_grocery_geofences()
-    threading.Thread(target=_tasks_daily_worker, daemon=True).start()
-    threading.Thread(target=_geo_sync_worker, daemon=True).start()
-    threading.Thread(target=_chat_title_worker, daemon=True).start()
-
-    main_port = int(os.environ.get('PORT', '8443'))
-
-    from werkzeug.serving import make_server
+    class _PortalRequestHandler(WSGIRequestHandler):
+        # A connection that goes quiet is dropped after this long instead of
+        # holding its thread forever. Long enough for the slowest upload a
+        # phone makes and for the gaps in a streamed chat reply.
+        timeout = 120
 
     # One listener, HTTPS only. There used to be a second, plaintext one on
     # 5020 so the backup agent could POST its run history without TLS. That
     # service is not part of this package, and what the port actually exposed
-    # was an unauthenticated copy of the entire app.
-    main_server = make_server(
-        '0.0.0.0', main_port, app, threaded=True,
-        ssl_context=('/certs/cert.pem', '/certs/key.pem'),
-    )
+    # was an unauthenticated copy of the entire app -- and it was still being
+    # opened on 2026-09-27, because this block had a stale twin further down
+    # carrying the fix while the copy that ran did not.
+    main_server = make_server('0.0.0.0', main_port, app, threaded=True,
+                              request_handler=_PortalRequestHandler)
+    # TLS set up here rather than through make_server(ssl_context=...), which
+    # wraps the listener with the handshake done inside accept() -- on the one
+    # thread serving every connection. A single client that connected and never
+    # finished its handshake held that thread, the queue filled at 128 and the
+    # whole portal stopped answering (2026-09-27, ~12 minutes, restart only).
+    # With the handshake deferred, it happens on the connection's own thread,
+    # under its timeout, and a stalled phone costs one thread for two minutes.
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain('/certs/cert.pem', '/certs/key.pem')
+    main_server.socket = tls.wrap_socket(main_server.socket, server_side=True,
+                                         do_handshake_on_connect=False)
+    main_server.ssl_context = tls
 
     t1 = threading.Thread(target=main_server.serve_forever, daemon=True)
     t1.start()
