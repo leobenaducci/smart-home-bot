@@ -431,6 +431,7 @@ MODEL_PROVIDERS = {
     "ollama-cloud": "ollama_cloud",  # ollama.com
     "openrouter": "openrouter",      # openrouter.ai, one key for many models
     "together": "together_ai",       # together.ai
+    "nanogpt": "nanogpt",            # nano-gpt.com, one key for many models
     "openai": "openai",              # OpenAI itself
     # Anything that speaks the OpenAI API at a URL you give it: a vLLM or
     # llama.cpp server on the LAN, LM Studio, or a provider this package has
@@ -544,6 +545,7 @@ HOSTED_API_BASE = {
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     "together_ai": ("https://api.together.xyz/v1", "TOGETHER_API_KEY"),
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "nanogpt": ("https://nano-gpt.com/api/v1", "NANOGPT_API_KEY"),
 }
 
 
@@ -1100,6 +1102,7 @@ PROVIDER_REQUIREMENT = {
     "ollama_cloud": "the OLLAMA_API_KEY credential",
     "openrouter": "the OPENROUTER_API_KEY credential",
     "together_ai": "the TOGETHER_API_KEY credential",
+    "nanogpt": "the NANOGPT_API_KEY credential",
     "openai": "the OPENAI_API_KEY credential",
     "openai_compatible": "cloud.openai_compatible",
     "freetoken": "cloud.freetoken",
@@ -1321,7 +1324,8 @@ def enabled_providers(cfg: dict, secrets: dict, endpoints: dict) -> set[str]:
     on.add("custom")                      # OpenCode Zen, required for the unit
     for provider, key in (("openrouter", "OPENROUTER_API_KEY"),
                           ("together_ai", "TOGETHER_API_KEY"),
-                          ("openai", "OPENAI_API_KEY")):
+                          ("openai", "OPENAI_API_KEY"),
+                          ("nanogpt", "NANOGPT_API_KEY")):
         if secrets.get(key, ""):
             on.add(provider)
     if openai_compatible_endpoint(cfg, secrets)[0]:
@@ -3879,17 +3883,16 @@ def harness_settings(harness: dict, cfg: dict) -> dict:
     """`assistant.harness` as nanobot's `agents.defaults.harness`.
 
     `enabled` sends a member's own background tasks to pi, which runs the models
-    picked for the sub-agent and the powerful sub-agent. `allow_go` lets those
-    be OpenCode Go models -- the household's explicit exception to CLAUDE.md's
-    rule that Go is for a person at the keyboard. `model` is an optional
+    picked for the sub-agent and the powerful sub-agent -- never OpenCode Go
+    ones: `allow_go`, the exception that let pi call Go, was withdrawn on
+    2026-09-26 and is ignored if a config still has it. `model` is an optional
     override, written like `assistant.models` (`ollama:gemma4:e4b`), and must
     then be a local engine.
     """
     enabled = bool(harness.get("enabled"))
     # `long_tasks` sends turns labelled `long` there too, instead of planning
     # them in the chat.
-    out = {"enabled": enabled, "engine": "pi", "allowGo": bool(harness.get("allow_go")),
-           "longTasks": bool(harness.get("long_tasks"))}
+    out = {"enabled": enabled, "engine": "pi", "longTasks": bool(harness.get("long_tasks"))}
     model = str(harness.get("model") or "").strip()
     if model:
         prefix, sep, name = model.partition(":")
@@ -4267,6 +4270,33 @@ def apply_model_choices(config_json: str, cfg: dict) -> str:
                  f"which is neither `powerful` nor a profession this "
                  f"assistant declares -- the setting will not reach a turn.")
 
+    # The fallback check above, for every other role. A role on a provider this
+    # file does not declare is written in and fails on every turn: on
+    # 2026-09-26 `everyday` moved to NanoGPT and the room assistant, whose
+    # config lists fewer providers on purpose, would have been deployed green
+    # with a model it could not reach. Refused here, where someone is looking.
+    declared = {k for k in (doc.get("providers") or {}) if not k.startswith("_")}
+    # The fields that name a provider: `provider`, `providerPowerful`, and the
+    # `<role>Provider` ones. Not every `provider*` key -- `providerRetryMode`
+    # is a retry policy, not a place to send a turn.
+    named = {key: val for key, val in defaults.items()
+             if isinstance(val, str) and val
+             and (key in ("provider", "providerPowerful") or key.endswith("Provider"))}
+    named.update({f"providerProfiles.{k}": v for k, v in (defaults.get("providerProfiles") or {}).items()
+                  if isinstance(v, str) and v})
+    # Only a file that lists its providers can be held to them; every shipped
+    # config does, and a fragment without the section is not a config to judge.
+    missing = sorted({(v, k) for k, v in named.items() if v not in declared and v != "auto"}
+                     ) if "providers" in doc else []
+    if missing:
+        raise DeployError(
+            "this assistant's config does not declare "
+            + ", ".join(sorted({v for v, _ in missing}))
+            + f", but {', '.join(k for _, k in missing)} would run on it.\n"
+            f"    Every turn on it would fail. Add the provider block (and pass its "
+            f"credential to that container), or choose a model on one of: "
+            f"{', '.join(sorted(declared)) or 'nothing'}.")
+
     return json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
 
 
@@ -4410,6 +4440,13 @@ CONFIG_DEFAULTS = {
     # switching this on before that mirror is known to work deletes the sole
     # copy of everything past the cutoff.
     "services.home-cameras.recording_retention_days": 0,
+    # What the clip reviewer bins unwatched, which kinds it bins even when the
+    # model hedged, and which detector tags beyond people and animals keep a
+    # clip regardless. These are clip_review.py's own defaults, written here so
+    # a household can reach them; each can narrow the bin and never widen it.
+    "services.home-cameras.review_delete_kinds": "bug,clock,light,static,weather",
+    "services.home-cameras.review_trust_over_hedge": "clock",
+    "services.home-cameras.review_keep_tags": "",
     # Where Home Assistant actually is, for households that do not run it in
     # this stack. Empty means "there isn't one", which is the shipped state.
     #

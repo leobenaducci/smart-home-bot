@@ -110,6 +110,7 @@ services:
       - OPENAI_COMPATIBLE_API_KEY=${OPENAI_COMPATIBLE_API_KEY:-disabled}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - NANOGPT_API_KEY=${NANOGPT_API_KEY:-}
       # The two image slots from the admin page. Passed even when empty: the
       # theme skill falls back to its own literal on an empty string, and an
       # *unset* name is what nanobot refuses to start on.

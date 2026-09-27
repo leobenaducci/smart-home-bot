@@ -14279,13 +14279,18 @@ def _geo_deliver(notify_user, target_user, text, place_name, direction):
                   f'in your own words: "{text}". Don\'t forward it to anybody else.'
                   + _EVENT_REPLY_IS_THE_MESSAGE)
         fallback = f'{who} {verb} {place_name}: {text}'
+    # A shopping-list reminder is for the list: tapping it opens the chat with
+    # the grocery panel up, not the bare conversation.
+    grocery = _geo_is_grocery(text)
     delivered = _alfred_notify(notify_user, prompt, scope=_event_scope('ev-geo'), profile=EVENT_PROFILE)
     if delivered:
         if not _user_watching(notify_user):
-            _notify_user(notify_user, delivered[:300], title='Alfred', tags='round_pushpin')
+            _notify_user(notify_user, delivered[:300], title='Alfred', tags='round_pushpin',
+                         click=_grocery_chat_link() if grocery else None)
     else:
         _notify_user(notify_user, fallback, title='📍 Recordatorio',
-                     tags='round_pushpin', click=chat_link(welcome=fallback))
+                     tags='round_pushpin',
+                     click=_grocery_chat_link() if grocery else chat_link(welcome=fallback))
 
 
 # --- Collapsing movement alerts ----------------------------------------------
@@ -15436,6 +15441,13 @@ GROCERY_GEOFENCE_TEXT = (
     'pendientes y nombra algunos (consulta la lista con la skill grocery / '
     'list_groceries). If nothing is pending, tell me anyway.'
 )
+
+
+def _geo_is_grocery(text):
+    """Is this reminder the seeded shopping-list one? Matched on the tool it
+    names rather than the whole text: the text has been reworded once already,
+    and rows seeded under the old wording are still live in geo.db."""
+    return 'list_groceries' in (text or '')
 
 
 def seed_grocery_geofences():
@@ -17716,6 +17728,13 @@ def init_usage_db():
     for _col in ('tier', 'label', 'route_source'):
         if _col not in cols:
             conn.execute(f"ALTER TABLE token_usage ADD COLUMN {_col} TEXT NOT NULL DEFAULT ''")
+    # Which provider answered, 2026-09-27: `nanogpt`, `custom` (OpenCode Zen),
+    # `together_ai`, `ollama_text`... as nanobot's config names them. A model
+    # name does not say it -- `deepseek-v4-flash` runs on Zen and on NanoGPT --
+    # and a rescued turn runs somewhere other than where it was sent. Blank on
+    # every row before this, shown as "not recorded" rather than guessed.
+    if 'provider' not in cols:
+        conn.execute("ALTER TABLE token_usage ADD COLUMN provider TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -17946,12 +17965,14 @@ def usage_ingest():
     route = data.get('route') if isinstance(data.get('route'), dict) else {}
     row = row + (str(route.get('tier') or '')[:16], str(route.get('label') or '')[:16],
                  str(route.get('source') or '')[:24])
+    row = row + (re.sub(r'[^a-z0-9_]', '', str(data.get('provider') or '').lower())[:32],)
     conn = _usage_conn()
     try:
         conn.execute(
             'INSERT INTO token_usage (username, ts, day, scope, model, prompt_tokens, '
             'cached_tokens, completion_tokens, reasoning_tokens, tools, tool_names, '
-            'cost_usd, tier, label, route_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
+            'cost_usd, tier, label, route_source, provider) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
         # Cheap enough to do inline and it keeps the file from being a surprise
         # in a year; the index makes it a range delete.
         if row[1] % 200 == 0:
@@ -18496,6 +18517,32 @@ def stats_gpu():
                    **_gpu_series(hours), breakdown=_gpu_breakdown(hours))
 
 
+# Providers as the household reads them. The key is nanobot's own name for the
+# provider block, which is what the usage row stores; anything not listed here
+# is shown under that name rather than hidden.
+USAGE_PROVIDER_LABELS = {
+    'custom': 'OpenCode Zen', 'nanogpt': 'NanoGPT', 'together_ai': 'Together AI',
+    'openrouter': 'OpenRouter', 'openai': 'OpenAI', 'ollama_cloud': 'Ollama cloud',
+    'ollama': 'Local Ollama', 'ollama_vision': 'Local Ollama (vision)',
+    'freetoken': 'FreeToken', 'openai_compatible': 'OpenAI-compatible server',
+}
+
+
+def _usage_provider_label(key):
+    """(label, icon) for a provider key; '' is a row from before providers
+    were recorded (2026-09-27), and says so instead of guessing from a model
+    name that more than one provider serves."""
+    if not key:
+        return 'Not recorded (before 2026-09-27)', '·'
+    if key in USAGE_PROVIDER_LABELS:
+        label = USAGE_PROVIDER_LABELS[key]
+    elif key.startswith('ollama_'):
+        label = f"Local Ollama ({key[len('ollama_'):]})"
+    else:
+        label = key
+    return label, ('🏠' if key.startswith('ollama') and key != 'ollama_cloud' else '☁️')
+
+
 def _usage_rows(days):
     since = (_tasks_today() - timedelta(days=days - 1)).isoformat()
     conn = _usage_conn()
@@ -18503,7 +18550,7 @@ def _usage_rows(days):
         return conn.execute(
             'SELECT username, day, scope, model, prompt_tokens, cached_tokens, '
             'completion_tokens, reasoning_tokens, tools, tool_names, cost_usd, '
-            'tier, label, route_source '
+            'tier, label, route_source, provider '
             'FROM token_usage WHERE day >= ? ORDER BY day', (since,)).fetchall()
     finally:
         conn.close()
@@ -18571,11 +18618,13 @@ def stats_summary():
     rows = _usage_rows(days)
 
     by_scope, by_model, by_user, by_day, by_route = {}, {}, {}, {}, {}
+    by_provider = {}
     total = _usage_bucket()
     for r in rows:
         username, day, scope, model = r[0], r[1], r[2], r[3]
+        provider = r[14] if len(r) > 14 else ''
         for coll, key in ((by_scope, scope), (by_model, model or '(sin modelo)'),
-                          (by_user, username), (by_day, day)):
+                          (by_user, username), (by_day, day), (by_provider, provider or '')):
             _usage_add(coll.setdefault(key, _usage_bucket()), r)
         _usage_add(total, r)
         # Routing: `tier/label` is the row. An escalation is two rows -- the
@@ -18640,6 +18689,11 @@ def stats_summary():
         by_scope=_out(by_scope, _usage_label),
         by_route=_out(by_route, lambda k: (k, '🧭')),
         by_model=_out(by_model),
+        # Where the tokens went, by who served them -- the subscription, the
+        # per-token providers and the house's own hardware apart. Cost is what
+        # the rate table prices; a subscription's turns cost what it says, not
+        # what the table would charge per token.
+        by_provider=_out(by_provider, _usage_provider_label),
         by_user=_out(by_user, lambda u: (_tasks_display_name(u), '👤')),
         by_day=sorted(({'key': k, **b} for k, b in by_day.items()),
                       key=lambda x: x['key']),
@@ -19865,42 +19919,6 @@ def credentials_page():
 
 
 # ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-# Daily geofence reconcile: re-push geofence_sync to every device with active
-# geofence reminders. Belt-and-suspenders — ntfy control messages have no
-# offline replay, so a phone that was offline when a reminder changed catches
-# up here within a day even if the app is never reopened. Silent (the app
-# intercepts geofence_sync and reloads; it is never shown as a notification).
-GEO_SYNC_INTERVAL_S = 24 * 3600
-
-# Every route is declared by now, so the one thing `_register_space_routes`
-# cannot check for itself can be checked here: a profession whose `url` shadows
-# an existing /chat/* view. Module level, not inside `__main__`, so it also
-# fires under a WSGI server that only imports this file.
-_assert_no_space_route_collisions()
-
-
-def _geo_sync_worker():
-    time.sleep(60)  # brief warmup so it doesn't fire mid-startup
-    while True:
-        try:
-            conn = _geo_conn()
-            try:
-                targets = [r[0] for r in conn.execute(
-                    'SELECT DISTINCT target_user FROM geofence_reminders WHERE active = 1'
-                ).fetchall()]
-            finally:
-                conn.close()
-            for user in targets:
-                _geo_notify_sync(user)
-        except Exception:
-            pass
-        time.sleep(GEO_SYNC_INTERVAL_S)
-
-
-
-# ---------------------------------------------------------------------------
 # Nanobot profiles: how each member's Alfred is set up
 #
 # Until now this lived in files nobody edited: `config.userN.json` beside the
@@ -20678,6 +20696,41 @@ def profiles_api_export():
     return jsonify(_profiles_export(instance, redact=redact))
 
 # ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+# Daily geofence reconcile: re-push geofence_sync to every device with active
+# geofence reminders. Belt-and-suspenders — ntfy control messages have no
+# offline replay, so a phone that was offline when a reminder changed catches
+# up here within a day even if the app is never reopened. Silent (the app
+# intercepts geofence_sync and reloads; it is never shown as a notification).
+GEO_SYNC_INTERVAL_S = 24 * 3600
+
+# Every route is declared by now, so the one thing `_register_space_routes`
+# cannot check for itself can be checked here: a profession whose `url` shadows
+# an existing /chat/* view. Module level, not inside `__main__`, so it also
+# fires under a WSGI server that only imports this file.
+_assert_no_space_route_collisions()
+
+
+def _geo_sync_worker():
+    time.sleep(60)  # brief warmup so it doesn't fire mid-startup
+    while True:
+        try:
+            conn = _geo_conn()
+            try:
+                targets = [r[0] for r in conn.execute(
+                    'SELECT DISTINCT target_user FROM geofence_reminders WHERE active = 1'
+                ).fetchall()]
+            finally:
+                conn.close()
+            for user in targets:
+                _geo_notify_sync(user)
+        except Exception:
+            pass
+        time.sleep(GEO_SYNC_INTERVAL_S)
+
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
     # No init_backup_db(). It was called here and defined nowhere: the backup
     # history it set up belongs to `home-backups`, a service upstream ships and
@@ -20727,104 +20780,43 @@ if __name__ == '__main__':
     threading.Thread(target=_chat_title_worker, daemon=True).start()
 
     main_port = int(os.environ.get('PORT', '8443'))
-    backup_port = int(os.environ.get('BACKUP_PORT', '5020'))
 
-    from werkzeug.serving import make_server
+    import faulthandler
+    import signal
+    import ssl
+    from werkzeug.serving import WSGIRequestHandler, make_server
 
-    main_server = make_server(
-        '0.0.0.0', main_port, app, threaded=True,
-        ssl_context=('/certs/cert.pem', '/certs/key.pem'),
-    )
-    backup_server = make_server(
-        '0.0.0.0', backup_port, app, threaded=True,
-    )
+    # `docker kill -s USR1 <container>` writes every thread's stack to the log.
+    # The portal hung on 2026-09-27 with its accept queue full and one thread
+    # blocked on a socket, and there was no way to see where without this.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
 
-    t1 = threading.Thread(target=main_server.serve_forever, daemon=True)
-    t2 = threading.Thread(target=backup_server.serve_forever, daemon=True)
-
-    t1.start()
-    t2.start()
-
-    try:
-        while True:
-            time.sleep(3600)
-    except KeyboardInterrupt:
-        main_server.shutdown()
-        backup_server.shutdown()
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-# Daily geofence reconcile: re-push geofence_sync to every device with active
-# geofence reminders. Belt-and-suspenders — ntfy control messages have no
-# offline replay, so a phone that was offline when a reminder changed catches
-# up here within a day even if the app is never reopened. Silent (the app
-# intercepts geofence_sync and reloads; it is never shown as a notification).
-GEO_SYNC_INTERVAL_S = 24 * 3600
-
-# Every route is declared by now, so the one thing `_register_space_routes`
-# cannot check for itself can be checked here: a profession whose `url` shadows
-# an existing /chat/* view. Module level, not inside `__main__`, so it also
-# fires under a WSGI server that only imports this file.
-_assert_no_space_route_collisions()
-
-
-def _geo_sync_worker():
-    time.sleep(60)  # brief warmup so it doesn't fire mid-startup
-    while True:
-        try:
-            conn = _geo_conn()
-            try:
-                targets = [r[0] for r in conn.execute(
-                    'SELECT DISTINCT target_user FROM geofence_reminders WHERE active = 1'
-                ).fetchall()]
-            finally:
-                conn.close()
-            for user in targets:
-                _geo_notify_sync(user)
-        except Exception:
-            pass
-        time.sleep(GEO_SYNC_INTERVAL_S)
-
-
-# ---------------------------------------------------------------------------
-if __name__ == '__main__':
-    init_shares_db()
-    init_device_db()
-    init_tasks_db()
-    init_geo_db()
-    init_grocery_db()
-    init_menu_db()
-    init_notif_db()
-    init_wa_db()
-    init_usage_db()
-    start_gpu_sampler()
-    init_bgtask_db()
-    init_persona_db()
-    init_theme_db()
-    init_chat_titles_db()
-    init_family_db()
-    # Once, and then never again: the pre-per-day archive is filed under the
-    # days it happened on and renamed aside. See migrate_legacy_history.
-    migrate_legacy_history()
-    seed_grocery_geofences()
-    threading.Thread(target=_tasks_daily_worker, daemon=True).start()
-    threading.Thread(target=_geo_sync_worker, daemon=True).start()
-    threading.Thread(target=_chat_title_worker, daemon=True).start()
-
-    main_port = int(os.environ.get('PORT', '8443'))
-
-    from werkzeug.serving import make_server
+    class _PortalRequestHandler(WSGIRequestHandler):
+        # A connection that goes quiet is dropped after this long instead of
+        # holding its thread forever. Long enough for the slowest upload a
+        # phone makes and for the gaps in a streamed chat reply.
+        timeout = 120
 
     # One listener, HTTPS only. There used to be a second, plaintext one on
     # 5020 so the backup agent could POST its run history without TLS. That
     # service is not part of this package, and what the port actually exposed
-    # was an unauthenticated copy of the entire app.
-    main_server = make_server(
-        '0.0.0.0', main_port, app, threaded=True,
-        ssl_context=('/certs/cert.pem', '/certs/key.pem'),
-    )
+    # was an unauthenticated copy of the entire app -- and it was still being
+    # opened on 2026-09-27, because this block had a stale twin further down
+    # carrying the fix while the copy that ran did not.
+    main_server = make_server('0.0.0.0', main_port, app, threaded=True,
+                              request_handler=_PortalRequestHandler)
+    # TLS set up here rather than through make_server(ssl_context=...), which
+    # wraps the listener with the handshake done inside accept() -- on the one
+    # thread serving every connection. A single client that connected and never
+    # finished its handshake held that thread, the queue filled at 128 and the
+    # whole portal stopped answering (2026-09-27, ~12 minutes, restart only).
+    # With the handshake deferred, it happens on the connection's own thread,
+    # under its timeout, and a stalled phone costs one thread for two minutes.
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain('/certs/cert.pem', '/certs/key.pem')
+    main_server.socket = tls.wrap_socket(main_server.socket, server_side=True,
+                                         do_handshake_on_connect=False)
+    main_server.ssl_context = tls
 
     t1 = threading.Thread(target=main_server.serve_forever, daemon=True)
     t1.start()

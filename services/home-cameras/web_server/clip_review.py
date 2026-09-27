@@ -60,6 +60,23 @@ REVIEW_MODEL = os.environ.get('CLIP_REVIEW_MODEL', 'qwen3-vl:8b')
 # Off by default so a deployment that cannot reach Ollama keeps its recordings
 # where they have always been rather than silently filling a review tray.
 REVIEW_ENABLED = os.environ.get('CLIP_REVIEW_ENABLED', '1') not in ('0', 'false', '')
+# The Settings page's switch, once somebody has used it. The environment is
+# the deploy's default (`services.home-cameras.clip_review`); this is the
+# household's answer, and it takes effect on the next clip rather than on the
+# next deploy -- giving the card back to Ollama for an afternoon should not
+# need one. None means nobody has chosen, and the default stands.
+_enabled_choice = None
+
+
+def review_enabled() -> bool:
+    """Whether the next clip goes through the vision model."""
+    return REVIEW_ENABLED if _enabled_choice is None else _enabled_choice
+
+
+def set_review_enabled(value) -> None:
+    """The page's switch: True, False, or None to fall back to the default."""
+    global _enabled_choice
+    _enabled_choice = None if value is None else bool(value)
 REVIEW_TIMEOUT_S = int(os.environ.get('CLIP_REVIEW_TIMEOUT', '180'))
 REVIEW_MAX_AGE_DAYS = int(os.environ.get('CLIP_REVIEW_MAX_AGE_DAYS', '15'))
 # How many frames of the clip the model sees: one a second, between a floor and
@@ -320,6 +337,15 @@ LIVING_TAGS = frozenset(('person', 'dog', 'cat', 'bird', 'horse', 'sheep',
 # did anything.
 DETECTOR_TAGS = LIVING_TAGS | frozenset(
     ('car', 'truck', 'bus', 'motorcycle', 'bicycle'))
+
+# What the detector may name to keep a clip out of the bin. Living things
+# always; a household may add vehicles (CLIP_REVIEW_KEEP_TAGS) when a car in
+# frame is worth a recording to it -- security cameras on a driveway -- and
+# accepts the parked-car clips that come with that. The setting can only add:
+# like DELETE_KINDS it may make the bin smaller, never larger.
+PROTECTING_TAGS = LIVING_TAGS | frozenset(
+    t.strip().lower() for t in os.environ.get('CLIP_REVIEW_KEEP_TAGS', '').split(',')
+    if t.strip()) & DETECTOR_TAGS
 
 
 def detector_tags_in(filename: str) -> list:
@@ -733,6 +759,13 @@ def living_tags_in(filename: str) -> set:
     return LIVING_TAGS.intersection(p.lower() for p in parts[3:])
 
 
+def protecting_tags_in(filename: str) -> set:
+    """What the detector saw that keeps this clip out of the bin: the living
+    tags, plus whatever the household added in PROTECTING_TAGS."""
+    parts = os.path.splitext(os.path.basename(filename))[0].split('_')
+    return PROTECTING_TAGS.intersection(p.lower() for p in parts[3:])
+
+
 def keep_from(answer: dict) -> bool:
     """The model's `keep`, and only if it actually answered the question.
 
@@ -818,7 +851,7 @@ def is_just_a_static_scene(verdict: dict, filename: str) -> bool:
     # to remove.
     if kind not in HEDGE_TRUSTED_KINDS and verdict.get('keep'):
         return False
-    living = living_tags_in(filename)
+    living = protecting_tags_in(filename)
     if living:
         logger.info("clip review: %s says nothing happened, but the detector "
                     "saw %s — keeping it for a person", filename,
@@ -926,7 +959,7 @@ class ClipReviewQueue:
         # one sent every recording in the house to the tray — where the fifteen
         # day purge would have deleted the lot. Off means keep, as it always
         # has.
-        if REVIEW_ENABLED:
+        if review_enabled():
             # Lowest-priority inference in the house: let anything else on the
             # card go first. Nothing here branches on the outcome -- the clip
             # is reviewed either way -- it is recorded so the page can say

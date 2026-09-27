@@ -62,7 +62,8 @@ _MAX_TOOL_NAMES = 40
 def report_usage(session_key: str | None, model: str | None,
                  usage: dict[str, int] | None,
                  tools_used: int | list[str] | None = 0,
-                 route: dict[str, Any] | None = None) -> None:
+                 route: dict[str, Any] | None = None,
+                 provider: str | None = None) -> None:
     """Record one completed run. Safe to call from anywhere in the loop.
 
     `tools_used` takes the runner's list of tool names. The count alone was
@@ -86,6 +87,10 @@ def report_usage(session_key: str | None, model: str | None,
         # list is truncated would make those rows disagree with these.
         "tools": len(names) if names else int(tools_used or 0),
         "tool_names": names[:_MAX_TOOL_NAMES],
+        # Which provider answered (`nanogpt`, `custom` for OpenCode Zen,
+        # `ollama_text`...), so the usage page can count by provider. Blank
+        # from a caller that does not know, and on every row before 2026-09-27.
+        "provider": provider or "",
     }
     if route:
         # Which tier answered and who decided -- see agent/classify.py. The

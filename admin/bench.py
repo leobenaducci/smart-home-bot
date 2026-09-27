@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 
 # assistant.models' prefixes (MODEL_PROVIDERS in deploy/deploy.py).
-PREFIXES = ("ollama", "ollama-cloud", "ollama-vision", "openrouter", "together",
+PREFIXES = ("ollama", "ollama-cloud", "ollama-vision", "openrouter", "together", "nanogpt",
             "openai", "openai-compatible", "freetoken", "llamacpp")
 MODEL_RE = re.compile(r"^[\w.:/@+\-]{1,200}$")
 ROLES = ("everyday", "tools", "notifications", "events", "heartbeat", "longtask", "steps",

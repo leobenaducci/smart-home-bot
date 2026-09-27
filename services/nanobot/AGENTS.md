@@ -922,9 +922,9 @@ own background tasks on **pi** (pi.dev, pinned in the image at `/opt/pi` from
   sub-agent (the powerful sub-agent's for a complex task), reached the way
   nanobot reaches it; nudges it until a file the task asked for actually came
   back from `make_document`, and returns the answer. OpenCode requests carry
-  `x-opencode-session`, one per task. OpenCode Go only with
-  `harness.allow_go` — the household's one exception to CLAUDE.md's Go rule;
-  nanobot's own loop never runs a Go model and falls back to the everyday one.
+  `x-opencode-session`, one per task. Never OpenCode Go: the household's
+  `harness.allow_go` exception was withdrawn on 2026-09-26, and a Go model
+  stays in nanobot's loop, which runs the everyday one instead.
 - `nanobot/harness/pi/alfred.ts` — the tools pi gets: `web` (search/fetch),
   `make_document`, `skill`, `skill_guide`, plus read/write/edit confined to
   the task's folder. **No bash**, and pi's own environment holds no secrets;

@@ -204,7 +204,7 @@
   "admin.models.invalid_url": "该地址不是系统可以调用的 URL。需要 http:// 或 https:// 以及主机名 — 例如 http://192.168.1.20:8000/v1。未保存任何内容。",
   "admin.models.key_set": "已设密钥",
   "admin.models.key_unset": "无密钥 — 不提供",
-  "admin.models.keyed_sources_note": "只要在凭据里填上密钥，OpenRouter、Together AI 和 OpenAI 就会出现；清空密钥它们就消失。没有别的要配置：一个账号要么能访问，要么不能。",
+  "admin.models.keyed_sources_note": "只要在凭据里填上密钥，OpenRouter、Together AI、NanoGPT 和 OpenAI 就会出现；清空密钥它们就消失。没有别的要配置：一个账号要么能访问，要么不能。",
   "admin.models.local_preferred": "此处本地才是正确选择",
   "admin.models.max_output": "最大输出",
   "admin.models.measured": "本地实测：",

@@ -306,7 +306,8 @@ which changes far more slowly than any roster does:
 
 A value names a model **and, by its prefix, where it runs**: a bare name is
 OpenCode Zen, and `ollama:`, `ollama-cloud:`, `openrouter:`, `together:`,
-`openai-compatible:` and `freetoken:` each select a provider. They can all be
+`nanogpt:`, `openai-compatible:` and `freetoken:` each select a provider
+([docs/nanogpt.md](nanogpt.md) covers the one with a subscription). They can all be
 live at once. Notification triage on the GPU in the cupboard, everyday chat on a
 hosted model, one profession on whatever is genuinely best at it.
 

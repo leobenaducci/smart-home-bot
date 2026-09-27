@@ -500,6 +500,18 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         # being down.
         detect_by_base_keyword="freetoken",
     ),
+    # NanoGPT (nano-gpt.com): OpenAI-compatible gateway, hundreds of models
+    # under `vendor/model` ids behind one key.
+    ProviderSpec(
+        name="nanogpt",
+        keywords=("nanogpt", "nano-gpt"),
+        env_key="NANOGPT_API_KEY",
+        display_name="NanoGPT",
+        backend="openai_compat",
+        is_gateway=True,
+        detect_by_base_keyword="nano-gpt",
+        default_api_base="https://nano-gpt.com/api/v1",
+    ),
     # Together AI: OpenAI-compatible inference gateway
     ProviderSpec(
         name="together_ai",

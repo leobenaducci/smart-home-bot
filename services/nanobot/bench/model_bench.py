@@ -47,6 +47,7 @@ HERE = Path(__file__).resolve().parent
 PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "ollama-vision": "ollama_vision",
     "openrouter": "openrouter", "together": "together_ai", "openai": "openai",
+    "nanogpt": "nanogpt",
     "openai-compatible": "openai_compatible", "freetoken": "freetoken",
     # The llama.cpp router on the host, which is what cloud.openai_compatible
     # points at here. Its own name so a result says what it ran on.
@@ -245,6 +246,11 @@ class Recorder:
         self.tokens_in = 0
         self.tokens_out = 0
         self.llm_seconds = 0.0
+        # What the provider said on a call that failed outright. The loop turns
+        # one into the turn's reply ("Error: ..."), and scoring that text as
+        # an answer marked NanoGPT models "answered in English" when they had
+        # never been reached -- Zen had refused the name (2026-09-26).
+        self.llm_errors: list[str] = []
         self.first_token_at: float | None = None
         self.skill_by_command: dict[str, tuple[str, str]] = {}
         self.skill_params: dict[str, dict] = {}
@@ -404,6 +410,12 @@ def house_names(text: str) -> str:
 # --- checks -----------------------------------------------------------------
 
 def judge(case: dict, reply: str, rec: Recorder, heartbeat: tuple[str, str] | None) -> list[str]:
+    # A call that failed is the answer, and the only one: the reply is the
+    # provider's error text, and grading it for language, length or content
+    # reports a model fault where there is an endpoint, key or name fault.
+    errors = getattr(rec, "llm_errors", None) or []
+    if errors:
+        return [f"the model call failed: {errors[-1]}"]
     fails: list[str] = []
     labels = [c["label"] for c in rec.calls]
     # Handing a long job to a background sub-agent is how the house is meant to
@@ -632,6 +644,8 @@ def instrument_provider(provider, rec: Recorder) -> None:
             u = getattr(r, "usage", None) or {}
             rec.tokens_in += int(u.get("prompt_tokens") or 0)
             rec.tokens_out += int(u.get("completion_tokens") or 0)
+            if getattr(r, "finish_reason", None) == "error":
+                rec.llm_errors.append(str(getattr(r, "content", "") or "no message")[:200])
             return r
         setattr(provider, meth, wrapped)
 

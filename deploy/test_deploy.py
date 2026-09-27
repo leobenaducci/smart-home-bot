@@ -1461,6 +1461,27 @@ try:
 except D.DeployError as _exc:
     check("  refused", "does not declare" in str(_exc), _exc)
 
+# The same for every other role: the main model moved to NanoGPT on
+# 2026-09-26 and the room assistant, which lists fewer providers, would have
+# been deployed with a model it could not reach.
+print("\nany role on a provider the config lacks is refused, not only the fallback")
+try:
+    D.apply_model_choices(_house, {"assistant": {"models": {"everyday": "openrouter:some/model"}}})
+    check("  everyday on an undeclared provider: refused", False, "written in, failing every turn")
+except D.DeployError as _exc:
+    check("  everyday on an undeclared provider: refused",
+          "does not declare openrouter" in str(_exc) and "provider" in str(_exc), _exc)
+try:
+    D.apply_model_choices(_house, {"assistant": {"models": {
+        "everyday": "gpt-6-luna", "classifier": "openai:gpt-x"}}})
+    check("  a lesser role too (classifier on openai)", False, "written in")
+except D.DeployError as _exc:
+    check("  a lesser role too (classifier on openai)", "classifierProvider" in str(_exc), _exc)
+_house_ng = _json.loads(D.apply_model_choices(_house, {"assistant": {"models": {
+    "everyday": "nanogpt:deepseek/deepseek-v4.1-flash"}}}))["agents"]["defaults"]
+check("  the house can run everyday on NanoGPT now that it declares it",
+      _house_ng.get("provider") == "nanogpt", _house_ng.get("provider"))
+
 # And the one this household actually runs has to be buildable in BOTH configs,
 # because both get the same fallback written into them.
 for _which, _path in (("base", "services/nanobot/config/config.json"),
@@ -4292,10 +4313,11 @@ check("  on a host with systemd, installing the units is still the answer",
 print("\nassistant.harness: background tasks on pi, with the sub-agent models")
 _h = json.loads(D.apply_model_choices('{"agents": {"defaults": {}}}',
                 {"assistant": {"harness": {"enabled": True}}}))["agents"]["defaults"]["harness"]
-check("  on, with no model: pi runs the sub-agent models, Go not allowed",
-      _h == {"enabled": True, "engine": "pi", "allowGo": False, "longTasks": False}, _h)
+check("  on, with no model: pi runs the sub-agent models",
+      _h == {"enabled": True, "engine": "pi", "longTasks": False}, _h)
 _h = D.harness_settings({"enabled": True, "allow_go": True}, {})
-check("  allow_go is passed through", _h["allowGo"] is True, _h)
+check("  a config that still says allow_go gets nothing from it (withdrawn 2026-09-26)",
+      "allowGo" not in _h, _h)
 _h = D.harness_settings({"enabled": True, "model": "ollama:gemma4:e4b"},
                         {"cloud": {"ollama": {"local": {"context": 40960}}}})
 check("  an override is a local model, reached through the assistants' own OLLAMA_URL",

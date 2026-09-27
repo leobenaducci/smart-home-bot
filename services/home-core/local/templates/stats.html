@@ -178,6 +178,11 @@
     </div>
 
     <div class="sheet">
+      <h2>By provider</h2>
+      <p class="note">Who served each turn: a flat subscription, a per-token
+        provider, or this house's own hardware. A turn a fallback rescued counts
+        where it ran. Turns from before 2026-09-27 have no provider recorded.</p>
+      <table id="by-provider"></table>
       <h2>By model</h2>
       <table id="by-model"></table>
     </div>
@@ -529,6 +534,7 @@ async function load() {
   table(document.getElementById('by-route'), (d.by_route || []).map(r => ({
     ...r, label: `${r.label}${r.escalations ? ` · ${r.escalations} escalated` : ''}`,
   })), 'Route');
+  table(document.getElementById('by-provider'), d.by_provider || [], 'Provider');
   table(document.getElementById('by-model'), d.by_model, 'Modelo', {cloud: true});
   table(document.getElementById('by-user'), d.by_user, 'Persona');
   toolTable(document.getElementById('by-tool'), d.by_tool || []);

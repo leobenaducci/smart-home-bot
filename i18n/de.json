@@ -204,7 +204,7 @@
   "admin.models.invalid_url": "Diese Adresse ist keine URL, die das System aufrufen kann. Sie braucht http:// oder https:// und einen Host — zum Beispiel http://192.168.1.20:8000/v1. Es wurde nichts gespeichert.",
   "admin.models.key_set": "Schlüssel gesetzt",
   "admin.models.key_unset": "kein Schlüssel — nicht im Angebot",
-  "admin.models.keyed_sources_note": "OpenRouter, Together AI und OpenAI erscheinen, sobald ihr Schlüssel unter den Zugangsdaten steht, und verschwinden, wenn er gelöscht wird. Mehr ist nicht einzustellen: Ein Konto erreicht sie oder eben nicht.",
+  "admin.models.keyed_sources_note": "OpenRouter, Together AI, NanoGPT und OpenAI erscheinen, sobald ihr Schlüssel unter den Zugangsdaten steht, und verschwinden, wenn er gelöscht wird. Mehr ist nicht einzustellen: Ein Konto erreicht sie oder eben nicht.",
   "admin.models.local_preferred": "hier ist lokal die richtige Wahl",
   "admin.models.max_output": "Max. Ausgabe",
   "admin.models.measured": "Hier gemessen:",

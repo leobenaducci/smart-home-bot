@@ -24,7 +24,7 @@ from nanobot.config.schema import ProvidersConfig
 # which is what a bare name (OpenCode Zen) resolves to.
 DEPLOYED_BLOCKS = [
     "custom", "ollama", "ollama_cloud", "together_ai",
-    "freetoken", "openrouter", "openai", "openai_compatible",
+    "freetoken", "openrouter", "openai", "openai_compatible", "nanogpt",
 ]
 
 

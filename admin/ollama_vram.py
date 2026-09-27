@@ -198,6 +198,23 @@ def gguf_facts(where: str) -> dict:
     return facts_from_info(info, size)
 
 
+# Architectures Ollama serves one request at a time, whatever
+# OLLAMA_NUM_PARALLEL says: its scheduler logs "model architecture does not
+# currently support parallel requests" and loads one slot's cache. Counting
+# the configured slots put the Text setup (qwen3.5:9b, 128k, q8_0) at 11.4 GiB
+# with two slots and 13.5 with three -- over the card -- while it held 8.8 on
+# its 12 GB card with either (2026-09-26). llama.cpp's own server does run
+# these in parallel, so the rule is Ollama's, not the model's.
+OLLAMA_ONE_SLOT_ARCHS = frozenset({"qwen35", "qwen35moe"})
+
+
+def slots(facts: dict, parallel: int, engine: str = "ollama") -> int:
+    """How many slots' cache the server will actually allocate."""
+    if engine == "ollama" and (facts or {}).get("arch") in OLLAMA_ONE_SLOT_ARCHS:
+        return 1
+    return max(1, int(parallel or 1))
+
+
 def kv_bytes(facts: dict, context: int, parallel: int, kv_cache: str) -> float:
     per = KV_BYTES.get(kv_cache, 2.0)
     total = 0.0
@@ -249,9 +266,12 @@ def measure(url: str, models: list[str], inst: dict) -> tuple[list[dict], str]:
 def model_need(name: str, facts: dict, inst: dict, measured: dict) -> tuple[float, str]:
     """(bytes on the card, "measured"|"estimated"|"unknown") for one model on *inst*."""
     point = (measured.get("models") or {}).get(name)
-    want_kv = kv_bytes(facts, inst["context"], inst["parallel"], inst["kv_cache"]) if facts else 0.0
+    engine = inst.get("engine", "ollama")
+    want_kv = kv_bytes(facts, inst["context"], slots(facts, inst["parallel"], engine),
+                       inst["kv_cache"]) if facts else 0.0
     if point:
-        had_kv = kv_bytes(facts, point["context"], point["parallel"], point["kv_cache"]) if facts else 0.0
+        had_kv = kv_bytes(facts, point["context"], slots(facts, point["parallel"], engine),
+                          point["kv_cache"]) if facts else 0.0
         same = (point["context"] == inst["context"] and point["parallel"] == inst["parallel"]
                 and point["kv_cache"] == inst["kv_cache"])
         return max(0.0, point["vram"] - had_kv + want_kv), "measured" if same else "estimated"

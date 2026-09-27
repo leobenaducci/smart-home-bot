@@ -173,12 +173,13 @@ def test_pi_never_gets_bash(fake_pi, tmp_path, bench):
 
 
 @pytest.mark.parametrize("url", ["https://opencode.ai/zen/go/v1", "https://OpenCode.AI/zen/go/v1"])
-def test_opencode_go_is_refused_unless_the_household_allowed_it(fake_pi, tmp_path, url):
-    """Go is the flat plan CLAUDE.md keeps for a person at the keyboard."""
+def test_opencode_go_is_always_refused(fake_pi, tmp_path, url):
+    """Go is the flat plan CLAUDE.md keeps for a person at the keyboard, and
+    there is no switch to allow it for pi any more (withdrawn 2026-09-26)."""
     state = fake_pi({"text": "never"})
     res = asyncio.run(H.run(TASK, H.Endpoint(base_url=url, model="kimi"), tmp_path / "w"))
     assert "refused" in res.error and not os.path.exists(str(state) + ".log")
-    assert H.Endpoint(base_url=url, model="kimi", allow_go=True).check() is None
+    assert H.Endpoint(base_url=url, model="kimi").check() is not None
 
 
 def test_zen_gets_a_session_header_one_per_task(fake_pi, tmp_path):

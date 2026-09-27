@@ -308,6 +308,34 @@ check("a record with no route is in the totals and in no route",
 check("the money follows the tier",
       by_route['powerful/complex']['cost'] > by_route['everyday/action']['cost'])
 
+# --- By provider ---------------------------------------------------------------
+# A model name does not say who served it: deepseek-v4-flash runs on OpenCode
+# Zen and on NanoGPT, and a rescued turn runs somewhere else again. nanobot
+# says which, and rows from before it did are "not recorded", never guessed.
+print("\nby provider: who served each turn")
+for prov, model in (('nanogpt', 'deepseek/deepseek-v4.1-flash'), ('nanogpt', 'deepseek/deepseek-v4-pro'),
+                    ('custom', 'deepseek-v4-flash'), ('ollama_text', 'qwen3.5:9b'),
+                    (' Together_AI\n', 'Qwen/Qwen3.8-Flash')):
+    client.post('/chat/usage', headers=_h(), json={
+        'session_key': chat_key, 'model': model, 'provider': prov,
+        'usage': {'prompt_tokens': 1000, 'completion_tokens': 100}})
+by_provider = {r['key']: r for r in summary().get_json()['by_provider']}
+check("two NanoGPT models are one provider row",
+      by_provider.get('nanogpt', {}).get('turns') == 2, by_provider.keys())
+check("the same model name on Zen is its own row", by_provider.get('custom', {}).get('turns') == 1)
+check("labelled for a person", by_provider.get('nanogpt', {}).get('label') == 'NanoGPT'
+      and by_provider.get('custom', {}).get('label') == 'OpenCode Zen', by_provider.get('custom'))
+check("a local server says it is local",
+      by_provider.get('ollama_text', {}).get('label') == 'Local Ollama (text)', by_provider.get('ollama_text'))
+check("a provider name is cleaned to its key, not stored as sent",
+      by_provider.get('together_ai', {}).get('label') == 'Together AI', by_provider.keys())
+check("rows from before providers were recorded are said to be",
+      by_provider.get('', {}).get('label', '').startswith('Not recorded'), by_provider.get(''))
+check("every turn is in exactly one provider row",
+      sum(r['turns'] for r in by_provider.values()) == summary().get_json()['total']['turns'])
+page = client.get('/stats', headers=_h()).get_data(as_text=True)
+check("and the page draws it", 'id="by-provider"' in page and 'd.by_provider' in page)
+
 # --- Reachable from the phone ---------------------------------------------------
 print("\nfinding it from the chat page")
 html = open(os.path.join(dst, "templates", "chat.html"), encoding="utf-8").read()

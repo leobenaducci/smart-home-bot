@@ -144,10 +144,6 @@ class HarnessConfig(Base):
 
     enabled: bool = False
     engine: Literal["pi"] = "pi"
-    # OpenCode Go (the flat plan) for pi's models. CLAUDE.md keeps Go for a
-    # person at the keyboard and says unattended traffic can get the account
-    # blocked; this is the household's explicit exception, for pi only.
-    allow_go: bool = False
     # Long tasks too: a turn the classifier labels `long` goes to a sub-agent
     # on pi instead of being planned in the chat. Off by default -- a plan in
     # the chat asks the person as it goes, keeps read-only steps read-only and
@@ -378,6 +374,7 @@ class ProvidersConfig(Base):
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig, exclude=True)  # Github Copilot (OAuth)
     qianfan: ProviderConfig = Field(default_factory=ProviderConfig)  # Qianfan (百度千帆)
     together_ai: ProviderConfig = Field(default_factory=ProviderConfig)  # Together AI
+    nanogpt: ProviderConfig = Field(default_factory=ProviderConfig)  # NanoGPT (nano-gpt.com)
     # Three this stack writes into config.json that upstream does not declare.
     # `extra` is Pydantic's default `ignore`, so the blocks were parsed away in
     # silence and `_resolve_alt_provider`'s `getattr(config.providers, name)`

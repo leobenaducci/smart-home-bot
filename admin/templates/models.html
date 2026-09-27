@@ -628,9 +628,7 @@
         {# Whatever is configured stays selectable even when the roster no
            longer offers it — a hand-edited config must never be silently
            rewritten by opening this page. #}
-        {% set go_row = harness.allow_go and row.id in ('subagent', 'subagent_powerful') %}
-        {% if cur and not known
-              and not (go_row and cur.startswith('opencode-go/')) %}
+        {% if cur and not known %}
           <optgroup label="{{ t('admin.models.not_on_offer') }}">
             <option value="{{ cur }}" selected>{{ cur }}</option>
           </optgroup>
@@ -678,17 +676,6 @@
             {% endfor %}
           </optgroup>
         {% endfor %}
-        {# OpenCode Go, for the sub-agent roles only and only when the household
-           allowed it: pi runs these, nanobot's own loop never does. #}
-        {% if go_row %}
-          {% for group in code_choices if group.key == 'go' %}
-          <optgroup label="{{ t('admin.models.harness_go_group') }}">
-            {% for m in group.models %}
-              <option value="{{ m.id }}" {% if m.id == cur %}selected{% endif %}>{{ m.id }}</option>
-            {% endfor %}
-          </optgroup>
-          {% endfor %}
-        {% endif %}
       {% endmacro %}
       {# The rescue chain: one picker per place, in order, each with every
          choice a role has -- "Local Ollama" included, its setup then picked
@@ -849,11 +836,6 @@
         {{ t('admin.models.harness_long_tasks') }}
       </label>
       <p class="help">{{ t('admin.models.harness_long_tasks_help') }}</p>
-      <label class="row-tight">
-        <input type="checkbox" name="harness_allow_go" {% if harness.allow_go %}checked{% endif %}>
-        {{ t('admin.models.harness_allow_go') }}
-      </label>
-      <p class="help">{{ t('admin.models.harness_allow_go_help') }}</p>
 
       {# This box is in the middle of the long roles form, whose own Save is at
          the very bottom; the next Save on screen belongs to another card and
@@ -1403,7 +1385,7 @@
       <select id="f-provider">
         <option value="">{{ t('admin.models.filter_all') }}</option>
         {% for group in model_groups %}
-          {% if options | selectattr('provider', 'equalto', group.provider) | list %}
+          {% if options | selectattr('group', 'equalto', group.provider) | list %}
             <option value="{{ group.provider }}">{{ group.label }}</option>
           {% endif %}
         {% endfor %}
@@ -1469,7 +1451,7 @@
     {# A row this house is on is marked rather than moved: the sort order is
        the reader's, and hoisting the twelve models in use to the top would
        fight whichever column they just clicked. #}
-    <tr data-provider="{{ m.provider }}"
+    <tr data-provider="{{ m.group }}"
         data-reasoning="{{ 1 if m.reasoning else 0 }}"
         data-vision="{{ 1 if m.vision else 0 }}"
         data-audio="{{ 1 if m.audio else 0 }}"
@@ -1872,6 +1854,7 @@
     error:   {{ t('admin.models.test_error')|tojson }},
     skipped: {{ t('admin.models.test_skipped')|tojson }},
     asked:   {{ t('admin.models.test_asked')|tojson }},
+    tested:  {{ t('admin.models.test_tested')|tojson }},
     replied: {{ t('admin.models.test_replied')|tojson }},
     bench:   {{ t('admin.models.test_bench_sent')|tojson }},
     benchDone: {{ t('admin.models.test_bench_done')|tojson }},
@@ -1968,6 +1951,13 @@
                        (data.tok_s ? ' · ' + data.tok_s + ' tok/s' : '') +
                        (data.tokens ? ' · ' + data.tokens + ' tok' : '');
     box.appendChild(head);
+    // Which model answered, so a verdict is never read as another's.
+    if (data.configured) {
+      var which = document.createElement('span');
+      which.className = 'step';
+      which.textContent = SAYS.tested.replace('{model}', data.configured);
+      box.appendChild(which);
+    }
     // What this role was actually asked. Without it a criterion like "stays
     // silent" is a word with no question behind it.
     if (data.why) {
@@ -2006,9 +1996,16 @@
       box.textContent = SAYS.running;
       // The token goes in the *body*: the guard reads request.form['_csrf'],
       // and a header alone is a 403.
+      // What the picker shows now, saved or not: choosing a model and pressing
+      // Test is asking about *that* model. Sending only the role tested the
+      // saved one, and a model somebody was trying out got the verdict of the
+      // one it was meant to replace.
+      var picked = [];
+      document.querySelectorAll('select[name="model:' + role + '"], select[name^="model:' + role + ':"]')
+        .forEach(function (sel) { if (sel.value) picked.push(['model', sel.value]); });
       fetch('/models/test', {
         method: 'POST',
-        body: new URLSearchParams({ _csrf: CSRF, role: role })
+        body: new URLSearchParams([['_csrf', CSRF], ['role', role]].concat(picked))
       })
         .then(function (r) { return r.json().then(function (d) { return { code: r.status, data: d }; }); })
         .then(function (out) {

@@ -351,8 +351,9 @@
 
         <div class="card">
             <h2>Clip review</h2>
-            <p>Every recording goes through the vision model before it is
-               saved. What it decided appears under each clip in Recordings.</p>
+            <p>While it is on, every recording goes through the vision model
+               before it is saved. What it decided appears under each clip in
+               Recordings. Switch it in Recording Settings below.</p>
             <div id="review-status" class="review-status">Consultando…</div>
         </div>
 
@@ -365,6 +366,16 @@
                         <input type="checkbox" id="recording-enabled" name="recording_enabled">
                         <span>Enable motion-triggered recording</span>
                     </label>
+                </div>
+
+                <div class="form-group checkbox">
+                    <label>
+                        <input type="checkbox" id="clip-review-enabled" name="clip_review_enabled">
+                        <span>Review each clip with the vision model</span>
+                    </label>
+                    <small>Off keeps every clip unreviewed and leaves the graphics card
+                        to everything else. Takes effect from the next clip; clips
+                        recorded while it was off are not reviewed afterwards.</small>
                 </div>
 
                 <div class="form-group">
@@ -437,6 +448,8 @@
                 .then(data => {
                     if (data.recording_enabled !== undefined)
                         document.getElementById('recording-enabled').checked = data.recording_enabled;
+                    if (data.clip_review_enabled !== undefined)
+                        document.getElementById('clip-review-enabled').checked = data.clip_review_enabled;
                     if (data.recording_start_hour !== undefined)
                         document.getElementById('recording-start-hour').value = data.recording_start_hour;
                     if (data.recording_end_hour !== undefined)
@@ -473,6 +486,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     recording_enabled: document.getElementById('recording-enabled').checked,
+                    clip_review_enabled: document.getElementById('clip-review-enabled').checked,
                     recording_start_hour: parseInt(document.getElementById('recording-start-hour').value),
                     recording_end_hour: parseInt(document.getElementById('recording-end-hour').value),
                     recording_duration: parseInt(document.getElementById('recording-duration').value),

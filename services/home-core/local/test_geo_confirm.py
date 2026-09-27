@@ -349,6 +349,26 @@ resp = client.post('/geo/api/event', json={'place_id': 1, 'transition': 'enter'}
 check("a repeat is still suppressed", resp.get_json().get('ignored', '').startswith('already'),
       resp.get_json())
 
+
+# --- Where tapping the notification lands ------------------------------------
+print("\na shopping-list reminder opens the grocery panel; any other, the chat")
+sent = []
+A._notify_user = lambda user, msg, **kw: sent.append(kw.get('click'))
+A._user_watching = lambda user: False
+GROCERY_OLD = ('revisar la lista de compras del supermercado: dime cuántos productos '
+               'quedan pendientes (consulta la lista con la skill grocery / list_groceries).')
+for label, reply in (("delivered by Alfred", "Te quedan 3 cosas"), ("fallback", None)):
+    A._alfred_notify = lambda *a, _r=reply, **kw: _r
+    for text in (A.GROCERY_GEOFENCE_TEXT, GROCERY_OLD):
+        sent.clear()
+        A._geo_deliver(USER1, USER1, text, 'Mall', 'enter')
+        check(f"{label}: grocery reminder opens the list",
+              sent == [A._grocery_chat_link()], sent)
+    sent.clear()
+    A._geo_deliver(USER1, USER1, 'comprar pan', 'casa', 'enter')
+    check(f"{label}: an ordinary reminder does not",
+          sent and 'panel=grocery' not in (sent[0] or ''), sent)
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")
 raise SystemExit(1 if failures else 0)

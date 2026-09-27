@@ -837,7 +837,7 @@ services:
                  # `--check-contract` exists for. Empty is fine for an
                  # endpoint that answers whoever asks.
                  IMAGE_API_KEY,
-                 OPENROUTER_API_KEY, OPENAI_API_KEY]
+                 OPENROUTER_API_KEY, OPENAI_API_KEY, NANOGPT_API_KEY]
       per_member: ["NANOBOT_API_SECRET_{M}", "HOMECORE_PROXY_TOKEN_{M}",
                    "PAPERLESS_API_TOKEN_{M}"]
 
@@ -1013,7 +1013,7 @@ services:
       # exporting it.
       optional: [HOMEASSISTANT_TOKEN, VOICE_GATEWAY_TOKEN, NTFY_CREDENTIALS,
                  TOGETHER_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY,
-                 IMAGE_API_KEY]
+                 IMAGE_API_KEY, NANOGPT_API_KEY]
       # Deliberately no per_member block. `docker compose up` re-interpolates
       # the whole environment, so anything absent here is blank in the
       # container, which for this service is the point.
@@ -1197,7 +1197,17 @@ services:
           # every recording -- off is not a purge, and clip_review.py says so
           # in as many words. Supplied as "1"/"0"; see derived above for why
           # it cannot be the config's own bool.
+          # This is the default only: the wall's Settings page has the switch
+          # (Recording Settings), and once saved there, its choice wins and
+          # takes effect without a deploy.
           CLIP_REVIEW_ENABLED: "{derived.clip_review_enabled}"
+          # What the reviewer may bin, and when. Each can only make the bin
+          # smaller than clip_review.py's own floor -- see the compose file.
+          # The household's say over them, rather than compose defaults
+          # nothing could reach: these were read and never exported.
+          CLIP_REVIEW_DELETE_KINDS: "{services.home-cameras.review_delete_kinds}"
+          CLIP_REVIEW_TRUST_OVER_HEDGE: "{services.home-cameras.review_trust_over_hedge}"
+          CLIP_REVIEW_KEEP_TAGS: "{services.home-cameras.review_keep_tags}"
           # The clip reviewer is the heaviest user of this household's card --
           # every recorded clip is three frames through a vision model -- and
           # it was the one part of Alfred's work that appeared nowhere on the

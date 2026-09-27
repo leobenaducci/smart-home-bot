@@ -35,9 +35,10 @@ It was extracted from a live household's multi-repo setup — the services are r
 their own histories; the packaging layer around them (`home-stack`, `deploy/`,
 `admin/`, `i18n/`, `config/`, `secrets/`) was built for this repository.
 
-Everything runs on one PC by default. `OPENCODE_API_KEY` is the only
-credential that leaves the network, and the optional VPS proxy is the only
-thing that runs off that machine.
+Everything runs on one PC by default. The model providers' keys are the only
+credentials that leave the network -- `OPENCODE_API_KEY` by default, and any the
+household adds (NanoGPT, OpenRouter, Together; `docs/nanogpt.md`) -- and the
+optional VPS proxy is the only thing that runs off that machine.
 
 **Go belongs to the coding harness. Everything else uses Zen.** One account
 opens both — `https://opencode.ai/zen/v1` is Zen, per token; `/zen/go/v1` is the
@@ -66,15 +67,12 @@ Which *roles* sit on Zen is the household's choice and not a rule: the admin
 page moves them freely, and a role on Zen is fine as long as its caller uses Zen
 correctly — which means the session header, every time.
 
-**The one exception, decided by the household on 2026-09-23: Go models in the
-pi harness.** With `assistant.harness.allow_go` on ("Allow OpenCode Go models
-in pi", beside the sub-agent models on the Models page), the sub-agent and
-powerful sub-agent roles may pick an `opencode-go/…` model, and pi — which runs
-background tasks — calls Go with it, a fresh `x-opencode-session` per task.
-It is off by default and the page says why: this is unattended traffic on the
-flat plan, the thing the paragraph above says can get the account blocked. The
-exception is that narrow: nanobot's own loop still never calls Go (a task that
-cannot go to pi runs on the everyday model instead), and no other caller may.
+**There is no exception.** From 2026-09-23 to 2026-09-26 the household allowed
+Go models in the pi harness (`assistant.harness.allow_go`, "Allow OpenCode Go
+models in pi"); it withdrew that, and the switch is gone from the page, the
+deployer and pi alike -- a config that still says `allow_go` gets nothing from
+it. A sub-agent role on an `opencode-go/…` model is refused at save, and a task
+given one stays in nanobot's loop on the everyday model.
 
 **Every request to `opencode.ai` carries `x-opencode-session`.** OpenCode began
 requiring it on 2026-09-06 -- without it "requests may error" -- and asks for one

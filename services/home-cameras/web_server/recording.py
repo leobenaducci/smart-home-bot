@@ -731,7 +731,7 @@ def _review_queue():
 def review_queue_status() -> dict:
     """What the reviewer has been up to, for the settings page."""
     q = _review_queue()
-    return {'enabled': clip_review.REVIEW_ENABLED, 'model': clip_review.REVIEW_MODEL,
+    return {'enabled': clip_review.review_enabled(), 'model': clip_review.REVIEW_MODEL,
             'pending': q.depth(), 'reviewed': q.reviewed, 'kept': q.kept,
             'to_review': q.to_review, 'last_error': q.last_error,
             # Deleted unwatched, so it is counted where somebody can see it.

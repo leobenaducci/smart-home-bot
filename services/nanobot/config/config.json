@@ -92,6 +92,11 @@
       "apiKey": "${OPENROUTER_API_KEY}",
       "apiBase": "https://openrouter.ai/api/v1"
     },
+    "_comment_nanogpt": "nano-gpt.com, for a model written `nanogpt:<vendor/model>` in assistant.models. Listed whether or not the key is set, like every provider here: the key is exported empty when there is none, and a provider nobody names is never called.",
+    "nanogpt": {
+      "apiKey": "${NANOGPT_API_KEY}",
+      "apiBase": "https://nano-gpt.com/api/v1"
+    },
     "_comment_openai": "OpenAI itself, for `openai:<name>`. Listed whether or not the key is set, like every provider here: this file is read for ${...} in every string and an unset reference stops the container from starting.",
     "openai": {
       "apiKey": "${OPENAI_API_KEY}",

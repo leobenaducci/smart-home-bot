@@ -922,6 +922,56 @@ def fetch_openrouter(api_key: str) -> tuple[list[dict], str]:
     return sorted(out, key=lambda m: m["name"]), ""
 
 
+def fetch_nanogpt(api_key: str) -> tuple[list[dict], str]:
+    """nano-gpt.com's roster: hundreds of models, `vendor/model` ids, one key.
+
+    `?detailed=true` is what carries prices, window and capabilities; without
+    it the list is ids alone. Prices already arrive per million tokens, in
+    dollars, so unlike OpenRouter's they are taken as they come -- and only
+    when the unit says so, because a price in another unit is worse than none.
+    """
+    try:
+        data = _get("https://nano-gpt.com/api/v1/models?detailed=true", timeout=20,
+                    headers={"Authorization": f"Bearer {api_key}"} if api_key else None)
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        return [], f"could not reach nano-gpt.com: {exc}"
+
+    def price(pricing: dict, key: str) -> float | None:
+        if pricing.get("unit") != "per_million_tokens" or pricing.get("currency", "USD") != "USD":
+            return None
+        try:
+            return round(float(pricing.get(key)), 6)
+        except (TypeError, ValueError):
+            return None
+
+    out = []
+    for m in _rows(data):
+        mid = (m.get("id") or "").strip()
+        if not mid:
+            continue
+        pricing = m.get("pricing") or {}
+        caps = m.get("capabilities") or {}
+        arch = m.get("architecture") or {}
+        out.append({
+            "id": f"nanogpt:{mid}",
+            "name": m.get("name") or mid,
+            "provider": "nanogpt",
+            "input": price(pricing, "prompt"),
+            "output": price(pricing, "completion"),
+            "cache_read": None,
+            "context": m.get("context_length"),
+            "max_output": m.get("max_output_tokens"),
+            "reasoning": bool(caps.get("reasoning")),
+            "vision": bool(caps.get("vision")) or "image" in (arch.get("input_modalities") or []),
+            "audio": bool(caps.get("audio_input")),
+            # Covered by the flat NanoGPT subscription rather than billed per
+            # token. The page lists the two apart: the same price column means
+            # a bill for one and nothing for the other.
+            "subscription": bool((m.get("subscription") or {}).get("included")),
+        })
+    return sorted(out, key=lambda m: m["name"]), ""
+
+
 # What together.ai says when a model exists, is priced, is in `/v1/models`, and
 # cannot be called on a serverless key. It is the ONLY 400 that means this --
 # `This model only supports streaming` is another one, and those models work.
@@ -1501,7 +1551,7 @@ def save_cache(path: Path, catalogue: dict) -> None:
 # the fetcher, the cache and the template cannot disagree about what a source
 # is -- which is how the admin page came to look for `cloud.ollama.mode` long
 # after the config stopped having one.
-SOURCES = ("opencode_zen", "openrouter", "together", "openai",
+SOURCES = ("opencode_zen", "openrouter", "together", "nanogpt", "openai",
            "ollama", "ollama_cloud", "ollama_vision", "openai_compatible",
            "freetoken")
 
@@ -1605,6 +1655,8 @@ def price_roles(catalogue: dict, state_dir: str) -> dict:
                 # exactly what the old filter had hidden, minus the reason.
                 {"id": m["id"], "provider": m.get("provider", ""), "cost": cost,
                  **({"note": m["note"]} if m.get("note") else {}),
+                 # Which NanoGPT heading it goes under (app._picker_group).
+                 **({"subscription": True} if m.get("subscription") else {}),
                  **advise(m, spec, volume or ASSUMED_VOLUME, cheapest)}
                 for cost, m in priced
             ],
@@ -1699,6 +1751,7 @@ def refresh(path: Path, endpoints: dict | None = None,
     serverless = {} if recheck else dict(previous.get("together_serverless") or {})
     for source, fetch in (("openrouter", fetch_openrouter),
                           ("together", fetch_together),
+                          ("nanogpt", fetch_nanogpt),
                           ("openai", fetch_openai)):
         ep = endpoints.get(source)
         if not (ep and ep.get("key")):

@@ -1276,6 +1276,7 @@ SECRET_IMPACT = {
     "CRAWL4AI_API_TOKEN": ["crawl4ai", "nanobot"],
     "CRAWL4AI_SECRET_KEY": ["crawl4ai"],
     "TOGETHER_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
+    "NANOGPT_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "OPENAI_COMPATIBLE_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "FREETOKEN_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     # Read by ./home-stack backup on the host, not by any container.
@@ -2683,6 +2684,11 @@ MODEL_GROUPS = (
     {"provider": "opencode_zen", "key": "admin.models.source_opencode_zen"},
     {"provider": "openrouter", "key": "admin.models.source_openrouter"},
     {"provider": "together", "key": "admin.models.source_together"},
+    # NanoGPT, split: what the subscription covers, and what it bills per
+    # token on top. `nanogpt_sub` is a heading, not a provider -- the models
+    # under it are still `nanogpt:` (see _picker_group).
+    {"provider": "nanogpt_sub", "key": "admin.models.source_nanogpt_sub"},
+    {"provider": "nanogpt", "key": "admin.models.source_nanogpt"},
     {"provider": "openai", "key": "admin.models.source_openai"},
     {"provider": "ollama", "key": "admin.models.source_ollama_local"},
     {"provider": "ollama_vision", "key": "admin.models.source_ollama_vision"},
@@ -2697,6 +2703,7 @@ MODEL_GROUPS = (
 KEYED_SOURCES = (
     ("openrouter", "OPENROUTER_API_KEY"),
     ("together", "TOGETHER_API_KEY"),
+    ("nanogpt", "NANOGPT_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
     # Zen's catalogue comes from models.dev and needs no key, but deciding
     # which of it *this* account can route does: models.dev lists the whole
@@ -2704,6 +2711,14 @@ KEYED_SOURCES = (
     # say which. `fetch_opencode_zen` asks, once per model, and caches.
     ("opencode_zen", "OPENCODE_API_KEY"),
 )
+
+
+def _picker_group(m: dict) -> str:
+    """The heading a model is listed under: its provider, except that NanoGPT's
+    subscription models get their own."""
+    if m.get("provider") == "nanogpt" and m.get("subscription"):
+        return "nanogpt_sub"
+    return m.get("provider") or ""
 
 
 def model_groups(cfg: dict) -> list[dict]:
@@ -2911,6 +2926,7 @@ _PROBE_BASES = {
     "opencode_zen": model_catalogue.ZEN_API_BASE,
     "together": "https://api.together.xyz/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "nanogpt": "https://nano-gpt.com/api/v1",
     "openai": "https://api.openai.com/v1",
     "ollama_cloud": "https://ollama.com/v1",
 }
@@ -2937,7 +2953,7 @@ def _responses_only_for(role: str, value: str) -> bool:
 
 _PROBE_PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "openrouter": "openrouter",
-    "together": "together", "openai": "openai",
+    "together": "together", "openai": "openai", "nanogpt": "nanogpt",
     "openai-compatible": "openai_compatible", "freetoken": "freetoken",
     # The second ollama. Without it `ollama-vision:x` fell through to
     # OpenCode Zen, and the Test button failed every vision/documents model.
@@ -2979,6 +2995,12 @@ def models_test():
     if role not in chosen and role not in model_catalogue.IMAGE_SLOTS:
         return jsonify({"ok": False, "error": t("admin.models.test_unknown_role")}), 400
     raw = chosen.get(role)
+    # The picker's current value, saved or not: the page sends what it shows,
+    # so a model can be tried before it is chosen. Absent (an older page, a
+    # script), the saved one is tested as before.
+    asked = [v.strip() for v in request.form.getlist("model") if v.strip()]
+    if asked:
+        raw = asked if len(asked) > 1 or isinstance(raw, list) else asked[0]
     if isinstance(raw, list):
         return jsonify(_probe_chain(cfg, role, [str(v).strip() for v in raw if str(v or "").strip()])), 200
     value = str(raw or "").strip()
@@ -3326,14 +3348,10 @@ def models_page():
             # picker cannot offer these -- Go is not in SOURCES -- so reaching
             # here means an edited form, a replayed save, or a hand-edited
             # config, which is exactly when a rule has to hold.
+            # No exception: pi's was withdrawn on 2026-09-26 (CLAUDE.md).
             if model_catalogue.is_go_model(value):
-                # The one exception: the sub-agent roles, when the household
-                # allowed Go for pi in this same save. pi runs them; nanobot's
-                # own loop never does (it falls back to the everyday model).
-                if not (persona in ("subagent", "subagent_powerful")
-                        and request.form.get("harness_allow_go") == "on"):
-                    refused_go.append(f"{persona} ({value})")
-                    continue
+                refused_go.append(f"{persona} ({value})")
+                continue
             if not model_catalogue.zero_cost_ok(persona, by_id.get(local_model(value)[0])):
                 refused.append(f"{persona} ({value})")
                 continue
@@ -3441,7 +3459,8 @@ def models_page():
         if request.form.get("scope:harness"):
             harness = assistant.setdefault("harness", {})
             harness["enabled"] = request.form.get("harness_enabled") == "on"
-            harness["allow_go"] = request.form.get("harness_allow_go") == "on"
+            # Withdrawn 2026-09-26; dropped from a config that still has it.
+            harness.pop("allow_go", None)
             harness["long_tasks"] = request.form.get("harness_long_tasks") == "on"
 
         if request.form.get("scope:sources"):
@@ -3614,7 +3633,10 @@ def models_page():
             # for has a model that fits.
             "by_provider": [
                 {"source": src,
-                 "label": _t_or(f"admin.models.source_{src}", src),
+                 # All of NanoGPT here, both halves of the split the pickers
+                 # show, so its label is the provider's and not "pay per token".
+                 "label": ("NanoGPT" if src == "nanogpt"
+                           else _t_or(f"admin.models.source_{src}", src)),
                  "models": group["picks"],
                  # False when the provider publishes nothing to rank on, so
                  # the page can say "price is all this one tells us" rather
@@ -3701,7 +3723,7 @@ def models_page():
         models = advice.get("models") or []
         by_provider: dict = {}
         for m in models:
-            by_provider.setdefault(m["provider"], []).append(m)
+            by_provider.setdefault(_picker_group(m), []).append(m)
         if row["id"] in DIRECT_ROLES:
             # Offered only what the consumer can call -- see _responses_only_for.
             by_provider = {p: [m for m in ms
@@ -3817,7 +3839,6 @@ def models_page():
         view=view,
         speech=speech,
         harness={"enabled": bool(_harness.get("enabled")),
-                 "allow_go": bool(_harness.get("allow_go")),
                  "long_tasks": bool(_harness.get("long_tasks"))},
         bench_runs=bench_views,
         ollama=_ollama_card(cfg),
@@ -3839,7 +3860,11 @@ def models_page():
         image_slots=image_slots,
         image_choices=image_choices,
         in_use=in_use,
-        options=sorted(every.values(), key=lambda m: (m["provider"], m["id"])),
+        # `group` is the heading a model is listed under, which is its provider
+        # except for NanoGPT's subscription models (_picker_group). The table
+        # filters on it, so "NanoGPT -- pay per token" matches only those.
+        options=sorted(({**m, "group": _picker_group(m)} for m in every.values()),
+                       key=lambda m: (m["provider"], m["id"])),
         model_groups=groups,
         provider_labels={g["provider"]: g["label"] for g in groups},
         sources=_source_settings(cfg),
@@ -5907,7 +5932,7 @@ def secrets_page():
         # can be blocked for it. None of the rest is required, and a local
         # Ollama needs no key at all.
         "models": ["OPENCODE_API_KEY", "OPENROUTER_API_KEY",
-                   "OLLAMA_API_KEY", "TOGETHER_API_KEY"],
+                   "OLLAMA_API_KEY", "TOGETHER_API_KEY", "NANOGPT_API_KEY"],
         "required": [],
         "generated": [
             "HOMECORE_SECRET_KEY", "HOMECORE_DEBUG_API_KEY", "ADMIN_SECRET_KEY",
@@ -7631,6 +7656,51 @@ def _ollama_needs(cfg: dict, insts: list[dict], users: dict | None = None,
     return needs
 
 
+# What decides how much memory a server takes. The card is not in it: moving a
+# server moves the same bytes.
+_SIZING = ("model", "context", "parallel", "kv_cache", "engine", "max_models", "cpu")
+
+
+def _keep_live_sizes(before: dict, insts: list[dict], needs: dict[str, dict],
+                     gpus: list[dict]) -> dict[str, dict]:
+    """*needs*, with each running server whose sizing is unchanged drawn at
+    what it holds now instead of at the estimate.
+
+    The page drew a card from the host's reading and a Preview from the
+    formula, so moving the Text setup from GPU1 to GPU0 -- nothing else --
+    showed it at 8.8 GiB before and 11.4 after (2026-09-26). Same server, same
+    bytes: the estimate is for what a change makes new, and a move makes
+    nothing new.
+
+    A reading under half the estimate is taken as a server that is loading or
+    has unloaded its model, and the estimate stands: that is what it will hold
+    once it answers.
+    """
+    import ollama_vram
+    try:
+        old = {i["id"]: i for i in OI.instances(before, enabled_only=False)}
+    except OI.InstanceError:
+        return needs
+    old_needs = _ollama_needs(before, list(old.values()))
+    live: dict[str, int] = {}
+    for g in gpus:
+        for t in g.get("tenants") or []:
+            owner = str(t.get("owner", ""))
+            if owner.startswith("unit "):
+                live[owner[len("unit "):]] = live.get(owner[len("unit "):], 0) + int(t.get("mib") or 0)
+    out = dict(needs)
+    for inst in insts:
+        was = old.get(inst["id"])
+        if (not was or inst["id"] not in needs or was.get("unit") != inst.get("unit")
+                or any(was.get(k) != inst.get(k) for k in _SIZING)
+                or old_needs.get(inst["id"], {}).get("resident") != needs[inst["id"]].get("resident")):
+            continue
+        held = live.get(inst.get("unit") or "", 0) * 1024 * 1024
+        if held and held >= needs[inst["id"]]["bytes"] / 2:
+            out[inst["id"]] = {**needs[inst["id"]], "bytes": float(held), "how": "measured"}
+    return out
+
+
 def _next_ollama_port(insts: list[dict], start: int = 11437) -> int:
     used = {i["port"] for i in insts}
     port = start
@@ -8028,8 +8098,9 @@ def ollama_save():
     # room"); a preview says the same things its own way.
     placement_notes: list[str] = []
     if any(i["gpu_mode"] == "auto" for i in insts):
-        needs = {k: v["bytes"] for k, v in _ollama_needs(cfg, insts).items()}
         gpus = _gpus_with_tenants(cfg)
+        needs = {k: v["bytes"] for k, v in
+                 _keep_live_sizes(before, insts, _ollama_needs(cfg, insts), gpus).items()}
         if gpus:
             placed = ollama_vram.place(gpus, insts, needs)
             for sid, cards in placed["gpus"].items():
@@ -8058,8 +8129,9 @@ def ollama_save():
             enabled = [i for i in OI.instances(cfg) if i["enabled"]]
         except OI.InstanceError as exc:
             return jsonify(ok=False, errors=[str(exc)], warnings=warnings)
-        needs = _ollama_needs(cfg, enabled)
-        view = _gpu_view(_gpus_with_tenants(cfg), enabled, needs, measured=False)
+        gpus = _gpus_with_tenants(cfg)
+        needs = _keep_live_sizes(before, enabled, _ollama_needs(cfg, enabled), gpus)
+        view = _gpu_view(gpus, enabled, needs, measured=False)
         if not view:
             warnings.append(_t_or("admin.models.ollama_no_gpus",
                                   "The cards are not known yet. Run ./home-stack ollama on the "
