@@ -144,10 +144,6 @@ class HarnessConfig(Base):
 
     enabled: bool = False
     engine: Literal["pi"] = "pi"
-    # OpenCode Go (the flat plan) for pi's models. CLAUDE.md keeps Go for a
-    # person at the keyboard and says unattended traffic can get the account
-    # blocked; this is the household's explicit exception, for pi only.
-    allow_go: bool = False
     # Long tasks too: a turn the classifier labels `long` goes to a sub-agent
     # on pi instead of being planned in the chat. Off by default -- a plan in
     # the chat asks the person as it goes, keeps read-only steps read-only and

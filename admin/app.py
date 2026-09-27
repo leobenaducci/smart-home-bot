@@ -3338,14 +3338,10 @@ def models_page():
             # picker cannot offer these -- Go is not in SOURCES -- so reaching
             # here means an edited form, a replayed save, or a hand-edited
             # config, which is exactly when a rule has to hold.
+            # No exception: pi's was withdrawn on 2026-09-26 (CLAUDE.md).
             if model_catalogue.is_go_model(value):
-                # The one exception: the sub-agent roles, when the household
-                # allowed Go for pi in this same save. pi runs them; nanobot's
-                # own loop never does (it falls back to the everyday model).
-                if not (persona in ("subagent", "subagent_powerful")
-                        and request.form.get("harness_allow_go") == "on"):
-                    refused_go.append(f"{persona} ({value})")
-                    continue
+                refused_go.append(f"{persona} ({value})")
+                continue
             if not model_catalogue.zero_cost_ok(persona, by_id.get(local_model(value)[0])):
                 refused.append(f"{persona} ({value})")
                 continue
@@ -3453,7 +3449,8 @@ def models_page():
         if request.form.get("scope:harness"):
             harness = assistant.setdefault("harness", {})
             harness["enabled"] = request.form.get("harness_enabled") == "on"
-            harness["allow_go"] = request.form.get("harness_allow_go") == "on"
+            # Withdrawn 2026-09-26; dropped from a config that still has it.
+            harness.pop("allow_go", None)
             harness["long_tasks"] = request.form.get("harness_long_tasks") == "on"
 
         if request.form.get("scope:sources"):
@@ -3829,7 +3826,6 @@ def models_page():
         view=view,
         speech=speech,
         harness={"enabled": bool(_harness.get("enabled")),
-                 "allow_go": bool(_harness.get("allow_go")),
                  "long_tasks": bool(_harness.get("long_tasks"))},
         bench_runs=bench_views,
         ollama=_ollama_card(cfg),

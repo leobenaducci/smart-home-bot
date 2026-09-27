@@ -33,9 +33,9 @@ from nanobot.providers.base import LLMProvider
 # Hard cap on a single subagent's total runtime. A long research task can
 # legitimately take a while, but it must not run forever; on timeout we
 # announce whatever partial progress we have rather than dying silently.
-# OpenCode Go: models written `opencode-go/<name>`, the flat plan's endpoint.
+# OpenCode Go: models written `opencode-go/<name>`. Recognised so they can be
+# refused -- neither pi nor nanobot's loop calls the flat plan.
 GO_PREFIX = "opencode-go/"
-GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 
 
 def is_go_model(model: str | None) -> bool:
@@ -266,9 +266,10 @@ class SubagentManager:
 
         The model the household picked: the sub-agent's, or the powerful
         sub-agent's for a complex task -- reached the way nanobot reaches it,
-        unless `harness.base_url`/`model` override it. An OpenCode Go model is
-        reached on Go's own endpoint and only with `harness.allow_go`. Whether
-        the task came from the member's own session is the caller's check.
+        unless `harness.base_url`/`model` override it. Never an OpenCode Go
+        model: those stay in nanobot's loop, which runs the everyday model
+        instead. Whether the task came from the member's own session is the
+        caller's check.
         """
         h = self.harness
         if not (h.enabled and h.engine == "pi"):
@@ -282,16 +283,12 @@ class SubagentManager:
         provider = (self.powerful_provider or self.provider) if use_powerful else self.provider
         if h.base_url and h.model:
             ep = pi_runner.Endpoint(base_url=h.base_url, model=h.model, api_key=h.api_key or "local",
-                                    context_window=h.context_window, reasoning=h.reasoning,
-                                    allow_go=h.allow_go)
+                                    context_window=h.context_window, reasoning=h.reasoning)
         elif is_go_model(model):
-            ep = pi_runner.Endpoint(
-                base_url=GO_BASE_URL, model=model.split("/", 1)[1],
-                api_key=os.environ.get("OPENCODE_API_KEY") or os.environ.get("OPENCODE_GO_API_KEY", ""),
-                context_window=max(h.context_window, 131072), reasoning=False, allow_go=h.allow_go)
+            logger.info("harness: {} is an OpenCode Go model, which pi may not run", model)
+            return None
         else:
-            ep = pi_runner.endpoint_for_provider(provider, model, context_window=h.context_window,
-                                                 allow_go=h.allow_go)
+            ep = pi_runner.endpoint_for_provider(provider, model, context_window=h.context_window)
         if ep is None:
             logger.info("harness: pi cannot reach {} -- nanobot's loop runs it", model)
             return None

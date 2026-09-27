@@ -18,8 +18,8 @@ What this module adds around pi is the harness, and it is small on purpose:
 
 * **The endpoint.** The model the household picked for the sub-agent, reached
   the way nanobot reaches it. OpenCode requests carry `x-opencode-session`,
-  one per task. OpenCode Go -- the flat plan CLAUDE.md keeps for a person at
-  the keyboard -- only when assistant.harness.allow_go says so.
+  one per task. Never OpenCode Go -- the flat plan CLAUDE.md keeps for a
+  person at the keyboard.
 * **What pi can reach.** pi runs with a minimal environment -- no provider
   keys, no tokens, nothing a page it reads could talk it into sending
   somewhere -- and with no `bash`: nanobot's own exec has an env allowlist, a
@@ -106,18 +106,16 @@ class Endpoint:
     # Sent on every request. OpenCode's `x-opencode-session` is added by run()
     # itself, one per task: a session id is never hard-coded (CLAUDE.md).
     headers: dict[str, str] = field(default_factory=dict)
-    # OpenCode Go is the flat plan CLAUDE.md reserves for a person at the
-    # keyboard; a background task is not that. Refused unless the household
-    # switched this on (assistant.harness.allow_go) knowing the account risk.
-    allow_go: bool = False
-
     def check(self) -> str | None:
         """Why this endpoint may not be used, or None."""
         if not self.base_url or not self.model:
             return "no base URL or model"
-        if _is_go(self.base_url) and not self.allow_go:
-            return ("an OpenCode Go endpoint: Go is for interactive use, and a background task "
-                    "on it needs assistant.harness.allow_go")
+        # OpenCode Go is the flat plan CLAUDE.md reserves for a person at the
+        # keyboard, and a background task is not that. There was a household
+        # switch for it (assistant.harness.allow_go); it was withdrawn on
+        # 2026-09-26, so there is no way to say yes here.
+        if _is_go(self.base_url):
+            return "an OpenCode Go endpoint: Go is for interactive use, never a background task"
         return None
 
 
@@ -210,8 +208,8 @@ def header_env_names(endpoint: Endpoint) -> dict[str, str]:
     return {h: f"ALFRED_HARNESS_HEADER_{i}" for i, h in enumerate(headers)}
 
 
-def endpoint_for_provider(provider: Any, model: str | None, *, context_window: int = 40960,
-                          allow_go: bool = False) -> Endpoint | None:
+def endpoint_for_provider(provider: Any, model: str | None, *,
+                          context_window: int = 40960) -> Endpoint | None:
     """The endpoint nanobot itself would call for *model* on *provider*, or None.
 
     What the harness runs is the model the household picked for the sub-agent,
@@ -235,8 +233,7 @@ def endpoint_for_provider(provider: Any, model: str | None, *, context_window: i
     local = bool(spec and str(getattr(spec, "name", "")).startswith("ollama"))
     return Endpoint(base_url=base, model=name, api_key=provider.api_key or "local",
                     context_window=context_window if local else max(context_window, 131072),
-                    reasoning=local, headers=dict(getattr(provider, "extra_headers", {}) or {}),
-                    allow_go=allow_go)
+                    reasoning=local, headers=dict(getattr(provider, "extra_headers", {}) or {}))
 
 
 def _skill_env_file() -> str:

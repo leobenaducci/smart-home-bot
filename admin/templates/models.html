@@ -628,9 +628,7 @@
         {# Whatever is configured stays selectable even when the roster no
            longer offers it — a hand-edited config must never be silently
            rewritten by opening this page. #}
-        {% set go_row = harness.allow_go and row.id in ('subagent', 'subagent_powerful') %}
-        {% if cur and not known
-              and not (go_row and cur.startswith('opencode-go/')) %}
+        {% if cur and not known %}
           <optgroup label="{{ t('admin.models.not_on_offer') }}">
             <option value="{{ cur }}" selected>{{ cur }}</option>
           </optgroup>
@@ -678,17 +676,6 @@
             {% endfor %}
           </optgroup>
         {% endfor %}
-        {# OpenCode Go, for the sub-agent roles only and only when the household
-           allowed it: pi runs these, nanobot's own loop never does. #}
-        {% if go_row %}
-          {% for group in code_choices if group.key == 'go' %}
-          <optgroup label="{{ t('admin.models.harness_go_group') }}">
-            {% for m in group.models %}
-              <option value="{{ m.id }}" {% if m.id == cur %}selected{% endif %}>{{ m.id }}</option>
-            {% endfor %}
-          </optgroup>
-          {% endfor %}
-        {% endif %}
       {% endmacro %}
       {# The rescue chain: one picker per place, in order, each with every
          choice a role has -- "Local Ollama" included, its setup then picked
@@ -849,11 +836,6 @@
         {{ t('admin.models.harness_long_tasks') }}
       </label>
       <p class="help">{{ t('admin.models.harness_long_tasks_help') }}</p>
-      <label class="row-tight">
-        <input type="checkbox" name="harness_allow_go" {% if harness.allow_go %}checked{% endif %}>
-        {{ t('admin.models.harness_allow_go') }}
-      </label>
-      <p class="help">{{ t('admin.models.harness_allow_go_help') }}</p>
 
       {# This box is in the middle of the long roles form, whose own Save is at
          the very bottom; the next Save on screen belongs to another card and

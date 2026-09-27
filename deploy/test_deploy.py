@@ -4292,10 +4292,11 @@ check("  on a host with systemd, installing the units is still the answer",
 print("\nassistant.harness: background tasks on pi, with the sub-agent models")
 _h = json.loads(D.apply_model_choices('{"agents": {"defaults": {}}}',
                 {"assistant": {"harness": {"enabled": True}}}))["agents"]["defaults"]["harness"]
-check("  on, with no model: pi runs the sub-agent models, Go not allowed",
-      _h == {"enabled": True, "engine": "pi", "allowGo": False, "longTasks": False}, _h)
+check("  on, with no model: pi runs the sub-agent models",
+      _h == {"enabled": True, "engine": "pi", "longTasks": False}, _h)
 _h = D.harness_settings({"enabled": True, "allow_go": True}, {})
-check("  allow_go is passed through", _h["allowGo"] is True, _h)
+check("  a config that still says allow_go gets nothing from it (withdrawn 2026-09-26)",
+      "allowGo" not in _h, _h)
 _h = D.harness_settings({"enabled": True, "model": "ollama:gemma4:e4b"},
                         {"cloud": {"ollama": {"local": {"context": 40960}}}})
 check("  an override is a local model, reached through the assistants' own OLLAMA_URL",

@@ -3883,17 +3883,16 @@ def harness_settings(harness: dict, cfg: dict) -> dict:
     """`assistant.harness` as nanobot's `agents.defaults.harness`.
 
     `enabled` sends a member's own background tasks to pi, which runs the models
-    picked for the sub-agent and the powerful sub-agent. `allow_go` lets those
-    be OpenCode Go models -- the household's explicit exception to CLAUDE.md's
-    rule that Go is for a person at the keyboard. `model` is an optional
+    picked for the sub-agent and the powerful sub-agent -- never OpenCode Go
+    ones: `allow_go`, the exception that let pi call Go, was withdrawn on
+    2026-09-26 and is ignored if a config still has it. `model` is an optional
     override, written like `assistant.models` (`ollama:gemma4:e4b`), and must
     then be a local engine.
     """
     enabled = bool(harness.get("enabled"))
     # `long_tasks` sends turns labelled `long` there too, instead of planning
     # them in the chat.
-    out = {"enabled": enabled, "engine": "pi", "allowGo": bool(harness.get("allow_go")),
-           "longTasks": bool(harness.get("long_tasks"))}
+    out = {"enabled": enabled, "engine": "pi", "longTasks": bool(harness.get("long_tasks"))}
     model = str(harness.get("model") or "").strip()
     if model:
         prefix, sep, name = model.partition(":")

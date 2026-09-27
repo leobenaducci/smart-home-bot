@@ -127,15 +127,16 @@ def test_pi_runs_the_sub_agent_model_and_the_powerful_one_for_a_hard_task(tmp_pa
     assert m._harness_endpoint(powerful=True).model == "deepseek-v4-pro"
 
 
-def test_a_go_model_reaches_pi_only_when_allowed(tmp_path, monkeypatch):
+def test_a_go_model_never_reaches_pi(tmp_path, monkeypatch):
+    """The household's allow_go exception was withdrawn on 2026-09-26: an old
+    config that still carries it gets nothing from it."""
     monkeypatch.setattr(pi_runner, "available", lambda: True)
     monkeypatch.setenv("OPENCODE_API_KEY", "sk-oc")
     m = with_models(tmp_path, HarnessConfig(enabled=True), model="opencode-go/kimi-k2.7-code")
     assert m._harness_endpoint() is None
-    m = with_models(tmp_path, HarnessConfig(enabled=True, allow_go=True), model="opencode-go/kimi-k2.7-code")
-    ep = m._harness_endpoint()
-    assert ep.base_url == "https://opencode.ai/zen/go/v1" and ep.model == "kimi-k2.7-code"
-    assert ep.api_key == "sk-oc"
+    old = HarnessConfig.model_validate({"enabled": True, "allowGo": True})
+    m = with_models(tmp_path, old, model="opencode-go/kimi-k2.7-code")
+    assert m._harness_endpoint() is None
 
 
 def test_nanobots_own_loop_never_calls_a_go_model(tmp_path, monkeypatch):
