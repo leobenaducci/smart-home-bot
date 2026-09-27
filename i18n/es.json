@@ -1314,5 +1314,21 @@
   "admin.members.group_parents_none": "nadie tiene marcada la casilla de Padres",
   "admin.members.group_remove": "Quitar",
   "admin.members.group_new": "Nombre del grupo nuevo",
-  "admin.members.groups_help": "Al guardar, el portal lo toma en su próximo despliegue; los teléfonos reciben los grupos nuevos con la próxima compilación de la app."
+  "admin.members.groups_help": "Al guardar, el portal lo toma en su próximo despliegue; los teléfonos reciben los grupos nuevos con la próxima compilación de la app.",
+  "family_chat.group_family": "Familia",
+  "family_chat.group_parents": "Padres",
+  "family_chat.not_member": "El chat familiar es para los miembros del hogar.",
+  "family_chat.no_thread": "Esa conversación no existe, o no estás en ella.",
+  "family_chat.empty": "Escribí algo primero.",
+  "nav.family_chat": "Chat familiar",
+  "family_chat.placeholder": "Escribile a la familia…",
+  "family_chat.urgent": "Urgente",
+  "family_chat.urgent_help": "Además de vibrar, hace sonar su teléfono, aunque esté en silencio o en No molestar.",
+  "family_chat.send": "Enviar",
+  "family_chat.delivered": "entregado",
+  "family_chat.seen": "visto",
+  "family_chat.pending": "todavía no entregado",
+  "family_chat.no_messages": "Todavía no hay mensajes.",
+  "family_chat.urgent_tag": "‼ Urgente",
+  "family_chat.failed": "No se pudo enviar:"
 }

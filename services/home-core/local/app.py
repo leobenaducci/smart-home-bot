@@ -24,7 +24,7 @@ import io
 import mimetypes
 import smbclient
 import smbclient.path as smbpath
-from flask import Flask, render_template, jsonify, request, Response, stream_with_context, session, redirect, url_for, send_file, g, abort
+from flask import Flask, render_template, jsonify, request, Response, stream_with_context, session, redirect, url_for, send_file, g, abort, has_request_context
 # The 403 below is HTML and quotes a path the caller supplied.
 from markupsafe import escape
 
@@ -96,10 +96,32 @@ def _pick_locale():
         sorted(available)[0] if available else 'es')
 
 
+def _default_locale():
+    available = set(_translator.available) if _translator else set()
+    default = os.environ.get('HOME_STACK_DEFAULT_LOCALE', 'es')
+    return default if default in available or not available else sorted(available)[0]
+
+
 def t(key, **params):
     if not _translator:
         return key
+    # A background worker has no request to read a language from. It used to
+    # raise here -- and the family chat's worker, which names a group in the
+    # alert it re-sends, failed on every pass, so no re-alert or SMS hand-off
+    # would ever have gone out (caught by its test, 2026-09-27).
+    if not has_request_context():
+        return _translator(key, locale=_default_locale(), **params)
     return _translator(key, locale=_pick_locale(), **params)
+
+
+def t_for(login, key, **params):
+    """`t`, in the language of the person it is *for* rather than of whoever
+    made the request: a push to somebody's phone reads in their language."""
+    if not _translator:
+        return key
+    mine = _MEMBER_LOCALES.get(login)
+    locale = mine if mine in set(_translator.available) else _default_locale()
+    return _translator(key, locale=locale, **params)
 
 
 def _t_or(key, fallback, **params):
@@ -20696,6 +20718,433 @@ def profiles_api_export():
     return jsonify(_profiles_export(instance, redact=redact))
 
 # ---------------------------------------------------------------------------
+# Family chat: person to person, and to the household's groups
+# ---------------------------------------------------------------------------
+# Mostly for emergencies, so delivery is the whole feature. Every message makes
+# the recipient's phone vibrate through Do Not Disturb until they open it or
+# snooze it (five minutes, then again); one the sender flags urgent rings as
+# well. The app does the alerting (`family_msg`, a control message it never
+# shows as a plain notification) and reports each message the moment it lands
+# (/family-chat/api/delivered), so "not delivered" and "not seen yet" are
+# different states here.
+#
+# A message nobody's phone has confirmed within FC_SMS_AFTER_S is handed back
+# to the *sender's* phone, which sends it as an SMS from its own SIM
+# (`family_sms`). The phones carry the family directory -- numbers and groups --
+# built into the APK, so a sender with no data sends SMS directly, and a
+# recipient with only SMS still gets the alert. That half lives in the app; the
+# portal only has to say when a push did not arrive.
+#
+# Threads: `g:<group id>` for a group from family.json (`family`, `parents`,
+# and the household's own), `dm:<login>:<login>` for two people, logins sorted.
+# Everything here keys on the login id, like every other table a request
+# reaches (CLAUDE.md, "Three ids name a person").
+FAMILY_CHAT_DB_PATH = os.path.join('backup_data', 'family_chat.db')
+FC_SNOOZE_S = 5 * 60            # the one snooze: five minutes, then it alerts again
+FC_REPUSH_S = 60                # an unconfirmed push is sent again this often...
+FC_REPUSH_MAX = 10              # ...this many times, and then only SMS is left
+FC_SMS_AFTER_S = 3 * 60         # undelivered this long: the sender's phone texts it
+FC_TEXT_MAX = 2000
+FC_TICK_S = 15
+
+
+def _fc_conn():
+    conn = sqlite3.connect(FAMILY_CHAT_DB_PATH, isolation_level=None)
+    conn.execute('PRAGMA busy_timeout=5000')
+    return conn
+
+
+def init_family_chat_db():
+    os.makedirs(os.path.dirname(FAMILY_CHAT_DB_PATH), exist_ok=True)
+    conn = _fc_conn()
+    try:
+        conn.executescript('''
+            CREATE TABLE IF NOT EXISTS fc_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                text TEXT NOT NULL,
+                urgent INTEGER NOT NULL DEFAULT 0,
+                ts INTEGER NOT NULL,
+                -- The sender's phone names a message before it knows whether
+                -- the portal is reachable, so one sent by SMS and later synced
+                -- is the same message and not a second one.
+                client_id TEXT UNIQUE
+            );
+            CREATE INDEX IF NOT EXISTS idx_fc_thread ON fc_messages(thread, id);
+            CREATE TABLE IF NOT EXISTS fc_receipts (
+                msg_id INTEGER NOT NULL,
+                recipient TEXT NOT NULL,
+                delivered_at INTEGER,
+                seen_at INTEGER,
+                snoozed_until INTEGER,
+                last_alert_at INTEGER,
+                alerts INTEGER NOT NULL DEFAULT 0,
+                sms_requested_at INTEGER,
+                PRIMARY KEY (msg_id, recipient)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fc_open ON fc_receipts(recipient, seen_at);
+        ''')
+    finally:
+        conn.close()
+
+
+def _fc_people():
+    """{login: {member, name, phone, parents}} for every account that belongs
+    to a member of the household, from family.json joined to users.json."""
+    by_member = {str(p.get('member') or ''): p for p in _admin_family()}
+    out = {}
+    for user in load_users():
+        login = user.get('username')
+        person = by_member.get(_member_of(user))
+        if login and person and person.get('active', True):
+            out[login] = {'member': person.get('member'),
+                          'name': person.get('display_name') or _tasks_display_name(login),
+                          'phone': person.get('phone') or '',
+                          'parents': bool(person.get('parents'))}
+    return out
+
+
+def _fc_groups(for_login=None):
+    """{group id: {name, members: [logins], preset}} from family.json, the
+    preset names in *for_login*'s language (the requester's by default)."""
+    try:
+        with open(FAMILY_FILE, encoding='utf-8') as fh:
+            raw = json.load(fh).get('groups') or []
+    except (OSError, ValueError):
+        raw = []
+    login_of = {v['member']: k for k, v in _fc_people().items()}
+    out = {}
+    for g in raw:
+        logins = [login_of[m] for m in (g.get('members') or []) if m in login_of]
+        if g.get('id') and logins:
+            name = g.get('name') or g['id']
+            if g.get('preset') and g['id'] in ('family', 'parents'):
+                # The preset names in the household's language; the stored
+                # English one if the catalogue has nothing -- never a blank.
+                key = f"family_chat.group_{g['id']}"
+                translated = t_for(for_login, key) if for_login else t(key)
+                name = translated if translated and translated != key else name
+            out[g['id']] = {'name': name, 'members': logins, 'preset': bool(g.get('preset'))}
+    return out
+
+
+def _fc_thread_members(thread, groups=None):
+    """The logins in a thread, or [] for one that does not exist."""
+    if thread.startswith('g:'):
+        g = (groups if groups is not None else _fc_groups()).get(thread[2:])
+        return list(g['members']) if g else []
+    if thread.startswith('dm:'):
+        pair = thread[3:].split(':')
+        people = _fc_people()
+        return pair if len(pair) == 2 and pair[0] != pair[1] and all(p in people for p in pair) else []
+    return []
+
+
+def _fc_dm(a, b):
+    return 'dm:' + ':'.join(sorted((a, b)))
+
+
+def _fc_thread_name(thread, me, groups=None, people=None):
+    if thread.startswith('g:'):
+        # In *me*'s language: this is the name on that person's screen.
+        g = _fc_groups(for_login=me).get(thread[2:])
+        return g['name'] if g else thread
+    other = next((p for p in thread[3:].split(':') if p != me), '')
+    return ((people if people is not None else _fc_people()).get(other) or {}).get('name') or other
+
+
+def _fc_alert(recipient, msg, thread_name, sender_name):
+    """Tell one phone to start (or keep up) the alert for a message."""
+    _geo_push_control(recipient, 'family_msg', {
+        'id': msg['id'], 'thread': msg['thread'], 'thread_name': thread_name,
+        'from': msg['sender'], 'from_name': sender_name,
+        'text': msg['text'][:500], 'urgent': bool(msg['urgent']), 'ts': msg['ts'],
+    })
+
+
+def _fc_stop(recipient, thread):
+    """Seen or snoozed: every one of that person's phones stops alerting."""
+    _geo_push_control(recipient, 'family_stop', {'thread': thread})
+
+
+def _fc_row(r):
+    return {'id': r[0], 'thread': r[1], 'sender': r[2], 'text': r[3],
+            'urgent': bool(r[4]), 'ts': r[5]}
+
+
+@app.route('/family-chat/api/directory')
+@api_login_required
+def family_chat_directory():
+    """Who can be messaged and how: the app keeps a copy for when it is
+    offline (the build carries one too), the panel draws its list from it."""
+    me = session['user']
+    people = _fc_people()
+    if me not in people:
+        return jsonify(error=t('family_chat.not_member')), 403
+    groups = _fc_groups()
+    return jsonify(
+        me=me,
+        people=[{'login': k, 'name': v['name'], 'phone': v['phone'], 'parents': v['parents']}
+                for k, v in people.items()],
+        groups=[{'id': gid, 'thread': 'g:' + gid, 'name': g['name'], 'members': g['members']}
+                for gid, g in groups.items() if me in g['members']],
+    )
+
+
+@app.route('/family-chat/api/threads')
+@api_login_required
+def family_chat_threads():
+    me = session['user']
+    people, groups = _fc_people(), _fc_groups()
+    if me not in people:
+        return jsonify(error=t('family_chat.not_member')), 403
+    threads = [('g:' + gid, g['name'], 'group') for gid, g in groups.items() if me in g['members']]
+    threads += [(_fc_dm(me, other), p['name'], 'person') for other, p in people.items() if other != me]
+    conn = _fc_conn()
+    try:
+        out = []
+        for thread, name, kind in threads:
+            last = conn.execute('SELECT id, thread, sender, text, urgent, ts FROM fc_messages '
+                                'WHERE thread=? ORDER BY id DESC LIMIT 1', (thread,)).fetchone()
+            unread = conn.execute(
+                'SELECT COUNT(*) FROM fc_receipts r JOIN fc_messages m ON m.id=r.msg_id '
+                'WHERE m.thread=? AND r.recipient=? AND r.seen_at IS NULL', (thread, me)).fetchone()[0]
+            out.append({'thread': thread, 'name': name, 'kind': kind, 'unread': unread,
+                        'last': _fc_row(last) if last else None})
+    finally:
+        conn.close()
+    out.sort(key=lambda x: -(x['last']['ts'] if x['last'] else 0))
+    return jsonify(threads=out)
+
+
+@app.route('/family-chat/api/messages')
+@api_login_required
+def family_chat_messages():
+    me = session['user']
+    thread = request.args.get('thread', '')
+    if me not in _fc_thread_members(thread):
+        return jsonify(error=t('family_chat.no_thread')), 404
+    after = request.args.get('after', 0, type=int)
+    people = _fc_people()
+    conn = _fc_conn()
+    try:
+        rows = conn.execute('SELECT id, thread, sender, text, urgent, ts FROM fc_messages '
+                            'WHERE thread=? AND id>? ORDER BY id DESC LIMIT 200',
+                            (thread, after)).fetchall()
+        msgs = []
+        for r in reversed(rows):
+            m = _fc_row(r)
+            m['from_name'] = (people.get(m['sender']) or {}).get('name') or m['sender']
+            rec = conn.execute('SELECT recipient, delivered_at, seen_at FROM fc_receipts WHERE msg_id=?',
+                               (m['id'],)).fetchall()
+            # Who has it and who has seen it: the sender's question in an
+            # emergency, and the only way to know an SMS is on its way.
+            m['receipts'] = [{'login': x[0], 'name': (people.get(x[0]) or {}).get('name') or x[0],
+                              'delivered': bool(x[1]), 'seen': bool(x[2])} for x in rec]
+            msgs.append(m)
+    finally:
+        conn.close()
+    return jsonify(thread=thread, name=_fc_thread_name(thread, me), messages=msgs)
+
+
+@app.route('/family-chat/api/send', methods=['POST'])
+@api_login_required
+def family_chat_send():
+    me = session['user']
+    data = request.get_json(silent=True) or {}
+    thread = str(data.get('thread') or '')
+    text = str(data.get('text') or '').strip()[:FC_TEXT_MAX]
+    groups = _fc_groups()
+    members = _fc_thread_members(thread, groups)
+    if me not in members:
+        return jsonify(error=t('family_chat.no_thread')), 404
+    if not text:
+        return jsonify(error=t('family_chat.empty')), 400
+    urgent = bool(data.get('urgent'))
+    client_id = str(data.get('client_id') or '')[:64] or None
+    now = int(time.time())
+    conn = _fc_conn()
+    try:
+        if client_id:
+            dup = conn.execute('SELECT id FROM fc_messages WHERE client_id=?', (client_id,)).fetchone()
+            if dup:
+                return jsonify(ok=True, id=dup[0], duplicate=True)
+        cur = conn.execute('INSERT INTO fc_messages (thread, sender, text, urgent, ts, client_id) '
+                           'VALUES (?,?,?,?,?,?)', (thread, me, text, int(urgent), now, client_id))
+        msg_id = cur.lastrowid
+        recipients = [r for r in members if r != me]
+        for r in recipients:
+            conn.execute('INSERT INTO fc_receipts (msg_id, recipient, last_alert_at, alerts) '
+                         'VALUES (?,?,?,1)', (msg_id, r, now))
+    finally:
+        conn.close()
+    msg = {'id': msg_id, 'thread': thread, 'sender': me, 'text': text, 'urgent': urgent, 'ts': now}
+    people = _fc_people()
+    sender_name = (people.get(me) or {}).get('name') or me
+    for r in recipients:
+        try:
+            _fc_alert(r, msg, _fc_thread_name(thread, r, groups, people), sender_name)
+        except Exception:                                          # noqa: BLE001
+            app.logger.exception('family chat: alert to %s failed', r)
+    app.logger.info('family chat: %s sent %s to %s (%d recipient(s))%s',
+                    me, msg_id, thread, len(recipients), ' URGENT' if urgent else '')
+    return jsonify(ok=True, id=msg_id, recipients=len(recipients))
+
+
+def _fc_mark(me, field, thread=None, ids=None, value=None):
+    """Set `field` on this person's receipts, for a thread or for message ids;
+    returns the threads touched."""
+    now = int(time.time())
+    conn = _fc_conn()
+    try:
+        if thread is not None:
+            rows = conn.execute('SELECT r.msg_id, m.thread FROM fc_receipts r JOIN fc_messages m '
+                                'ON m.id=r.msg_id WHERE r.recipient=? AND m.thread=?',
+                                (me, thread)).fetchall()
+        else:
+            q = ','.join('?' * len(ids or []))
+            rows = conn.execute(f'SELECT r.msg_id, m.thread FROM fc_receipts r JOIN fc_messages m '
+                                f'ON m.id=r.msg_id WHERE r.recipient=? AND r.msg_id IN ({q})',
+                                (me, *ids)).fetchall() if ids else []
+        for msg_id, _t in rows:
+            if field == 'delivered_at':
+                conn.execute('UPDATE fc_receipts SET delivered_at=COALESCE(delivered_at, ?) '
+                             'WHERE msg_id=? AND recipient=?', (now, msg_id, me))
+            elif field == 'seen_at':
+                # Seen is delivered too: an SMS-only phone that later syncs says
+                # "seen" without ever having confirmed the push.
+                conn.execute('UPDATE fc_receipts SET seen_at=COALESCE(seen_at, ?), '
+                             'delivered_at=COALESCE(delivered_at, ?) WHERE msg_id=? AND recipient=?',
+                             (now, now, msg_id, me))
+            elif field == 'snoozed_until':
+                conn.execute('UPDATE fc_receipts SET snoozed_until=?, '
+                             'delivered_at=COALESCE(delivered_at, ?) '
+                             'WHERE msg_id=? AND recipient=? AND seen_at IS NULL',
+                             (value, now, msg_id, me))
+        return sorted({t_ for _m, t_ in rows})
+    finally:
+        conn.close()
+
+
+@app.route('/family-chat/api/delivered', methods=['POST'])
+@api_login_required
+def family_chat_delivered():
+    """The app, the moment a `family_msg` push lands (or an SMS it parsed)."""
+    data = request.get_json(silent=True) or {}
+    ids = [int(i) for i in (data.get('ids') or []) if str(i).isdigit()][:200]
+    _fc_mark(session['user'], 'delivered_at', ids=ids)
+    return jsonify(ok=True)
+
+
+@app.route('/family-chat/api/seen', methods=['POST'])
+@api_login_required
+def family_chat_seen():
+    """The thread was opened: its alert stops on every one of this person's
+    phones, not only the one they looked at."""
+    me = session['user']
+    data = request.get_json(silent=True) or {}
+    thread = str(data.get('thread') or '')
+    if me not in _fc_thread_members(thread):
+        return jsonify(error=t('family_chat.no_thread')), 404
+    _fc_mark(me, 'seen_at', thread=thread)
+    _fc_stop(me, thread)
+    return jsonify(ok=True)
+
+
+@app.route('/family-chat/api/snooze', methods=['POST'])
+@api_login_required
+def family_chat_snooze():
+    """Five minutes of quiet, then it alerts again -- in an emergency a snooze
+    must not be a way for a message to disappear. From the alert's button."""
+    me = session['user']
+    data = request.get_json(silent=True) or {}
+    thread = str(data.get('thread') or '')
+    if me not in _fc_thread_members(thread):
+        return jsonify(error=t('family_chat.no_thread')), 404
+    until = int(time.time()) + FC_SNOOZE_S
+    _fc_mark(me, 'snoozed_until', thread=thread, value=until)
+    _fc_stop(me, thread)
+    return jsonify(ok=True, until=until)
+
+
+def _fc_tick(now=None):
+    """One pass of the worker: alert again after a snooze, push again what no
+    phone confirmed, and hand to the sender's phone as SMS what still has not
+    arrived. Returns what it did, for the tests."""
+    now = int(now or time.time())
+    did = {'realert': 0, 'repush': 0, 'sms': 0}
+    conn = _fc_conn()
+    try:
+        rows = conn.execute(
+            'SELECT r.msg_id, r.recipient, r.delivered_at, r.snoozed_until, r.last_alert_at, '
+            'r.alerts, r.sms_requested_at, m.thread, m.sender, m.text, m.urgent, m.ts '
+            'FROM fc_receipts r JOIN fc_messages m ON m.id=r.msg_id '
+            'WHERE r.seen_at IS NULL AND m.ts > ?', (now - 7 * 86400,)).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return did
+    people, groups = _fc_people(), _fc_groups()
+    sms_for = {}
+    for (msg_id, rcpt, delivered, snoozed, last_alert, alerts, sms_at,
+         thread, sender, text, urgent, ts) in rows:
+        msg = {'id': msg_id, 'thread': thread, 'sender': sender, 'text': text,
+               'urgent': urgent, 'ts': ts}
+        sender_name = (people.get(sender) or {}).get('name') or sender
+        again = None
+        if snoozed and now >= snoozed and (last_alert or 0) < snoozed:
+            again = 'realert'
+        elif not delivered and not snoozed and alerts < FC_REPUSH_MAX \
+                and now - (last_alert or ts) >= FC_REPUSH_S:
+            again = 'repush'
+        if again:
+            _fc_alert(rcpt, msg, _fc_thread_name(thread, rcpt, groups, people), sender_name)
+            did[again] += 1
+            c = _fc_conn()
+            try:
+                c.execute('UPDATE fc_receipts SET last_alert_at=?, alerts=alerts+1 '
+                          'WHERE msg_id=? AND recipient=?', (now, msg_id, rcpt))
+            finally:
+                c.close()
+        if not delivered and not sms_at and now - ts >= FC_SMS_AFTER_S \
+                and (people.get(rcpt) or {}).get('phone'):
+            sms_for.setdefault((msg_id, sender), (msg, sender_name, []))[2].append(rcpt)
+    for (msg_id, sender), (msg, sender_name, rcpts) in sms_for.items():
+        # To the sender's own phone: it sends the SMS from its SIM. Its
+        # directory has the numbers already; they ride along so a number
+        # changed on the users page since the last build is still right.
+        _geo_push_control(sender, 'family_sms', {
+            'id': msg_id, 'thread': msg['thread'],
+            'thread_name': _fc_thread_name(msg['thread'], sender, groups, people),
+            'from_name': sender_name, 'text': msg['text'][:500], 'urgent': bool(msg['urgent']),
+            'to': [{'login': r, 'name': people[r]['name'], 'phone': people[r]['phone']}
+                   for r in rcpts],
+        })
+        c = _fc_conn()
+        try:
+            for r in rcpts:
+                c.execute('UPDATE fc_receipts SET sms_requested_at=? WHERE msg_id=? AND recipient=?',
+                          (now, msg_id, r))
+        finally:
+            c.close()
+        did['sms'] += len(rcpts)
+        app.logger.warning('family chat: message %s undelivered to %s after %ds -- asked %s to SMS it',
+                           msg_id, ','.join(rcpts), now - msg['ts'], sender)
+    return did
+
+
+def _family_chat_worker():
+    time.sleep(20)
+    while True:
+        try:
+            _fc_tick()
+        except Exception:                                          # noqa: BLE001
+            app.logger.exception('family chat: worker pass failed')
+        time.sleep(FC_TICK_S)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 # Daily geofence reconcile: re-push geofence_sync to every device with active
@@ -20771,6 +21220,7 @@ if __name__ == '__main__':
         app.logger.warning('family directory not synced: %s', exc)
     init_projects_db()
     init_profiles_db()
+    init_family_chat_db()
     # Once, and then never again: the pre-per-day archive is filed under the
     # days it happened on and renamed aside. See migrate_legacy_history.
     migrate_legacy_history()
@@ -20778,6 +21228,7 @@ if __name__ == '__main__':
     threading.Thread(target=_tasks_daily_worker, daemon=True).start()
     threading.Thread(target=_geo_sync_worker, daemon=True).start()
     threading.Thread(target=_chat_title_worker, daemon=True).start()
+    threading.Thread(target=_family_chat_worker, daemon=True).start()
 
     main_port = int(os.environ.get('PORT', '8443'))
 
