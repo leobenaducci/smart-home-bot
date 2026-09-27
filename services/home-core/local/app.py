@@ -20786,6 +20786,12 @@ def init_family_chat_db():
                 PRIMARY KEY (msg_id, recipient)
             );
             CREATE INDEX IF NOT EXISTS idx_fc_open ON fc_receipts(recipient, seen_at);
+            -- Whose phone runs an app that understands family_msg and friends:
+            -- it fetches the directory on every connect, and nothing else does.
+            CREATE TABLE IF NOT EXISTS fc_capable (
+                login TEXT PRIMARY KEY,
+                at INTEGER NOT NULL
+            );
         ''')
     finally:
         conn.close()
@@ -20856,8 +20862,31 @@ def _fc_thread_name(thread, me, groups=None, people=None):
     return ((people if people is not None else _fc_people()).get(other) or {}).get('name') or other
 
 
+# An app older than the family chat shows an unknown control message as a
+# notification, raw -- `family_stop {"thread": "g:parents"}` on a parent's
+# phone (2026-09-27). So those go only to phones that have said they
+# understand them, and everyone else gets a readable message instead.
+FC_CAPABLE_S = 14 * 86400
+
+
+def _fc_capable(login):
+    conn = _fc_conn()
+    try:
+        row = conn.execute('SELECT at FROM fc_capable WHERE login=?', (login,)).fetchone()
+    finally:
+        conn.close()
+    return bool(row) and time.time() - row[0] < FC_CAPABLE_S
+
+
 def _fc_alert(recipient, msg, thread_name, sender_name):
     """Tell one phone to start (or keep up) the alert for a message."""
+    if not _fc_capable(recipient):
+        # An older app: an ordinary notification it can show, that opens the
+        # conversation. No alarm -- that needs the new app -- but it arrives.
+        prefix = '‼ ' if msg['urgent'] else '👪 '
+        _notify_user(recipient, f"{sender_name}: {msg['text'][:300]}", title=prefix + thread_name,
+                     click=f"{HOMECORE_PUBLIC_URL}/chat?panel=family&thread={quote(msg['thread'])}")
+        return
     _geo_push_control(recipient, 'family_msg', {
         'id': msg['id'], 'thread': msg['thread'], 'thread_name': thread_name,
         'from': msg['sender'], 'from_name': sender_name,
@@ -20870,7 +20899,8 @@ def _fc_alert(recipient, msg, thread_name, sender_name):
 
 def _fc_stop(recipient, thread):
     """Seen or snoozed: every one of that person's phones stops alerting."""
-    _geo_push_control(recipient, 'family_stop', {'thread': thread})
+    if _fc_capable(recipient):      # an older app has no alert to stop, and would show this raw
+        _geo_push_control(recipient, 'family_stop', {'thread': thread})
 
 
 def _fc_row(r):
@@ -20887,6 +20917,14 @@ def family_chat_directory():
     people = _fc_people()
     if me not in people:
         return jsonify(error=t('family_chat.not_member')), 403
+    # Only the app asks for this (the chat page's panel does not), so asking is
+    # this person's phone saying it understands the family control messages.
+    conn = _fc_conn()
+    try:
+        conn.execute('INSERT INTO fc_capable (login, at) VALUES (?,?) '
+                     'ON CONFLICT(login) DO UPDATE SET at=excluded.at', (me, int(time.time())))
+    finally:
+        conn.close()
     groups = _fc_groups()
     return jsonify(
         me=me,
@@ -21120,6 +21158,19 @@ def _fc_tick(now=None):
                 and (people.get(rcpt) or {}).get('phone'):
             sms_for.setdefault((msg_id, sender), (msg, sender_name, []))[2].append(rcpt)
     for (msg_id, sender), (msg, sender_name, rcpts) in sms_for.items():
+        if not _fc_capable(sender):
+            # An older app cannot text anybody, and would show the request raw.
+            # Marked done so the warning below is said once, not every pass.
+            c = _fc_conn()
+            try:
+                for r in rcpts:
+                    c.execute('UPDATE fc_receipts SET sms_requested_at=? WHERE msg_id=? AND recipient=?',
+                              (now, msg_id, r))
+            finally:
+                c.close()
+            app.logger.warning('family chat: message %s undelivered to %s, and %s has no app that '
+                               'can text it', msg_id, ','.join(rcpts), sender)
+            continue
         # To the sender's own phone: it sends the SMS from its SIM. Its
         # directory has the numbers already; they ride along so a number
         # changed on the users page since the last build is still right.

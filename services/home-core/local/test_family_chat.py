@@ -70,6 +70,8 @@ A.init_family_chat_db()
 A.app.config["TESTING"] = True
 pushes = []
 A._geo_push_control = lambda user, tag, extra=None: pushes.append((user, tag, extra or {}))
+shown = []
+A._notify_user = lambda user, message, **kw: shown.append((user, message, kw))
 failures = []
 
 
@@ -97,7 +99,28 @@ def tags(user=None):
     return [(u, t) for u, t, _e in pushes if user is None or u == user]
 
 
-print("who is in which conversation")
+print("a phone with an app older than the family chat")
+pushes.clear(); shown.clear()
+r = as_(TOMI).post("/family-chat/api/send", json={"thread": "g:family", "text": "¿Llegaron?"}).get_json()
+check("gets no control message it would show raw", not [1 for u, _t, _e in pushes if u in (MORA, JUANA)], pushes)
+check("but a readable notification that opens the conversation",
+      sorted(u for u, _m, _k in shown) == sorted([JUANA, MORA])
+      and all("Tomi: ¿Llegaron?" in m and "panel=family" in k.get("click", "") for _u, m, k in shown), shown)
+pushes.clear()
+as_(MORA).post("/family-chat/api/seen", json={"thread": "g:family"})
+check("and no family_stop when it is seen", not pushes, pushes)
+_old_ts = A._fc_conn().execute("SELECT ts FROM fc_messages WHERE id=?", (r["id"],)).fetchone()[0]
+pushes.clear()
+A._fc_tick(now=_old_ts + 3 * 60 + 5)
+check("nor a family_sms to a sender whose app cannot text", not [1 for _u, tg, _e in pushes if tg == "family_sms"], pushes)
+
+as_(JUANA).post("/family-chat/api/seen", json={"thread": "g:family"})   # nothing left pending
+
+# From here on every phone runs the new app: it fetches the directory on connect.
+for _u in (TOMI, MORA, JUANA):
+    as_(_u).get("/family-chat/api/directory")
+
+print("\nwho is in which conversation")
 d = as_(JUANA).get("/family-chat/api/directory").get_json()
 check("a child sees Family but not Parents", [g["id"] for g in d["groups"]] == ["family"], d["groups"])
 check("and the directory carries the numbers the SMS fallback dials",
