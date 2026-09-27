@@ -148,7 +148,7 @@ def ring_phone(target_user=None, seconds=45):
     # "Where did I leave my phone": makes it ring loudly even in silencio — the
     # sound goes out on the alarm stream, which silent mode doesn't touch. The
     # phone shows who asked and a Detener button, and it stops on its own.
-    # Self, or another person (admin only). seconds is capped at 120.
+    # Self, or another person (admin only). seconds is capped at 600 (ten minutes, for finding a lost phone).
     body = {"seconds": int(seconds)}
     if target_user:
         body["user"] = _uid(target_user)

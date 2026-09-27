@@ -15282,7 +15282,9 @@ def geo_locate():
 
 
 GEO_RING_DEFAULT_S = 45
-GEO_RING_MAX_S = 120
+# Ten minutes: "find Juana's phone" in a house is a search, not a beep. The
+# app caps it at the same (PhoneRinger).
+GEO_RING_MAX_S = 600
 
 
 @app.route('/geo/api/ring', methods=['POST'])
@@ -20860,6 +20862,9 @@ def _fc_alert(recipient, msg, thread_name, sender_name):
         'id': msg['id'], 'thread': msg['thread'], 'thread_name': thread_name,
         'from': msg['sender'], 'from_name': sender_name,
         'text': msg['text'][:500], 'urgent': bool(msg['urgent']), 'ts': msg['ts'],
+        # The sender's own id for it: a phone that already got it as an SMS
+        # (keyed by this) files the push as the same message.
+        'client_id': msg.get('client_id') or '',
     })
 
 
@@ -20974,12 +20979,16 @@ def family_chat_send():
                            'VALUES (?,?,?,?,?,?)', (thread, me, text, int(urgent), now, client_id))
         msg_id = cur.lastrowid
         recipients = [r for r in members if r != me]
+        # Sent by SMS already -- the sender's phone had no data and is syncing
+        # it now -- so the SMS hand-off below must not text it a second time.
+        sms_done = now if data.get('sms_sent') else None
         for r in recipients:
-            conn.execute('INSERT INTO fc_receipts (msg_id, recipient, last_alert_at, alerts) '
-                         'VALUES (?,?,?,1)', (msg_id, r, now))
+            conn.execute('INSERT INTO fc_receipts (msg_id, recipient, last_alert_at, alerts, '
+                         'sms_requested_at) VALUES (?,?,?,1,?)', (msg_id, r, now, sms_done))
     finally:
         conn.close()
-    msg = {'id': msg_id, 'thread': thread, 'sender': me, 'text': text, 'urgent': urgent, 'ts': now}
+    msg = {'id': msg_id, 'thread': thread, 'sender': me, 'text': text, 'urgent': urgent, 'ts': now,
+           'client_id': client_id}
     people = _fc_people()
     sender_name = (people.get(me) or {}).get('name') or me
     for r in recipients:
@@ -21078,7 +21087,7 @@ def _fc_tick(now=None):
     try:
         rows = conn.execute(
             'SELECT r.msg_id, r.recipient, r.delivered_at, r.snoozed_until, r.last_alert_at, '
-            'r.alerts, r.sms_requested_at, m.thread, m.sender, m.text, m.urgent, m.ts '
+            'r.alerts, r.sms_requested_at, m.thread, m.sender, m.text, m.urgent, m.ts, m.client_id '
             'FROM fc_receipts r JOIN fc_messages m ON m.id=r.msg_id '
             'WHERE r.seen_at IS NULL AND m.ts > ?', (now - 7 * 86400,)).fetchall()
     finally:
@@ -21088,9 +21097,9 @@ def _fc_tick(now=None):
     people, groups = _fc_people(), _fc_groups()
     sms_for = {}
     for (msg_id, rcpt, delivered, snoozed, last_alert, alerts, sms_at,
-         thread, sender, text, urgent, ts) in rows:
+         thread, sender, text, urgent, ts, client_id) in rows:
         msg = {'id': msg_id, 'thread': thread, 'sender': sender, 'text': text,
-               'urgent': urgent, 'ts': ts}
+               'urgent': urgent, 'ts': ts, 'client_id': client_id}
         sender_name = (people.get(sender) or {}).get('name') or sender
         again = None
         if snoozed and now >= snoozed and (last_alert or 0) < snoozed:

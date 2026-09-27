@@ -3717,6 +3717,34 @@ def build_family_directory(cfg: dict) -> str:
                       ensure_ascii=False, indent=2) + "\n"
 
 
+def app_family_directory(cfg: dict) -> str:
+    """The family chat's directory as the phone app carries it, built into
+    each APK so a phone with no data can still text the family and recognise
+    a family SMS. The same shape as the portal's /family-chat/api/directory
+    (login ids, `g:<id>` threads), so the app reads either the same way; the
+    app refreshes it from there whenever it is online.
+
+    Household data: written only into the build's staging copy of the app
+    sources, never into this repository.
+    """
+    logins = portal_logins(cfg)
+    by_id = {str(m.get("id") or "").strip(): m for m in (cfg.get("members") or [])}
+    people = []
+    for mid, member in by_id.items():
+        if mid and member.get("active", True) and mid in logins:
+            people.append({"login": logins[mid], "member": mid,
+                           "name": str(member.get("display_name") or mid),
+                           "phone": str(member.get("phone") or "").strip(),
+                           "parents": bool(member.get("parents"))})
+    groups = [{"id": g["id"], "thread": "g:" + g["id"], "name": g["name"],
+               "members": [logins[m] for m in g["members"] if m in logins]}
+              for g in family_chat_groups(cfg)]
+    return json.dumps({"me": None, "people": people,
+                       "groups": [g for g in groups if g["members"]],
+                       "built_at": int(time.time())},
+                      ensure_ascii=False, indent=2) + "\n"
+
+
 def family_chat_groups(cfg: dict) -> list[dict]:
     """The family chat's groups, by member id: `family` (every active member)
     and `parents` (the active members with the Parents box) -- the same two the

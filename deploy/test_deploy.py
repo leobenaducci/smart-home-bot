@@ -4359,6 +4359,20 @@ check("  the phone and the parents flag are in the directory",
       _p["user1"]["phone"] == "+15550100" and _p["user1"]["parents"] is True
       and _p["user3"]["phone"] == "" and _p["user3"]["parents"] is False, _p.get("user1"))
 check("  and the groups are too", [g["id"] for g in _doc["groups"]][:2] == ["family", "parents"], _doc.get("groups"))
+_real_logins = D.portal_logins
+D.portal_logins = lambda cfg: {"user1": "999000111", "user2": "999000222", "user3": "999000333"}
+try:
+    _app = json.loads(D.app_family_directory(_fc))
+finally:
+    D.portal_logins = _real_logins
+check("  the app's copy keys people on login ids, as the portal does",
+      {p["login"] for p in _app["people"]} == {"999000111", "999000222", "999000333"}, _app["people"])
+check("  with the numbers it texts", {p["login"]: p["phone"] for p in _app["people"]}["999000111"] == "+15550100")
+check("  and threads the portal knows",
+      [g["thread"] for g in _app["groups"]][:2] == ["g:family", "g:parents"]
+      and _app["groups"][0]["members"] == ["999000111", "999000222", "999000333"], _app["groups"])
+check("  an inactive member is in no group and not in the list",
+      "user4" not in json.dumps(_app), _app)
 
 print()
 if failures:

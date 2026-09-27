@@ -228,3 +228,8 @@ cython_debug/
 # Hand-made backup copies of files being edited.
 *.bak
 *.bak-*
+
+# The family chat's directory (names, phone numbers, groups), baked into each
+# APK by the admin page's build. Written only into the build's staging copy;
+# never let one land in the tree.
+services/proxy/android/app/src/main/assets/family_directory.json

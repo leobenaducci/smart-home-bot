@@ -6205,6 +6205,16 @@ def _run_apk_job(channel: str):
         # the named volume, not this directory.
         shutil.copytree(APK_SRC, work,
                         ignore=shutil.ignore_patterns(".gradle", "build"))
+        # The family chat's directory -- names, numbers, groups -- baked into
+        # this build, so the app can text the family and recognise a family
+        # SMS with no data at all. Household data: it goes into this staging
+        # copy only, never into the repository the sources come from.
+        _deploy = _deployer()
+        if _deploy is not None and hasattr(_deploy, "app_family_directory"):
+            assets = work / "app" / "src" / "main" / "assets"
+            assets.mkdir(parents=True, exist_ok=True)
+            (assets / "family_directory.json").write_text(
+                _deploy.app_family_directory(load_config()), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         _apk_dir()
         with APK_LOG.open("w") as log:

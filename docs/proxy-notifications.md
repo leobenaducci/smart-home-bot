@@ -222,9 +222,18 @@ features — see `NtfyClientService.handleMessage`:
   phone": `PhoneRinger` plays the alarm tone **on the alarm stream**, which is
   what survives silent mode, raises the alarm volume for the duration and puts
   it back, vibrates, and posts a full-screen notification saying who asked with
-  a **Detener** button. It always stops itself (45s default, 120s max).
+  a **Detener** button. It always stops itself (45s default, 600s max).
   Triggered by `POST /geo/api/ring` — yourself, or another person if you're an
   admin, the same rule as locate/track.
+- `family_msg` (body JSON `{id, thread, thread_name, from_name, text, urgent,
+  ts, client_id}`) → the family chat: `FamilyAlert` vibrates on the alarm
+  stream until the message is opened or snoozed, and rings too when `urgent`.
+  The app confirms delivery (`POST /family-chat/api/delivered`) first.
+- `family_stop` (body JSON `{thread}`) → the thread was seen or snoozed on one
+  of this person's devices; stop alerting on this one.
+- `family_sms` (body JSON `{id, thread_name, from_name, text, urgent, to}`) →
+  a message this phone sent has not reached `to` in three minutes: text it to
+  them from this SIM. See [family-chat.md](family-chat.md).
 
 HomeCore sends these via `_geo_push_control` / `_geo_notify_sync`.
 

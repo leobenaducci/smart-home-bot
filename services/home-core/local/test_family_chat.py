@@ -182,6 +182,17 @@ pushes.clear()
 A._fc_tick(now=ts3 + 3 * 60 + 5)
 check("Mora has no phone on file: no family_sms", not [1 for _u, tg, _e in pushes if tg == "family_sms"], pushes)
 
+print("\na message the sender already texted (no data) is not texted again")
+pushes.clear()
+r = as_(TOMI).post("/family-chat/api/send", json={"thread": "g:family", "text": "sin datos",
+                                                  "client_id": "a-offline-1", "sms_sent": True}).get_json()
+check("the push carries the sender's id, so an SMS copy is the same message",
+      all(e.get("client_id") == "a-offline-1" for _u, t_, e in pushes if t_ == "family_msg") and pushes, pushes)
+ts4 = A._fc_conn().execute("SELECT ts FROM fc_messages WHERE id=?", (r["id"],)).fetchone()[0]
+pushes.clear()
+A._fc_tick(now=ts4 + 3 * 60 + 5)
+check("and no SMS hand-off for it", not [1 for _u, tg, _e in pushes if tg == "family_sms"], pushes)
+
 print("\nthe worker runs outside any request, and names groups in each person's language")
 A._MEMBER_LOCALES.update({TOMI: "en", JUANA: "es"})
 try:
