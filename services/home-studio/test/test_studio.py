@@ -575,6 +575,8 @@ rend = (st.get("renders") or [{}])[-1]
 check("  a preview render is the whole video: the made shot and a card for the missing one",
       st["render"]["state"] == "done" and rend.get("preview") is True
       and abs(rend.get("seconds", 0) - (2.0 + 124 / 24)) < 0.3, (st.get("render"), rend))
+check("  encoded as a draft: H.264, fast, playable everywhere",
+      media.probe(A.projects.dir(JUANA, vp["id"]) / rend["file"])["codec"] == "h264")
 check("  and leaves nothing of its own behind but the film",
       sorted(x.name for x in (A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()) == [rend["file"].split("/")[-1]],
       list((A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()))

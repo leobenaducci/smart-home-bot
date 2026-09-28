@@ -658,7 +658,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                         use_lengths.append(None)
             film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
                                 crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
-                                marks=use_marks)
+                                marks=use_marks, fast=preview)
             if tracks:
                 laid = []
                 for k, tr in enumerate(tracks):

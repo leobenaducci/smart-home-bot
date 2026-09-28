@@ -27,6 +27,10 @@ class MediaError(RuntimeError):
 # (Firefox, most Linux desktops) cannot play these. Phones and the app can.
 X265 = ["-c:v", "libx265", "-preset", "medium", "-crf", "23", "-tag:v", "hvc1",
         "-pix_fmt", "yuv420p", "-x265-params", "log-level=error"]
+# A draft, not something kept: the preview's download. H.264 at a fast
+# preset takes seconds where H.265 takes a minute, plays in every browser,
+# and its larger file costs nothing for a file that is looked at and dropped.
+FAST = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
 
 
 def _run(args: list[str], timeout: int = 1800) -> str:
@@ -130,7 +134,8 @@ def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
 
 
 def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
-           lengths: list[float | None] | None = None, marks: list[Path | None] | None = None) -> Path:
+           lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
+           fast: bool = False) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
@@ -189,7 +194,7 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
         maps = ["[v]", "[a]"]
     _run([*args, "-filter_complex", ";".join(parts), "-map", maps[0], "-map", maps[1],
-          *X265, "-c:a", "aac", "-b:a", "192k",
+          *(FAST if fast else X265), "-c:a", "aac", "-b:a", "192k",
           "-movflags", "+faststart", str(out)])
     return out
 

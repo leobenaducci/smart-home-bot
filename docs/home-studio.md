@@ -129,7 +129,9 @@ length it will have -- so the song runs under it unbroken, and every frame
 carries a watermark (`media.watermark`, drawn with Pillow rather than ffmpeg's
 drawtext, whose text needs escaping for any colon or quote in a description):
 PREVIEW in a corner, and the shot, its time in the song and its version along
-the bottom. The film itself still leaves missing shots out; its song follows
+the bottom. It is a draft, so it is H.264 at a fast preset (`media.FAST`):
+seconds where H.265 takes a minute, and playable in every browser. The film
+itself stays H.265 and still leaves missing shots out; its song follows
 each shot's place in the video (`media.follow`), so a gap no longer puts the
 shots after it out of time with their words.
 
