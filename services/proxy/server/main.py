@@ -845,6 +845,31 @@ def _settings_gate(request, rest):
 #
 # HomeWeb does its own admin check on top of all five: the pages redirect a
 # non-admin away and the APIs answer 403.
+@app.api_route("/studio{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_studio(request: Request, rest: str):
+    """The Studio page and /studio/api/* (home-studio, docs/home-studio.md).
+    The seventh of these: the app comes through this proxy even on the home
+    wifi, so without the prefix the Studio was in the Apps menu on a browser
+    and nowhere in the app. Streams, so a film seeks by byte range."""
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/studio", rest, request.url.query), user)
+
+
+@app.api_route("/devices{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_devices(request: Request, rest: str):
+    """/devices/api/* -- the app registering which device it is, and its
+    answers to a command (docs/devices.md). The app posts these from its own
+    background service, so they only ever arrive through here."""
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/devices", rest, request.url.query), user)
+
+
 @app.api_route("/projects{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_projects(request: Request, rest: str):
     """Los proyectos de Alfred Programador."""

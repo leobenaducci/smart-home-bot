@@ -3739,6 +3739,12 @@ def _at_home():
 CHAT_APP_LINKS = [
     {'name': 'Cameras', 'url': '/camaras/', 'icon': '📷',
      'description': 'What the house cameras can see', 'menu': 'casa'},
+    # Listed here, not added when the studio is on, so test_app_tiles_reachable
+    # sees it and checks the chat proxy forwards it -- it did not, and the
+    # Studio was missing from the app (2026-09-28). Hidden while the studio is
+    # off (_chat_external_links).
+    {'name': 'Studio', 'url': '/studio', 'icon': '🎬',
+     'description': "Video, pictures and songs, made on the house's own card", 'menu': 'casa'},
     # opencode's own interface, on `dns.code`. A link and not a panel, because
     # it is a different origin -- it has to be, its assets and its API are
     # absolute from the origin root and `/api` collides with this app's.
@@ -3817,6 +3823,8 @@ def _chat_external_links():
     # the house-only rule above exists to prevent, arriving by another door.
     if not _code_host():
         links = [link for link in links if link['name'] != 'Code']
+    if not _studio_configured():
+        links = [link for link in links if link['name'] != 'Studio']
     return links + _extension_menu_links()['casa']
 
 
@@ -21575,12 +21583,6 @@ def _studio_headers(username):
     return {'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': username,
             'X-Studio-Name': _tasks_display_name(username),
             'X-Studio-Admin': '1' if _tasks_is_admin(username) else ''}
-
-
-if _studio_configured():
-    CHAT_APP_LINKS.append({'name': 'Studio', 'url': '/studio', 'icon': '🎬',
-                           'description': 'Video, pictures and songs, made on the house\'s own card',
-                           'menu': 'casa'})
 
 
 @app.route('/studio')
