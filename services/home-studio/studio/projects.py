@@ -418,6 +418,15 @@ class Projects:
         if base.resolve() in path.parents and path.is_file():
             path.unlink()
 
+    def _rmtree_inside(self, base: Path, rel: str) -> None:
+        """Remove a folder of this project's -- a version's scores and stems --
+        and only one inside its takes."""
+        if not rel:
+            return
+        path = (base / rel).resolve()
+        if (base / "takes").resolve() in path.parents and path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
     def delete_take(self, owner: str, pid: str, item_id: str, take_id: str) -> dict:
         """One version of an item, gone from the project *and* the disk -- the
         clip or picture and the frames taken from it. The one way a take's
@@ -444,6 +453,7 @@ class Projects:
             self._unlink_inside(base, str((take.get("analysis") or {}).get("file") or ""))
             for key in ("file", "srt"):
                 self._unlink_inside(base, str((take.get("transcript") or {}).get(key) or ""))
+            self._rmtree_inside(base, str((take.get("score") or {}).get("dir") or ""))
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
             return item

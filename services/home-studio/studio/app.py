@@ -690,6 +690,29 @@ def analyze_song(pid: str, item_id: str, body: dict | None = None, me: Who = Dep
     return {"take": take["id"], "job": _public(store.get(job["id"]) or job, me)}
 
 
+@app.post("/api/projects/{pid}/items/{item_id}/score")
+def song_score(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """A song version's parts -- guitar as notes and tab, piano -- and the
+    stems to practise with: served once written, otherwise queued, once, and
+    the job returned for the page to wait on. `retry` asks again after a
+    failure."""
+    body = body or {}
+    _doc, item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    sc = take.get("score") or {}
+    if sc.get("state") == "done":
+        return {"take": take["id"], "score": sc}
+    for job in store.active():
+        if job["owner"] == me.login and job["kind"] == "score" and job["target"] == item_id \
+                and job["params"].get("take") == take["id"]:
+            return {"take": take["id"], "job": _public(job, me)}
+    if sc.get("state") == "failed" and not body.get("retry"):
+        return {"take": take["id"], "failed": sc.get("error") or "failed"}
+    if not body.get("start"):
+        return {"take": take["id"], "none": True}
+    job = _enqueue(me, "score", {"take": take["id"]}, pid, item_id, title=item.get("title") or "")
+    return {"take": take["id"], "job": _public(store.get(job["id"]) or job, me)}
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/cuts")
 def music_video_cuts(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """Where a music video's cuts fall on this song, for shots of about

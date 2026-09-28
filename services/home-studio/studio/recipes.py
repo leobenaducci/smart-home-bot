@@ -24,11 +24,13 @@ VOICE_MODEL = "qwen3_tts_base"
 # shares the card with a render.
 # `board` is a storyboard frame: a picture made for a shot, on the image model.
 # `portrait` is a picture of a character, on the image model, filed on it.
+# `score` is a song written out as parts (studio/score.py), on audio.cpp too.
 KINDS = ("image", "song", "instrumental", "voice", "video_shot", "edit", "analyze", "repaint", "board",
-         "portrait")
+         "portrait", "score")
 MODEL_OF = {"image": IMAGE_MODEL, "song": SONG_MODEL, "instrumental": INSTRUMENTAL_MODEL,
             "voice": VOICE_MODEL, "video_shot": VIDEO_MODEL, "edit": VIDEO_MODEL,
-            "analyze": "audio.cpp", "repaint": "audio.cpp", "board": IMAGE_MODEL, "portrait": IMAGE_MODEL}
+            "analyze": "audio.cpp", "repaint": "audio.cpp", "board": IMAGE_MODEL, "portrait": IMAGE_MODEL,
+            "score": "audio.cpp"}
 
 FPS = 24
 # H3 takes 17n + 5 frames: 124 is ~5 s, 481 (its largest window) ~20 s.
@@ -175,6 +177,8 @@ def estimate_note(kind: str, p: dict) -> str:
         return "voz"
     if kind == "analyze":
         return "escuchar una canción"
+    if kind == "score":
+        return "partituras de una canción"
     if kind == "board":
         return "storyboard"
     if kind == "portrait":

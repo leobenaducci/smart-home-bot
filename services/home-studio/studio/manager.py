@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import analysis, media, recipes
+from . import analysis, media, recipes, score
 from .projects import ProjectError, Projects
 from .store import Store
 
@@ -197,6 +197,8 @@ class Manager:
             return self._analyze(job)
         if job["kind"] == "repaint":
             return self._repaint(job)
+        if job["kind"] == "score":
+            return self._score(job)
         try:
             params = self._resolve(job)
             settings = recipes.settings_for(job["kind"], params)
@@ -296,6 +298,66 @@ class Manager:
         except Exception as exc:                               # noqa: BLE001 -- reported on the job
             log.exception("analysis %s failed", job["id"])
             self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc)[:500])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            if self.audio and self.audio.url:
+                self.audio.wait_idle()
+
+    def _score(self, job: dict) -> None:
+        """A song written out as parts to read and practise from.
+
+        Three things on the audio unit and one on the CPU: the song split into
+        stems (for playing along without the guitars, or hearing them alone),
+        the notes heard in the whole mix, and the score written from them
+        (studio/score.py). Filed beside the version it was made from; nobody
+        is notified -- the page that asked is waiting for it."""
+        self.store.update(job["id"], state="running", started=time.time(), progress=0.05, phase="separating")
+        work = self.scratch / job["id"]
+        work.mkdir(parents=True, exist_ok=True)
+        owner, pid, take_id = job["owner"], job["project"], job["params"].get("take")
+        item_id = job["target"]
+        try:
+            if not (self.audio and self.audio.url):
+                raise RuntimeError("the Studio's audio unit is not configured")
+            doc = self.projects.load(owner, pid)
+            found = Projects.find(doc, item_id)
+            if not found:
+                raise ProjectError("the song is gone")
+            item = found[2]
+            take = next((t for t in item.get("takes") or [] if t.get("id") == take_id), None)
+            if not take:
+                raise ProjectError("that version of the song is gone")
+            base = self.projects.dir(owner, pid)
+            song = base / take["file"]
+            stems = self.audio.separate_stems(song, work)
+            self.store.update(job["id"], progress=0.3, phase="transcribing")
+            events, midi = self.audio.notes(song, work, list(score.INSTRUMENTS))
+            self.store.update(job["id"], progress=0.85, phase="writing")
+            hint = float((take.get("analysis") or {}).get("tempo") or 0) or analysis.beats_of(song)[0]
+            xml, meta = score.build(events, hint, item.get("title") or doc["name"])
+            rel_dir = f"takes/{item_id}/{take['id']}-score"
+            out = base / rel_dir
+            shutil.rmtree(out, ignore_errors=True)
+            out.mkdir(parents=True)
+            (out / "score.musicxml").write_text(xml, encoding="utf-8")
+            if midi:
+                (out / "notes.mid").write_bytes(midi)
+            media.mix_audio([stems[k] for k in ("vocals", "drums", "bass") if k in stems], out / "minus.mp3")
+            media.mix_audio([stems["other"]], out / "part.mp3")
+            self.projects.set_take_field(owner, pid, item_id, take["id"], "score", {
+                "state": "done", "dir": rel_dir, "file": f"{rel_dir}/score.musicxml",
+                "midi": f"{rel_dir}/notes.mid" if midi else "", "minus": f"{rel_dir}/minus.mp3",
+                "part": f"{rel_dir}/part.mp3", **meta})
+            self.store.update(job["id"], state="done", finished=time.time(), progress=1.0, phase="",
+                              files=[f"{rel_dir}/score.musicxml"])
+        except Exception as exc:                               # noqa: BLE001 -- reported on the job and the version
+            log.exception("score %s failed", job["id"])
+            self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc)[:500])
+            try:
+                self.projects.set_take_field(owner, pid, item_id, take_id, "score",
+                                             {"state": "failed", "error": str(exc)[:300]})
+            except ProjectError:
+                pass
         finally:
             shutil.rmtree(work, ignore_errors=True)
             if self.audio and self.audio.url:

@@ -11,6 +11,7 @@ People are the invented household: Tomi and Mora (parents), Juana.
 """
 import os
 import shutil
+from collections import Counter
 import subprocess
 import sys
 import tempfile
@@ -396,6 +397,132 @@ else:
           store2.get(ja["id"])["state"] == "done" and (projects.dir(JUANA, p["id"]) / got["analysis"]["file"]).is_file(),
           (store2.get(ja["id"]), got.get("analysis")))
     check("  without starting the generator for it", fake.seen[-1].get("model_type") != "audio.cpp")
+
+    print("\na song written out: guitar as notes and tab, piano on two staves")
+    from studio import score
+    import xml.etree.ElementTree as ET
+
+    def strum(t0, pitches, inst, length=0.24, idx=[0]):
+        out = []
+        for pch in pitches:
+            idx[0] += 1
+            out += [{"type": "start", "pitch": pch, "start_time": round(t0, 2), "index": idx[0], "instrument": inst},
+                    {"type": "end", "end_time": round(t0 + length, 2), "start_event_index": idx[0]}]
+        return out
+    # 118 bpm, the first downbeat at 0.31 s: C, G, Am, F a bar each, strummed
+    # in eighths, and a picked line on the electric over the last two bars.
+    beat_s, t0 = 60 / 118, 0.31
+    shapes = [[48, 52, 55, 60, 64], [43, 47, 50, 55, 59, 67], [45, 52, 57, 60, 64], [41, 48, 53, 57, 60, 65]]
+    evs = []
+    for bar in range(8):
+        for k in range(8):
+            evs += strum(t0 + (bar * 4 + k / 2) * beat_s, shapes[bar % 4], "acoustic_guitar")
+    for k, pch in enumerate([64, 67, 69, 72, 71, 69, 67, 64] * 2):
+        evs += strum(t0 + (24 + k / 2) * beat_s, [pch], "clean_electric_guitar", length=0.2)
+    for k in range(16):
+        evs += strum(t0 + k * 2 * beat_s, [36 + (k % 4) * 2, 72 + k % 3], "acoustic_piano", length=0.9)
+    evs += strum(5.0, [30], "acoustic_guitar")                   # below the low E: out of the tab
+    evs += strum(7.0, [60], "distorted_electric_guitar")         # heard once: noise, not a part
+    notes = [n for n in score.notes_from_events(evs) if n["instrument"] in score.INSTRUMENTS]
+    b, first = score.fit_grid(notes, 123.0)
+    check("  the tempo comes from the notes, not the beat tracker's guess",
+          abs(60 / b - 118) < 0.2, 60 / b)
+    check("  and the bar starts where the chords change",
+          abs(((first - t0) / (4 * b) + 0.5) % 1 - 0.5) * 4 * b < 0.03, (first, t0))
+    check("  chords are named from their notes, the bass first",
+          score.chord_name(shapes[0])[1:] == ("major", "") and score.chord_name(shapes[2])[1:] == ("minor", "m")
+          and score.chord_name([43, 47, 50, 55, 59, 67])[0] == 7 and score.chord_name([60]) is None)
+    xml, meta = score.build(evs, 123.0, "Prueba <1>")
+    check("  one part per instrument heard, and a stray note is not a part",
+          [t["id"] for t in meta["tracks"]] == ["acoustic_guitar", "clean_electric_guitar", "acoustic_piano"], meta["tracks"])
+    root = ET.fromstring(xml.split("\n", 2)[2])
+    sums = []
+    for part in root.findall("part"):
+        for m in part.findall("measure"):
+            pos = {}
+            for el in m.findall("note"):
+                if el.find("chord") is None:
+                    st = el.findtext("staff") or "1"
+                    pos[st] = pos.get(st, 0) + int(el.findtext("duration"))
+            sums += list(pos.values())
+    check("  every bar of every staff adds up to a bar", sums and set(sums) == {16}, Counter(sums))
+    check("  the title is escaped", root.findtext("work/work-title") == "Prueba <1>")
+    frets_ok = True
+    for n in root.iter("note"):
+        tech = n.find("notations/technical")
+        if tech is None:
+            continue
+        stp, alt, octv = n.findtext("pitch/step"), int(n.findtext("pitch/alter") or 0), int(n.findtext("pitch/octave"))
+        midi = (octv + 1) * 12 + "C D EF G A B".index(stp) + alt
+        string, fret = int(tech.findtext("string")), int(tech.findtext("fret"))
+        frets_ok &= score.TUNING[6 - string] + fret == midi and 0 <= fret <= score.MAX_FRET
+    check("  every tab number is the note it stands for, on a real string", frets_ok)
+    first_c = [n for n in root.find("part").iter("note") if n.find("notations/technical") is not None][:5]
+    check("  an open chord is fingered open, not up the neck",
+          max(int(n.findtext("notations/technical/fret")) for n in first_c) <= 3,
+          [n.findtext("notations/technical/fret") for n in first_c])
+    check("  and the harmony is written above it", [h.findtext("root/root-step") for h in root.find("part").iter("harmony")][:4]
+          == ["C", "G", "A", "F"], [h.findtext("root/root-step") for h in root.find("part").iter("harmony")][:6])
+    check("  the page gets a whole-number tempo and the exact one to follow the song by",
+          meta["score_tempo"] == 118 and abs(meta["tempo"] - 118) < 0.2 and meta["start"] <= t0 + 0.03)
+
+    class FakeScoreAudio:
+        url = "http://audio"
+
+        def __init__(self):
+            self.asked = None
+
+        def separate_stems(self, song, work):
+            out = {}
+            for k in ("vocals", "drums", "bass", "other"):
+                out[k] = work / f"stem-{k}.wav"
+                subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=2",
+                                str(out[k])], check=True)
+            return out
+
+        def notes(self, song, work, instruments):
+            self.asked = instruments
+            return evs, b"MThd fake"
+
+        def wait_idle(self, timeout=60.0):
+            pass
+    mgr.audio = FakeScoreAudio()
+    js = store2.add(owner=JUANA, owner_name="Juana", kind="score", model="audio.cpp",
+                    params={"take": real_take["id"]}, project=p["id"], target=sid)
+    mgr.wake()
+    deadline = time.time() + 120
+    while time.time() < deadline and store2.get(js["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    got = next(t for t in Projects.find(projects.load(JUANA, p["id"]), sid)[2]["takes"] if t["id"] == real_take["id"])
+    sc = got.get("score") or {}
+    base_dir = projects.dir(JUANA, p["id"])
+    check("  a score job files the score, the notes and two play-along tracks on the version",
+          store2.get(js["id"])["state"] == "done" and sc.get("state") == "done"
+          and all((base_dir / sc[k]).is_file() for k in ("file", "midi", "minus", "part"))
+          and sc["dir"].startswith(f"takes/{sid}/"), (store2.get(js["id"]), sc))
+    check("  asking the notes of guitars and piano only", set(mgr.audio.asked) == set(score.INSTRUMENTS), mgr.audio.asked)
+    mgr.audio = None
+    jf = store2.add(owner=JUANA, owner_name="Juana", kind="score", model="audio.cpp",
+                    params={"take": real_take["id"]}, project=p["id"], target=sid)
+    mgr.wake()
+    while time.time() < deadline and store2.get(jf["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    got = next(t for t in Projects.find(projects.load(JUANA, p["id"]), sid)[2]["takes"] if t["id"] == real_take["id"])
+    check("  without the audio unit it fails, and says so on the version",
+          store2.get(jf["id"])["state"] == "failed" and got["score"]["state"] == "failed", got.get("score"))
+    projects.set_take_field(JUANA, p["id"], sid, real_take["id"], "score", sc)
+    extra = projects.append(JUANA, p["id"], "audio", [{"kind": "song", "title": "otra"}])[0]
+    xt = projects.add_take(JUANA, p["id"], extra["id"], {"file": sc["minus"], "kind": "song"})
+    xdir = f"takes/{extra['id']}/{xt['id']}-score"
+    (base_dir / xdir).mkdir(parents=True)
+    (base_dir / xdir / "score.musicxml").write_text("x")
+    projects.set_take_field(JUANA, p["id"], extra["id"], xt["id"], "score", {"state": "done", "dir": xdir})
+    projects.delete_take(JUANA, p["id"], extra["id"], xt["id"])
+    check("  deleting a version takes its scores and stems with it", not (base_dir / xdir).exists())
+    xt2 = projects.add_take(JUANA, p["id"], extra["id"], {"file": sc["minus"], "kind": "song"})
+    projects.set_take_field(JUANA, p["id"], extra["id"], xt2["id"], "score", {"state": "done", "dir": "takes"})
+    projects.delete_take(JUANA, p["id"], extra["id"], xt2["id"])
+    check("  and never a folder that is not one version's", (base_dir / sc["file"]).is_file())
     print("\nretouching a song")
     cover = recipes.settings_for("song", {"lyrics": "[Coro]\nla", "style": "rock", "seconds": 20,
                                           "source_file": "/data/x.mp3", "strength": 0.85, "keep_voice": True})
@@ -646,6 +773,27 @@ check("  asking to listen queues one job, however often it is asked",
 check("  and the plan waits for it",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/cuts", json={"shot_seconds": 8},
              headers=h(JUANA, "Juana")).status_code == 409)
+sc0 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={}, headers=h(JUANA, "Juana")).json()
+sc1 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json()
+sc2 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json()
+check("  a song's scores are only made when asked, and asked twice they are one job",
+      sc0.get("none") and sc1.get("job") and sc1["job"]["id"] == sc2["job"]["id"] and sc1["job"]["kind"] == "score", (sc0, sc1, sc2))
+check("  nobody else can ask for them",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(TOMI, "Tomi")).status_code == 404)
+A.manager.cancel(sc1["job"]["id"])
+stake = sc1["take"]
+sdir = f"takes/{sng['id']}/{stake}-score"
+(A.projects.dir(JUANA, pj["id"]) / sdir).mkdir(parents=True, exist_ok=True)
+(A.projects.dir(JUANA, pj["id"]) / sdir / "score.musicxml").write_text("<score-partwise/>")
+A.projects.set_take_field(JUANA, pj["id"], sng["id"], stake, "score",
+                          {"state": "done", "dir": sdir, "file": f"{sdir}/score.musicxml", "tempo": 120.0})
+sc3 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json()
+check("  once written they are served, not made again", sc3.get("score", {}).get("file") == f"{sdir}/score.musicxml", sc3)
+A.projects.set_take_field(JUANA, pj["id"], sng["id"], stake, "score", {"state": "failed", "error": "boom"})
+check("  a failure is reported, not retried on its own",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json().get("failed") == "boom")
+A.projects.set_take_field(JUANA, pj["id"], sng["id"], stake, "score",
+                          {"state": "done", "dir": sdir, "file": f"{sdir}/score.musicxml"})
 r = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/rework",
            json={"lyrics": "[Coro]\nle le", "start": 1, "end": 3}, headers=h(JUANA, "Juana")).json()
 check("  a stretch to redo queues a repaint", r["queued"][0]["kind"] == "repaint", r)
