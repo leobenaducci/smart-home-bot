@@ -268,6 +268,23 @@ async def upload(pid: str, file: UploadFile = File(...), kind: str = Form("refer
         _bad(exc, 404)
 
 
+@app.delete("/api/projects/{pid}/items/{item_id}/takes/{take_id}")
+def delete_take(pid: str, item_id: str, take_id: str, me: Who = Depends(who)):
+    try:
+        return projects.delete_take(me.login, pid, item_id, take_id)
+    except ProjectError as exc:
+        _bad(exc, 404)
+
+
+@app.delete("/api/projects/{pid}/uploads/{name}")
+def delete_upload(pid: str, name: str, me: Who = Depends(who)):
+    try:
+        projects.delete_upload(me.login, pid, f"uploads/{name}")
+    except ProjectError as exc:
+        _bad(exc, 404)
+    return {"ok": True}
+
+
 @app.get("/api/projects/{pid}/file/{rel:path}")
 def project_file(pid: str, rel: str, me: Who = Depends(who)):
     try:

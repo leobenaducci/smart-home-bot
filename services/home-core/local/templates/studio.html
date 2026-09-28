@@ -310,9 +310,15 @@
     function takesRow(item) {
       if (!(item.takes || []).length) return '';
       var cur = item.takes.indexOf(chosen(item));
+      var shown = item.takes[cur];
       return '<div class="takes"><span class="muted">' + S.takes + ':</span>' + item.takes.map(function (_, i) {
         return '<button data-choose="' + item.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + '</button>';
-      }).join('') + '</div>';
+      }).join('') + (shown && shown.id ? delTake(item.id, shown.id) : '') + '</div>';
+    }
+    // Deletes the version for good -- its file and its frames -- which is why
+    // it asks, and why it is the only thing on this page that deletes a file.
+    function delTake(itemId, takeId) {
+      return '<button class="danger" data-del-take="' + itemId + '" data-take="' + takeId + '" title="' + esc(S.delete_take) + '">🗑</button>';
     }
     function drawEditor() {
       var p = current;
@@ -446,7 +452,8 @@
           (livePreview(im) ? '<div style="margin-top:8px;max-width:320px">' + livePreview(im) + '</div>' : '') +
           ((im.takes || []).length ? '<div class="gallery">' + im.takes.map(function (t, k) {
             return '<div><a href="' + fileUrl(p.id, t.file) + '" target="_blank"><img loading="lazy" src="' + fileUrl(p.id, t.file) + '" alt=""></a>' +
-              '<div class="row" style="margin-top:4px">' + dlLink(p.id, t.file, p.name + ' - ' + (n + 1) + '.' + (k + 1)) + '</div></div>';
+              '<div class="row" style="margin-top:4px">' + dlLink(p.id, t.file, p.name + ' - ' + (n + 1) + '.' + (k + 1)) +
+              (t.id ? delTake(im.id, t.id) : '') + '</div></div>';
           }).join('') + '</div>' : '') + '</div>';
       });
       return html + '<button id="add-image">＋ 🖼️ ' + S.add_image + '</button>';
@@ -460,7 +467,8 @@
         return l.length ? l.map(function (u) {
           var prev = kind === 'voice' ? '<audio controls preload="none" src="' + fileUrl(p.id, u.file) + '"></audio>' :
             '<img src="' + fileUrl(p.id, u.file) + '" style="max-width:120px;border-radius:6px">';
-          return '<div class="row" style="margin:6px 0">' + prev + '<span class="muted">' + esc(u.name) + '</span></div>';
+          return '<div class="row" style="margin:6px 0">' + prev + '<span class="muted grow">' + esc(u.name) + '</span>' +
+            '<button class="danger" data-del-upload="' + esc(u.file.replace(/^uploads\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div>';
         }).join('') : '<p class="muted">' + S.no_files + '</p>';
       }
       return '<div class="card"><b>' + S.upload_ref + '</b>' + list('reference') +
@@ -536,7 +544,22 @@
         if (b.id === 'add-shot') { p.shots.push(newItem({ prompt: '', seconds: 5, continuity: true })); await saveNow(); drawTab(); return; }
         if (b.id === 'add-image') { p.images.push(newItem({ prompt: '', size: '1024x1024' })); await saveNow(); drawTab(); return; }
         if (d.addAudio) { p.audio.push(newItem({ kind: d.addAudio, seconds: d.addAudio === 'song' ? 90 : 30, language: p.settings.language })); await saveNow(); drawTab(); return; }
-        if (d.remove) { p[d.remove] = p[d.remove].filter(function (x) { return x.id !== d.id; }); await saveNow(); drawTab(); return; }
+        if (d.remove) {
+          if (!confirm(S.remove_confirm)) return;
+          p[d.remove] = p[d.remove].filter(function (x) { return x.id !== d.id; }); await saveNow(); drawTab(); return;
+        }
+        if (d.delTake) {
+          if (!confirm(S.delete_take_confirm)) return;
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + d.delTake + '/takes/' + d.take, { method: 'DELETE' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.delUpload) {
+          if (!confirm(S.delete_upload_confirm)) return;
+          await flushSave();
+          await api('projects/' + p.id + '/uploads/' + encodeURIComponent(d.delUpload), { method: 'DELETE' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
         if (d.up || d.down) {
           var id = d.up || d.down, i = p.shots.findIndex(function (s) { return s.id === id; }), jdx = i + (d.up ? -1 : 1);
           if (jdx < 0 || jdx >= p.shots.length) return;

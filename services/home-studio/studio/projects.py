@@ -311,6 +311,63 @@ class Projects:
             self._write(owner, pid, doc)
             return take
 
+    def _unlink_inside(self, base: Path, rel: str) -> None:
+        """Remove a file of this project's, and only one inside it."""
+        if not rel:
+            return
+        path = (base / rel).resolve()
+        if base.resolve() in path.parents and path.is_file():
+            path.unlink()
+
+    def delete_take(self, owner: str, pid: str, item_id: str, take_id: str) -> dict:
+        """One version of an item, gone from the project *and* the disk -- the
+        clip or picture and the frames taken from it. The one way a take's
+        files leave before the project does, and it is asked for by id: a
+        save never deletes a file, because a page with an older copy of the
+        project sends fewer items than there are."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found:
+                raise ProjectError("no such item")
+            item = found[2]
+            takes = item.get("takes") or []
+            idx = next((i for i, t in enumerate(takes) if t.get("id") == take_id), None)
+            if idx is None:
+                raise ProjectError("no such version")
+            take = takes.pop(idx)
+            chosen = item.get("chosen", -1)
+            if isinstance(chosen, int) and chosen >= 0:
+                item["chosen"] = -1 if chosen == idx else chosen - (1 if chosen > idx else 0)
+            base = self.dir(owner, pid)
+            for key in ("file", "first", "last"):
+                self._unlink_inside(base, str(take.get(key) or ""))
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return item
+
+    def delete_upload(self, owner: str, pid: str, rel: str) -> None:
+        """A file the person brought, gone from the disk, and from whatever
+        pointed at it: a shot's start picture, a voice's sample. A job already
+        queued with it fails with "no such file" when its turn comes."""
+        if not re.fullmatch(r"uploads/[A-Za-z0-9._-]+", rel or ""):
+            raise ProjectError("no such file")
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            before = len(doc.get("uploads") or [])
+            doc["uploads"] = [u for u in doc.get("uploads") or [] if u.get("file") != rel]
+            if len(doc["uploads"]) == before:
+                raise ProjectError("no such file")
+            for shot in doc.get("shots") or []:
+                if rel in (shot.get("refs") or []):
+                    shot["refs"] = [r for r in shot["refs"] if r != rel]
+            for audio in doc.get("audio") or []:
+                if audio.get("voice") == rel:
+                    audio["voice"] = ""
+            self._unlink_inside(self.dir(owner, pid), rel)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+
     def add_upload(self, owner: str, pid: str, name: str, data: bytes, kind: str) -> dict:
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[-60:] or "file"
         rel = f"uploads/{_new_id()}-{safe}"

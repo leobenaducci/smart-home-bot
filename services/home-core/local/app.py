@@ -21611,6 +21611,7 @@ STUDIO_UI_KEYS = (
     'mv_generate_now', 'mv_estimate', 'mv_existing', 'mv_go', 'mv_planning', 'mv_failed', 'mv_added',
     'preview', 'preview_missing', 'preview_close', 'mute_shots', 'soundtrack', 'live_preview',
     'cancel_all', 'cancel_all_confirm',
+    'delete_take', 'delete_take_confirm', 'delete_upload_confirm', 'remove_confirm',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',

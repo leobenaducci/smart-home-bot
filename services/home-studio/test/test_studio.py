@@ -267,6 +267,47 @@ else:
     check("  a music video can drop the shots' own sound: with the song at zero it is silent",
           loudest(silent) < -80 and loudest(mixed) > -40, (loudest(silent), loudest(mixed)))
 
+    print("\ndeleting a version, and a file somebody brought")
+    base = projects.dir(JUANA, p["id"])
+    doc = projects.load(JUANA, p["id"])
+    first_id = doc["shots"][0]["id"]
+    takes = doc["shots"][0]["takes"]
+    gone, kept = takes[0], takes[1]
+    projects.save(JUANA, p["id"], {"shots": [{**sh, "chosen": 1 if sh["id"] == first_id else sh.get("chosen", -1)}
+                                             for sh in doc["shots"]]})
+    item = projects.delete_take(JUANA, p["id"], first_id, gone["id"])
+    check("  the version leaves the project", [t["id"] for t in item["takes"]] == [kept["id"]], item["takes"])
+    check("  and the disk: its clip and both frames",
+          not any((base / gone[k]).exists() for k in ("file", "first", "last")), gone)
+    check("  the other version is untouched", (base / kept["file"]).is_file())
+    check("  and is still the one chosen, at its new place", item["chosen"] == 0, item["chosen"])
+    try:
+        projects.delete_take(JUANA, p["id"], first_id, gone["id"])
+        check("  a version cannot be deleted twice", False)
+    except ProjectError:
+        check("  a version cannot be deleted twice", True)
+    try:
+        projects.delete_take(TOMI, p["id"], first_id, kept["id"])
+        check("  nor by somebody else", False)
+    except ProjectError:
+        check("  nor by somebody else", (base / kept["file"]).is_file())
+
+    up = projects.add_upload(JUANA, p["id"], "cara.png", b"png", "reference")
+    doc = projects.load(JUANA, p["id"])
+    projects.save(JUANA, p["id"], {"shots": [{**sh, "refs": [up["file"]]} if i == 0 else sh
+                                             for i, sh in enumerate(doc["shots"])]})
+    projects.delete_upload(JUANA, p["id"], up["file"])
+    doc = projects.load(JUANA, p["id"])
+    check("  an upload is deleted from the disk and the list",
+          not (base / up["file"]).exists() and not any(u["file"] == up["file"] for u in doc["uploads"]))
+    check("  and the shot that started from it no longer points at it", doc["shots"][0].get("refs") == [], doc["shots"][0])
+    for bad in ("takes/x.mp4", "uploads/../project.json", "../other/uploads/a.png"):
+        try:
+            projects.delete_upload(JUANA, p["id"], bad)
+            check(f"  {bad!r} is not an upload", False)
+        except ProjectError:
+            check(f"  {bad!r} is not an upload", (base / "project.json").is_file())
+
     print("\nhow long the queue says a shot takes grows with the shot")
     five = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 5}})
     twenty = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 20}})
