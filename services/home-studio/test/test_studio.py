@@ -677,6 +677,102 @@ else:
     check("  and a default before it has done any", Store(tmp / "empty.db").rate("video_shot") == 360)
     mgr.stop()
 
+print("\na project's words under version control")
+from studio.history import History
+hp = Projects(tmp / "hist")
+hc = Characters(tmp / "hist")
+hist = History(hp, hc)
+hdoc = hp.create(JUANA, "Historia", "music_video")
+hpid = hdoc["id"]
+r1 = hist.record(JUANA, hpid, JUANA, "Juana")
+check("  a new project's first revision", r1 and hist.log(JUANA, hpid)["revisions"][0]["subject"] == "Proyecto creado",
+      hist.log(JUANA, hpid))
+hp.save(JUANA, hpid, {"shots": [{"prompt": "uno", "seconds": 5}]})
+r2 = hist.record(JUANA, hpid, JUANA, "Juana")
+s1 = hp.load(JUANA, hpid)["shots"][0]["id"]
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+r2b = hist.record(JUANA, hpid, JUANA, "Juana")
+revs = hist.log(JUANA, hpid)["revisions"]
+check("  saves close together by the same person are one revision",
+      len(revs) == 2 and revs[0]["subject"].startswith("Toma 1") and r2b != r2, revs)
+hdir = hp.dir(JUANA, hpid) / ".history"
+item_file = (hdir / "items" / f"{s1}.json").read_text()
+check("  a plain git repository, one readable file per item, words only",
+      (hdir / ".git").is_dir() and '"uno bis"' in item_file and "takes" not in item_file
+      and subprocess.run(["git", "-C", str(hdir), "log", "--oneline"], capture_output=True).returncode == 0)
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis y algo"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+check("  typed and undone within a revision leaves it as it was",
+      [r["rev"] for r in hist.log(JUANA, hpid)["revisions"]] == [r["rev"] for r in revs], hist.log(JUANA, hpid)["revisions"])
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+revs = hist.log(JUANA, hpid)["revisions"]
+tagged = revs[0]["rev"]
+hist.tag(JUANA, hpid, tagged, "primera versión", JUANA, "Juana")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "tres"}]})
+r3 = hist.record(JUANA, hpid, JUANA, "Juana", via="Alfred")
+revs = hist.log(JUANA, hpid)["revisions"]
+check("  a change by the person's assistant is its own revision, and says so",
+      len(revs) == 3 and revs[0]["author"] == "Juana (Alfred)", revs[:1])
+hp.add_take(JUANA, hpid, s1, {"file": "takes/x.mp4", "seconds": 5})
+check("  a version made by the card is not a revision", hist.record(JUANA, hpid, JUANA, "Juana") is None)
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "cuatro"}, {"prompt": "dos", "seconds": 5}]})
+r4 = hist.record(JUANA, hpid, JUANA, "Juana")
+s2 = hp.load(JUANA, hpid)["shots"][1]["id"]
+shown = hist.show(JUANA, hpid, r4)["changes"]
+check("  a revision shows what changed, before and after, by name",
+      {(c["label"], c.get("field_label"), c.get("before"), c.get("after")) for c in shown if c["on"] == "item" and c.get("field")}
+      == {("Toma 1", "descripción", "tres", "cuatro")} and any(c.get("change") == "added" and c["label"] == "Toma 2" for c in shown), shown)
+out = hist.revert(JUANA, hpid, r3, JUANA, "Juana")
+check("  reverting a change made over since is reported, not forced",
+      out["conflicts"] and hp.load(JUANA, hpid)["shots"][0]["prompt"] == "cuatro", out)
+out = hist.revert(JUANA, hpid, r4, JUANA, "Juana")
+now = hp.load(JUANA, hpid)
+check("  reverting a revision undoes exactly it: the words back, the added shot out",
+      not out["conflicts"] and [x["prompt"] for x in now["shots"]] == ["tres"] and now["shots"][0]["takes"], (out, now["shots"]))
+check("  and is a revision of its own", hist.log(JUANA, hpid)["revisions"][0]["kind"] == "revert")
+hp.add_take(JUANA, hpid, s1, {"file": "takes/y.mp4", "seconds": 5})
+back = hist.restore(JUANA, hpid, r2b, JUANA, "Juana")
+now = hp.load(JUANA, hpid)
+check("  going back to a revision: its words, its shots -- and the versions made since stay",
+      [x["prompt"] for x in now["shots"]] == ["uno bis"] and len(now["shots"][0]["takes"]) == 2, now["shots"])
+(hp.dir(JUANA, hpid) / "takes").mkdir(exist_ok=True)
+(hp.dir(JUANA, hpid) / "takes" / "z.mp4").write_bytes(b"x")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}, {"prompt": "con versión", "seconds": 5}]})
+s3 = hp.load(JUANA, hpid)["shots"][1]["id"]
+hp.add_take(JUANA, hpid, s3, {"file": "takes/z.mp4", "seconds": 5})
+with_s3 = hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hist.restore(JUANA, hpid, with_s3, JUANA, "Juana")
+back_s3 = next((x for x in hp.load(JUANA, hpid)["shots"] if x["id"] == s3), None)
+check("  a shot deleted on the page comes back with its versions", back_s3 and back_s3["takes"]
+      and back_s3["takes"][0]["file"] == "takes/z.mp4", back_s3)
+tags = hist.log(JUANA, hpid)["tags"]
+check("  tags keep a name, accents and all, on a revision", [t["name"] for t in tags] == ["primera versión"]
+      and tags[0]["rev"] == tagged, tags)
+hist.untag(JUANA, hpid, tags[0]["ref"])
+check("  and can be taken off", hist.log(JUANA, hpid)["tags"] == [])
+try:
+    hist.show(JUANA, hpid, "HEAD; rm -rf /")
+    check("  a revision is a hash, nothing else", False)
+except ProjectError:
+    check("  a revision is a hash, nothing else", True)
+cp = hp.duplicate(JUANA, hpid)
+check("  a copy keeps the history it was copied from",
+      len(hist.log(JUANA, cp["id"])["revisions"]) == len(hist.log(JUANA, hpid)["revisions"]))
+hch = hc.create(JUANA, hpid, {"name": "Bruma", "look": "un pelícano"})
+hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hc.update(hch["id"], JUANA, hpid, {"look": "un pelícano con casco"})
+rc = hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hist.revert(JUANA, hpid, rc, JUANA, "Juana")
+check("  a character's words are kept and reverted too",
+      hc.get(hch["id"], JUANA, hpid)["look"] == "un pelícano", hc.get(hch["id"], JUANA, hpid))
+
 print("\nthe API: who sees what")
 os.environ["STUDIO_DATA"] = str(tmp / "api")
 import importlib  # noqa: E402
@@ -1104,6 +1200,28 @@ check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
+
+print("\n  a project's history, through the API")
+hq = c.post("/api/projects", json={"name": "Con historia"}, headers=h(JUANA, "Juana")).json()
+c.put(f"/api/projects/{hq['id']}", json={"shots": [{"prompt": "hola", "seconds": 5}]}, headers=h(JUANA, "Juana"))
+via = {**h(JUANA, "Juana"), "X-Studio-Via": "Alfred"}
+c.post(f"/api/projects/{hq['id']}/items", json={"section": "images", "items": [{"prompt": "un gato"}]}, headers=via)
+lg = c.get(f"/api/projects/{hq['id']}/history", headers=h(JUANA, "Juana")).json()
+check("  every save is in the history by the time it is asked for, the assistant's marked as its",
+      [r["author"] for r in lg["revisions"]] == ["Juana (Alfred)", "Juana", "Juana"]
+      and lg["revisions"][-1]["kind"] == "start", lg["revisions"])
+check("  nobody else can read it", c.get(f"/api/projects/{hq['id']}/history", headers=h(TOMI, "Tomi")).status_code == 404)
+check("  a revision that is not one is a 404",
+      c.get(f"/api/projects/{hq['id']}/history/zzzz", headers=h(JUANA, "Juana")).status_code == 404)
+rv = c.post(f"/api/projects/{hq['id']}/history/{lg['revisions'][0]['rev']}/revert", headers=h(JUANA, "Juana")).json()
+check("  and reverting the assistant's change takes its picture out",
+      not rv["conflicts"] and c.get(f"/api/projects/{hq['id']}", headers=h(JUANA, "Juana")).json()["images"] == [], rv)
+tg = c.post(f"/api/projects/{hq['id']}/history/{lg['revisions'][1]['rev']}/tag", json={"name": "para Mora"},
+            headers=h(JUANA, "Juana")).json()
+check("  a tag is put on a revision and listed",
+      [t["name"] for t in c.get(f"/api/projects/{hq['id']}/history", headers=h(JUANA, "Juana")).json()["tags"]] == ["para Mora"])
+check("  and taken off", c.delete(f"/api/projects/{hq['id']}/tags/{tg['ref']}", headers=h(JUANA, "Juana")).status_code == 200
+      and c.get(f"/api/projects/{hq['id']}/history", headers=h(JUANA, "Juana")).json()["tags"] == [])
 
 print("\nthe default project, for what the assistant is asked")
 d1 = c.get("/api/default-project", headers=h(JUANA, "Juana")).json()

@@ -46,6 +46,10 @@ EDITABLE = {
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
+# Where an item taken out of the timeline keeps its full record -- versions
+# and all -- for a revision of the project's history that brings it back
+# (studio/history.py).
+REMOVED_DIR = ".history-removed"
 # What a project is for. It decides the page's starting shape and the
 # planning flow Alfred runs; every tool stays available in every kind.
 PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
@@ -178,6 +182,10 @@ class Projects:
                 if not isinstance(incoming.get(section), list):
                     continue
                 known = {item["id"]: item for item in doc.get(section) or []}
+                kept = {str(item.get("id")) for item in incoming[section][:200] if isinstance(item, dict)}
+                for iid, gone in known.items():
+                    if iid not in kept:
+                        self.stash_removed(owner, pid, gone)
                 merged = []
                 for item in incoming[section][:200]:
                     if not isinstance(item, dict):
@@ -344,8 +352,10 @@ class Projects:
         doc = self.load(owner, pid)
         new = self.create(owner, name or f"{doc['name']} (copia)")
         src, dst = self.dir(owner, pid), self.dir(owner, new["id"])
-        for sub in ("takes", "uploads", "renders"):
-            shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
+        # Its history comes too: a copy remembers what it was copied from.
+        for sub in ("takes", "uploads", "renders", ".history", REMOVED_DIR):
+            if (src / sub).is_dir():
+                shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
         # The project's own characters come too, with the same ids, so the
         # copied shots' cast still finds them (the wider ones need no copy).
         if (src / "characters").is_dir():
@@ -417,6 +427,14 @@ class Projects:
         path = (base / rel).resolve()
         if base.resolve() in path.parents and path.is_file():
             path.unlink()
+
+    def stash_removed(self, owner: str, pid: str, item: dict) -> None:
+        """An item's full record, kept when it leaves the timeline."""
+        if not ID_RE.fullmatch(str(item.get("id") or "")):
+            return
+        d = self.dir(owner, pid) / REMOVED_DIR
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{item['id']}.json").write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
 
     def _rmtree_inside(self, base: Path, rel: str) -> None:
         """Remove a folder of this project's -- a version's scores and stems --

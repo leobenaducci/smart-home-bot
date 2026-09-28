@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from . import analysis, media, recipes
 from .manager import Manager
 from .characters import Characters
+from .history import LABELS, History
 from .projects import ProjectError, Projects
 from .store import Store
 
@@ -51,6 +52,11 @@ store = Store(DATA / "queue" / "jobs.db")
 projects = Projects(DATA / "projects")
 characters = Characters(DATA / "projects")
 renders = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-render")
+# Each project's words under version control (studio/history.py). A save's
+# revision is written beside the request, one at a time, so typing is never
+# held up by git.
+history = History(projects, characters)
+histories = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-history")
 # Transcripts wait on the house's speech recogniser -- up to half an hour for
 # a long recording -- so they have a pool of their own: sharing the renders'
 # one worker held every person's films and encodes behind one transcript.
@@ -105,17 +111,34 @@ def _housekeeping() -> None:
 
 
 class Who:
-    def __init__(self, login: str, name: str, admin: bool):
-        self.login, self.name, self.admin = login, name, admin
+    def __init__(self, login: str, name: str, admin: bool, via: str = ""):
+        self.login, self.name, self.admin, self.via = login, name, admin, via
 
 
 def who(x_studio_secret: str = Header(""), x_studio_user: str = Header(""),
-        x_studio_name: str = Header(""), x_studio_admin: str = Header("")) -> Who:
+        x_studio_name: str = Header(""), x_studio_admin: str = Header(""),
+        x_studio_via: str = Header("")) -> Who:
+    """The person asking. `X-Studio-Via` names their assistant when it is
+    the one asking on their behalf -- the history says so."""
     if not SECRET or not hmac.compare_digest(x_studio_secret, SECRET):
         raise HTTPException(401, "not authorised")
     if not x_studio_user:
         raise HTTPException(401, "no user")
-    return Who(x_studio_user, x_studio_name or x_studio_user, x_studio_admin == "1")
+    return Who(x_studio_user, x_studio_name or x_studio_user, x_studio_admin == "1",
+               " ".join(x_studio_via.split())[:40])
+
+
+def _remember(me: Who, pid: str, message: str = "", kind: str = "edit") -> None:
+    """A revision of the project's words: taken now, written in the
+    background."""
+    captured = history.capture(me.login, pid)
+
+    def work():
+        try:
+            history.record(me.login, pid, me.login, me.name, me.via, kind=kind, message=message, captured=captured)
+        except Exception:                                      # noqa: BLE001 -- history never fails a save
+            log.exception("history of %s/%s", me.login, pid)
+    histories.submit(work)
 
 
 def _bad(exc: Exception, code: int = 400):
@@ -246,7 +269,9 @@ def list_projects(me: Who = Depends(who)):
 
 @app.post("/api/projects")
 def new_project(body: dict, me: Who = Depends(who)):
-    return projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
+    doc = projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
+    _remember(me, doc["id"])
+    return doc
 
 
 # -- characters ----------------------------------------------------------------
@@ -272,7 +297,9 @@ def list_characters(pid: str, me: Who = Depends(who)):
 def new_character(pid: str, body: dict, me: Who = Depends(who)):
     _project(me, pid)
     try:
-        return _char_public(characters.create(me.login, pid, body), me)
+        made = _char_public(characters.create(me.login, pid, body), me)
+        _remember(me, pid)
+        return made
     except ProjectError as exc:
         _bad(exc)
 
@@ -281,7 +308,9 @@ def new_character(pid: str, body: dict, me: Who = Depends(who)):
 def edit_character(pid: str, cid: str, body: dict, me: Who = Depends(who)):
     _project(me, pid)
     try:
-        return _char_public(characters.update(cid, me.login, pid, body, me.admin), me)
+        changed = _char_public(characters.update(cid, me.login, pid, body, me.admin), me)
+        _remember(me, pid)
+        return changed
     except ProjectError as exc:
         _bad(exc, 403)
 
@@ -291,7 +320,9 @@ def widen_character(pid: str, cid: str, me: Who = Depends(who)):
     """One scope wider: this project -> all of mine -> the family's."""
     _project(me, pid)
     try:
-        return _char_public(characters.widen(cid, me.login, pid, me.admin), me)
+        wider = _char_public(characters.widen(cid, me.login, pid, me.admin), me)
+        _remember(me, pid)
+        return wider
     except ProjectError as exc:
         _bad(exc, 403)
 
@@ -301,6 +332,7 @@ def delete_character(pid: str, cid: str, me: Who = Depends(who)):
     _project(me, pid)
     try:
         characters.delete(cid, me.login, pid, me.admin)
+        _remember(me, pid)
     except ProjectError as exc:
         _bad(exc, 403)
     return {"ok": True}
@@ -603,7 +635,9 @@ def get_project(pid: str, me: Who = Depends(who)):
 @app.put("/api/projects/{pid}")
 def save_project(pid: str, body: dict, me: Who = Depends(who)):
     try:
-        return projects.save(me.login, pid, body)
+        saved = projects.save(me.login, pid, body)
+        _remember(me, pid)
+        return saved
     except ProjectError as exc:
         _bad(exc, 404)
 
@@ -620,10 +654,64 @@ def delete_project(pid: str, me: Who = Depends(who)):
     return {"ok": True}
 
 
+# -- a project's history -----------------------------------------------------------
+def _history_call(fn):
+    try:
+        return fn()
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.get("/api/projects/{pid}/history")
+def project_history(pid: str, me: Who = Depends(who)):
+    """Every revision of the project's words, newest first, and its tags."""
+    _project(me, pid)
+    histories.submit(lambda: None).result(timeout=30)          # the saves before this one are in
+    return _history_call(lambda: history.log(me.login, pid))
+
+
+@app.get("/api/projects/{pid}/history/{rev}")
+def project_revision(pid: str, rev: str, me: Who = Depends(who)):
+    _project(me, pid)
+    return _history_call(lambda: history.show(me.login, pid, rev))
+
+
+@app.post("/api/projects/{pid}/history/{rev}/revert")
+def revert_revision(pid: str, rev: str, me: Who = Depends(who)):
+    """Undo what one revision changed, where nothing changed it since."""
+    _project(me, pid)
+    histories.submit(lambda: None).result(timeout=30)
+    return _history_call(lambda: history.revert(me.login, pid, rev, me.login, me.name, me.via))
+
+
+@app.post("/api/projects/{pid}/history/{rev}/restore")
+def restore_revision(pid: str, rev: str, me: Who = Depends(who)):
+    """The project as it read at that revision."""
+    _project(me, pid)
+    histories.submit(lambda: None).result(timeout=30)
+    return _history_call(lambda: history.restore(me.login, pid, rev, me.login, me.name, me.via))
+
+
+@app.post("/api/projects/{pid}/history/{rev}/tag")
+def tag_revision(pid: str, rev: str, body: dict, me: Who = Depends(who)):
+    _project(me, pid)
+    return _history_call(lambda: history.tag(me.login, pid, rev, str(body.get("name") or ""), me.login, me.name))
+
+
+@app.delete("/api/projects/{pid}/tags/{ref}")
+def untag(pid: str, ref: str, me: Who = Depends(who)):
+    _project(me, pid)
+    _history_call(lambda: history.untag(me.login, pid, ref))
+    return {"ok": True}
+
+
 @app.post("/api/projects/{pid}/duplicate")
 def duplicate_project(pid: str, body: dict | None = None, me: Who = Depends(who)):
     try:
-        return projects.duplicate(me.login, pid, str((body or {}).get("name") or ""))
+        copy = projects.duplicate(me.login, pid, str((body or {}).get("name") or ""))
+        lang = "en" if str(copy["settings"].get("language") or "es").startswith("en") else "es"
+        _remember(me, copy["id"], message=LABELS[lang]["copy"].format(s=projects.load(me.login, pid)["name"]))
+        return copy
     except ProjectError as exc:
         _bad(exc, 404)
 
@@ -939,6 +1027,7 @@ def add_items(pid: str, body: dict, me: Who = Depends(who)):
     section = str(body.get("section") or "")
     try:
         added = projects.append(me.login, pid, section, list(body.get("items") or []))
+        _remember(me, pid)
     except ProjectError as exc:
         _bad(exc, 404)
     out = {"items": [a["id"] for a in added]}

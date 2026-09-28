@@ -124,6 +124,10 @@
                 justify-content: center; overflow: hidden; }
     .sb-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .sb-card textarea { min-height: 84px; }
+    .hist-body { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+    .hist-change { padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: .86rem; line-height: 1.45; }
+    .hist-change ins { background: rgba(126,138,97,.25); text-decoration: none; }
+    .hist-change del { background: rgba(172,75,54,.18); }
     img.live { width: 100%; border-radius: var(--r-sm); display: block; background: #000; }
     dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }
   </style>
@@ -639,7 +643,7 @@
         '<span class="muted" id="saved">' + S.saved + '</span></div>' +
         '<div class="tabs">' + (p.kind === 'recording' ? [] : ['board']).concat(['video', 'audio', 'images', 'cast', 'files']).map(function (t) {
           return '<button data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
-        }).join('') + '<span class="grow"></span><button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div>' +
+        }).join('') + '<span class="grow"></span><button id="hist">🕘 ' + S.hist_button + '</button><button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div>' +
         (p.kind === 'music_video' ? '<p class="note">🎵 ' + S.mv_steps + '</p>' : '') +
         '<div id="tabbody"></div>';
       $('#v-edit').innerHTML = html;
@@ -930,6 +934,115 @@
       return '<button data-score="' + a.id + '">🎼 ' + S.score_make + '</button>';
     }
 
+    // The project's words under version control (the Studio's history.py):
+    // every save a revision, by who made it; undo one change, go back to a
+    // revision, or tag one. Pictures, clips and songs are not in it.
+    function wordDiff(a, b) {
+      var x = String(a == null ? '' : a).split(/(\s+)/), y = String(b == null ? '' : b).split(/(\s+)/);
+      if (x.length * y.length > 250000) return '<del>' + esc(a) + '</del> <ins>' + esc(b) + '</ins>';
+      var m = x.length, n = y.length, L = [];
+      for (var i = 0; i <= m; i++) { L.push(new Array(n + 1).fill(0)); }
+      for (i = m - 1; i >= 0; i--) for (var j = n - 1; j >= 0; j--)
+        L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+      var out = '', k = 0, l = 0;
+      while (k < m && l < n) {
+        if (x[k] === y[l]) { out += esc(x[k]); k++; l++; }
+        else if (L[k + 1][l] >= L[k][l + 1]) { out += '<del>' + esc(x[k]) + '</del>'; k++; }
+        else { out += '<ins>' + esc(y[l]) + '</ins>'; l++; }
+      }
+      while (k < m) out += '<del>' + esc(x[k++]) + '</del>';
+      while (l < n) out += '<ins>' + esc(y[l++]) + '</ins>';
+      return out;
+    }
+    function histValue(v, field) {
+      if (v == null || v === '') return '<span class="muted">—</span>';
+      if (field === 'cast' && Array.isArray(v)) {
+        return esc(v.map(function (id) { var c = cast.find(function (x) { return x.id === id; }); return c ? c.name : '?'; }).join(', '));
+      }
+      if (typeof v === 'object') return '<code>' + esc(JSON.stringify(v)) + '</code>';
+      return esc(String(v));
+    }
+    function histChanges(list) {
+      if (!list.length) return '<p class="muted">' + S.hist_nothing + '</p>';
+      return list.map(function (c) {
+        var head = '<b>' + esc(c.label) + '</b> · ' + esc(c.field_label || '');
+        var body;
+        if (c.change === 'added' || c.change === 'removed') {
+          var rec = c.after || c.before || {};
+          body = esc(rec.prompt || rec.lyrics || rec.title || rec.look || rec.name || '');
+        } else if (c.on === 'order') {
+          body = '<span class="muted">' + S.hist_reordered + '</span>';
+        } else if (typeof c.before === 'string' && typeof c.after === 'string') {
+          body = wordDiff(c.before, c.after);
+        } else {
+          body = histValue(c.before, c.field) + ' → ' + histValue(c.after, c.field);
+        }
+        return '<div class="hist-change"><div class="muted">' + head + '</div><div>' + body + '</div></div>';
+      }).join('');
+    }
+    async function historyDialog() {
+      var p = current, dlg = $('#dlg');
+      dlg.innerHTML = '<h2>🕘 ' + S.hist_title + '</h2><p class="muted">' + S.hist_help + '</p><div id="hist-list"><p class="muted">…</p></div>' +
+        '<div class="row" style="margin-top:12px"><button id="hist-tag-now">🏷 ' + S.hist_tag_now + '</button><span class="grow"></span><button id="hist-close">' + S.preview_close + '</button></div>';
+      dlg.showModal();
+      // One <dialog> serves every dialog on the page: this one's click
+      // handler goes when it closes.
+      dlg.addEventListener('close', function () { dlg.onclick = null; }, { once: true });
+      $('#hist-close').onclick = function () { dlg.close(); };
+      var data = { revisions: [], tags: [] };
+      async function load() {
+        try { data = await api('projects/' + p.id + '/history'); } catch (e) { toast(fmt('err', { e: e.message }), true); return; }
+        var icon = { revert: '↩', restore: '⏪', start: '✨', checkpoint: '•' };
+        $('#hist-list').innerHTML = data.revisions.length ? data.revisions.map(function (r, i) {
+          var tags = data.tags.filter(function (t) { return t.rev === r.rev; });
+          return '<div class="card hist-rev" style="margin-bottom:8px;padding:10px 12px"><div class="row">' +
+            '<b>' + (icon[r.kind] ? icon[r.kind] + ' ' : '') + esc(r.subject) + '</b>' +
+            tags.map(function (t) { return '<span class="pill ok">🏷 ' + esc(t.name) + ' <button class="icon" data-untag="' + esc(t.ref) + '" title="' + esc(S.delete) + '">✕</button></span>'; }).join('') +
+            '</div><div class="row" style="margin-top:4px"><span class="muted">' + esc(r.author) + ' · ' + new Date(r.at * 1000).toLocaleString() +
+            ' · <code>' + r.rev.slice(0, 7) + '</code></span><span class="grow"></span>' +
+            '<button data-hshow="' + r.rev + '">' + S.hist_show + '</button>' +
+            (r.kind !== 'start' ? '<button data-hrevert="' + r.rev + '" title="' + esc(S.hist_revert_help) + '">↩ ' + S.hist_revert + '</button>' : '') +
+            (i > 0 ? '<button data-hrestore="' + r.rev + '" title="' + esc(S.hist_restore_help) + '">⏪ ' + S.hist_restore + '</button>' : '') +
+            '<button data-htag="' + r.rev + '">🏷</button></div><div class="hist-body" id="hb-' + r.rev + '" hidden></div></div>';
+        }).join('') : '<p class="muted">' + S.hist_empty + '</p>';
+        $('#hist-tag-now').disabled = !data.revisions.length;
+      }
+      async function after(res) {
+        current = await api('projects/' + p.id); await loadCast(); drawEditor();
+        toast(res.conflicts && res.conflicts.length ? fmt('hist_conflicts', { n: res.conflicts.length }) : S.hist_done, !!(res.conflicts && res.conflicts.length));
+        load();
+      }
+      async function tagIt(rev) {
+        var name = prompt(S.hist_tag_prompt); if (!name || !name.trim()) return;
+        await api('projects/' + p.id + '/history/' + rev + '/tag', { method: 'POST', body: { name: name.trim() } });
+        load();
+      }
+      dlg.onclick = async function (ev) {
+        var b = ev.target.closest('button'); if (!b) return;
+        var d = b.dataset;
+        try {
+          if (b.id === 'hist-tag-now' && data.revisions.length) return tagIt(data.revisions[0].rev);
+          if (d.htag) return tagIt(d.htag);
+          if (d.untag) { if (!confirm(S.hist_untag_confirm)) return; await api('projects/' + p.id + '/tags/' + d.untag, { method: 'DELETE' }); return load(); }
+          if (d.hshow) {
+            var box = $('#hb-' + d.hshow);
+            if (!box.hidden) { box.hidden = true; return; }
+            var sh = await api('projects/' + p.id + '/history/' + d.hshow);
+            box.innerHTML = histChanges(sh.changes); box.hidden = false; return;
+          }
+          if (d.hrevert) {
+            if (!confirm(S.hist_revert_confirm)) return;
+            return after(await api('projects/' + p.id + '/history/' + d.hrevert + '/revert', { method: 'POST' }));
+          }
+          if (d.hrestore) {
+            if (!confirm(S.hist_restore_confirm)) return;
+            return after(await api('projects/' + p.id + '/history/' + d.hrestore + '/restore', { method: 'POST' }));
+          }
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
+      load();
+    }
+
     // Files
     function filesTab() {
       var p = current, up = p.uploads || [];
@@ -1010,6 +1123,7 @@
       try {
         if (b.id === 'back') return closeProject();
         if (d.tab) { await flushSave(); tab = d.tab; drawEditor(); return; }
+        if (b.id === 'hist') { await flushSave(); return historyDialog(); }
         if (b.id === 'dup') { await flushSave(); var np = await api('projects/' + p.id + '/duplicate', { method: 'POST', body: {} }); return openProject(np.id); }
         if (b.id === 'del') { if (!confirm(S.delete_confirm)) return; await api('projects/' + p.id, { method: 'DELETE' }); current = null; return closeProject(); }
         if (d.jump) { var el = document.getElementById('shot-' + d.jump); if (el) el.scrollIntoView({ behavior: 'smooth' }); return; }
