@@ -808,12 +808,21 @@ def fetch_ollama(base_url: str, api_key: str = "",
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
         return [], f"could not reach Ollama at {base_url}: {exc}"
     out = []
+    local = provider in ("ollama", "ollama_vision")
     for m in data.get("models") or []:
         name = m.get("name") or m.get("model") or ""
         if not name:
             continue
         details = m.get("details") or {}
         family = (details.get("family") or "").lower()
+        # What the model can take, as Ollama itself says (`/api/show`
+        # capabilities). The name was the guess before: `-vl` in it meant
+        # images, so qwen3.5 and gemma4 -- which read images natively -- were
+        # never offered for the vision role, and a server running one could
+        # not be picked for it (2026-09-27). Asked of the house's own Ollama
+        # only: one local call per model, while ollama.com would be a
+        # metered round trip per model per refresh.
+        caps = _ollama_capabilities(base_url, name, headers) if local else None
         # `ollama:`, `ollama-cloud:` and `ollama-vision:` are the prefixes
         # assistant.models uses (MODEL_PROVIDERS in deploy.py), so what this
         # page offers is exactly what the config takes -- and a model pulled
@@ -835,17 +844,31 @@ def fetch_ollama(base_url: str, api_key: str = "",
                {"input": None, "output": None, "cache_read": None}),
             "context": None, "max_output": None,
             "reasoning": False,
-            # `vl`/`vision`/`llava` in the family is how Ollama names its
-            # multimodal builds.
-            "vision": any(t in family or t in name.lower()
-                          for t in ("vl", "vision", "llava", "minicpm-v")),
-            # Ollama publishes no modality list, and there is no naming
-            # convention for audio the way there is for `-vl`. Left False
-            # rather than guessed at.
-            "audio": False,
+            # Without an answer from /api/show, the old guess: `vl`, `vision`
+            # or `llava` in the family or the name.
+            "vision": ("vision" in caps if caps is not None else
+                       any(t in family or t in name.lower()
+                           for t in ("vl", "vision", "llava", "minicpm-v"))),
+            # There is no naming convention for audio the way there is for
+            # `-vl`, so without /api/show it is left False rather than guessed.
+            "audio": "audio" in caps if caps is not None else False,
             "size": m.get("size"),
         })
     return sorted(out, key=lambda m: m["name"]), ""
+
+
+def _ollama_capabilities(base_url: str, name: str, headers: dict | None = None) -> set[str] | None:
+    """{"completion", "vision", "tools", ...} from Ollama's /api/show, or None."""
+    body = json.dumps({"model": name}).encode()
+    req = urllib.request.Request(f"{base_url.rstrip('/')}/api/show", data=body, method="POST",
+                                 headers={"User-Agent": USER_AGENT, "Content-Type": "application/json",
+                                          **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            caps = json.loads(r.read().decode()).get("capabilities")
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+    return set(caps) if isinstance(caps, list) else None
 
 
 def _rows(data) -> list:

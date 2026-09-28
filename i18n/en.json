@@ -1341,5 +1341,7 @@
   "devices.no_channel": "{name} cannot be reached: its owner has no notifications set up.",
   "nav.this_device": "This device",
   "nav.this_device_help": "Name this phone or tablet, and let a parent control it from Alfred",
-  "admin.models.library_stale": "Ollama did not answer at the last refresh ({at}), so its models are as they were before it. Apply again, or run ./home-stack ollama --library, to read them fresh."
+  "admin.models.library_stale": "Ollama did not answer at the last refresh ({at}), so its models are as they were before it. Apply again, or run ./home-stack ollama --library, to read them fresh.",
+  "admin.models.ollama_how_pending": "after Apply (estimated)",
+  "admin.models.ollama_gpu_until_apply": "running until Apply"
 }

@@ -302,7 +302,7 @@ def instance_need(inst: dict, models: list[str], facts: dict[str, dict], measure
 
 
 def gpu_view(gpus: list[dict], instances: list[dict], needs: dict[str, dict],
-             measured: bool = True) -> list[dict]:
+             measured: bool = True, pending: frozenset | set = frozenset()) -> list[dict]:
     """Per card: its size, what else is on it, each instance's share, and what is left.
 
     An instance on several cards is counted as an even split -- how Ollama
@@ -314,6 +314,15 @@ def gpu_view(gpus: list[dict], instances: list[dict], needs: dict[str, dict],
     its estimate and its process. With *measured*, a server the host saw on
     this card is drawn at what it actually holds; the Preview passes False,
     because what it draws is not running yet.
+
+    *pending* are servers saved with changes not applied yet. What the host
+    sees of one is its *old* configuration, so it is drawn at the estimate
+    for the saved one ("after Apply") -- the Media setup read "qwen3-vl:4b ·
+    16k" at 9.2 GiB "measured", which was qwen3-vl:8b at 64k still running
+    (2026-09-27). And a server the host sees on a card it is not drawn on --
+    moved away by a save not applied yet -- is still there until Apply, so it
+    is listed with the other tenants rather than vanishing: GPU1 read 2 of 12
+    GiB while the Text setup held 8.8 there.
     """
     own = ("unit ollama", "unit llamacpp-")
     out = []
@@ -323,7 +332,7 @@ def gpu_view(gpus: list[dict], instances: list[dict], needs: dict[str, dict],
         others = [t for t in tenants if not str(t.get("owner", "")).startswith(own)]
         seen = {str(t.get("owner", ""))[len("unit "):]: t for t in tenants
                 if str(t.get("owner", "")).startswith(own)}
-        rows = []
+        rows, drawn = [], set()
         for inst in instances:
             cards = inst["gpus"]
             if cards and idx not in cards:
@@ -331,8 +340,11 @@ def gpu_view(gpus: list[dict], instances: list[dict], needs: dict[str, dict],
             if not cards:
                 continue                                      # unpinned: shown apart
             share, how = needs[inst["id"]]["bytes"] / len(cards), needs[inst["id"]]["how"]
-            live = seen.get(inst.get("unit") or "") if measured else None
-            if live and live.get("mib"):
+            drawn.add(inst.get("unit") or "")
+            live = seen.get(inst.get("unit") or "") if measured and inst["id"] not in pending else None
+            if measured and inst["id"] in pending:
+                how = "pending"
+            elif live and live.get("mib"):
                 share, how = live["mib"] * 1024 * 1024, "measured"
             elif measured and inst.get("unit") and not inst.get("setup") and not inst.get("model"):
                 # A general server the host saw nothing of on this card holds
@@ -342,10 +354,14 @@ def gpu_view(gpus: list[dict], instances: list[dict], needs: dict[str, dict],
                 share, how = 0.0, "idle"
             rows.append({"id": inst["id"], "bytes": share, "how": how,
                          "split": len(cards) > 1})
+        if measured:
+            others = others + [{**t, "until_apply": True} for unit, t in seen.items()
+                               if unit not in drawn and t.get("mib")]
         total = g["total_mib"] * 1024 * 1024
         used = sum(t["mib"] for t in others) * 1024 * 1024 + sum(r["bytes"] for r in rows)
         out.append({"index": idx, "name": g.get("name", ""), "total": total,
-                    "others": [{"owner": t["owner"], "bytes": t["mib"] * 1024 * 1024} for t in others],
+                    "others": [{"owner": t["owner"], "bytes": t["mib"] * 1024 * 1024,
+                                "until_apply": bool(t.get("until_apply"))} for t in others],
                     "instances": rows, "free": total - used, "fits": used <= total * 0.97})
     return out
 

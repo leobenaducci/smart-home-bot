@@ -7564,7 +7564,8 @@ def _ollama_card(cfg: dict) -> dict:
             "removable": inst["id"] != "main" and not used and inst["purpose"] != "bench",
         })
     enabled = [i for i in insts if i["enabled"]]
-    card["gpu_view"] = _gpu_view(card["gpus"], enabled, needs)
+    card["gpu_view"] = _gpu_view(card["gpus"], enabled, needs,
+                                 pending={c["id"] for c in card["instances"] if c["state"] == "pending"})
     # An "Auto" server with no card is one the save could not place (the
     # cards were not known then): as unpinned as one set that way.
     card["unpinned"] = [i["id"] for i in enabled if not i["gpus"] and not i.get("cpu")]
@@ -7655,7 +7656,8 @@ def _ollama_card(cfg: dict) -> dict:
     return card
 
 
-def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool = True) -> list[dict]:
+def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool = True,
+              pending: frozenset | set = frozenset()) -> list[dict]:
     """The cards as the page draws them: each one's tenants and servers, in GiB
     and as a share of the card. The card and the preview both use this."""
     import ollama_vram
@@ -7668,6 +7670,7 @@ def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool
                         _t_or("admin.models.ollama_general_server", "{name} (general server)",
                               name=i["label"] or i["id"]))
               for i in enabled}
+    units = {i.get("unit"): labels[i["id"]] for i in enabled if i.get("unit")}
     models = {i["id"]: " · ".join(x for x in (
         OI.short_model(i["model"]) if i.get("model") else "",
         OI.ENGINE_LABELS.get(i.get("engine", "ollama"), "") if i.get("engine", "ollama") != "ollama" else "")
@@ -7677,12 +7680,16 @@ def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool
          "free_gib": round(g["free"] / ollama_vram.GIB, 1),
          "used_gib": round((g["total"] - g["free"]) / ollama_vram.GIB, 1),
          "over_gib": round(max(0, -g["free"]) / ollama_vram.GIB, 1),
+         # A house server still running where the saved list no longer puts
+         # it is named as its setup, not as its systemd unit.
          "others": [{**o, "gib": round(o["bytes"] / ollama_vram.GIB, 2),
-                     "pct": round(o["bytes"] * 100 / g["total"], 1)} for o in g["others"]],
+                     "pct": round(o["bytes"] * 100 / g["total"], 1),
+                     "owner": units.get(o["owner"][len("unit "):], o["owner"])
+                     if o.get("until_apply") else o["owner"]} for o in g["others"]],
          "instances": [{**r, "gib": round(r["bytes"] / ollama_vram.GIB, 1), "name": names.get(r["id"], r["id"]),
                         "label": labels.get(r["id"], r["id"]), "model": models.get(r["id"], ""),
                         "pct": round(r["bytes"] * 100 / g["total"], 1)} for r in g["instances"]]}
-        for g in ollama_vram.gpu_view(gpus, enabled, needs, measured=measured)]
+        for g in ollama_vram.gpu_view(gpus, enabled, needs, measured=measured, pending=pending)]
 
 
 def _ollama_needs(cfg: dict, insts: list[dict], users: dict | None = None,
