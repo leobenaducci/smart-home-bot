@@ -21665,7 +21665,7 @@ STUDIO_UI_KEYS = (
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
-    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_after',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_after', 'rec_retry',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
@@ -21951,7 +21951,10 @@ def studio_describe():
         '{"title": "...", "description": "...", "chapters": [{"start": 0, "title": "..."}, ...]} '
         "with each start in seconds."
     )
-    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-describe'
+    # One conversation per recording version: shared by the day, the second
+    # recording was described with the first one's transcript in its history.
+    take = re.sub(r'[^a-z0-9]', '', str(d.get('take') or ''))[:32] or 'x'
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-describe-{take}'
     out = _studio_parse_description(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S))
     if out is None:
         return jsonify(error=t('studio.rec_desc_failed')), 502

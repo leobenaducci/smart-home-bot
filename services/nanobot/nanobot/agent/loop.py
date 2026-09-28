@@ -1451,6 +1451,7 @@ class AgentLoop:
         profile: str | None = None,
         route_text: str | None = None,
         inline: bool = False,
+        said_text: str | None = None,
     ) -> tuple[str | None, list[str], list[dict], str, bool]:
         """Run the agent iteration loop.
 
@@ -1586,6 +1587,14 @@ class AgentLoop:
         # Which tier this turn *starts* on -- the caller's flags, a recent
         # escalation in this session, or the classifier's label, in that
         # order. `forced` and `sticky` never ask the model. See classify.py.
+        # What a sub-agent handed this turn is told the person said: the whole
+        # message as history keeps it -- the location, the reply it answers,
+        # what was sent to them in the background -- not only the words the
+        # router measured. Without it a delegated "and the other one?" lost
+        # the message it pointed at.
+        said = said_text if said_text is not None else route_text
+        if said is not None and initial_messages:
+            said = _with_image_placeholders(initial_messages[-1], said)
         if route_text is not None and initial_messages:
             route_text = _with_image_placeholders(initial_messages[-1], route_text)
         route = await self._route_turn(
@@ -1608,7 +1617,7 @@ class AgentLoop:
                 and not (use_vision or profile or powerful)
                 and delegate.may_delegate(channel, chat_id, session.key if session else None)):
             return await self._delegate_turn(initial_messages, session, channel, chat_id,
-                                             "long", route, said=route_text)
+                                             "long", route, said=said)
         # Long tasks on pi, when the household asks for it (`harness.longTasks`):
         # a `long` turn goes where a `background` one does rather than being
         # planned here. Only where pi can take it now -- otherwise the plan
@@ -1618,7 +1627,7 @@ class AgentLoop:
                 and delegate.may_delegate(channel, chat_id, session.key if session else None)
                 and self.subagents.harness_takes_long_tasks()):
             return await self._delegate_turn(initial_messages, session, channel, chat_id,
-                                             "long", route, said=route_text)
+                                             "long", route, said=said)
         if use_vision:
             runner, turn_model = self._vision_runner, self._vision_model
         elif profile and profile in self._profiles:
@@ -1801,7 +1810,7 @@ class AgentLoop:
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "continue", route,
                     done="\n\n".join(x for x in (plan_note, delegate.already_done(result.messages)) if x),
-                    lead=result.final_content, said=route_text)
+                    lead=result.final_content, said=said)
             if (self._should_escalate_any(result, route, runner) and can_hand_off):
                 route.escalated_from = result.stop_reason
                 report_usage(session.key if session else None,
@@ -1811,7 +1820,7 @@ class AgentLoop:
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "dead_end", route,
                     done="\n\n".join(x for x in (plan_note, delegate.already_done(result.messages)) if x),
-                    said=route_text)
+                    said=said)
             if self._should_escalate(result, route, runner):
                 first_attempt = result
                 reason = result.stop_reason
@@ -2282,7 +2291,9 @@ class AgentLoop:
         # otherwise make `/new` arrive as "[[[standing-context]]]…\n\n/new",
         # match nothing, and be answered by the model as prose — silently
         # removing the one way out of a session that has gone bad.
-        raw = standing_context.for_history(msg.content).strip() \
+        # Turn context off too: the portal puts the person's location in front
+        # of what they typed, and "[location]\n/new" matched no command.
+        raw = standing_context.for_routing(msg.content).strip() \
             if isinstance(msg.content, str) else ""
         ctx = CommandContext(msg=msg, session=session, key=key, raw=raw, loop=self)
         if result := await self.commands.dispatch(ctx):
@@ -2389,6 +2400,7 @@ class AgentLoop:
             # What the person wrote, without this turn's context either: that
             # stays in history and in front of the model, not in the routing.
             route_text=standing_context.for_routing(msg.content) if isinstance(msg.content, str) else None,
+            said_text=stored_text if isinstance(msg.content, str) else None,
         )
 
         if final_content is None or not final_content.strip():

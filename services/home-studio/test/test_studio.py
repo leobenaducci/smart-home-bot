@@ -819,6 +819,7 @@ heard = []
 A.WHISPER_URL = "http://whisper.invalid/transcribe"
 _post = A.requests.post
 A.requests.post = lambda url, **kw: heard.append((url, kw.get("data"))) or _Heard()
+A.TRANSCRIBE_PIECE_S = 1.0   # the 3-second recording goes as three pieces
 try:
     c.post(f"/api/projects/{rp['id']}/items/{rec['id']}/transcribe", json={}, headers=h(JUANA, "Juana"))
     deadline = time.time() + 60
@@ -833,6 +834,9 @@ finally:
 tr = tk.get("transcript") or {}
 check("  the recording's speech goes to the recogniser, in the project's language",
       heard and heard[0][0] == A.WHISPER_URL and heard[0][1]["language"] == "es", heard)
+check("  a recording goes to the recogniser a piece at a time", len(heard) == 3, len(heard))
+check("  each piece's times moved to where it sits in the recording",
+      tr.get("state") == "done" and "00:00:02,200 --> 00:00:03,400" in (A.projects.dir(JUANA, rp["id"]) / tr["srt"]).read_text(), tr)
 check("  and comes back as a transcript and subtitles on the version",
       tr.get("state") == "done" and "Hola, esto es una prueba." in tr.get("text", "")
       and "00:00:00,200 --> 00:00:01,400" in (A.projects.dir(JUANA, rp["id"]) / tr["srt"]).read_text(), tr)
@@ -875,6 +879,29 @@ kept_ch = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["
 check("  a recording keeps its description and chapters, in order, the unreadable ones dropped",
       kept_ch["description"] == "Paso a paso." and kept_ch["chapters"] == [{"start": 0.0, "title": "Intro"}, {"start": 95.0, "title": "Aflojar"}],
       kept_ch.get("chapters"))
+check("  subtitles and trimming are for recordings",
+      c.post(f"/api/projects/{sbp['id']}/items/{sdoc['shots'][0]['id']}/transcribe", json={}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/{sdoc['shots'][0]['id']}/trim", json={}, headers=h(JUANA, "Juana")).status_code == 400)
+# Sent as a request would be crafted by hand: a literal 1e999 in the JSON,
+# which Python reads as infinity (the page's own parser cannot send it).
+import json as _json
+raw_body = _json.dumps({"shots": [dict(x, chapters=[{"start": "__INF__", "title": "nunca"}, {"start": 5, "title": "ok"}])
+                                  for x in c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"]]})
+c.put(f"/api/projects/{rp['id']}", content=raw_body.replace('"__INF__"', "1e999"),
+      headers={**h(JUANA, "Juana"), "Content-Type": "application/json"})
+gi = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana"))
+check("  a chapter time that is not a real one is dropped, and the project still opens",
+      gi.status_code == 200 and gi.json()["shots"][0]["chapters"] == [{"start": 5.0, "title": "ok"}], gi.status_code)
+A.projects.set_item_field(JUANA, rp["id"], rec["id"], "trim", {"state": "running"})
+A.projects.set_take_field(JUANA, rp["id"], rec["id"], Projects.chosen_take(clipd)["id"], "transcript",
+                          {**tr, "state": "running"})
+check("  work cut off by a restart is marked interrupted, not left running", A.projects.interrupt_running() >= 1)
+after = next(x for x in c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == rec["id"])
+check("  so the page offers it again",
+      after["trim"]["state"] == "failed" and Projects.chosen_take(after)["transcript"]["state"] == "failed", after.get("trim"))
+srt_left = A.projects.dir(JUANA, rp["id"]) / tr["srt"]
+A.projects.delete_take(JUANA, rp["id"], rec["id"], Projects.chosen_take(after)["id"])
+check("  deleting a version takes its transcript with it", not srt_left.exists())
 empty = c.post(f"/api/projects/{rp['id']}/recordings", json={}, headers=h(JUANA, "Juana")).json()
 check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)

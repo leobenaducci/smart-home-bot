@@ -51,6 +51,10 @@ store = Store(DATA / "queue" / "jobs.db")
 projects = Projects(DATA / "projects")
 characters = Characters(DATA / "projects")
 renders = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-render")
+# Transcripts wait on the house's speech recogniser -- up to half an hour for
+# a long recording -- so they have a pool of their own: sharing the renders'
+# one worker held every person's films and encodes behind one transcript.
+speech = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-speech")
 render_state: dict[str, dict] = {}
 
 
@@ -76,6 +80,11 @@ app = FastAPI(title="home-studio", docs_url=None, redoc_url=None)
 
 @app.on_event("startup")
 def _start() -> None:
+    # Work that was running beside the queue when the studio stopped is gone
+    # with the process; left "running", its button never came back.
+    n = projects.interrupt_running()
+    if n:
+        log.info("marked %d interrupted transcript/trim/encode(s) as failed", n)
     manager.start()
     threading.Thread(target=_housekeeping, daemon=True).start()
 
@@ -443,6 +452,7 @@ def finish_recording(pid: str, rid: str, me: Who = Depends(who)):
 
 
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
+TRANSCRIBE_PIECE_S = 60.0
 
 
 @app.post("/api/projects/{pid}/items/{item_id}/trim")
@@ -452,6 +462,8 @@ def trim_silences(pid: str, item_id: str, body: dict | None = None, me: Who = De
     the CPU pool beside the queue; the item says where it is."""
     body = body or {}
     _doc, item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    if not item.get("recorded"):
+        _bad(ValueError("silences are taken out of recordings"))
     base = projects.dir(me.login, pid)
     try:
         min_s = max(0.6, min(10.0, float(body.get("min_seconds") or 1.2)))
@@ -490,21 +502,36 @@ def transcribe(pid: str, item_id: str, body: dict | None = None, me: Who = Depen
     if not WHISPER_URL:
         _bad(ValueError("the house has no speech recogniser configured"))
     doc, item, take = _item_take(me, pid, item_id, str((body or {}).get("take") or ""))
+    if not item.get("recorded"):
+        _bad(ValueError("subtitles are made for recordings"))
     base = projects.dir(me.login, pid)
     language = str((body or {}).get("language") or doc["settings"].get("language") or "es")[:5]
-    projects.set_take_field(me.login, pid, item_id, take["id"], "transcript", {"state": "running"})
+    # The earlier transcript's file names are kept while this one runs (it
+    # writes the same names): a record that forgot them left the files behind
+    # when the version was deleted.
+    projects.set_take_field(me.login, pid, item_id, take["id"], "transcript",
+                            {**(take.get("transcript") or {}), "state": "running"})
 
     def work():
         stem = base / "takes" / item_id / f"{take['id']}-transcript"
         wav = stem.with_suffix(".wav")
+        piece = stem.with_suffix(".piece.wav")
         try:
             media.to_wav(base / take["file"], wav, rate=16000, channels=1)
-            with open(wav, "rb") as fh:
-                r = requests.post(WHISPER_URL, files={"file": ("speech.wav", fh, "audio/wav")},
-                                  data={"language": language}, timeout=1800)
-            r.raise_for_status()
-            segments = [{"start": round(float(s["start"]), 2), "end": round(float(s["end"]), 2),
-                         "text": str(s.get("text") or "").strip()} for s in r.json().get("segments") or []]
+            total = media.probe(wav)["seconds"]
+            # A minute at a time: the recogniser is the house's, and a whole
+            # recording in one request held it -- and every room's voice
+            # request behind it -- for as long as the recording lasted.
+            segments, at = [], 0.0
+            while at < total - 0.05:
+                media.cut_audio(wav, piece, at, TRANSCRIBE_PIECE_S)
+                with open(piece, "rb") as fh:
+                    r = requests.post(WHISPER_URL, files={"file": ("speech.wav", fh, "audio/wav")},
+                                      data={"language": language}, timeout=600)
+                r.raise_for_status()
+                segments += [{"start": round(at + float(s["start"]), 2), "end": round(at + float(s["end"]), 2),
+                              "text": str(s.get("text") or "").strip()} for s in r.json().get("segments") or []]
+                at += TRANSCRIBE_PIECE_S
             stem.with_suffix(".json").write_text(json.dumps(segments, ensure_ascii=False))
             stem.with_suffix(".srt").write_text(media.srt(segments), encoding="utf-8")
             projects.set_take_field(me.login, pid, item_id, take["id"], "transcript", {
@@ -514,11 +541,13 @@ def transcribe(pid: str, item_id: str, body: dict | None = None, me: Who = Depen
         except Exception as exc:                               # noqa: BLE001
             log.warning("transcript %s failed: %s", item_id, exc)
             projects.set_take_field(me.login, pid, item_id, take["id"], "transcript",
-                                    {"state": "failed", "error": str(exc)[:300]})
+                                    {**{k: v for k, v in (take.get("transcript") or {}).items() if k in ("file", "srt")},
+                                     "state": "failed", "error": str(exc)[:300]})
         finally:
             wav.unlink(missing_ok=True)
+            piece.unlink(missing_ok=True)
 
-    renders.submit(work)
+    speech.submit(work)
     return {"ok": True, "state": "running"}
 
 

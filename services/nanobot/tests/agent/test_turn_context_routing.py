@@ -33,6 +33,11 @@ def test_a_short_message_with_long_notes_is_not_work_handed_over():
     assert router.fast_path(sc.for_routing(MSG)) is None
 
 
+def test_a_command_behind_the_location_is_still_a_command():
+    msg = f"{sc.OPEN}\npersona\n{sc.CLOSE}\n\n{sc.TURN_OPEN}\n[User's current location: 0,0]\n{sc.TURN_CLOSE}\n/new"
+    assert sc.for_routing(msg) == "/new"
+
+
 def test_a_message_without_turn_context_routes_as_before():
     plain = f"{sc.OPEN}\npersona\n{sc.CLOSE}\n\nhola"
     assert sc.for_routing(plain) == sc.for_history(plain) == "hola"

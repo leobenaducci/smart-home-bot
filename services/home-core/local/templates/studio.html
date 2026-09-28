@@ -163,7 +163,10 @@
     var ME = {{ user|tojson }};
     var CSRF = document.querySelector('meta[name=csrf-token]').content;
     var $ = function (sel, root) { return (root || document).querySelector(sel); };
-    function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    // Quotes too: this goes inside value="..." and title="..." all over the
+    // page, and a title with a quote in it was cut at the quote.
+    function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s);
+      return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
     function fmt(key, vars) { return (S[key] || key).replace(/\{(\w+)\}/g, function (_, k) { return vars[k]; }); }
     function dur(s) {
       s = Math.max(0, Math.round(s || 0));
@@ -510,7 +513,7 @@
       btn.disabled = true; btn.textContent = S.rec_describing;
       try {
         var segs = await (await fetch(fileUrl(p.id, tr.file))).json();
-        var r = await api('describe', { method: 'POST', body: { segments: segs, language: p.settings.language || 'es' } });
+        var r = await api('describe', { method: 'POST', body: { segments: segs, language: p.settings.language || 'es', take: t.id } });
         var dlg = $('#dlg');
         dlg.innerHTML = '<h2>' + S.rec_describe + '</h2>' +
           '<label class="f">' + S.rec_desc_title + '</label><input id="ds-t" value="' + esc(r.title) + '">' +
@@ -605,6 +608,7 @@
           html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>🔴 ' + esc(s.title || (S.shot + ' ' + (i + 1))) + '</b>' +
             (rs === 'processing' ? '<span class="pill run">' + S.rec_processing + '</span>' : rs === 'failed' ? '<span class="pill">' + S.rec_failed + '</span>' :
              rs === 'recording' ? '<span class="pill run">● ' + S.rec_title + '</span>' : '<span class="muted">' + clock(s.seconds || 0) + '</span>') +
+            (rs === 'failed' ? '<button data-rec-retry="' + s.id + '">' + S.rec_retry + '</button>' : '') +
             '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
             '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
             (t && t.file ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>' +
@@ -874,6 +878,10 @@
         if (b.id === 'preview') return previewPlayer();
         if (b.id === 'rec') return recorder();
         if (d.describe) return describeClip(d.describe, b);
+        if (d.recRetry) {
+          await api('projects/' + p.id + '/recordings/' + d.recRetry + '/finish', { method: 'POST' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
         if (d.copyChapters) {
           try { await navigator.clipboard.writeText(chaptersText(itemById(d.copyChapters))); toast(S.rec_desc_copied); }
           catch (e) { toast(fmt('err', { e: e.message }), true); }
@@ -882,7 +890,7 @@
         if (d.transcribe || d.trim) {
           await api('projects/' + p.id + '/items/' + (d.transcribe || d.trim) + '/' + (d.transcribe ? 'transcribe' : 'trim'),
                     { method: 'POST', body: {} });
-          current = await api('projects/' + p.id); drawTab(); watchClips(); return;
+          current = await api('projects/' + p.id); drawTab(); return;
         }
         if (b.id === 'ch-new') return characterDialog(null);
         if (d.chEdit) return characterDialog(cast.find(function (c) { return c.id === d.chEdit; }));
@@ -1316,7 +1324,7 @@
           try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST' }); }
           catch (e) { toast(fmt('err', { e: e.message }), true); }
           release(); dlg.close();
-          current = await api('projects/' + p.id); drawTab(); watchClips();
+          current = await api('projects/' + p.id); drawTab();
         };
         st.rec.start(5000);
         st.t0 = Date.now(); st.clock = setInterval(clockNow, 500);
@@ -1449,20 +1457,6 @@
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
       };
     }
-    // A clip being transcribed or trimmed is worked on beside the queue, so
-    // no job says when it is done: the page asks until the clip does.
-    function watchClips() {
-      var t = setInterval(async function () {
-        if (!current) return clearInterval(t);
-        var p = await api('projects/' + current.id);
-        var busy = (p.shots || []).some(function (s) {
-          var tk = chosen(s) || {};
-          return (s.trim || {}).state === 'running' || (tk.transcript || {}).state === 'running' || (s.recording || {}).state === 'processing';
-        });
-        if (!busy) { clearInterval(t); }
-        if (!dirty && !document.querySelector('dialog[open]')) { current = p; drawTab(); }
-      }, 4000);
-    }
     function watchRender() {
       var t = setInterval(async function () {
         if (!current) return clearInterval(t);
@@ -1478,7 +1472,12 @@
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
       var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),
-        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length + ':' + (i.boards || []).length; }); })]);
+        // Work done beside the queue (a transcript, a trim, a recording being
+        // encoded) has no job to watch, so its state is part of what is
+        // compared -- the tab redraws when it finishes, under the same guards.
+        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) {
+          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.recording || {}).state,
+                  ((chosen(i) || {}).transcript || {}).state].join(':'); }); })]);
       if (sig !== lastSig) {
         lastSig = sig;
         // Never redraw under somebody's cursor: the new takes wait for the

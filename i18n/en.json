@@ -1543,6 +1543,7 @@
   "studio.rec_saved": "all sent",
   "studio.rec_processing": "⏳ Processing the recording…",
   "studio.rec_failed": "The recording could not be processed",
+  "studio.rec_retry": "↻ Try again",
   "studio.rec_no_screen": "Recording the screen only works in a computer's browser.",
   "studio.rec_need_source": "Pick the screen, the camera, or both.",
   "studio.rec_default_title": "Recording {n}",

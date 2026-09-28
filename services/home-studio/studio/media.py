@@ -177,6 +177,12 @@ def for_generator(src: Path, out: Path) -> Path:
     return out
 
 
+def cut_audio(src: Path, out: Path, start: float, seconds: float) -> Path:
+    """*seconds* of *src* from *start*, same format."""
+    _run(["-ss", f"{start:.3f}", "-t", f"{seconds:.3f}", "-i", str(src), "-c", "copy", str(out)], timeout=300)
+    return out
+
+
 def srt(segments: list[dict]) -> str:
     """Subtitles in SubRip form from timed segments ({start, end, text})."""
     def stamp(t: float) -> str:

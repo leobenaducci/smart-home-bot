@@ -1545,6 +1545,7 @@
   "studio.rec_saved": "todo subido",
   "studio.rec_processing": "⏳ Procesando la grabación…",
   "studio.rec_failed": "No se pudo procesar la grabación",
+  "studio.rec_retry": "↻ Reintentar",
   "studio.rec_no_screen": "Grabar la pantalla solo funciona en el navegador de una computadora.",
   "studio.rec_need_source": "Elegí la pantalla, la cámara o las dos.",
   "studio.rec_default_title": "Grabación {n}",
