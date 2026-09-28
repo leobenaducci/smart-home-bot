@@ -192,8 +192,34 @@
     // to the phone's downloads (the `download` attribute alone does nothing
     // in a WebView). The extension is the file's own; the portal adds it.
     function dlLink(pid, rel, name) {
-      return '<a class="btn" download href="' + fileUrl(pid, rel) + '?download=' + encodeURIComponent(name) + '">⬇ ' + S.download + '</a>';
+      var ext = (rel.match(/\.[A-Za-z0-9]+$/) || [''])[0];
+      return '<a class="btn" download data-save="' + esc(name + ext) + '" href="' + fileUrl(pid, rel) + '?download=' + encodeURIComponent(name) + '">⬇ ' + S.download + '</a>';
     }
+    // In a browser the page fetches the file itself and saves it. Handing
+    // the link to the browser's download manager failed on the portal's own
+    // certificate: the person accepted it for the page, the download manager
+    // makes a request of its own and refuses it, and Chrome says "check
+    // internet connection" (2026-09-28). The Android app is the exception --
+    // its WebView cannot save a blob, and it hands an attachment to the
+    // phone's downloads -- so there the link is followed as it is.
+    var IN_APP = /\bwv\b/.test(navigator.userAgent) || !!window.AndroidDeviceKey;
+    async function saveFile(url, name) {
+      if (IN_APP) { location.href = url; return; }
+      var r = await fetch(url, { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var blob = await r.blob(), link = document.createElement('a');
+      link.href = URL.createObjectURL(blob); link.download = name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(function () { URL.revokeObjectURL(link.href); }, 60000);
+    }
+    document.addEventListener('click', function (ev) {
+      var a = ev.target.closest && ev.target.closest('a[data-save]');
+      if (!a || IN_APP) return;
+      ev.preventDefault();
+      var label = a.innerHTML; a.textContent = '…';
+      saveFile(a.href, a.dataset.save).catch(function (e) { toast(fmt('err', { e: e.message }), true); })
+        .finally(function () { a.innerHTML = label; });
+    });
 
     // ── The card and the queue ───────────────────────────────────────────
     var queueState = null;
@@ -977,9 +1003,8 @@
             if (!r || r.state !== 'running') break;
           }
           if (r && r.state === 'done') {
-            var link = document.createElement('a');
-            link.href = fileUrl(p.id, r.file) + '?download=' + encodeURIComponent(p.name + ' - ' + S.preview);
-            link.download = ''; document.body.appendChild(link); link.click(); link.remove();
+            await saveFile(fileUrl(p.id, r.file) + '?download=' + encodeURIComponent(p.name + ' - ' + S.preview),
+                           p.name + ' - ' + S.preview + '.mp4');
           } else toast(S.render_failed + (r && r.error ? ': ' + r.error : ''), true);
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
         finally { b.disabled = false; b.textContent = '⬇ ' + S.preview_download; }
