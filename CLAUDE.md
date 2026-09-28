@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A packageable self-hosted smart-home stack: twelve services on a default
 install, an installer, a deployer, an admin page and seven locales. The
-manifest declares twenty; eight (`alfred-mcp`, `audio-cpp`, `browser-use`,
-`home-search`, `homeassistant`, `n8n`, `nodered`, `registry`) stay off until a
+manifest declares twenty-one; nine (`alfred-mcp`, `audio-cpp`, `browser-use`,
+`home-search`, `home-studio`, `homeassistant`, `n8n`, `nodered`, `registry`) stay off until a
 household asks for them, which is why the two numbers are both true and neither
 is the whole answer. `brightdata` is a switch in the same list
 without a container of its own: it gates an MCP server in the assistants'

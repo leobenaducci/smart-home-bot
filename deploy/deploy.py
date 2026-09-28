@@ -1834,6 +1834,10 @@ def derive(cfg: dict, secrets: dict) -> dict:
         "usage_token_cameras": (
             derive_service_token(secrets["PROXY_SHARED_SECRET"], "home-cameras")
             if secrets.get("PROXY_SHARED_SECRET") else ""),
+        # The Studio's address for the portal, or empty while it is off or
+        # has no name: an empty one hides the page and its menu entry, where an
+        # address that answers nothing would offer a studio that is not there.
+        "studio_url": studio_url(cfg),
         # Whatever GPU exporter the household already runs, or empty. See the
         # note in the example config for why this stack does not ship one.
         "gpu_exporter_url": str(
@@ -2304,6 +2308,25 @@ def derive_crawl4ai_secret(shared_secret: str, purpose: str) -> str:
         f"{shared_secret}:crawl4ai:{purpose}".encode()).hexdigest()
 
 
+def studio_url(cfg: dict) -> str:
+    """http://<dns.studio>:<port> when home-studio is on, else ""."""
+    svc = (cfg.get("services") or {}).get("home-studio") or {}
+    name = str((cfg.get("dns") or {}).get("studio") or "").strip()
+    if not svc.get("enabled") or not name:
+        return ""
+    return f"http://{name}:{svc.get('port', 21040)}"
+
+
+def derive_studio_secret(shared_secret: str) -> str:
+    """home-studio's secret, which the portal also holds to call it.
+
+    The crawl4ai shape again: two containers must hold the same string, the
+    household has nobody to obtain it from, and deriving it means neither
+    end is ever out of step after PROXY_SHARED_SECRET is rotated.
+    """
+    return hashlib.sha256(f"{shared_secret}:home-studio".encode()).hexdigest()
+
+
 def derive_service_token(shared_secret: str, service: str) -> str:
     """A token that says "I am this container", not "I am this person".
 
@@ -2369,6 +2392,7 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
         secrets = {
             "CRAWL4AI_API_TOKEN": derive_crawl4ai_secret(shared, "token"),
             "CRAWL4AI_SECRET_KEY": derive_crawl4ai_secret(shared, "jwt"),
+            "STUDIO_SECRET": derive_studio_secret(shared),
             # The file still wins if somebody set one by hand: this is a
             # convenience, not a policy, and an operator who wants a specific
             # token should be able to have one.

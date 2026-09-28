@@ -1,0 +1,38 @@
+# home-studio: video, images, music and voices on one card of the house.
+# The API is only for the portal and the assistants, and answers nothing
+# without the shared secret.
+networks:
+  default:
+    name: nanobot-net
+    external: true
+
+services:
+  home-studio:
+    build:
+      context: .
+      args:
+        WANGP_REF: ${STUDIO_WANGP_REF:-91301f0e}
+    image: home-studio:latest
+    container_name: home-studio
+    restart: unless-stopped
+    environment:
+      - STUDIO_SECRET=${STUDIO_SECRET}
+      - STUDIO_NOTIFY_URL=${STUDIO_NOTIFY_URL:-}
+      - STUDIO_IDLE_S=${STUDIO_IDLE_S:-600}
+      - WANGP_PROFILE=${STUDIO_WANGP_PROFILE:-5}
+      - HF_HOME=/data/hf-cache
+      - NO_PROXY=localhost,127.0.0.1
+    # On the LAN, because the portal reaches it by `dns.studio` -- and every
+    # request without the derived secret is refused (studio/app.py `who`).
+    ports:
+      - "${STUDIO_PORT:-21040}:8090"
+    volumes:
+      # Everything on the big disk: projects, the queue, and the tens of GB of
+      # checkpoints, mounted where WanGP looks for them.
+      - ${STUDIO_DATA_DIR}:/data
+      - ${STUDIO_MODELS_DIR}:/opt/wangp/ckpts
+    # H3 at profile 5 streams weights through system RAM. The cap is what
+    # makes an out-of-memory this container's problem and not the house's.
+    mem_limit: ${STUDIO_MEM_LIMIT:-36g}
+    memswap_limit: ${STUDIO_MEM_LIMIT:-36g}
+    shm_size: 2g

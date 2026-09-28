@@ -21525,6 +21525,151 @@ def remote_ack():
 
 
 # ---------------------------------------------------------------------------
+# The Studio: video, pictures, songs and voices, generated on the house's own
+# card by `home-studio` (docs/home-studio.md). This app only fronts it: the
+# page, and `/studio/api/*` forwarded with the signed-in person's login, name
+# and whether they are a parent, vouched for by the derived secret. The
+# studio keeps projects per login and one queue for the whole house.
+# ---------------------------------------------------------------------------
+STUDIO_URL = (os.environ.get('STUDIO_URL') or '').rstrip('/')
+STUDIO_SECRET = os.environ.get('STUDIO_SECRET') or ''
+# Headers a browser may send that the studio needs (seeking in a video), and
+# ones it answers with that the browser needs back.
+_STUDIO_REQ_HEADERS = ('Range', 'If-None-Match', 'If-Modified-Since', 'Content-Type')
+_STUDIO_RESP_HEADERS = ('Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges',
+                        'ETag', 'Last-Modified', 'Cache-Control', 'Content-Disposition')
+STUDIO_LYRICS_TIMEOUT_S = 120
+
+
+# Every string the Studio page shows, handed to its script in one object.
+STUDIO_UI_KEYS = (
+    'title', 'subtitle', 'not_configured', 'unreachable', 'lyrics_need_theme', 'lyrics_failed',
+    'projects', 'new_project', 'new_project_name', 'untitled', 'empty_projects', 'back',
+    'duplicate', 'delete', 'delete_confirm', 'saved', 'saving', 'save_failed', 'tab_video',
+    'tab_audio', 'tab_images', 'tab_files', 'shot', 'add_shot', 'shots_total', 'shot_what',
+    'shot_what_ph', 'shot_says', 'shot_says_ph', 'shot_sound', 'shot_sound_ph', 'shot_music',
+    'shot_music_ph', 'shot_seconds', 'continuity', 'start_image', 'none', 'generate',
+    'regenerate', 'retouch', 'retouch_what', 'retouch_strength', 'retouch_go', 'move_up',
+    'move_down', 'remove', 'take', 'takes', 'no_take', 'generate_pending', 'long_scene',
+    'long_scene_help', 'long_scene_seconds', 'long_scene_go', 'render', 'render_crossfade',
+    'render_music', 'render_volume', 'render_start', 'render_go', 'render_running',
+    'render_failed', 'renders', 'download', 'resolution', 'res_wide', 'res_tall', 'res_square',
+    'language', 'add_song', 'add_instrumental', 'add_voice', 'kind_song', 'kind_instrumental',
+    'kind_voice', 'song_theme', 'song_theme_ph', 'write_lyrics', 'writing_lyrics', 'lyrics',
+    'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
+    'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
+    'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused',
+    'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
+    'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
+    'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
+    'err', 'min', 'sec', 'hours',
+)
+
+
+def _studio_configured():
+    return bool(STUDIO_URL and STUDIO_SECRET)
+
+
+def _studio_headers(username):
+    return {'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': username,
+            'X-Studio-Name': _tasks_display_name(username),
+            'X-Studio-Admin': '1' if _tasks_is_admin(username) else ''}
+
+
+if _studio_configured():
+    CHAT_APP_LINKS.append({'name': 'Studio', 'url': '/studio', 'icon': '🎬',
+                           'description': 'Video, pictures and songs, made on the house\'s own card',
+                           'menu': 'casa'})
+
+
+@app.route('/studio')
+@login_required
+def studio_page():
+    username = session['user']
+    return render_template('studio.html', user=username, user_name=_tasks_display_name(username),
+                           is_admin=_tasks_is_admin(username), configured=_studio_configured(),
+                           strings={k: t(f'studio.{k}') for k in STUDIO_UI_KEYS})
+
+
+@app.route('/studio/api/notify', methods=['POST'])
+def studio_notify():
+    """The studio says a job finished. Its own secret, no session: it is a
+    service reporting on somebody's behalf, and it names that somebody."""
+    if not _studio_configured() or not secrets.compare_digest(
+            request.headers.get('X-Studio-Secret', ''), STUDIO_SECRET):
+        abort(401)
+    d = request.get_json(silent=True) or {}
+    login = str(d.get('login') or '')
+    if not find_user(login):
+        return jsonify(ok=False), 404
+    project = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    _notify_user(login, str(d.get('text') or '')[:300], title=t_for(login, 'studio.title'),
+                 tags='clapper' if d.get('ok') else 'warning',
+                 click='/studio' + (f'?project={project}' if project else ''))
+    return jsonify(ok=True)
+
+
+@app.route('/studio/api/lyrics', methods=['POST'])
+@api_login_required
+def studio_lyrics():
+    """Lyrics written by the person's own assistant, in ACE-Step's shape:
+    section tags on their own lines, verses of similar length. The model that
+    writes is the household's; the card that sings is the studio's."""
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    theme = str(d.get('theme') or '').strip()[:600]
+    if not theme:
+        return jsonify(error=t('studio.lyrics_need_theme')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(str(d.get('language') or 'es'), 'Spanish')
+    seconds = max(20, min(600, int(d.get('seconds') or 90)))
+    style = str(d.get('style') or '').strip()[:200]
+    prompt = (
+        f"Write original song lyrics in {language} about: {theme}.\n"
+        + (f"Musical style: {style}.\n" if style else "")
+        + f"The song lasts about {seconds} seconds, so write about {max(2, seconds // 20)} short sections.\n"
+        "Format rules (for a singing model): put each section tag on its own line, such as "
+        "[Verse], [Chorus], [Bridge], [Outro]; separate sections with a blank line; 6-10 "
+        "syllables per line and similar line lengths within a section; no explanations, no "
+        "title, no quotes -- only the tagged lyrics."
+    )
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-lyrics'
+    text = _run_nanobot_turn(username, chat_id, prompt, STUDIO_LYRICS_TIMEOUT_S)
+    if not text:
+        return jsonify(error=t('studio.lyrics_failed')), 502
+    return jsonify(lyrics=text.strip())
+
+
+@app.route('/studio/api/<path:sub>', methods=['GET', 'POST', 'PUT', 'DELETE'])
+@api_login_required
+def studio_api(sub):
+    """Everything else, forwarded as it came, answered as it answers --
+    including a video's byte ranges, so seeking works."""
+    if not _studio_configured():
+        return jsonify(error=t('studio.not_configured')), 503
+    if '..' in sub or sub.startswith('/'):
+        abort(404)
+    headers = _studio_headers(session['user'])
+    for h in _STUDIO_REQ_HEADERS:
+        if request.headers.get(h):
+            headers[h] = request.headers[h]
+    try:
+        upstream = requests.request(
+            request.method, f'{STUDIO_URL}/api/{sub}', params=request.args, headers=headers,
+            data=request.get_data() if request.method != 'GET' else None,
+            stream=True, timeout=(5, 120))
+    except requests.RequestException as exc:
+        app.logger.warning('studio: %s %s failed: %s', request.method, sub, exc)
+        return jsonify(error=t('studio.unreachable')), 502
+    out = Response(stream_with_context(upstream.iter_content(chunk_size=256 * 1024)),
+                   status=upstream.status_code)
+    for h in _STUDIO_RESP_HEADERS:
+        if h in upstream.headers:
+            out.headers[h] = upstream.headers[h]
+    return out
+
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
     # No init_backup_db(). It was called here and defined nowhere: the backup
     # history it set up belongs to `home-backups`, a service upstream ships and

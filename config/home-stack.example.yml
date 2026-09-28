@@ -262,6 +262,9 @@ dns:
   # The transcription server, named because the portal and the assistants
   # both reach it and neither should carry an address.
   whisper: whisper.home
+  # The Studio's API (home-studio), for the portal. Only asked for when the
+  # studio is switched on.
+  studio: studio.home
 
 # Absolute paths on the target hosts. Deliberately outside any deploy
 # workspace: live configuration that a re-deploy can wipe has cost this stack
@@ -468,6 +471,24 @@ services:
     host: compute
     web_port: 21020
     registry_port: 21021
+  home-studio:
+    # Video with sound, pictures, songs and cloned voices, generated on one of
+    # this machine's cards -- one queue for everybody, projects per person, a
+    # Studio page in the portal (docs/home-studio.md). Off by default: it
+    # wants a card of its own (12 GB measured), ~52 GB of weights on the
+    # state disk, and a lot of RAM while a video renders.
+    enabled: false
+    host: compute
+    port: 21040
+    gpu: true
+    # The card it owns. Nothing else should be placed on it.
+    gpu_device: "1"
+    # Seconds with nothing to do before the model is unloaded and the card
+    # and RAM are given back.
+    idle_s: 600
+    # The container's memory cap: an out-of-memory stays its own problem.
+    mem_limit: 36g
+
   audio-cpp:
     # One C++/ggml runtime for both halves of the voice path -- speech to text
     # and text to speech -- as GGUF packages, on the CPU or on an NVIDIA card.

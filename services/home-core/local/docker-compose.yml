@@ -43,6 +43,10 @@ services:
       - HOME_STACK_DEFAULT_LOCALE=${HOME_STACK_DEFAULT_LOCALE:-es}
       - HOME_STACK_LOCALES=${HOME_STACK_LOCALES:-es,en}
       - CAMERAS_APP_URL=${CAMERAS_APP_URL:-http://127.0.0.1:21020}
+      # The Studio (home-studio): empty unless it is switched on, which keeps
+      # its page and its menu entry away.
+      - STUDIO_URL=${STUDIO_URL:-}
+      - STUDIO_SECRET=${STUDIO_SECRET:-}
       - NANOBOT_HOST=${NANOBOT_HOST:-127.0.0.1}
       - NANOBOT_API_PORT_BASE=${NANOBOT_API_PORT_BASE:-21301}
       - NANOBOT_WEBSOCKET_PORT_BASE=${NANOBOT_WEBSOCKET_PORT_BASE:-21201}

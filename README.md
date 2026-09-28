@@ -55,7 +55,7 @@ reverse proxy on a VPS you own, which forwards traffic home and stores nothing.
 
 ## Services
 
-This ships twenty services, twelve of them on by default; the rest wait until
+This ships twenty-one services, twelve of them on by default; the rest wait until
 you ask for them.
 
 | Service | What it does | Default |
@@ -213,7 +213,7 @@ deploy/     installer, manifest, deployer, backups, sanitizer, the Ollama and
             llama.cpp host helpers, units for the services built from images
 admin/      the admin page
 i18n/       seven catalogues and the Python/PHP/JS bindings
-services/   the twelve service directories the shipped services build from
+services/   the thirteen service directories the shipped services build from
 docs/       the conventions that span more than one service
 ```
 
@@ -231,6 +231,7 @@ docs/       the conventions that span more than one service
 | [docs/provider-routing.md](docs/provider-routing.md) | Putting a routing proxy in front of the model callers |
 | [docs/family-chat.md](docs/family-chat.md) | The family chat: alerts through Do Not Disturb, groups, and SMS when there is no data |
 | [docs/devices.md](docs/devices.md) | Naming a phone or tablet, and letting a parent turn it down or open an app on it from Alfred |
+| [docs/home-studio.md](docs/home-studio.md) | The Studio: video with sound, pictures, songs and cloned voices on one card, one queue for the family, projects per person |
 | [docs/nanogpt.md](docs/nanogpt.md) | NanoGPT: the key, what its subscription covers, and the models measured best on it |
 | [docs/token-spend.md](docs/token-spend.md) | Three weeks of measured token use, and where it goes |
 | [docs/backups.md](docs/backups.md) | Every path holding state, and how backups verify |

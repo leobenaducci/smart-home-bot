@@ -1,6 +1,6 @@
 # Plugins: bringing your own services
 
-This package ships twenty services, twelve of them on a default install. A real household has more, and they are the
+This package ships twenty-one services, twelve of them on a default install. A real household has more, and they are the
 ones with its names, its addresses and its credentials in them.
 
 Without somewhere to put those, there are two bad options: fork the package, or

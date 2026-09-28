@@ -1171,7 +1171,8 @@ IMPACT = {
     # "saved, and the house behaves the old way" failure this table exists for.
     "dns": ["home-core", "local-proxy", "nanobot", "nanobot-house",
             "home-cameras", "home-voice", "mqtt", "nodered", "home-paperless",
-            "alfred-mcp"],
+            "alfred-mcp", "home-studio"],
+    # home-studio because it tells the portal (by name) when a job is done.
     # alfred-mcp because `members[].programmer` renders that person's
     # bridge, and home-core because it is told which members have one.
     # home-paperless because each member's locale is one of the languages its

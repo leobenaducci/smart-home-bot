@@ -207,6 +207,8 @@ services:
           # LAN. Nothing exported these, so app.py's own defaults ran -- and
           # they named a host and a port that had moved.
           CAMERAS_APP_URL: "http://{dns.cameras}:{services.home-cameras.web_port}"
+          # The Studio, when it is on (docs/home-studio.md).
+          STUDIO_URL: "{derived.studio_url}"
           NANOBOT_HOST: "{dns.assistant}"
           NANOBOT_API_PORT_BASE: "{services.nanobot.api_port_base}"
           NANOBOT_WEBSOCKET_PORT_BASE: "{services.nanobot.websocket_port_base}"
@@ -378,7 +380,10 @@ services:
       optional: [PROJECTS_KEY, PROJECTS_BROKER_TOKEN,
                  SHARE_SMB_PASSWORD, NTFY_CREDENTIALS, VOICE_GATEWAY_TOKEN,
                  OPENCODE_API_KEY, ACME_DNS_API_TOKEN,
-                 NANOBOT_DEBUG_SECRET, MENU_DEVICE_TOKEN]
+                 NANOBOT_DEBUG_SECRET, MENU_DEVICE_TOKEN,
+                 # Derived (derive_studio_secret); the Studio page only uses it
+                 # when STUDIO_URL says the studio is on.
+                 STUDIO_SECRET]
       # Per-member, expanded from services.nanobot.members
       per_member: ["NANOBOT_API_SECRET_{M}"]
 
@@ -1403,6 +1408,49 @@ services:
             # fails on a slow line for no reason but the clock. Measured here
             # with the packages already staged: 433 s end to end.
             timeout: 1200
+
+  home-studio:
+    description: >
+      Video, pictures, songs and voices on one card of the house -- one queue
+      for everybody, per-person projects. See docs/home-studio.md.
+    role: compute
+    # Reached through the portal's Studio page, never directly: its API is for
+    # the portal and the assistants, so there is no tile of its own.
+    tier: none
+    icon: "🎬"
+    units:
+      - name: studio
+        dir: services/home-studio
+        compose:
+          - docker-compose.yml
+          - { file: docker-compose.gpu.yml, when: services.home-studio.gpu }
+        build: true
+        pre_remove_containers: [home-studio]
+        pre_create_networks: [nanobot-net]
+        env:
+          STUDIO_PORT: "{services.home-studio.port}"
+          # One card, and nothing else on it: the manager owns it.
+          STUDIO_GPU_DEVICE: "{services.home-studio.gpu_device}"
+          STUDIO_IDLE_S: "{services.home-studio.idle_s}"
+          STUDIO_MEM_LIMIT: "{services.home-studio.mem_limit}"
+          # Where "done" goes: the portal tells the person on their phone.
+          STUDIO_NOTIFY_URL: "https://{dns.portal}:{services.home-core.port}/studio/api/notify"
+        state:
+          # Projects, the queue, takes and renders: the household's own work.
+          - { path: "{paths.state}/home-studio/data", mount: /data, env: STUDIO_DATA_DIR }
+          # WanGP's checkpoints, ~52 GB for video, pictures and songs, and
+          # downloaded again on demand -- the same trade audio-cpp's make.
+          - { path: "{paths.state}/home-studio/models", mount: /opt/wangp/ckpts,
+              env: STUDIO_MODELS_DIR, backup: skip }
+        verify:
+          # A payload, not a 200: the manager answers with its worker state.
+          - http: "http://127.0.0.1:{services.home-studio.port}/health"
+            expect_json: {ok: true}
+            timeout: 300
+    secrets:
+      # Derived from PROXY_SHARED_SECRET (derive_studio_secret): the portal
+      # holds the same one, and there is nothing to type.
+      required: [STUDIO_SECRET]
 
   home-voice:
     description: Voice gateway; panels reach the shared assistant through it.

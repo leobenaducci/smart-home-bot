@@ -655,6 +655,9 @@ _ACTION_TO_SKILL: dict[str, str] = {
     # calling that as a function may mean a TV, which is Home Assistant.
     "open_app": "devices", "ring_device": "devices", "stop_ring_device": "devices",
     "list_devices": "devices", "list_apps": "devices",
+    # studio (the house's own generator)
+    "make_image": "studio", "make_song": "studio", "make_instrumental": "studio",
+    "make_video": "studio", "studio_queue": "studio",
     # family-message (Alfred → another member's Alfred)
     "send_family_message": "family-message", "send_message_to": "family-message",
     "ask_family": "family-message",

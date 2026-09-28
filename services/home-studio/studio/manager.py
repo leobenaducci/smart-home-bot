@@ -1,0 +1,298 @@
+"""The manager: one queue, one card, one worker at a time.
+
+Runs in the API process as a thread. Each round: the next job in the fair
+order (store.Store.order), resolved against its project *now* -- a shot that
+continues the one before it starts from that shot's chosen take as it is at
+this moment, not as it was when the job was queued -- then sent to the
+worker, followed, and filed into its project.
+
+The worker is started on demand and stopped after `idle_s` with nothing to
+do, which gives the card and the RAM back (worker.py says why that is the
+only way). A worker that dies fails the job it was running and is started
+fresh for the next one.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Callable
+
+from . import media, recipes
+from .projects import ProjectError, Projects
+from .store import Store
+
+log = logging.getLogger("studio.manager")
+
+
+# Where each WanGP phase sits in one bar from 0 to 1. WanGP's own `progress`
+# is per phase and on its own scale (the first real job read "100%" while the
+# model was still loading), so the steps decide where the step is known.
+PHASE_SPAN = {"loading": (0.0, 0.05), "loading_model": (0.05, 0.15), "encoding_text": (0.15, 0.2),
+              "inference": (0.2, 0.95), "denoising": (0.2, 0.95), "decoding": (0.95, 1.0)}
+
+
+def overall_progress(msg: dict) -> float:
+    phase = str(msg.get("phase") or "").lower()
+    lo, hi = next((span for key, span in PHASE_SPAN.items() if key in phase), (0.2, 0.95))
+    steps, step = msg.get("steps") or 0, msg.get("step") or 0
+    if steps:
+        within = step / steps
+    else:
+        raw = float(msg.get("progress") or 0)
+        within = raw / 100 if raw > 1 else raw
+    return round(lo + (hi - lo) * max(0.0, min(1.0, within)), 3)
+
+
+class Worker:
+    """The child process and its report pipe."""
+
+    def __init__(self, scratch: Path, log_path: Path):
+        read_fd, write_fd = os.pipe()
+        env = {**os.environ, "STUDIO_SCRATCH": str(scratch)}
+        self.log = open(log_path, "ab", buffering=0)
+        self.proc = subprocess.Popen([sys.executable, "-m", "studio.worker", str(write_fd)],
+                                     stdin=subprocess.PIPE, stdout=self.log, stderr=subprocess.STDOUT,
+                                     pass_fds=(write_fd,), env=env, cwd=str(Path(__file__).parent.parent),
+                                     text=True, bufsize=1)
+        os.close(write_fd)
+        self.reports = os.fdopen(read_fd, "r", buffering=1)
+        self.model = ""
+        self.last_used = time.time()
+
+    def send(self, **msg) -> None:
+        self.proc.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        self.proc.stdin.flush()
+
+    def read(self) -> dict | None:
+        line = self.reports.readline()
+        return json.loads(line) if line else None
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def stop(self) -> None:
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            self.proc.kill()
+        self.log.close()
+
+
+class Manager:
+    def __init__(self, store: Store, projects: Projects, scratch: Path, logs: Path,
+                 idle_s: float = 600, notify: Callable[[dict], None] | None = None,
+                 worker_factory: Callable[[], Worker] | None = None):
+        self.store, self.projects = store, projects
+        self.scratch, self.logs = Path(scratch), Path(logs)
+        self.scratch.mkdir(parents=True, exist_ok=True)
+        self.logs.mkdir(parents=True, exist_ok=True)
+        self.idle_s, self.notify = idle_s, notify
+        self._factory = worker_factory or (lambda: Worker(self.scratch, self.logs / "worker.log"))
+        self.worker: Worker | None = None
+        self.paused = False
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self.thread = threading.Thread(target=self._loop, name="studio-manager", daemon=True)
+
+    # -- control ------------------------------------------------------------
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self.worker:
+            self.worker.stop()
+
+    def wake(self) -> None:
+        self._wake.set()
+
+    def cancel(self, job_id: str) -> str | None:
+        """Cancel queued or running. The state it was in, or None."""
+        job = self.store.get(job_id)
+        if not job:
+            return None
+        if job["state"] == "running" and self.worker and self.worker.alive():
+            self.worker.send(cancel=job_id)
+            self.store.update(job_id, phase="cancelling")
+            return "running"
+        return self.store.cancel(job_id)
+
+    def status(self) -> dict:
+        return {"worker": bool(self.worker and self.worker.alive()),
+                "model": self.worker.model if self.worker else "",
+                "paused": self.paused}
+
+    # -- the loop -----------------------------------------------------------
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._fail_blocked()
+                job = None if self.paused else self.store.next_job(self.worker.model if self.worker else "")
+                if job is None:
+                    if self.worker and time.time() - self.worker.last_used > self.idle_s:
+                        log.info("idle for %ss: stopping the worker, the card is free", int(self.idle_s))
+                        self.worker.stop()
+                        self.worker = None
+                    self._wake.wait(timeout=5)
+                    self._wake.clear()
+                    continue
+                self._run(job)
+            except Exception:                                  # noqa: BLE001 -- the loop must not die
+                log.exception("manager round failed")
+                time.sleep(5)
+
+    def _fail_blocked(self) -> None:
+        for job in self.store.blocked_forever():
+            self.store.update(job["id"], state="failed", finished=time.time(),
+                              error="the shot it continues from was not made")
+
+    def _ensure_worker(self) -> Worker:
+        if self.worker and not self.worker.alive():
+            self.worker = None
+        if self.worker is None:
+            self.worker = self._factory()
+            msg = self.worker.read()
+            if not msg or msg.get("kind") != "ready":
+                self.worker.stop()
+                self.worker = None
+                raise RuntimeError("the worker did not start; see worker.log")
+        return self.worker
+
+    def _run(self, job: dict) -> None:
+        try:
+            params = self._resolve(job)
+            settings = recipes.settings_for(job["kind"], params)
+        except (recipes.RecipeError, ProjectError, media.MediaError) as exc:
+            self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc))
+            self._notify(job, ok=False)
+            return
+        self.store.update(job["id"], state="running", started=time.time(), progress=0, phase="loading")
+        try:
+            worker = self._ensure_worker()
+        except RuntimeError as exc:
+            self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc))
+            self._notify(job, ok=False)
+            return
+        out_dir = self.scratch / job["id"]
+        worker.send(run=job["id"], settings=settings, output_dir=str(out_dir))
+        worker.model = settings["model_type"]
+        result = None
+        while True:
+            msg = worker.read()
+            if msg is None:
+                break                                          # the worker died
+            if msg.get("id") != job["id"]:
+                continue
+            if msg["kind"] == "progress":
+                self.store.update(job["id"], progress=overall_progress(msg), phase=msg.get("phase", "")[:60])
+            elif msg["kind"] == "done":
+                result = msg
+                break
+        worker.last_used = time.time()
+        if result is None:
+            self.worker = None
+            self.store.update(job["id"], state="failed", finished=time.time(),
+                              error="the generator stopped unexpectedly (see worker.log)")
+            self._notify(job, ok=False)
+            return
+        current = self.store.get(job["id"])
+        if not result["success"]:
+            cancelled = current and current["phase"] == "cancelling"
+            self.store.update(job["id"], state="cancelled" if cancelled else "failed", finished=time.time(),
+                              error="" if cancelled else "; ".join(result.get("errors") or [])[:1000])
+            if not cancelled:
+                self._notify(job, ok=False)
+            return
+        try:
+            files = self._file(job, [Path(f) for f in result.get("files") or []])
+        except (ProjectError, media.MediaError, OSError) as exc:
+            self.store.update(job["id"], state="failed", finished=time.time(), error=f"could not file the result: {exc}")
+            self._notify(job, ok=False)
+            return
+        self.store.update(job["id"], state="done", finished=time.time(), progress=1.0, phase="", files=files)
+        self._notify(job, ok=True)
+
+    # -- before and after ---------------------------------------------------
+    def _resolve(self, job: dict) -> dict:
+        """The job's params with every reference turned into a file on disk,
+        read from the project as it is now."""
+        p = dict(job["params"])
+        if not job["project"]:
+            return p
+        owner, pid = job["owner"], job["project"]
+        doc = self.projects.load(owner, pid)
+        base = self.projects.dir(owner, pid)
+
+        def take_frame(item_id: str, key: str) -> str:
+            found = Projects.find(doc, item_id)
+            take = Projects.chosen_take(found[2]) if found else None
+            if not take or not take.get(key):
+                raise ProjectError("the shot it has to match has no take yet")
+            return str(base / take[key])
+
+        if p.get("continue_from"):
+            p["start_image"] = take_frame(p["continue_from"], "last")
+        if p.get("end_at"):
+            p["end_image"] = take_frame(p["end_at"], "first")
+        if p.get("start_upload"):
+            p["start_image"] = str(self.projects.file(owner, pid, p["start_upload"]))
+        if p.get("voice_upload"):
+            p["voice_file"] = str(self.projects.file(owner, pid, p["voice_upload"]))
+        if job["kind"] == "edit":
+            found = Projects.find(doc, job["target"])
+            take = Projects.chosen_take(found[2]) if found else None
+            if not take:
+                raise ProjectError("nothing to edit yet")
+            p["source_video"] = str(base / take["file"])
+            p.setdefault("start_image", str(base / take["first"]))
+            p.setdefault("end_image", str(base / take["last"]))
+        return p
+
+    def _file(self, job: dict, produced: list[Path]) -> list[str]:
+        """Move what the card made into the project (or the person's loose
+        results) and record the take. Paths returned relative to the project."""
+        produced = [f for f in produced if f.is_file()]
+        if not produced:
+            raise media.MediaError("the generator reported success but wrote nothing")
+        owner, pid = job["owner"], job["project"] or "loose"
+        if not job["project"]:
+            dest_root = self.projects.root / owner / ".loose"
+        else:
+            dest_root = self.projects.dir(owner, pid)
+        take_dir = dest_root / "takes" / (job["target"] or job["id"])
+        take_dir.mkdir(parents=True, exist_ok=True)
+        rel_files, take = [], {"job": job["id"], "kind": job["kind"]}
+        for i, src in enumerate(produced):
+            dst = take_dir / f"{job['id']}-{i}{src.suffix.lower()}"
+            shutil.move(str(src), dst)
+            rel = str(dst.relative_to(dest_root))
+            rel_files.append(rel)
+            if i == 0:
+                take["file"] = rel
+                if dst.suffix in (".mp4", ".mov", ".webm", ".mkv"):
+                    info = media.probe(dst)
+                    take["seconds"] = round(info["seconds"], 2)
+                    take["first"] = str(media.frame(dst, take_dir / f"{job['id']}-first.png", "first").relative_to(dest_root))
+                    take["last"] = str(media.frame(dst, take_dir / f"{job['id']}-last.png", "last").relative_to(dest_root))
+                elif dst.suffix in (".wav", ".mp3", ".flac", ".ogg"):
+                    take["seconds"] = round(media.probe(dst)["seconds"], 2)
+        shutil.rmtree(self.scratch / job["id"], ignore_errors=True)
+        if job["project"] and job["target"]:
+            self.projects.add_take(owner, pid, job["target"], take)
+        return rel_files
+
+    def _notify(self, job: dict, ok: bool) -> None:
+        if self.notify:
+            try:
+                self.notify({**(self.store.get(job["id"]) or job), "ok": ok})
+            except Exception:                                  # noqa: BLE001
+                log.exception("notify failed")
