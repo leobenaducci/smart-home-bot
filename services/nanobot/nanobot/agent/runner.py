@@ -872,13 +872,22 @@ _QWEN35_PARAM_RE = re.compile(
 #   </｜DSML｜tool_calls>
 # It carries what the Qwen3.5 format carries, so it is rewritten into that one
 # and every Qwen path -- a tool, a skill by name, the stripping -- applies.
-_DSML = r"<\s*/?\s*[｜|]\s*DSML\s*[｜|]\s*"
+# The bars come doubled too, and the wrapper is sometimes just "calls":
+# deepseek-v4.1-flash answered a Studio request on 2026-09-28 with
+#   <｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="exec">...
+# which the single-bar pattern let through verbatim, call unrun.
+_BAR = r"[｜|]+"
+_DSML = rf"<\s*/?\s*{_BAR}\s*DSML\s*{_BAR}\s*"
+_DSML_OPEN = rf"<\s*{_BAR}\s*DSML\s*{_BAR}\s*"
+_DSML_CLOSE = rf"<\s*/\s*{_BAR}\s*DSML\s*{_BAR}\s*"
 _DSML_REWRITES = (
-    (re.compile(_DSML.replace("/?", "") + r"invoke\s+name\s*=\s*\"([^\"]+)\"\s*>", re.I), r"<function=\1>"),
-    (re.compile(r"<\s*/\s*[｜|]\s*DSML\s*[｜|]\s*invoke\s*>", re.I), "</function>"),
-    (re.compile(_DSML.replace("/?", "") + r"parameter\s+name\s*=\s*\"(\w+)\"[^>]*>", re.I), r"<parameter=\1>"),
-    (re.compile(r"<\s*/\s*[｜|]\s*DSML\s*[｜|]\s*parameter\s*>", re.I), "</parameter>"),
-    (re.compile(_DSML + r"(?:tool_calls|function_calls)\s*>", re.I), ""),
+    (re.compile(_DSML_OPEN + r"invoke\s+name\s*=\s*\"([^\"]+)\"\s*>", re.I), r"<function=\1>"),
+    (re.compile(_DSML_CLOSE + r"invoke\s*>", re.I), "</function>"),
+    (re.compile(_DSML_OPEN + r"parameter\s+name\s*=\s*\"(\w+)\"[^>]*>", re.I), r"<parameter=\1>"),
+    (re.compile(_DSML_CLOSE + r"parameter\s*>", re.I), "</parameter>"),
+    (re.compile(_DSML + r"(?:tool_calls|function_calls|calls)\s*>", re.I), ""),
+    # Anything else in the markup is not for a person to read.
+    (re.compile(_DSML + r"[^>]*>", re.I), ""),
 )
 
 
