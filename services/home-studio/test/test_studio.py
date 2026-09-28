@@ -431,7 +431,8 @@ else:
           abs(((first - t0) / (4 * b) + 0.5) % 1 - 0.5) * 4 * b < 0.03, (first, t0))
     check("  chords are named from their notes, the bass first",
           score.chord_name(shapes[0])[1:] == ("major", "") and score.chord_name(shapes[2])[1:] == ("minor", "m")
-          and score.chord_name([43, 47, 50, 55, 59, 67])[0] == 7 and score.chord_name([60]) is None)
+          and score.chord_name([43, 47, 50, 55, 59, 67])[0] == 7 and score.chord_name([60]) is None
+          and score.chord_name([52, 59, 64]) == (4, "power", "5"))
     xml, meta = score.build(evs, 123.0, "Prueba <1>")
     check("  one part per instrument heard, and a stray note is not a part",
           [t["id"] for t in meta["tracks"]] == ["acoustic_guitar", "clean_electric_guitar", "acoustic_piano"], meta["tracks"])

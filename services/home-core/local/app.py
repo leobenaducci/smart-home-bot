@@ -21645,7 +21645,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
     'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
@@ -21698,6 +21698,59 @@ def studio_page():
     return render_template('studio.html', user=username, user_name=_tasks_display_name(username),
                            is_admin=_tasks_is_admin(username), configured=_studio_configured(),
                            strings={k: t(f'studio.{k}') for k in STUDIO_UI_KEYS})
+
+
+# The practice page's words: its own list, beside the Studio's, so the page
+# is sent only what it shows.
+PRACTICE_UI_KEYS = (
+    'practice_title', 'practice_back', 'practice_play', 'practice_stop', 'practice_source',
+    'practice_src_song', 'practice_src_minus', 'practice_src_part', 'practice_src_synth', 'practice_track',
+    'practice_view', 'practice_view_both', 'practice_view_tab', 'practice_view_notes', 'practice_speed',
+    'practice_loop', 'practice_loop_help', 'practice_clear', 'practice_countin', 'practice_metronome',
+    'practice_loading', 'practice_error', 'practice_not_ready', 'practice_note',
+    'track_acoustic_guitar', 'track_clean_electric_guitar', 'track_distorted_electric_guitar',
+    'track_acoustic_piano', 'track_electric_piano',
+)
+
+
+@app.route('/studio/practice')
+@login_required
+def studio_practice():
+    """A song version's parts, to read and practise with: the score the
+    Studio wrote (a `score` job), rendered and played in the browser, with the
+    song, the song without its guitars and keys, those alone, or a synth.
+
+    Asked of the Studio as the person, so it is their project or nothing;
+    the files are then fetched through the same proxy as everything else."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    pid = re.sub(r'[^a-z0-9]', '', request.args.get('project') or '')[:32]
+    item_id = re.sub(r'[^a-z0-9]', '', request.args.get('item') or '')[:32]
+    take_id = re.sub(r'[^a-z0-9]', '', request.args.get('take') or '')[:32]
+    strings = {k: t(f'studio.{k}') for k in PRACTICE_UI_KEYS}
+    title, cfg = t('studio.practice_title'), None
+    try:
+        r = requests.get(f'{STUDIO_URL}/api/projects/{pid}', headers=_studio_headers(username), timeout=(5, 20))
+        doc = r.json() if r.status_code == 200 else {}
+    except (requests.RequestException, ValueError) as exc:
+        app.logger.warning('studio: practice page for %s failed: %s', pid, exc)
+        doc = {}
+    item = next((a for a in doc.get('audio') or [] if a.get('id') == item_id), None) or {}
+    take = next((x for x in item.get('takes') or [] if x.get('id') == take_id), None) or {}
+    sc = take.get('score') or {}
+    if item:
+        title = item.get('title') or doc.get('name') or title
+    if sc.get('state') == 'done' and all(sc.get(k) for k in ('file', 'minus', 'part')) and take.get('file'):
+        def url(rel, download=''):
+            return (f'/studio/api/projects/{pid}/file/' + quote(str(rel), safe='/')
+                    + (f'?download={quote(download)}' if download else ''))
+        cfg = {'strings': strings,
+               'meta': {k: sc.get(k) for k in ('tempo', 'score_tempo', 'start', 'tracks')},
+               'score': url(sc['file']),
+               'audio': {'song': url(take['file']), 'minus': url(sc['minus']), 'part': url(sc['part'])},
+               'downloads': {'xml': url(sc['file'], title), 'midi': url(sc['midi'], title) if sc.get('midi') else ''}}
+    return render_template('studio_practice.html', strings=strings, title=title, project=pid, cfg=cfg)
 
 
 @app.route('/studio/api/notify', methods=['POST'])

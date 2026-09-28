@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="{{ lang or 'es' }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ strings.practice_title }} · {{ title }}</title>
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    /* The house tokens (menu.html has the long explanation of each). */
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --paper-2:#fff;
+      --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2;
+      --olive:#57633F; --olive-2:#7E8A61;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; background: var(--plaster); font-family: var(--sans); color: var(--ink);
+           -webkit-font-smoothing: antialiased; }
+    header { background: var(--wall); color: var(--wall-fg); padding: 14px 20px; display: flex; align-items: center; gap: 13px; }
+    header .plate { width: 40px; height: 40px; flex: none; display: grid; place-items: center;
+      background: linear-gradient(160deg, rgba(255,255,255,.15), rgba(0,0,0,.17));
+      border: 1px solid rgba(235,212,155,.25); border-radius: 12px; font-size: 1.3rem; }
+    header h1 { font-family: var(--display); font-size: 1.15rem; font-weight: 700; color: #F3EEDF;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    header .hlink { margin-left: auto; color: var(--wall-fg); text-decoration: none; font-size: .8rem; font-weight: 600;
+      padding: 7px 11px; border-radius: 10px; border: 1px solid rgba(218,212,194,.16); white-space: nowrap; }
+    .muted { color: var(--ink-soft); font-size: .8rem; }
+    button, .btn { font: inherit; font-size: .82rem; font-weight: 700; border-radius: var(--r); cursor: pointer;
+      border: 1px solid var(--line); background: var(--paper-2); color: var(--olive); padding: 8px 12px;
+      text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+    button:hover, .btn:hover { border-color: var(--honey); color: var(--honey); }
+    button.primary { background: var(--olive); color: #fff; border-color: var(--olive); min-width: 46px; justify-content: center; }
+    button.primary:hover { background: var(--honey); border-color: var(--honey); color: #fff; }
+    select { font: inherit; font-size: .84rem; color: var(--ink); background: var(--paper);
+      border: 1px solid var(--line); border-radius: var(--r-sm); padding: 7px 8px; max-width: 100%; }
+    select:disabled { opacity: .5; }
+
+    /* The controls stay in view while the score scrolls under them. */
+    .controls { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--line);
+      padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+    .group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .clock { font-family: var(--mono); font-size: .84rem; min-width: 92px; }
+    .check { display: inline-flex; gap: 5px; align-items: center; font-size: .82rem; cursor: pointer; }
+    .check input { accent-color: var(--olive); }
+    input[type=range] { accent-color: var(--olive); width: 120px; }
+    .speed-v { font-family: var(--mono); font-size: .8rem; min-width: 38px; }
+    .note { margin: 12px 16px 0; padding: 10px 12px; border-radius: var(--r); background: rgba(198,137,43,.12);
+      border: 1px solid rgba(198,137,43,.3); font-size: .82rem; line-height: 1.45; }
+    .note.err { background: rgba(172,75,54,.1); border-color: rgba(172,75,54,.3); color: var(--clay); }
+    .sheet { margin: 12px auto 80px; max-width: 1200px; padding: 0 8px; }
+    #score { background: #fff; border-radius: var(--r-lg); border: 1px solid var(--line); min-height: 50vh; overflow: hidden; }
+    /* alphaTab's cursor and the stretch picked to repeat, in the house colours. */
+    .at-cursor-bar { background: rgba(198,137,43,.12); }
+    .at-selection div { background: rgba(126,138,97,.22); }
+    .at-cursor-beat { background: var(--honey); width: 3px; }
+    .at-highlight * { fill: var(--clay); stroke: var(--clay); }
+    @media (max-width: 640px) {
+      header { padding: 10px 12px; }
+      .controls { padding: 8px 10px; gap: 6px 10px; }
+      input[type=range] { width: 90px; }
+      .sheet { padding: 0; }
+      #score { border-radius: 0; border-left: 0; border-right: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="plate">🎼</div>
+    <h1>{{ title }}</h1>
+    <a class="hlink" href="/studio?project={{ project }}">← {{ strings.practice_back }}</a>
+  </header>
+  {% if not cfg %}
+  <p class="note err">{{ strings.practice_not_ready }}</p>
+  {% else %}
+  <div class="controls">
+    <div class="group">
+      <button class="primary" id="play" title="{{ strings.practice_play }}">▶</button>
+      <button id="stop" title="{{ strings.practice_stop }}">⏹</button>
+      <span class="clock" id="clock">0:00</span>
+    </div>
+    <div class="group">
+      <select id="source" aria-label="{{ strings.practice_source }}">
+        <option value="song">🎵 {{ strings.practice_src_song }}</option>
+        <option value="minus">🎸✖ {{ strings.practice_src_minus }}</option>
+        <option value="part">🎸 {{ strings.practice_src_part }}</option>
+        <option value="synth">🎹 {{ strings.practice_src_synth }}</option>
+      </select>
+      <select id="track" aria-label="{{ strings.practice_track }}"></select>
+      <select id="view" aria-label="{{ strings.practice_view }}">
+        <option value="both">{{ strings.practice_view_both }}</option>
+        <option value="tab">{{ strings.practice_view_tab }}</option>
+        <option value="notes">{{ strings.practice_view_notes }}</option>
+      </select>
+    </div>
+    <div class="group">
+      <span class="muted">{{ strings.practice_speed }}</span>
+      <input type="range" id="speed" min="25" max="125" step="5" value="100" aria-label="{{ strings.practice_speed }}">
+      <span class="speed-v" id="speed-v">100%</span>
+    </div>
+    <div class="group">
+      <label class="check" title="{{ strings.practice_loop_help }}"><input type="checkbox" id="loop"> 🔁 {{ strings.practice_loop }}</label>
+      <button id="clear" title="{{ strings.practice_loop_help }}">{{ strings.practice_clear }}</button>
+      <span id="synth-only" class="group" hidden>
+        <label class="check"><input type="checkbox" id="countin"> {{ strings.practice_countin }}</label>
+        <label class="check"><input type="checkbox" id="metronome"> {{ strings.practice_metronome }}</label>
+      </span>
+    </div>
+    <div class="group" style="margin-left:auto">
+      <a class="btn" href="{{ cfg.downloads.xml }}">⬇ MusicXML</a>
+      {% if cfg.downloads.midi %}<a class="btn" href="{{ cfg.downloads.midi }}">⬇ MIDI</a>{% endif %}
+    </div>
+  </div>
+  <p class="note">{{ strings.practice_note }}</p>
+  <p class="note" id="loading">{{ strings.practice_loading }}</p>
+  <p class="note err" id="error" hidden></p>
+  <div class="sheet"><div id="score"></div></div>
+  <script type="application/json" id="practice-cfg">{{ cfg|tojson }}</script>
+  <script type="module" src="/static/studio/practice.js"></script>
+  {% endif %}
+</body>
+</html>

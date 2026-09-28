@@ -345,8 +345,10 @@ def _staff_xml(bars, fifths: int, *, guitar: bool, staff: int = 0) -> list[str]:
                 xml.append(_rest_xml(value, staff))
                 continue
             if guitar and tie in ("", "start"):
-                name = chord_name(ev["pitches"])
-                if name and len(set(p % 12 for p in ev["pitches"])) >= 3 and name != last_chord:
+                # Named when it is a chord at all -- a power chord (root and
+                # fifth) included, the electric guitar's commonest.
+                name = chord_name(ev["pitches"]) if len(ev["pitches"]) >= 2 else None
+                if name and name != last_chord:
                     xml.append(_harmony(ev["pitches"], fifths))
                     last_chord = name
             frets = ev.get("frets") or {}

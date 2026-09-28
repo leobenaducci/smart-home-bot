@@ -878,7 +878,8 @@
           '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
           (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) +
             '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>' +
-            (kind === 'song' ? '<button data-rs="' + a.id + '">✏️ ' + S.rs_button + '</button>' : '') : '') + '</div></div>';
+            (kind === 'song' ? '<button data-rs="' + a.id + '">✏️ ' + S.rs_button + '</button>' : '') +
+            (kind !== 'voice' ? scoreButton(a, t) : '') : '') + '</div></div>';
       });
       html += '<div class="row"><button data-add-audio="song">＋ 🎤 ' + S.add_song + '</button><button data-add-audio="instrumental">＋ 🎹 ' + S.add_instrumental + '</button>' +
         '<button data-add-audio="voice">＋ 🗣️ ' + S.add_voice + '</button></div>';
@@ -913,6 +914,20 @@
       var has = (current.uploads || []).some(function (u) { return u.kind === 'reference' && u.source === file; });
       return has ? '<span class="pill ok" title="' + esc(S.ref_is) + '">📌 ✓</span>'
         : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" title="' + esc(S.ref_add) + '">📌 ' + S.ref_add_short + '</button>';
+    }
+
+    // The version's parts written out -- guitar as notes and tab, piano --
+    // and the practice page for them. Made once per version, when asked.
+    function scoreButton(a, t) {
+      var sc = t.score || {}, j = (current.jobs || []).find(function (x) { return x.kind === 'score' && x.target === a.id; });
+      if (sc.state === 'done') {
+        return '<a class="btn" href="/studio/practice?project=' + current.id + '&item=' + a.id + '&take=' + t.id + '">🎼 ' + S.score_open + '</a>';
+      }
+      if (j) return '<span class="pill run">🎼 ' + S.score_running + (j.state === 'running' ? ' ' + Math.round(j.progress * 100) + '%' : '') + '</span>';
+      if (sc.state === 'failed') {
+        return '<button data-score="' + a.id + '" data-retry="1" title="' + esc(sc.error || '') + '">🎼 ' + S.score_retry + '</button>';
+      }
+      return '<button data-score="' + a.id + '">🎼 ' + S.score_make + '</button>';
     }
 
     // Files
@@ -1116,6 +1131,14 @@
           await api('projects/' + p.id + '/references', { method: 'POST', body: { file: d.asRef, name: d.name || '' } });
           toast(S.ref_added);
           current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.score) {
+          var st = chosen(itemById(d.score));
+          if (!st || !confirm(S.score_confirm)) return;
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + d.score + '/score', { method: 'POST', body: { take: st.id, start: true, retry: !!d.retry } });
+          toast(S.score_queued);
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
         if (d.sbCut) { itemById(d.sbCut).continuity = false; await saveNow(); drawTab(); return; }
         if (d.boardFrom) return boardFromDialog(d.boardFrom);
@@ -1677,7 +1700,7 @@
         // compared -- the tab redraws when it finishes, under the same guards.
         ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) {
           return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.recording || {}).state,
-                  ((chosen(i) || {}).transcript || {}).state].join(':'); }); })]);
+                  ((chosen(i) || {}).transcript || {}).state, ((chosen(i) || {}).score || {}).state].join(':'); }); })]);
       if (sig !== lastSig) {
         lastSig = sig;
         // Never redraw under somebody's cursor: the new takes wait for the
