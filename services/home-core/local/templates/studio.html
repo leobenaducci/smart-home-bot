@@ -461,6 +461,25 @@
         return '<button data-cast-toggle="' + s.id + '" data-ch="' + c.id + '" class="' + (on ? 'on' : '') + '">' + esc(c.name) + '</button>';
       }).join('') + '</div>';
     }
+    // What can be done with a recorded clip: its subtitles (the house's
+    // speech recogniser) and taking its long silences out (a new version).
+    function recordingTools(s, t, p, i) {
+      var tr = t.transcript || {}, trim = s.trim || {}, html = '';
+      if (tr.state === 'running') html += '<span class="pill run">' + S.rec_subs_running + '</span>';
+      else if (tr.state === 'done') html += dlLink(p.id, tr.srt, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))).replace('⬇ ' + S.download, '⬇ .srt');
+      else html += '<button data-transcribe="' + s.id + '">' + S.rec_subs + '</button>' +
+                   (tr.state === 'failed' ? '<span class="muted">' + S.rec_subs_failed + '</span>' : '');
+      if (trim.state === 'running') html += '<span class="pill run">' + S.rec_trim_running + '</span>';
+      else html += '<button data-trim="' + s.id + '">' + S.rec_trim + '</button>' +
+        (trim.state === 'done' ? '<span class="muted">' + fmt('rec_trim_done', { s: Math.round(trim.removed || 0) }) + '</span>' :
+         trim.state === 'failed' ? '<span class="muted">' + fmt('rec_trim_failed', { e: esc(trim.error || '') }) + '</span>' : '');
+      return html;
+    }
+    function transcriptView(t) {
+      var tr = t.transcript || {};
+      return tr.state === 'done' && tr.text ? '<details style="margin-top:6px"><summary class="muted">' + S.rec_transcript + '</summary>' +
+        '<p style="margin-top:6px;font-size:.88rem">' + esc(tr.text) + '</p></details>' : '';
+    }
     function chosen(item) {
       var t = item.takes || [], i = item.chosen;
       return (i >= 0 && i < t.length) ? t[i] : t[t.length - 1];
@@ -534,7 +553,9 @@
             '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
             '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
             (t && t.file ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>' +
-              '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) + '</div>' : '') +
+              takesRow(s) +
+              '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) +
+              recordingTools(s, t, p, i) + '</div>' + transcriptView(t) : '') +
             '</div>';
           return;
         }
@@ -795,6 +816,11 @@
         }
         if (b.id === 'preview') return previewPlayer();
         if (b.id === 'rec') return recorder();
+        if (d.transcribe || d.trim) {
+          await api('projects/' + p.id + '/items/' + (d.transcribe || d.trim) + '/' + (d.transcribe ? 'transcribe' : 'trim'),
+                    { method: 'POST', body: {} });
+          current = await api('projects/' + p.id); drawTab(); watchClips(); return;
+        }
         if (b.id === 'ch-new') return characterDialog(null);
         if (d.chEdit) return characterDialog(cast.find(function (c) { return c.id === d.chEdit; }));
         if (d.chPortrait) {
@@ -1227,7 +1253,7 @@
           try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST' }); }
           catch (e) { toast(fmt('err', { e: e.message }), true); }
           release(); dlg.close();
-          current = await api('projects/' + p.id); drawTab();
+          current = await api('projects/' + p.id); drawTab(); watchClips();
         };
         st.rec.start(5000);
         st.t0 = Date.now(); st.clock = setInterval(clockNow, 500);
@@ -1338,6 +1364,8 @@
       var soundtrack = (p.settings || {}).soundtrack || '';
       dlg.innerHTML = '<h2>' + S.render + '</h2>' +
         '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-x" style="width:auto"> ' + S.render_crossfade + '</label>' +
+        ((p.shots || []).some(function (s) { return ((chosen(s) || {}).transcript || {}).state === 'done'; })
+          ? '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-subs" style="width:auto" checked> ' + S.render_subs + '</label>' : '') +
         (audio.length ? '<label class="f">' + S.render_music + '</label><select id="rd-a"><option value="">' + S.none + '</option>' +
           audio.map(function (a) { return '<option value="' + a.id + '"' + (a.id === soundtrack ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' +
           '<div class="row"><div class="grow"><label class="f">' + S.render_volume + '</label><input type="range" id="rd-v" min="0" max="150" value="' + (soundtrack ? 100 : 80) + '"></div>' +
@@ -1352,10 +1380,25 @@
         try {
           var mute = $('#rd-m');
           await api('projects/' + p.id + '/render', { method: 'POST', body: { crossfade: $('#rd-x').checked ? 0.5 : 0, tracks: tracks,
+                                                                              subtitles: !!($('#rd-subs') && $('#rd-subs').checked),
                                                                               own_sound: !(mute && mute.checked && tracks.length) } });
           dlg.close(); current = await api('projects/' + p.id); drawTab(); watchRender();
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
       };
+    }
+    // A clip being transcribed or trimmed is worked on beside the queue, so
+    // no job says when it is done: the page asks until the clip does.
+    function watchClips() {
+      var t = setInterval(async function () {
+        if (!current) return clearInterval(t);
+        var p = await api('projects/' + current.id);
+        var busy = (p.shots || []).some(function (s) {
+          var tk = chosen(s) || {};
+          return (s.trim || {}).state === 'running' || (tk.transcript || {}).state === 'running' || (s.recording || {}).state === 'processing';
+        });
+        if (!busy) { clearInterval(t); }
+        if (!dirty && !document.querySelector('dialog[open]')) { current = p; drawTab(); }
+      }, 4000);
     }
     function watchRender() {
       var t = setInterval(async function () {

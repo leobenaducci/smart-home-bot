@@ -119,7 +119,8 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "preview_download", "preview_rendering",
             "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "mv_steps", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
             "tab_cast", "ch_none", "ch_new", "ch_edit", "ch_name", "ch_look", "ch_look_ph", "ch_personality", "ch_personality_ph", "ch_voice", "ch_voice_text", "ch_record", "ch_stop", "ch_pictures", "ch_save", "ch_portrait", "ch_speak", "ch_speak_what", "ch_speak_ph", "ch_widen_person", "ch_widen_family", "ch_scope_project", "ch_scope_person", "ch_scope_family", "ch_widen_confirm", "ch_delete_confirm", "ch_in_shot",
-            "rec_title", "rec_screen", "rec_cam", "rec_mic", "rec_start", "rec_pause", "rec_resume", "rec_stop", "rec_uploading", "rec_saved", "rec_processing", "rec_failed", "rec_no_screen", "rec_need_source", "rec_default_title", "rec_denied", "delete_render_confirm"):
+            "rec_title", "rec_screen", "rec_cam", "rec_mic", "rec_start", "rec_pause", "rec_resume", "rec_stop", "rec_uploading", "rec_saved", "rec_processing", "rec_failed", "rec_no_screen", "rec_need_source", "rec_default_title", "rec_denied", "delete_render_confirm",
+            "rec_subs", "rec_subs_running", "rec_subs_failed", "rec_transcript", "rec_trim", "rec_trim_running", "rec_trim_done", "rec_trim_failed", "render_subs"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
 
 print("\na music video is planned by Alfred, shot by shot")

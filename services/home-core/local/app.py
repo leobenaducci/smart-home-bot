@@ -21633,6 +21633,8 @@ STUDIO_UI_KEYS = (
     'rec_processing', 'rec_failed', 'rec_no_screen', 'rec_need_source', 'rec_default_title',
     'rec_denied',
     'delete_render_confirm',
+    'rec_subs', 'rec_subs_running', 'rec_subs_failed', 'rec_transcript', 'rec_trim',
+    'rec_trim_running', 'rec_trim_done', 'rec_trim_failed', 'render_subs',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',

@@ -24,6 +24,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -438,6 +439,86 @@ def finish_recording(pid: str, rid: str, me: Who = Depends(who)):
 
     renders.submit(work)
     return {"ok": True, "state": "processing"}
+
+
+WHISPER_URL = os.environ.get("WHISPER_URL", "")
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/trim")
+def trim_silences(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """A new version of a clip with its long silences taken out -- the pauses
+    in a recording where nothing is said. The original version is kept. On
+    the CPU pool beside the queue; the item says where it is."""
+    body = body or {}
+    _doc, item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    base = projects.dir(me.login, pid)
+    try:
+        min_s = max(0.6, min(10.0, float(body.get("min_seconds") or 1.2)))
+    except (TypeError, ValueError) as exc:
+        _bad(exc)
+    projects.set_item_field(me.login, pid, item_id, "trim", {"state": "running"})
+
+    def work():
+        try:
+            stamp = uuid.uuid4().hex[:8]
+            clip, removed = media.cut_silences(base / take["file"], base / "takes" / item_id / f"{stamp}-trim.mp4",
+                                               min_s=min_s)
+            first = media.frame(clip, clip.with_name(f"{stamp}-trim-first.png"), "first")
+            last = media.frame(clip, clip.with_name(f"{stamp}-trim-last.png"), "last")
+            seconds = round(media.probe(clip)["seconds"], 2)
+            projects.add_take(me.login, pid, item_id, {"file": str(clip.relative_to(base)), "kind": "trimmed",
+                                                       "from": take["id"], "seconds": seconds,
+                                                       "first": str(first.relative_to(base)),
+                                                       "last": str(last.relative_to(base))})
+            projects.set_item_field(me.login, pid, item_id, "seconds", seconds)
+            projects.set_item_field(me.login, pid, item_id, "trim", {"state": "done", "removed": removed})
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("trim %s failed: %s", item_id, exc)
+            projects.set_item_field(me.login, pid, item_id, "trim", {"state": "failed", "error": str(exc)[:300]})
+
+    renders.submit(work)
+    return {"ok": True, "state": "running"}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/transcribe")
+def transcribe(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """What is said in a clip, with its times: the house's speech recogniser
+    on the clip's sound (on its own card, not this one), kept on the version
+    as JSON and as SubRip subtitles, for the film to burn in or to download.
+    On the CPU pool beside the queue; the version says where it is."""
+    if not WHISPER_URL:
+        _bad(ValueError("the house has no speech recogniser configured"))
+    doc, item, take = _item_take(me, pid, item_id, str((body or {}).get("take") or ""))
+    base = projects.dir(me.login, pid)
+    language = str((body or {}).get("language") or doc["settings"].get("language") or "es")[:5]
+    projects.set_take_field(me.login, pid, item_id, take["id"], "transcript", {"state": "running"})
+
+    def work():
+        stem = base / "takes" / item_id / f"{take['id']}-transcript"
+        wav = stem.with_suffix(".wav")
+        try:
+            media.to_wav(base / take["file"], wav, rate=16000, channels=1)
+            with open(wav, "rb") as fh:
+                r = requests.post(WHISPER_URL, files={"file": ("speech.wav", fh, "audio/wav")},
+                                  data={"language": language}, timeout=1800)
+            r.raise_for_status()
+            segments = [{"start": round(float(s["start"]), 2), "end": round(float(s["end"]), 2),
+                         "text": str(s.get("text") or "").strip()} for s in r.json().get("segments") or []]
+            stem.with_suffix(".json").write_text(json.dumps(segments, ensure_ascii=False))
+            stem.with_suffix(".srt").write_text(media.srt(segments), encoding="utf-8")
+            projects.set_take_field(me.login, pid, item_id, take["id"], "transcript", {
+                "state": "done", "file": str(stem.with_suffix(".json").relative_to(base)),
+                "srt": str(stem.with_suffix(".srt").relative_to(base)),
+                "text": " ".join(s["text"] for s in segments)[:4000]})
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("transcript %s failed: %s", item_id, exc)
+            projects.set_take_field(me.login, pid, item_id, take["id"], "transcript",
+                                    {"state": "failed", "error": str(exc)[:300]})
+        finally:
+            wav.unlink(missing_ok=True)
+
+    renders.submit(work)
+    return {"ok": True, "state": "running"}
 
 
 @app.post("/api/projects/{pid}/storyboard")
@@ -875,6 +956,12 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     base = projects.dir(me.login, pid)
     made = [(s, Projects.chosen_take(s)) for s in doc.get("shots") or []]
     preview = bool(body.get("preview"))
+    # Subtitles burnt in, for the clips whose version has them.
+    with_subs = bool(body.get("subtitles"))
+
+    def subs_of(t):
+        rel = ((t or {}).get("transcript") or {}).get("srt") if with_subs else None
+        return base / rel if rel and (base / rel).is_file() else None
     clips = [base / t["file"] for s, t in made if t]
     # A shot cut to the music is read only up to its cut.
     lengths = [float(s["seconds"]) if s.get("exact") and s.get("seconds") else None for s, t in made if t]
@@ -917,6 +1004,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         followed = []
         try:
             use_clips, use_lengths, use_marks = clips, lengths, None
+            use_subs = [subs_of(t) for s, t in made if t]
             if preview:
                 if clips:
                     first = media.probe(clips[0])
@@ -924,7 +1012,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                 else:
                     w, h = (doc["settings"].get("resolution") or "832x480").split("x")
                     size = (int(w), int(h))
-                use_clips, use_lengths, use_marks = [], [], []
+                use_clips, use_lengths, use_marks, use_subs = [], [], [], []
                 badge = str(labels.get("preview") or "PREVIEW")[:30].upper()
 
                 def clock(t: float) -> str:
@@ -938,6 +1026,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                         info += f" · {str(labels.get('version') or 'version')[:30]} {k}/{len(takes)}"
                     use_marks.append(media.watermark(badge, info, size, base / "renders" / f"{stamp}-mark{n}.png"))
                     followed.append(use_marks[-1])
+                    use_subs.append(subs_of(t))
                     if t:
                         use_clips.append(base / t["file"])
                         use_lengths.append(length if s.get("exact") else None)
@@ -957,7 +1046,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                         use_lengths.append(None)
             film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
                                 crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
-                                marks=use_marks, fast=preview)
+                                marks=use_marks, fast=preview, subs=use_subs)
             if tracks:
                 laid = []
                 for k, tr in enumerate(tracks):

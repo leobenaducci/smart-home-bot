@@ -23,6 +23,9 @@ services:
       # a music video. By container name on nanobot-net; unset, a song is
       # still analysed for its beats, just without its words.
       - STUDIO_AUDIO_URL=${STUDIO_AUDIO_URL:-}
+      # The house's speech recogniser (faster-whisper): a recording's
+      # transcript and subtitles. Unset, recordings get no subtitles.
+      - WHISPER_URL=${WHISPER_URL:-}
       - WANGP_PROFILE=${STUDIO_WANGP_PROFILE:-5}
       - HF_HOME=/data/hf-cache
       - NO_PROXY=localhost,127.0.0.1

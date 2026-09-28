@@ -107,6 +107,46 @@ def encode_recording(src: Path, out: Path) -> Path:
     return out
 
 
+def silences(src: Path, noise_db: float = -35.0, min_s: float = 1.2) -> list[tuple[float, float]]:
+    """Stretches of *src* quieter than *noise_db* for at least *min_s*."""
+    done = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(src), "-vn",
+                           "-af", f"silencedetect=noise={noise_db}dB:d={min_s}", "-f", "null", "-"],
+                          capture_output=True, text=True, timeout=1800)
+    out, start = [], None
+    for line in (done.stderr or "").splitlines():
+        if "silence_start:" in line:
+            start = float(line.split("silence_start:")[1].split()[0])
+        elif "silence_end:" in line and start is not None:
+            out.append((max(0.0, start), float(line.split("silence_end:")[1].split()[0])))
+            start = None
+    if start is not None:
+        out.append((start, probe(src)["seconds"]))
+    return out
+
+
+def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1.2,
+                 keep: float = 0.3) -> tuple[Path, float]:
+    """*src* without its long silences, `keep` seconds of each left either side
+    so a word is never clipped. Returns the new clip and the seconds removed."""
+    total = probe(src)["seconds"]
+    gaps = [(a + keep, b - keep) for a, b in silences(src, noise_db, min_s) if b - a - 2 * keep > 0.2]
+    if not gaps:
+        raise MediaError("no silence long enough to trim")
+    spans, t = [], 0.0
+    for a, b in gaps:
+        if a > t:
+            spans.append((t, a))
+        t = b
+    if total - t > 0.05:
+        spans.append((t, total))
+    expr = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in spans)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-i", str(src), "-vf", f"select='{expr}',setpts=N/FRAME_RATE/TB",
+          "-af", f"aselect='{expr}',asetpts=N/SR/TB", *X265, "-c:a", "aac", "-b:a", "160k",
+          "-movflags", "+faststart", str(out)], timeout=7200)
+    return out, round(total - sum(b - a for a, b in spans), 2)
+
+
 def compress_video(src: Path) -> Path:
     """*src* re-encoded to H.265 in place: same name, same sound, so nothing
     that points at it has to change. Replaced only once the new file reads back
@@ -137,6 +177,17 @@ def for_generator(src: Path, out: Path) -> Path:
     return out
 
 
+def srt(segments: list[dict]) -> str:
+    """Subtitles in SubRip form from timed segments ({start, end, text})."""
+    def stamp(t: float) -> str:
+        ms = int(round(max(0.0, t) * 1000))
+        return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+    blocks = []
+    for n, seg in enumerate((s for s in segments if str(s.get("text") or "").strip()), 1):
+        blocks.append(f"{n}\n{stamp(float(seg['start']))} --> {stamp(float(seg['end']))}\n{str(seg['text']).strip()}\n")
+    return "\n".join(blocks)
+
+
 def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
     """*src* as a PCM WAV at *rate* and *channels*."""
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +197,7 @@ def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
 
 def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
            lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
-           fast: bool = False) -> Path:
+           fast: bool = False, subs: list[Path | None] | None = None) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
@@ -183,8 +234,14 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
     parts, n = [], len(videos)
     for i, info in enumerate(infos):
         label = f"b{i}" if i in mark_input else f"v{i}"
+        # A clip's subtitles, burnt in after it is sized, so the text is the
+        # same size in every clip. Paths here are the studio's own (letters,
+        # digits, `/_-.`), so nothing in them needs the filter's escaping.
+        sub = (subs or [None] * len(videos))[i] if subs else None
+        burn = (f",subtitles=filename={sub}:force_style='FontName=DejaVu Sans,FontSize=18,"
+                f"Outline=2,Shadow=0,MarginV=22'") if sub else ""
         parts.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[{label}]")
+                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24{burn},format=yuv420p[{label}]")
         if i in mark_input:
             parts.append(f"[{mark_input[i]}:v]scale={w}:{h},format=rgba[m{i}]")
             parts.append(f"[b{i}][m{i}]overlay=0:0:shortest=1,format=yuv420p[v{i}]")
