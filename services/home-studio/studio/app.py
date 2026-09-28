@@ -81,6 +81,17 @@ def _notify(job: dict) -> None:
                       headers={"X-Studio-Secret": SECRET}, timeout=10, verify=False)
     except requests.RequestException as exc:
         log.warning("notify failed: %s", exc)
+    # A frame drawn inside a refine loop goes back to the portal to be looked
+    # at: the reviewer is the person's assistant, which the Studio cannot reach.
+    refine = (job.get("params") or {}).get("refine")
+    if job.get("ok") and job.get("kind") == "board" and refine and NOTIFY_URL.endswith("/notify"):
+        try:
+            requests.post(NOTIFY_URL[:-len("notify")] + "frame-review",
+                          json={"login": job["owner"], "project": job["project"], "shot": job["target"],
+                                "job": job["id"], "refine": refine},
+                          headers={"X-Studio-Secret": SECRET}, timeout=10, verify=False)
+        except requests.RequestException as exc:
+            log.warning("frame review hook failed: %s", exc)
 
 
 manager = Manager(store, projects, DATA / "scratch", DATA / "logs", idle_s=IDLE_S, notify=_notify,
@@ -616,6 +627,19 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
     except ProjectError as exc:
         _bad(exc, 404)
     want = [str(i) for i in body.get("items") or []]
+    # `prompts`: what to draw instead of a shot's description -- a reviewer's
+    # improved prompt -- which leaves the description the person wrote as it
+    # is. `refine`: rounds of review left after this drawing (the portal
+    # reviews each frame drawn with some and redraws it while it scores low).
+    overrides = {str(k): str(v).strip()[:1200] for k, v in (body.get("prompts") or {}).items() if str(v).strip()}
+    refine = None
+    if isinstance(body.get("refine"), dict):
+        try:
+            refine = {"rounds": max(0, min(3, int(body["refine"].get("rounds", 0)))),
+                      "threshold": max(1, min(10, int(body["refine"].get("threshold", 7)))),
+                      "round": max(0, min(9, int(body["refine"].get("round", 0))))}
+        except (TypeError, ValueError):
+            refine = None
     look = str(doc["settings"].get("look") or "").strip()
     size = recipes.BOARD_SIZE.get(doc["settings"].get("resolution", "832x480"), "1344x768")
     busy = {j["target"] for j in store.active() if j["owner"] == me.login and j["kind"] == "board"}
@@ -628,12 +652,18 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
         what = str(shot.get("prompt") or "").strip()
         if not what:
             continue
+        drawn = overrides.get(shot["id"], what)
         cast = characters.describe(shot.get("cast") or [], me.login, pid)
-        prompt = (f"{look}. " if look else "") + f"Film still: {what}" + (f" Characters: {cast}." if cast else "")
+        prompt = (f"{look}. " if look else "") + f"Film still: {drawn}" + (f" Characters: {cast}." if cast else "")
         # `shot_prompt`: the description as it was when the frame was asked
         # for, kept on the frame so the page can tell a frame whose shot has
         # been described differently since -- one to draw again.
-        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200]},
+        params = {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200]}
+        if drawn != what:
+            params["drawn_from"] = drawn
+        if refine:
+            params["refine"] = refine
+        queued.append(_enqueue(me, "board", params,
                                pid, shot["id"],
                                shot.get("title") or f"{doc['name']} {idx + 1}")["id"])
     if not queued:
@@ -909,6 +939,15 @@ def board_from(pid: str, item_id: str, body: dict, me: Who = Depends(who)):
         return projects.board_from(me.login, pid, item_id, str(body.get("file") or ""))
     except ProjectError as exc:
         _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/boards/{board_id}/review")
+def board_review(pid: str, item_id: str, board_id: str, body: dict, me: Who = Depends(who)):
+    """What the person's assistant saw in a frame, kept on it."""
+    try:
+        return projects.set_board_review(me.login, pid, item_id, board_id, dict(body.get("review") or {}))
+    except ProjectError as exc:
+        _bad(exc, 404)
 
 
 @app.post("/api/projects/{pid}/items/{item_id}/favorite")

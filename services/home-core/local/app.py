@@ -5508,13 +5508,17 @@ def _delegate_chat_id(username, space):
             f':{DELEGATE_SCOPE}-{CHAT_SPACES[space]["scope"]}')
 
 
-def _run_nanobot_turn(username, chat_id, text, timeout, profile=None):
+def _run_nanobot_turn(username, chat_id, text, timeout, profile=None, images=None):
     """One non-streaming turn against the user's own instance. Text, or None.
 
     *profile* names the profession this turn should run as, so a delegated piece
     is produced by the same model that profession uses when someone talks to it
     directly — a design brief handed to the Designer gets the Designer's
     model, not the caller's.
+
+    *images* are data: URLs sent with the text. The assistant keeps the turn
+    on its own model and looks at them through its vision model
+    (describe_image), as it does with a photo somebody sends it.
     """
     user = find_user(username)
     nanobot_id = user.get('nanobot_id') if user else None
@@ -5524,7 +5528,9 @@ def _run_nanobot_turn(username, chat_id, text, timeout, profile=None):
         r = requests.post(
             f'{nanobot_url(nanobot_id)}/chat/completions',
             headers=nanobot_auth_headers(nanobot_id),
-            json={'messages': [{'role': 'user', 'content': text}],
+            json={'messages': [{'role': 'user', 'content': (
+                      [{'type': 'text', 'text': text}]
+                      + [{'type': 'image_url', 'image_url': {'url': u}} for u in images]) if images else text}],
                   'session_id': chat_id, 'channel': 'websocket',
                   # The profile names the persona and the persona names one
                   # model; `powerful` would only override it where none is set.
@@ -21645,7 +21651,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_reviewing_n', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_review_redraw', 'sb_review_use', 'sb_review_used', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
     'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
@@ -21939,15 +21945,310 @@ def studio_music_video():
           f'text: [{{"prompt": "...", "continues": false' + (', "cast": ["..."]' if cast_text else '') + '}}, ...]'
     )
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-video'
-    shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S), n)
+    # Written by the Designer: a storyboard is a thing looked at, which is
+    # what that profession's model is chosen for (assistant.models.designer).
+    shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S, profile='designer'), n)
     if shots is None:
         # Once more, saying what went wrong: the usual miss is a count off by one.
         again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only "
                  f"the JSON array, exactly {n} entries, no code fence.")
-        shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S), n)
+        shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
+                                                     profile='designer'), n)
     if shots is None:
         return jsonify(error=t('studio.mv_failed')), 502
     return jsonify(shots=shots)
+
+
+STUDIO_REVIEW_TIMEOUT_S = 300
+# One refine pass per project at a time: a second press while one runs would
+# review and redraw the same frames twice.
+_studio_refining = set()
+_studio_refining_lock = threading.Lock()
+
+
+def _studio_call(username, method, path, body=None, timeout=30):
+    """The Studio's API as the person, from the portal's own code. JSON or None."""
+    try:
+        r = requests.request(method, f'{STUDIO_URL}/api/{path}', headers=_studio_headers(username),
+                             json=body, timeout=(5, timeout))
+        return r.json() if r.status_code == 200 else None
+    except (requests.RequestException, ValueError) as exc:
+        app.logger.warning('studio: %s %s failed: %s', method, path, exc)
+        return None
+
+
+def _studio_data_url(username, path):
+    """A picture of the Studio's (a frame, a character's portrait) as a data:
+    URL for the assistant. None when it cannot be read."""
+    try:
+        r = requests.get(f'{STUDIO_URL}/api/{path}', headers=_studio_headers(username), timeout=(5, 30))
+        if r.status_code != 200 or not r.content:
+            return None
+        ctype = (r.headers.get('Content-Type') or 'image/jpeg').split(';')[0]
+        if not ctype.startswith('image/'):
+            return None
+        return f'data:{ctype};base64,' + base64.b64encode(r.content).decode()
+    except requests.RequestException:
+        return None
+
+
+# The house's vision model, for looking at the Studio's pictures: resolved by
+# the deployer from `assistant.models.vision` (model_endpoint, host network).
+STUDIO_VISION_URL = os.environ.get('STUDIO_VISION_URL', '')
+STUDIO_VISION_MODEL = os.environ.get('STUDIO_VISION_MODEL', '')
+STUDIO_VISION_KEY = os.environ.get('STUDIO_VISION_KEY', '')
+
+
+def _studio_vision(prompt, images):
+    """One question about some pictures, to the vision model. Text or None.
+    No thinking: it is asked to look and answer, and a reasoning model
+    spends its budget before the answer otherwise (see the titler)."""
+    if not (STUDIO_VISION_URL and STUDIO_VISION_MODEL):
+        app.logger.warning('studio: no vision model to review frames with (assistant.models.vision)')
+        return None
+    headers = {'Authorization': f'Bearer {STUDIO_VISION_KEY}'} if STUDIO_VISION_KEY else {}
+    if 'opencode.ai' in STUDIO_VISION_URL.lower():
+        headers['x-opencode-session'] = secrets.token_hex(16)
+    body = {'model': STUDIO_VISION_MODEL, 'stream': False, 'temperature': 0.2, 'max_tokens': 800,
+            'reasoning_effort': 'none',
+            'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]
+                          + [{'type': 'image_url', 'image_url': {'url': u}} for u in images]}]}
+    try:
+        r = requests.post(STUDIO_VISION_URL, json=body, headers=headers, timeout=STUDIO_REVIEW_TIMEOUT_S)
+        if not r.ok:
+            app.logger.warning('studio: the vision model said %s', r.status_code)
+            return None
+        return r.json()['choices'][0]['message']['content']
+    except (requests.RequestException, ValueError, KeyError, IndexError) as exc:
+        app.logger.warning('studio: the vision model failed: %s', exc)
+        return None
+
+
+def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
+    """What the Designer would draw the frame with instead: the review's
+    findings in, one image prompt out. Text only -- the picture itself was
+    looked at on the house's card."""
+    prompt = (
+        "You write the image prompts of a film's storyboard. One frame came out wrong and is to be drawn again.\n"
+        f"The shot should show: {shot.get('prompt') or ''}\n"
+        f"The frame was drawn from: {board.get('drawn_from') or shot.get('prompt') or ''}\n"
+        + (f"The film's look: {look}\n" if look else "")
+        + ("The characters, as they must look every time:\n"
+           + "\n".join(f"- {c['name']}: {c.get('look') or ''}" for c in cast) + "\n" if cast else "")
+        + "Someone who looked at the frame found these problems:\n" + "\n".join(f"- {x}" for x in review['problems'])
+        + ("\nAnd this works:\n" + "\n".join(f"- {x}" for x in review['ok']) if review['ok'] else "")
+        + "\nWrite the prompt to redraw it with, in English: the same shot, fixing every problem and keeping what "
+          "works, 1 to 3 concrete visual sentences for an image model (who, where, action, framing, light). Answer "
+          "with only the prompt -- no quotes, no heading, no other text."
+    )
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-review-{sid}'
+    text = _run_nanobot_turn(username, chat_id, prompt, STUDIO_REVIEW_TIMEOUT_S, profile='designer') or ''
+    text = re.sub(r'^```\w*|```$', '', text.strip()).strip().strip('"“”').strip()
+    return text.split('\n\n')[0].strip()[:1200]
+
+
+def _studio_parse_review(text):
+    """{score, ok, problems, prompt} from whatever the assistant answered."""
+    if not text:
+        return None
+    start, end = text.find('{'), text.rfind('}')
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+        score = max(0, min(10, round(float(raw.get('score')))))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    def words(xs):
+        return [str(x).strip()[:300] for x in xs if str(x).strip()][:8] if isinstance(xs, list) else []
+    return {'score': score, 'ok': words(raw.get('ok')), 'problems': words(raw.get('problems')),
+            'prompt': str(raw.get('prompt') or '').strip()[:1200]}
+
+
+def _studio_review_board(username, pid, sid, job_id=None, round_=0, threshold=7):
+    """One storyboard frame looked at and judged against what the shot is
+    for -- its description, the project's look, the characters cast in it,
+    the words sung during it -- by the house's own vision model
+    (`assistant.models.vision`, on the house's card: the pictures never leave
+    it). Under the bar, the Designer (`assistant.models.designer`) writes the
+    prompt to redraw it with. The review is kept on the frame. Returns it, or
+    None."""
+    doc = _studio_call(username, 'GET', f'projects/{pid}') or {}
+    shot = next((s for s in doc.get('shots') or [] if s.get('id') == sid), None)
+    boards = (shot or {}).get('boards') or []
+    if not boards:
+        return None
+    board = next((b for b in boards if job_id and b.get('job') == job_id), None)
+    if board is None:
+        i = shot.get('board', -1)
+        board = boards[i] if isinstance(i, int) and 0 <= i < len(boards) else boards[-1]
+    path = f"projects/{pid}/items/{sid}/boards/{board['id']}/review"
+    _studio_call(username, 'POST', path, {'review': {'state': 'running'}})
+    try:
+        return _studio_review_frame(username, pid, doc, shot, board, path, round_, threshold)
+    except Exception:
+        # Never left "being reviewed" for good.
+        _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the review stopped'}})
+        raise
+
+
+def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshold=7):
+    sid = shot['id']
+    frame = _studio_data_url(username, f"projects/{pid}/file/{quote(board['file'], safe='/')}")
+    if not frame:
+        _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the frame could not be read'}})
+        return None
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    cast = [c for c in chars if c.get('id') in (shot.get('cast') or [])][:3]
+    images, refs = [frame], []
+    for c in cast:
+        pics = c.get('pictures') or []
+        i = c.get('portrait', -1)
+        if pics and isinstance(i, int) and 0 <= i < len(pics):
+            url = _studio_data_url(username, f"projects/{pid}/characters/{c['id']}/file/{quote(pics[i], safe='/')}")
+            if url:
+                images.append(url)
+                refs.append(c['name'])
+    sung = ''
+    song = next((a for a in doc.get('audio') or [] if a.get('id') == (doc.get('settings') or {}).get('soundtrack')), None)
+    take = None
+    if song:
+        takes = song.get('takes') or []
+        ci = song.get('chosen', -1)
+        take = takes[ci] if isinstance(ci, int) and 0 <= ci < len(takes) else (takes[-1] if takes else None)
+    if take and (take.get('analysis') or {}).get('file') and shot.get('exact'):
+        an = _studio_call(username, 'POST', f"projects/{pid}/items/{song['id']}/analyze", {'take': take['id']}) or {}
+        a, z = float(shot.get('start') or 0), float(shot.get('start') or 0) + float(shot.get('seconds') or 0)
+        sung = ' / '.join(l.get('text') or '' for l in an.get('lines') or []
+                          if float(l.get('start') or 0) < z and float(l.get('end') or 0) > a)
+    look = str((doc.get('settings') or {}).get('look') or '').strip()
+    language = {'es': 'Spanish', 'en': 'English'}.get(str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    prompt = (
+        "You review one storyboard frame of a film before it is made into video. The first picture is the frame"
+        + (f"; the next are reference portraits of {', '.join(refs)}, in that order, which the characters in the "
+           "frame must look like" if refs else "") + ".\n"
+        f"The frame should show: {shot.get('prompt') or ''}\n"
+        + (f"The film's look: {look}\n" if look else "")
+        + ("The characters, as they must look every time:\n"
+           + "\n".join(f"- {c['name']}: {c.get('look') or ''}" for c in cast) + "\n" if cast else "")
+        + (f"Sung during this shot: \"{sung}\"\n" if sung else "")
+        + "Look closely at what is actually there: who and what, the setting, the framing and camera angle, the "
+          "light, the style, and any defect (extra or missing limbs, broken hands or faces, garbled text, a "
+          "character who does not match their description or portrait). Judge how well it serves the shot, from 0 "
+          "(wrong) to 10 (exactly right, nothing to fix). Write the findings in "
+          f"{language}, short and concrete; `problems` is an empty list when there are none. Answer with only a JSON "
+          'object: {"score": 0-10, "ok": ["what works", ...], "problems": ["what is wrong", ...]}'
+    )
+    review = _studio_parse_review(_studio_vision(prompt, images))
+    if review is None:
+        _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the review could not be read'}})
+        return None
+    review['round'] = round_
+    # The picture was looked at on the house's card; what to draw instead is
+    # writing, and the storyboard's writing is the Designer's.
+    if review['score'] < threshold and review['problems']:
+        review['prompt'] = _studio_redraw_prompt(username, sid, shot, board, look, cast, review)
+    _studio_call(username, 'POST', path, {'review': {**review, 'state': 'done'}})
+    return review
+
+
+def _studio_refine_step(username, pid, sid, refine, job_id=None):
+    """Review a frame; below the bar with rounds left, redraw it from the
+    reviewer's prompt -- the Studio sends the new frame back here to be
+    reviewed in turn, however long it waits in the queue."""
+    review = _studio_review_board(username, pid, sid, job_id, int(refine.get('round') or 0),
+                                  int(refine.get('threshold') or 7))
+    if not review:
+        return None
+    if review['score'] < int(refine.get('threshold') or 7) and int(refine.get('rounds') or 0) > 0 and review['prompt']:
+        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {
+            'items': [sid], 'prompts': {sid: review['prompt']},
+            'refine': {'rounds': int(refine['rounds']) - 1, 'threshold': int(refine.get('threshold') or 7),
+                       'round': int(refine.get('round') or 0) + 1}})
+    return review
+
+
+def _studio_background(fn, *args):
+    def run():
+        with app.app_context():
+            try:
+                fn(*args)
+            except Exception:                                  # noqa: BLE001 -- a review never takes the portal down
+                app.logger.exception('studio: background review failed')
+    threading.Thread(target=run, daemon=True).start()
+
+
+@app.route('/studio/api/board-review', methods=['POST'])
+@api_login_required
+def studio_board_review():
+    """👁 on a frame: the person's assistant looks at it now."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    sid = re.sub(r'[^a-z0-9]', '', str(d.get('shot') or ''))[:32]
+    review = _studio_review_board(session['user'], pid, sid)
+    if review is None:
+        return jsonify(error=t('studio.sb_review_failed')), 502
+    return jsonify(review=review)
+
+
+@app.route('/studio/api/board-refine', methods=['POST'])
+@api_login_required
+def studio_board_refine():
+    """🔁: every frame named (or every frame) reviewed, and those under the
+    bar redrawn from the review, up to `rounds` times -- in the background,
+    one project at a time."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    try:
+        refine = {'rounds': max(0, min(3, int(d.get('rounds', 2)))),
+                  'threshold': max(1, min(10, int(d.get('threshold', 7)))), 'round': 0}
+    except (TypeError, ValueError):
+        return jsonify(error='bad refine'), 400
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    want = {re.sub(r'[^a-z0-9]', '', str(x))[:32] for x in d.get('shots') or []}
+    shots = [s['id'] for s in doc.get('shots') or [] if s.get('boards') and not s.get('recorded')
+             and (not want or s['id'] in want)]
+    key = (username, pid)
+    with _studio_refining_lock:
+        if key in _studio_refining:
+            return jsonify(error=t('studio.sb_refine_busy')), 409
+        _studio_refining.add(key)
+
+    def run():
+        try:
+            for sid in shots:
+                _studio_refine_step(username, pid, sid, dict(refine))
+        finally:
+            with _studio_refining_lock:
+                _studio_refining.discard(key)
+    _studio_background(run)
+    return jsonify(started=len(shots))
+
+
+@app.route('/studio/api/frame-review', methods=['POST'])
+def studio_frame_review():
+    """The Studio filed a frame drawn inside a refine loop: look at it. Its
+    own secret, like /notify -- a service asking on somebody's behalf."""
+    if not _studio_configured() or not secrets.compare_digest(
+            request.headers.get('X-Studio-Secret', ''), STUDIO_SECRET):
+        abort(401)
+    d = request.get_json(silent=True) or {}
+    login = str(d.get('login') or '')
+    if not find_user(login):
+        return jsonify(ok=False), 404
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    sid = re.sub(r'[^a-z0-9]', '', str(d.get('shot') or ''))[:32]
+    job = re.sub(r'[^a-z0-9]', '', str(d.get('job') or ''))[:32]
+    refine = d.get('refine') if isinstance(d.get('refine'), dict) else {}
+    _studio_background(_studio_refine_step, login, pid, sid, refine, job)
+    return jsonify(ok=True)
 
 
 def _studio_parse_description(text):

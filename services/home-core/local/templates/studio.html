@@ -124,6 +124,8 @@
                 justify-content: center; overflow: hidden; }
     .sb-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .sb-card textarea { min-height: 84px; }
+    .review { border-top: 1px dashed var(--line); padding-top: 6px; }
+    .rv-line { font-size: .8rem; line-height: 1.4; margin-top: 3px; }
     .hist-body { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
     .hist-change { padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: .86rem; line-height: 1.45; }
     .hist-change ins { background: rgba(126,138,97,.25); text-decoration: none; }
@@ -536,7 +538,8 @@
       return '<div class="takes"><span class="muted">🖼️ ' + S.storyboard + ':</span>' + b.map(function (_, i) {
         return '<button data-board-choose="' + s.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + '</button>';
       }).join('') + '<button data-board="' + s.id + '">' + (b.length ? S.board_redraw : S.board_draw) + '</button>' +
-        '<button data-board-from="' + s.id + '" title="' + esc(S.board_from) + '">📌</button></div>';
+        '<button data-board-from="' + s.id + '" title="' + esc(S.board_from) + '">📌</button>' +
+        (b.length ? '<button data-review="' + s.id + '" title="' + esc(S.sb_review_help) + '">👁 ' + S.sb_review + '</button>' : '') + '</div>';
     }
     // Who is in the shot: their looks go into its frame and its video.
     function castRow(s) {
@@ -723,15 +726,36 @@
         };
       });
     }
+    // What the person's assistant saw in a frame (the Designer's model,
+    // looking through its vision model): a score, what works, what does not,
+    // and the prompt it would redraw it with.
+    function reviewRunning(r) { return r && r.state === 'running' && Date.now() / 1000 - (r.at || 0) < 900; }
+    function reviewBlock(s, b) {
+      var r = b && b.review;
+      if (!r) return '';
+      if (reviewRunning(r)) return '<p class="muted" style="margin:6px 0 0">👁 ' + S.sb_reviewing + '</p>';
+      if (r.state === 'failed' || r.state === 'running') return '<p class="muted" style="margin:6px 0 0">👁 ' + S.sb_review_failed + '</p>';
+      var good = r.score >= 7;
+      return '<div class="review" style="margin-top:6px"><div class="row"><span class="pill ' + (good ? 'ok' : 'bad') + '">👁 ' + r.score + '/10</span>' +
+        (r.round ? '<span class="muted">' + fmt('sb_review_round', { n: r.round }) + '</span>' : '') + '</div>' +
+        (r.problems || []).map(function (x) { return '<div class="rv-line">✗ ' + esc(x) + '</div>'; }).join('') +
+        (r.ok || []).slice(0, 3).map(function (x) { return '<div class="rv-line muted">✓ ' + esc(x) + '</div>'; }).join('') +
+        (r.prompt && !good ? '<div class="rv-line"><span class="muted">' + S.sb_review_suggests + '</span> ' + esc(r.prompt) + '</div>' +
+          '<div class="row" style="margin-top:4px"><button data-review-redraw="' + s.id + '">🔄 ' + S.sb_review_redraw + '</button>' +
+          '<button data-review-use="' + s.id + '">✍️ ' + S.sb_review_use + '</button></div>' : '') + '</div>';
+    }
     function boardTab() {
       var p = current, shots = (p.shots || []).filter(function (s) { return !s.recorded; });
       if (!shots.length) return '<div class="card"><p class="muted">' + S.sb_empty + '</p></div>';
       var missing = shots.filter(function (s) { return !(s.boards || []).length && s.prompt && !boardJob(s); });
       var changed = shots.filter(function (s) { return boardChanged(s) && !boardJob(s); });
+      var withFrames = shots.filter(function (s) { return (s.boards || []).length && !boardJob(s); });
       var html = '<div class="card"><p class="muted" style="margin-top:0">' + S.sb_help + '</p><div class="row" style="flex-wrap:wrap">' +
         (missing.length ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: missing.length }) + '</button>' : '') +
         (changed.length ? '<button id="sb-redraw-changed">🔄 ' + fmt('sb_redraw_changed', { n: changed.length }) + '</button>' : '') +
-        '<button id="preview">▶ ' + S.sb_animatic + '</button></div>' +
+        '<button id="preview">▶ ' + S.sb_animatic + '</button>' +
+        (withFrames.length ? '<button id="sb-review-all" title="' + esc(S.sb_review_help) + '">👁 ' + fmt('sb_review_all', { n: withFrames.length }) + '</button>' +
+          '<button id="sb-refine" title="' + esc(S.sb_refine_help) + '">🔁 ' + S.sb_refine + '</button>' : '') + '</div>' +
         '<p class="muted" style="margin-bottom:0">🎥 ' + (useBoards() ? S.sb_to_video : S.sb_to_video_off) + '</p></div><div class="sb-grid">';
       (p.shots || []).forEach(function (s, i) {
         if (s.recorded) return;
@@ -750,7 +774,7 @@
           '<textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           (b && !startsFresh(s) ? '<p class="muted" style="margin:6px 0 0;font-size:.82rem">⛓ ' + S.sb_continues +
             ' <button data-sb-cut="' + s.id + '">' + S.sb_use_frame + '</button></p>' : '') +
-          boardRow(s) + castRow(s) + '</div>';
+          reviewBlock(s, b) + boardRow(s) + castRow(s) + '</div>';
       });
       return html + '</div>';
     }
@@ -1252,6 +1276,48 @@
           await flushSave();
           await api('projects/' + p.id + '/items/' + d.score + '/score', { method: 'POST', body: { take: st.id, start: true, retry: !!d.retry } });
           toast(S.score_queued);
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (d.review) {
+          b.disabled = true; b.textContent = '👁 ' + S.sb_reviewing;
+          await flushSave();
+          try { await api('board-review', { method: 'POST', body: { project: p.id, shot: d.review } }); }
+          finally { current = await api('projects/' + p.id); drawTab(); }
+          return;
+        }
+        if (b.id === 'sb-review-all') {
+          var todo = current.shots.filter(function (s) { return (s.boards || []).length && !boardJob(s) && !s.recorded; });
+          if (!todo.length) return;
+          b.disabled = true; busy++;
+          try {
+            await flushSave();
+            for (var q = 0; q < todo.length; q++) {
+              b.textContent = '👁 ' + fmt('sb_reviewing_n', { i: q + 1, n: todo.length });
+              try { await api('board-review', { method: 'POST', body: { project: p.id, shot: todo[q].id } }); }
+              catch (e) { toast(fmt('err', { e: e.message }), true); }
+            }
+          } finally { busy--; current = await api('projects/' + p.id); drawTab(); }
+          return;
+        }
+        if (b.id === 'sb-refine') {
+          if (!confirm(S.sb_refine_confirm)) return;
+          await flushSave();
+          var rf = await api('board-refine', { method: 'POST', body: { project: p.id, rounds: 2, threshold: 7 } });
+          toast(fmt('sb_refine_started', { n: rf.started }));
+          return;
+        }
+        if (d.reviewUse) {
+          var su = itemById(d.reviewUse), rb = chosenBoard(su);
+          if (!rb || !rb.review || !rb.review.prompt) return;
+          su.prompt = rb.review.prompt; await saveNow(); drawTab(); toast(S.sb_review_used); return;
+        }
+        if (d.reviewRedraw) {
+          var sr = itemById(d.reviewRedraw), rr0 = chosenBoard(sr);
+          if (!rr0 || !rr0.review || !rr0.review.prompt) return;
+          await flushSave();
+          var prm = {}; prm[sr.id] = rr0.review.prompt;
+          var rq2 = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: [sr.id], prompts: prm } });
+          toast(fmt('board_queued', { n: rq2.queued.length }));
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
         if (d.sbCut) { itemById(d.sbCut).continuity = false; await saveNow(); drawTab(); return; }
@@ -1814,7 +1880,8 @@
         // compared -- the tab redraws when it finishes, under the same guards.
         ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) {
           return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.recording || {}).state,
-                  ((chosen(i) || {}).transcript || {}).state, ((chosen(i) || {}).score || {}).state].join(':'); }); })]);
+                  ((chosen(i) || {}).transcript || {}).state, ((chosen(i) || {}).score || {}).state,
+                  (((chosenBoard(i) || {}).review) || {}).state, (((chosenBoard(i) || {}).review) || {}).score].join(':'); }); })]);
       if (sig !== lastSig) {
         lastSig = sig;
         // Never redraw under somebody's cursor: the new takes wait for the

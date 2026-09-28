@@ -428,6 +428,36 @@ class Projects:
         if base.resolve() in path.parents and path.is_file():
             path.unlink()
 
+    def set_board_review(self, owner: str, pid: str, item_id: str, board_id: str, review: dict) -> dict:
+        """A frame's review: a score out of ten, what works, what does not,
+        and the prompt the reviewer would draw it with -- or `state: running`
+        while it is being looked at. Shaped here: it is shown to the person."""
+        def words(xs):
+            return [str(x).strip()[:300] for x in (xs or []) if str(x).strip()][:8] if isinstance(xs, list) else []
+        clean = {"state": review.get("state") if review.get("state") in ("running", "done", "failed") else "done",
+                 "at": time.time()}
+        if clean["state"] == "done":
+            try:
+                clean["score"] = max(0, min(10, round(float(review.get("score")))))
+            except (TypeError, ValueError):
+                raise ProjectError("a review needs a score") from None
+            clean.update(ok=words(review.get("ok")), problems=words(review.get("problems")),
+                         prompt=str(review.get("prompt") or "").strip()[:1200],
+                         round=max(0, min(9, int(review.get("round") or 0))))
+        elif clean["state"] == "failed":
+            clean["error"] = str(review.get("error") or "")[:300]
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found or found[0] != "shots":
+                raise ProjectError("no such shot")
+            board = next((b for b in found[2].get("boards") or [] if b.get("id") == board_id), None)
+            if board is None:
+                raise ProjectError("no such frame")
+            board["review"] = clean
+            self._write(owner, pid, doc)
+            return board
+
     def stash_removed(self, owner: str, pid: str, item: dict) -> None:
         """An item's full record, kept when it leaves the timeline."""
         if not ID_RE.fullmatch(str(item.get("id") or "")):

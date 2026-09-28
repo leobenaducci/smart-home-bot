@@ -986,6 +986,41 @@ check("  a page's save cannot move the chosen frame back (a newer one stays chos
 c.post(f"/api/projects/{sbp['id']}/items/{s1['id']}/board", json={"index": 0}, headers=h(JUANA, "Juana"))
 check("  choosing one is its own call",
       c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]["board"] == 0)
+s1id = sdoc["shots"][1]["id"]
+for q in [j for j in A.store.active() if j["kind"] == "board"]:
+    A.manager.cancel(q["id"])
+rq = c.post(f"/api/projects/{sbp['id']}/storyboard", json={"items": [s1id], "prompts": {s1id: "a brighter lighthouse at dawn"},
+                                                          "refine": {"rounds": 1, "threshold": 8}}, headers=h(JUANA, "Juana")).json()
+bp_ = A.store.get(rq["queued"][0]["id"])["params"]
+check("  a frame can be drawn from a reviewer's prompt, the person's description left as it is",
+      "Film still: a brighter lighthouse at dawn" in bp_["prompt"] and bp_["drawn_from"] == "a brighter lighthouse at dawn"
+      and bp_["shot_prompt"] == sdoc["shots"][1]["prompt"].strip()
+      and bp_["refine"] == {"rounds": 1, "threshold": 8, "round": 0}, bp_)
+A.manager.cancel(rq["queued"][0]["id"])
+hooked = []
+saved_post, saved_url = A.requests.post, A.NOTIFY_URL
+A.requests.post = lambda url, json=None, **kw: hooked.append((url, json))
+A.NOTIFY_URL = "https://portal.invalid/studio/api/notify"
+A._notify({"id": "jb1", "kind": "board", "owner": JUANA, "project": sbp["id"], "target": s1id, "title": "",
+           "params": {"refine": {"rounds": 1, "threshold": 8, "round": 0}}, "ok": True})
+A._notify({"id": "jb2", "kind": "board", "owner": JUANA, "project": sbp["id"], "target": s1id, "title": "",
+           "params": {}, "ok": True})
+A.requests.post, A.NOTIFY_URL = saved_post, saved_url
+check("  a frame drawn inside a refine loop goes back to the portal to be looked at -- only that one",
+      [u for u, _ in hooked if u.endswith("/frame-review")] == ["https://portal.invalid/studio/api/frame-review"]
+      and next(j for u, j in hooked if u.endswith("/frame-review"))["job"] == "jb1", hooked)
+bd = Projects.chosen_board(next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s1id))
+rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
+            json={"review": {"score": 12, "ok": ["luz"], "problems": ["<b>mano</b>"] * 20, "prompt": "p", "round": 1}},
+            headers=h(JUANA, "Juana")).json()
+check("  a review is kept on its frame, shaped: a score out of ten, a few findings",
+      rv["review"]["score"] == 10 and len(rv["review"]["problems"]) == 8 and rv["review"]["state"] == "done", rv.get("review"))
+check("  a review without a score is refused",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review", json={"review": {"ok": []}},
+             headers=h(JUANA, "Juana")).status_code == 404)
+check("  and nobody else can write one",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review", json={"review": {"score": 5}},
+             headers=h(TOMI, "Tomi")).status_code == 404)
 s0 = sdoc["shots"][0]["id"]
 bf = c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/f.png"}, headers=h(JUANA, "Juana")).json()
 s0doc = next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s0)
