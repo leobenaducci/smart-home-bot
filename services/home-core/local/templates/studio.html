@@ -253,7 +253,14 @@
     });
 
     // ── The editor ─────────────────────────────────────────────────────────
-    var current = null, tab = 'video', saveTimer = null, dirty = false;
+    // `busy` counts requests in flight (lyrics, uploads) and `saving` a save:
+    // the periodic refresh waits for both, or it replaces the project under
+    // them and what they bring back is written into a copy nobody sees -- the
+    // lyrics Alfred wrote vanished exactly that way (2026-09-28).
+    var current = null, tab = 'video', saveTimer = null, dirty = false, saving = false, busy = 0;
+    // What a song is about is only an input for Alfred, not part of the
+    // project; kept here so a redraw does not empty the box.
+    var themes = {};
     async function openProject(pid) {
       current = await api('projects/' + pid);
       history.replaceState(null, '', '/studio?project=' + pid);
@@ -373,7 +380,7 @@
           '<span class="grow"></span><button class="danger" data-remove="audio" data-id="' + a.id + '">✕</button></div>' +
           '<input data-f="title" data-id="' + a.id + '" placeholder="' + S.untitled + '" value="' + esc(a.title) + '">';
         if (kind === 'song') {
-          html += '<label class="f">' + S.song_theme + '</label><div class="row"><input class="grow" data-theme="' + a.id + '" placeholder="' + esc(S.song_theme_ph) + '" style="width:auto">' +
+          html += '<label class="f">' + S.song_theme + '</label><div class="row"><input class="grow" data-theme="' + a.id + '" placeholder="' + esc(S.song_theme_ph) + '" value="' + esc(themes[a.id] || '') + '" style="width:auto">' +
             '<button data-lyrics="' + a.id + '">✨ ' + S.write_lyrics + '</button></div>' +
             '<label class="f">' + S.lyrics + '</label><textarea rows="8" data-f="lyrics" data-id="' + a.id + '" placeholder="' + esc(S.lyrics_ph) + '">' + esc(a.lyrics) + '</textarea>' +
             '<label class="f">' + S.style + '</label><input data-f="style" data-id="' + a.id + '" placeholder="' + esc(S.style_ph) + '" value="' + esc(a.style) + '">' +
@@ -445,7 +452,7 @@
     async function flushSave() {
       clearTimeout(saveTimer);
       if (!dirty || !current) return;
-      dirty = false;
+      dirty = false; saving = true;
       var p = current;
       try {
         var saved = await api('projects/' + p.id, { method: 'PUT', body: { name: p.name, settings: p.settings, shots: p.shots, audio: p.audio, images: p.images } });
@@ -454,6 +461,7 @@
         });
         var el = $('#saved'); if (el) el.textContent = S.saved;
       } catch (e) { var el2 = $('#saved'); if (el2) el2.textContent = S.save_failed; toast(fmt('err', { e: e.message }), true); }
+      finally { saving = false; }
     }
     async function saveNow() { dirty = true; await flushSave(); current = await api('projects/' + current.id); }
 
@@ -461,6 +469,7 @@
       var el = ev.target;
       if (!current) return;
       if (el.id === 'pname') { current.name = el.value; markDirty(); return; }
+      if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
       if (!el.dataset.f) return;
       var item = itemById(el.dataset.id); if (!item) return;
       var v = el.type === 'checkbox' ? el.checked : el.type === 'range' || el.type === 'number' ? Number(el.value) : el.value;
@@ -477,8 +486,10 @@
       if (el.dataset.upload && el.files.length) {
         var fd = new FormData(); fd.append('file', el.files[0]); fd.append('kind', el.dataset.upload);
         toast(S.uploading);
+        busy++;
         try { await api('projects/' + current.id + '/upload', { method: 'POST', body: fd }); current = await api('projects/' + current.id); drawTab(); }
         catch (e) { toast(fmt('err', { e: e.message }), true); }
+        finally { busy--; }
       }
     });
     function newItem(fields) { return Object.assign({ id: 'new' + Math.random().toString(36).slice(2, 10), takes: [], chosen: -1 }, fields); }
@@ -524,11 +535,21 @@
     }
     async function writeLyrics(id, btn) {
       var item = itemById(id), theme = document.querySelector('[data-theme="' + id + '"]').value;
+      themes[id] = theme;
       btn.disabled = true; btn.textContent = S.writing_lyrics;
+      busy++;
       try {
+        await flushSave();
         var r = await api('lyrics', { method: 'POST', body: { theme: theme, style: item.style, language: item.language || current.settings.language, seconds: item.seconds } });
-        item.lyrics = r.lyrics; markDirty(); drawTab();
-      } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = '✨ ' + S.write_lyrics; }
+        // Looked up again: the project may have been reloaded while Alfred wrote.
+        var now = itemById(id);
+        if (now) { now.lyrics = r.lyrics; markDirty(); }
+        drawTab();
+      } catch (e) {
+        toast(e.message, true);
+        var b = document.querySelector('[data-lyrics="' + id + '"]');
+        if (b) { b.disabled = false; b.textContent = '✨ ' + S.write_lyrics; }
+      } finally { busy--; }
     }
     function retouch(id) {
       var s = itemById(id), dlg = $('#dlg');
@@ -597,7 +618,7 @@
     // What changed while the page was open: a job finished, a take arrived.
     var lastSig = '';
     async function syncJobs() {
-      if (!current || dirty || document.querySelector('dialog[open]')) return;
+      if (!current || dirty || saving || busy || document.querySelector('dialog[open]')) return;
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
       var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20)]; }),
