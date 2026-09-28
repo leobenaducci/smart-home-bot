@@ -2030,9 +2030,12 @@
 })();
 </script>
 <script>
-/* A setup's model: the library's models, marked by how each tested on the
-   engine picked beside it; one that failed there cannot be picked (unless it
-   is what the setup runs now), and "Other" opens a box to type a name. */
+/* A setup's model: the library's models *for the engine picked beside it* --
+   one that engine cannot run is not listed at all (a GGUF file has no place
+   on an Ollama setup until it is imported), the rest ordered works, untested,
+   fails. One that failed there cannot be picked; the model the setup runs now
+   is always listed, whatever its state, so the form never quietly drops it.
+   "Other" opens a box to type a name. */
 (function () {
   document.querySelectorAll('select[data-other]').forEach(function (sel) {
     var grid = sel.closest('.oi-grid');
@@ -2042,14 +2045,23 @@
     function mark() {
       var e = engine ? engine.value : 'ollama';
       var key = 'state' + e.charAt(0).toUpperCase() + e.slice(1);
-      Array.prototype.forEach.call(sel.options, function (o) {
-        if (!o.hasAttribute('data-gib')) return;
+      var RANK = {ok: 0, untested: 1, fail: 2, none: 3};
+      var models = Array.prototype.filter.call(sel.options, function (o) { return o.hasAttribute('data-gib'); });
+      models.forEach(function (o) {
         var state = o.dataset[key] || 'none';
+        o.dataset.rank = RANK[state];
         o.textContent = o.getAttribute('data-short') + ' · ' + o.getAttribute('data-gib') + ' GiB — '
           + sel.getAttribute('data-l-' + state);
         o.disabled = (state === 'fail' || state === 'none') && o.value !== initial;
+        o.hidden = state === 'none' && o.value !== initial;
       });
-      if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) sel.value = '';
+      // Re-ordered in place, before whatever follows them ("Other", a model
+      // the library does not hold): a stable sort keeps the library's order
+      // within a state.
+      var anchor = models.length ? models[models.length - 1].nextSibling : null;
+      models.slice().sort(function (a, b) { return a.dataset.rank - b.dataset.rank; })
+        .forEach(function (o) { sel.insertBefore(o, anchor); });
+      if (sel.selectedOptions[0] && (sel.selectedOptions[0].disabled || sel.selectedOptions[0].hidden)) sel.value = '';
     }
     function toggle() {
       var on = sel.value === '__other__';
