@@ -110,6 +110,22 @@ for looking at. Until a shot is made, the page and the preview download show
 its frame in its place: an animatic, timed to the song. The music video's
 planner draws the storyboard first unless asked to go straight to video.
 
+The **Storyboard tab** is where the frames are worked on: each shot's frame,
+its time on the song and the words sung in it, its description (the same text
+the Video tab edits -- there is one description per shot, not two), redraw,
+and 📌 to make any picture already in the project its frame (a reference, a
+generated image, another shot's frame; copied into the shot's folder,
+`board_from`). A frame keeps the description it was drawn from
+(`boards[].prompt`, the job's `shot_prompt`), so a shot described differently
+since is marked, and "redraw the changed ones" redraws exactly those. The tab
+makes no video. The **Video tab** reads the storyboard instead, by a switch at
+its top that is on unless turned off (`settings.use_storyboard`): on, a shot
+that starts fresh shows its frame as the picture it starts from, in place of
+its own start-picture choice, and `generate` sends it as `start_board`; off,
+the frames are not used. A video remembers the frame it started from
+(`takes[].board`), so a video made before its frame was drawn -- or from
+another frame -- says so, and Regenerate makes it from the frame.
+
 ## Characters
 
 Who appears (`studio/characters.py`): a name, how they look (said the same
@@ -254,6 +270,71 @@ kept, and the new one remembers the words it was sung with):
   song again from the version, held to it by "how close" (Source Audio
   Strength, 50-95%), keeping the singer's timbre too if asked.
 
+## Sheet music and practice
+
+🎼 on a song's (or instrumental's) version writes out its parts -- a `score`
+job, about a minute on the card for a 90-second song -- and then opens
+`/studio/practice` for them:
+
+- **Stems** first: HTDemucs on the audio unit (`htdemucs_q8_0`, 62 MB) splits
+  the version into vocals, drums, bass and "other", where guitars and keys
+  land. They become the practice page's play-along tracks: the song without
+  its guitars and keys (`minus.mp3`) and those alone (`part.mp3`).
+- **Notes** from the whole mix, not the stem: MuScriptor (`muscriptor_small_f32`,
+  412 MB, audio.cpp's `midi` task) asked for acoustic, clean and distorted
+  guitar and acoustic and electric piano. On the first song tried the mix told
+  a strummed acoustic from a picked electric, and the separated stem heard it
+  all as one acoustic and lost the riff.
+- **The score** (`studio/score.py`), as MusicXML: guitar as notes over
+  tablature with chord names, piano on two staves, one part per instrument
+  heard more than a handful of times. The grid is fitted to the notes
+  themselves -- the beat tracker said 123 bpm where the strums fell every
+  0.2475 s (121.2), a second and a half of drift over the song -- and the bar
+  starts where chords change. Tab is a string and fret per note, chosen a
+  chord shape at a time along the cheapest path for the hand; a note the
+  guitar cannot play stays in the notation and out of the tab.
+
+The files sit beside the version (`takes/<song>/<version>-score/`) and leave
+with it. The practice page draws the score in the browser with alphaTab
+(staged in the portal as its module build: the classic build starts its
+workers from `blob:`, which the portal's `'self'` policy refuses). It plays
+with the song, the minus-one, the part alone, or the notes on a synthesizer
+(count-in and metronome there), at 25-125 % speed with pitch kept, and a
+stretch dragged across the score repeats. The cursor follows the real song
+through alphaTab's external-media handler: the score is written at a
+whole-number tempo, and the page maps it onto the song's by the ratio of the
+two and the score's start. MusicXML (MuseScore opens it) and MIDI download.
+
+It is written by ear from a generated recording: chords and rhythm are
+usually right, a fast run may not be, and the page says so.
+
+## History
+
+Every project's words are under version control
+(`studio/history.py`): a git repository in `<project>/.history/` with one
+JSON file per shot, song and picture holding what a person writes in it --
+descriptions, dialogue, sound, lyrics, style, prompts, titles, lengths, cast
+-- plus the project's name and settings, the order of each section and its
+own characters' text. Never a picture, clip or song, and never the list of
+versions the card made. `git log -p` in the folder reads as the edits were
+made.
+
+Each save is a revision by whoever made it, with "(Alfred)" when their
+assistant did (the portal sends `X-Studio-Via` for a member's own token). A
+person's saves minutes apart fold into one revision (the page saves while
+you type), and something typed and undone inside one leaves nothing. The
+snapshot is taken when the save is made; only git runs behind the request.
+
+🕘 History on the project lists the revisions and their tags. Each can be
+looked at word by word, **undone alone** -- only what it changed, and only
+where nothing changed it since; the rest is reported, not overwritten --
+**gone back to**, making the project read as it did then, or **tagged**.
+Undoing and going back are revisions too, so both can be undone. Nothing is
+lost to them: an item that leaves the timeline -- by the page's ✕ as well --
+keeps its full record, versions and all, in `<project>/.history-removed/`,
+and the revision that brings it back brings them back (those whose files
+still exist). A copy of a project keeps the history it was copied from.
+
 ## Deleting
 
 A version (a take) is deleted with its 🗑: the clip or picture and the frames
@@ -289,7 +370,8 @@ Everything on the big disk (`/mnt/data`), nothing on the system SSD except
 the container image:
 
     <paths.state>/home-studio/models          WanGP checkpoints (~52 GB), backup: skip
-    <paths.state>/home-studio/data/projects   <login>/<project>/ -- project.json, takes/, uploads/, renders/
+    <paths.state>/home-studio/data/projects   <login>/<project>/ -- project.json, takes/, uploads/, renders/,
+                                              .history/ (the words' git), .history-removed/
     <paths.state>/home-studio/data/queue      the queue, so a restart resumes it
     <paths.state>/home-studio/data/logs       worker.log: WanGP's own console
 
