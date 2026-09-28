@@ -21761,9 +21761,14 @@ def studio_api(sub):
     for h in _STUDIO_REQ_HEADERS:
         if request.headers.get(h):
             headers[h] = request.headers[h]
+    # `?download=<name>` on a project file: sent as an attachment, which is
+    # what the Android app's WebView hands to the phone's downloads. Decided
+    # here rather than in the studio, and never forwarded to it.
+    download = request.args.get('download') if request.method == 'GET' and '/file/' in sub else None
+    params = {k: v for k, v in request.args.items() if k != 'download'}
     try:
         upstream = requests.request(
-            request.method, f'{STUDIO_URL}/api/{sub}', params=request.args, headers=headers,
+            request.method, f'{STUDIO_URL}/api/{sub}', params=params, headers=headers,
             data=request.get_data() if request.method != 'GET' else None,
             stream=True, timeout=(5, 120))
     except requests.RequestException as exc:
@@ -21774,7 +21779,21 @@ def studio_api(sub):
     for h in _STUDIO_RESP_HEADERS:
         if h in upstream.headers:
             out.headers[h] = upstream.headers[h]
+    if download is not None and upstream.status_code == 200:
+        out.headers['Content-Disposition'] = _studio_attachment(download, sub)
     return out
+
+
+def _studio_attachment(name, sub):
+    """`attachment` with the name the page asked for and the file's own
+    extension. Both forms: `filename*` carries the accents, and the plain one
+    is what older Android download handlers read."""
+    ext = os.path.splitext(sub)[1][:10]
+    base = re.sub(r'[\x00-\x1f/\\:*?"<>|]+', ' ', str(name or '')).strip()[:100] or 'studio'
+    if ext and not base.lower().endswith(ext.lower()):
+        base += ext
+    plain = unicodedata.normalize('NFKD', base).encode('ascii', 'ignore').decode() or 'studio' + ext
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(base)}"
 
 
 # ---------------------------------------------------------------------------

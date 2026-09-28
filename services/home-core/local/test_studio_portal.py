@@ -1,6 +1,15 @@
-"""The Studio's portal side: what "lyrics with Alfred" asks the assistant for.
+"""The Studio's two portal-side pieces: what "lyrics with Alfred" asks the
+assistant for, and how a file is handed over as a download.
 
 Run: python local/test_studio_portal.py   (needs Flask; skips loudly without it)
+
+Downloads: the page's `?download=<name>` makes the portal answer with an
+attachment. That header is the whole feature on a phone -- the Android app's
+WebView ignores the `download` attribute and only hands a response to the
+phone's downloads when it says `attachment` -- so it is checked, along with the
+name it carries and that the parameter never reaches the studio.
+
+Lyrics:
 
 The page asks before calling, and says which of two things it wants: a new
 song from the theme, or the lyrics already in the box kept and changed only
@@ -101,6 +110,39 @@ CATALOGUES = {loc: json.load(open(os.path.join(I18N, f"{loc}.json"), encoding="u
 for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics_notes",
             "lyrics_notes_ph", "lyrics_go"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
+
+print("\na file asked for as a download comes back as an attachment")
+A.STUDIO_URL, A.STUDIO_SECRET = "http://studio.invalid", "s" * 32
+sent = []
+
+
+class _Up:
+    status_code = 200
+    headers = {"Content-Type": "video/mp4", "Content-Length": "3"}
+
+    def iter_content(self, chunk_size=None):
+        yield b"abc"
+
+
+def _fake(method, url, params=None, **kw):
+    sent.append((url, dict(params or {})))
+    return _Up()
+
+
+A.requests.request = _fake
+r = client.get("/studio/api/projects/abc123def456/file/takes/x1.mp4?download=Canción de Mora - Toma 1", headers=HOME)
+r.get_data()  # drain the stream, or its context is popped out of order
+cd = r.headers.get("Content-Disposition", "")
+check("attachment", cd.startswith("attachment;"), cd)
+check("with the asked-for name and the file's own extension",
+      "filename*=UTF-8''Canci%C3%B3n%20de%20Mora%20-%20Toma%201.mp4" in cd, cd)
+check("and a plain-ASCII name for older handlers", 'filename="Cancion de Mora - Toma 1.mp4"' in cd, cd)
+check("the parameter is not forwarded to the studio", sent and "download" not in sent[-1][1], sent[-1:])
+r = client.get("/studio/api/projects/abc123def456/file/takes/x1.mp4", headers=HOME)
+r.get_data()
+check("without it, the file plays inline as before", "Content-Disposition" not in r.headers, r.headers)
+check("a name cannot smuggle a path or a quote",
+      '/' not in A._studio_attachment('../../etc/"passwd', "takes/a.png").split("filename*")[0].split('filename="')[1])
 
 shutil.rmtree(tmp, ignore_errors=True)
 print()

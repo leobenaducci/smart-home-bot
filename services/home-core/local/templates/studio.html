@@ -176,6 +176,13 @@
       return d;
     }
     function fileUrl(pid, rel) { return '/studio/api/projects/' + pid + '/file/' + rel.split('/').map(encodeURIComponent).join('/'); }
+    // A download, not a link: `?download=` has the portal send the file as an
+    // attachment under this name, which is what makes the Android app hand it
+    // to the phone's downloads (the `download` attribute alone does nothing
+    // in a WebView). The extension is the file's own; the portal adds it.
+    function dlLink(pid, rel, name) {
+      return '<a class="btn" download href="' + fileUrl(pid, rel) + '?download=' + encodeURIComponent(name) + '">⬇ ' + S.download + '</a>';
+    }
 
     // ── The card and the queue ───────────────────────────────────────────
     var queueState = null;
@@ -343,7 +350,8 @@
         html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>' + S.shot + ' ' + (i + 1) + '</b>' + statusPill(s) +
           '<span class="grow"></span><button data-up="' + s.id + '" title="' + S.move_up + '">↑</button><button data-down="' + s.id + '" title="' + S.move_down + '">↓</button>' +
           '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + S.remove + '">✕</button></div>' +
-          '<div class="shot"><div><div class="media">' + media + '</div>' + takesRow(s) + '</div><div>' +
+          '<div class="shot"><div><div class="media">' + media + '</div>' + takesRow(s) +
+          (t && t.file ? '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + S.shot + ' ' + (i + 1)) + '</div>' : '') + '</div><div>' +
           '<label class="f">' + S.shot_what + '</label><textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           '<label class="f">' + S.shot_says + '</label><textarea data-f="dialogue" data-id="' + s.id + '" rows="2" placeholder="' + esc(S.shot_says_ph) + '">' + esc(s.dialogue) + '</textarea>' +
           '<div class="row"><div class="grow"><label class="f">' + S.shot_sound + '</label><input data-f="soundscape" data-id="' + s.id + '" placeholder="' + esc(S.shot_sound_ph) + '" value="' + esc(s.soundscape) + '"></div>' +
@@ -365,7 +373,7 @@
         html += '<h2 style="margin-top:20px">' + S.renders + '</h2>' + renders.map(function (r) {
           return '<div class="card"><video controls preload="metadata" style="width:100%;border-radius:8px" src="' + fileUrl(p.id, r.file) + '"></video>' +
             '<div class="row"><span class="muted">' + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
-            '<a class="btn" download href="' + fileUrl(p.id, r.file) + '">' + S.download + '</a></div></div>';
+            dlLink(p.id, r.file, p.name) + '</div></div>';
         }).join('');
       }
       return html;
@@ -399,7 +407,8 @@
             '<label class="f">' + S.voice_text + '</label><textarea rows="4" data-f="text" data-id="' + a.id + '" placeholder="' + esc(S.voice_text_ph) + '">' + esc(a.text) + '</textarea>';
         }
         html += (t && t.file ? '<audio controls preload="none" src="' + fileUrl(p.id, t.file) + '"></audio>' : '') + takesRow(a) +
-          '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button></div></div>';
+          '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
+          (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) : '') + '</div></div>';
       });
       html += '<div class="row"><button data-add-audio="song">＋ 🎤 ' + S.add_song + '</button><button data-add-audio="instrumental">＋ 🎹 ' + S.add_instrumental + '</button>' +
         '<button data-add-audio="voice">＋ 🗣️ ' + S.add_voice + '</button></div>';
@@ -409,7 +418,7 @@
     // Pictures
     function imagesTab() {
       var p = current, html = '';
-      (p.images || []).forEach(function (im) {
+      (p.images || []).forEach(function (im, n) {
         var sizes = [['1024x1024', 'size_square'], ['1344x768', 'size_wide'], ['768x1344', 'size_tall']];
         html += '<div class="card" id="image-' + im.id + '"><div class="row" style="margin-bottom:6px">' + statusPill(im) + '<span class="grow"></span>' +
           '<button class="danger" data-remove="images" data-id="' + im.id + '">✕</button></div>' +
@@ -417,8 +426,9 @@
           '<div class="row"><label class="f" style="margin:0">' + S.size + '</label><select style="width:auto" data-f="size" data-id="' + im.id + '">' + sizes.map(function (s) {
             return '<option value="' + s[0] + '"' + ((im.size || '1024x1024') === s[0] ? ' selected' : '') + '>' + S[s[1]] + '</option>';
           }).join('') + '</select><span class="grow"></span><button class="primary" data-gen="' + im.id + '">' + ((im.takes || []).length ? S.regenerate : S.generate) + '</button></div>' +
-          ((im.takes || []).length ? '<div class="gallery">' + im.takes.map(function (t) {
-            return '<a href="' + fileUrl(p.id, t.file) + '" target="_blank"><img loading="lazy" src="' + fileUrl(p.id, t.file) + '" alt=""></a>';
+          ((im.takes || []).length ? '<div class="gallery">' + im.takes.map(function (t, k) {
+            return '<div><a href="' + fileUrl(p.id, t.file) + '" target="_blank"><img loading="lazy" src="' + fileUrl(p.id, t.file) + '" alt=""></a>' +
+              '<div class="row" style="margin-top:4px">' + dlLink(p.id, t.file, p.name + ' - ' + (n + 1) + '.' + (k + 1)) + '</div></div>';
           }).join('') + '</div>' : '') + '</div>';
       });
       return html + '<button id="add-image">＋ 🖼️ ' + S.add_image + '</button>';
