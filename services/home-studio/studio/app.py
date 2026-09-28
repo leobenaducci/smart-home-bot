@@ -217,6 +217,7 @@ def admin(action: str, body: dict | None = None, me: Who = Depends(who)):
         raise HTTPException(403, "only a parent")
     if action == "pause":
         manager.paused = True
+        manager.pause_reason = "update" if (body or {}).get("reason") == "update" else ""
     elif action == "resume":
         manager.paused = False
         manager.wake()

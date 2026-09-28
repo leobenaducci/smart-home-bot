@@ -1590,6 +1590,8 @@
   "studio.card_free": "The card is free",
   "studio.card_busy": "Working: {what} for {who} · {pct}%",
   "studio.card_paused": "Paused by a parent",
+  "studio.card_paused_update": "Paused for a Studio update, a few minutes",
+  "studio.card_paused_after": "the ones after it wait ({why})",
   "studio.queue_empty": "Nothing waiting.",
   "studio.starts_in": "starts in ~{t}",
   "studio.starts_now": "next",

@@ -572,6 +572,13 @@ check("  and when each should start", all(j["position"] and j["starts_in"] is no
 jid = q_tomi[0]["id"]
 check("  Tomi cannot cancel Juana's job", c.delete(f"/api/jobs/{jid}", headers=h(TOMI, "Tomi")).status_code == 404)
 check("  a parent can", c.delete(f"/api/jobs/{jid}", headers=h(MORA, "Mora", admin=True)).status_code == 200)
+c.post("/api/admin/pause", json={"reason": "update"}, headers=h(MORA, "Mora", admin=True))
+st_q = c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]
+check("  a pause says why: an update is not a parent's decision", st_q["paused"] and st_q["pause_reason"] == "update", st_q)
+c.post("/api/admin/pause", json={}, headers=h(MORA, "Mora", admin=True))
+check("  and a parent's pause has no reason to show",
+      c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]["pause_reason"] == "")
+c.post("/api/admin/resume", json={}, headers=h(MORA, "Mora", admin=True))
 check("  and a child cannot pause the card", c.post("/api/admin/pause", json={}, headers=h(JUANA, "Juana")).status_code == 403)
 check("  Juana cannot open Tomi's projects",
       c.get(f"/api/projects/{pj['id']}", headers=h(TOMI, "Tomi")).status_code == 404)
