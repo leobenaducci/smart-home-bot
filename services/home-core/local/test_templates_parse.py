@@ -105,6 +105,11 @@ for page in pages:
         continue
     blocks = [b for b in SCRIPT.findall(html) if b.strip()]
     bad = []
+    # An empty page parses perfectly. A template file that lost its content
+    # -- an editing slip truncated studio.html once (2026-09-28) and this
+    # check passed it as "0 block(s)" -- is caught here instead of on screen.
+    if not page.read_text(encoding="utf-8").strip():
+        bad.append("the template file is empty")
     for i, code in enumerate(blocks):
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
                                          encoding="utf-8") as fh:
