@@ -209,6 +209,32 @@ class Projects:
             pointer.write_text(doc["id"])
             return doc
 
+    def add_recording(self, owner: str, pid: str, title: str) -> dict:
+        """A clip the person is recording (the Recording kind): a shot with no
+        description, whose take is what they recorded rather than what the
+        card made. `recording` says where it is: recording, processing, done
+        or failed."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            item = {"id": _new_id(), "title": str(title or "")[:80], "prompt": "", "seconds": 0.0,
+                    "takes": [], "chosen": -1, "recorded": True,
+                    "recording": {"state": "recording", "started": time.time()}}
+            doc.setdefault("shots", []).append(item)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return item
+
+    def set_item_field(self, owner: str, pid: str, item_id: str, key: str, value) -> None:
+        """One server-side field of one item (a recording's state)."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found:
+                raise ProjectError("no such item")
+            found[2][key] = value
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+
     def append(self, owner: str, pid: str, section: str, items: list[dict]) -> list[dict]:
         """Add items to the end of a section, server-side, and return them with
         their ids. Unlike `save` it leaves every other item as it is -- which is

@@ -20,13 +20,15 @@ import hmac
 import json
 import logging
 import os
+import re
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import analysis, media, recipes
@@ -334,6 +336,80 @@ def character_speak(pid: str, cid: str, body: dict | None = None, me: Who = Depe
     job = _enqueue(me, "voice", {"text": text, "voice_char": cid, "voice_text": ch.get("voice_text") or "",
                                  "seconds": 30, "language": "es"}, pid, cid, title=ch["name"])
     return {"queued": [_public(store.get(job["id"]) or job, me)]}
+
+
+# -- recordings (the Recording kind) --------------------------------------------
+RECORD_CHUNK_MAX = 32 * 1024 * 1024
+
+
+def _rec_dir(me: Who, pid: str, rid: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9]{6,32}", rid or ""):
+        _bad(ProjectError("no such recording"), 404)
+    return projects.dir(me.login, pid) / "recordings" / rid
+
+
+@app.post("/api/projects/{pid}/recordings")
+def start_recording(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """A new clip being recorded in the page. Its pieces arrive while it is
+    recorded, so closing the tab or losing the network loses seconds, not the
+    recording."""
+    _project(me, pid)
+    item = projects.add_recording(me.login, pid, str((body or {}).get("title") or ""))
+    _rec_dir(me, pid, item["id"]).mkdir(parents=True, exist_ok=True)
+    return item
+
+
+@app.post("/api/projects/{pid}/recordings/{rid}/chunk")
+async def recording_chunk(pid: str, rid: str, n: int, request: Request, me: Who = Depends(who)):
+    """One piece of the recording, numbered in the order it was made."""
+    d = _rec_dir(me, pid, rid)
+    if not d.is_dir():
+        _bad(ProjectError("no such recording"), 404)
+    data = await request.body()
+    if len(data) > RECORD_CHUNK_MAX:
+        raise HTTPException(413, "too large")
+    if not 0 <= n < 100000:
+        _bad(ValueError("bad piece number"))
+    (d / f"part-{n:06d}.webm").write_bytes(data)
+    return {"ok": True, "n": n}
+
+
+@app.post("/api/projects/{pid}/recordings/{rid}/finish")
+def finish_recording(pid: str, rid: str, me: Who = Depends(who)):
+    """The pieces joined in order -- a browser recording's pieces are one
+    stream cut up, so joined they are the file -- and encoded into a kept
+    clip on the CPU, beside the card's queue. The clip becomes its take."""
+    d = _rec_dir(me, pid, rid)
+    parts = sorted(d.glob("part-*.webm"))
+    if not parts:
+        _bad(ValueError("nothing was recorded"))
+    base = projects.dir(me.login, pid)
+    projects.set_item_field(me.login, pid, rid, "recording", {"state": "processing", "parts": len(parts)})
+
+    def work():
+        raw = d / "recording.webm"
+        try:
+            with open(raw, "wb") as out:
+                for part in parts:
+                    out.write(part.read_bytes())
+            take_dir = base / "takes" / rid
+            clip = media.encode_recording(raw, take_dir / f"{rid}-rec.mp4")
+            seconds = round(media.probe(clip)["seconds"], 2)
+            first = media.frame(clip, take_dir / f"{rid}-first.png", "first")
+            last = media.frame(clip, take_dir / f"{rid}-last.png", "last")
+            projects.add_take(me.login, pid, rid, {"file": str(clip.relative_to(base)), "kind": "recording",
+                                                   "seconds": seconds, "first": str(first.relative_to(base)),
+                                                   "last": str(last.relative_to(base))})
+            projects.set_item_field(me.login, pid, rid, "seconds", seconds)
+            projects.set_item_field(me.login, pid, rid, "recording", {"state": "done"})
+            shutil.rmtree(d, ignore_errors=True)
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("recording %s failed: %s", rid, exc)
+            # The pieces are kept: a recording that failed to encode is not lost.
+            projects.set_item_field(me.login, pid, rid, "recording", {"state": "failed", "error": str(exc)[:300]})
+
+    renders.submit(work)
+    return {"ok": True, "state": "processing"}
 
 
 @app.post("/api/projects/{pid}/storyboard")

@@ -714,6 +714,38 @@ check("  a shot's cast puts their look in its frame, as edited",
 A.manager.cancel(r["queued"][0]["id"])
 check("  a portrait needs a look, a voice test a voice sample",
       c.post(f"/api/projects/{cp['id']}/characters/{ch['id']}/speak", json={"text": "hola"}, headers=h(JUANA, "Juana")).status_code == 400)
+print("\n  a recording made in the page, arriving in pieces")
+rp = c.post("/api/projects", json={"name": "Tutorial", "kind": "recording"}, headers=h(JUANA, "Juana")).json()
+rec = c.post(f"/api/projects/{rp['id']}/recordings", json={"title": "Toma 1"}, headers=h(JUANA, "Juana")).json()
+check("  a recording starts as a clip of the project, recording", rec["recorded"] and rec["recording"]["state"] == "recording")
+webm = tmp / "screen.webm"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi",
+                "-i", "sine=frequency=330", "-t", "3", "-shortest", "-c:v", "libvpx", "-b:v", "300k", "-c:a", "libopus",
+                str(webm)], check=True)
+blob = webm.read_bytes()
+cuts = [0, len(blob) // 3, 2 * len(blob) // 3, len(blob)]
+for n in (2, 0, 1):   # out of order on purpose: the number, not the arrival, decides
+    ok = c.post(f"/api/projects/{rp['id']}/recordings/{rec['id']}/chunk?n={n}", content=blob[cuts[n]:cuts[n + 1]],
+                headers={**h(JUANA, "Juana"), "Content-Type": "application/octet-stream"})
+check("  its pieces are taken in", ok.status_code == 200, ok.text)
+check("  and nobody else can add to it",
+      c.post(f"/api/projects/{rp['id']}/recordings/{rec['id']}/chunk?n=3", content=b"x",
+             headers={**h(TOMI, "Tomi"), "Content-Type": "application/octet-stream"}).status_code == 404)
+c.post(f"/api/projects/{rp['id']}/recordings/{rec['id']}/finish", headers=h(JUANA, "Juana"))
+deadline = time.time() + 180
+while time.time() < deadline:
+    clipd = next(x for x in c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == rec["id"])
+    if clipd["recording"]["state"] != "processing":
+        break
+    time.sleep(0.5)
+kept = A.projects.dir(JUANA, rp["id"]) / (Projects.chosen_take(clipd) or {}).get("file", "none")
+check("  finished, the pieces are one clip, kept as H.265 with its sound and length",
+      clipd["recording"]["state"] == "done" and kept.is_file() and media.probe(kept)["codec"] == "hevc"
+      and media.probe(kept)["has_audio"] and 2.8 < clipd["seconds"] < 3.2, (clipd, kept))
+check("  and the pieces are gone", not (A.projects.dir(JUANA, rp["id"]) / "recordings" / rec["id"]).exists())
+empty = c.post(f"/api/projects/{rp['id']}/recordings", json={}, headers=h(JUANA, "Juana")).json()
+check("  a recording with nothing in it cannot be finished",
+      c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 

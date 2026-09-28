@@ -134,6 +134,22 @@ image model that takes the character's picture as a reference (WanGP has
 editing models that do), and replacing H3's own voice in a shot's dialogue
 with the character's.
 
+## Recording (the Recording kind)
+
+🔴 in a Recording (or free) project: the screen, the camera or both -- the
+camera in a corner over the screen, drawn on a worker's clock because a
+page's own timers crawl while the person is in the window being recorded --
+with the microphone. The browser's recorder hands over a piece every five
+seconds, and each goes up as it is made (`/recordings/<id>/chunk?n=`, retried),
+so a closed tab or a dropped network loses seconds, not the take. Finishing
+joins the pieces in order -- they are one stream cut up -- and encodes the clip
+on the CPU (H.265, 30 fps), beside the card's queue; a clip that fails to
+encode keeps its pieces. Each recording is a clip of the project, in the same
+timeline as generated shots, so the preview, the film and the downloads work
+on it unchanged. Screen recording is a computer's browser only; in the
+Android app the camera also needs the app to grant it (it grants only the
+microphone today).
+
 ## A music video from a song
 
 The 🎬 button on a song, voice or instrumental that has a take. The Studio

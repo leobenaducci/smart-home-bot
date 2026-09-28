@@ -96,6 +96,17 @@ def compress_audio(src: Path) -> Path:
     return out
 
 
+def encode_recording(src: Path, out: Path) -> Path:
+    """A recording made in the page (WebM from the browser, variable frame
+    rate) as a kept clip: H.265 at a constant 30 fps with AAC sound."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-fflags", "+genpts", "-i", str(src), "-map", "0:v:0", "-map", "0:a?", "-r", "30",
+          *X265, "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)], timeout=7200)
+    if probe(out)["seconds"] <= 0:
+        raise MediaError("the recording could not be read")
+    return out
+
+
 def compress_video(src: Path) -> Path:
     """*src* re-encoded to H.265 in place: same name, same sound, so nothing
     that points at it has to change. Replaced only once the new file reads back

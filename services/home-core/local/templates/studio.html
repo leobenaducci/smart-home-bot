@@ -281,7 +281,7 @@
     // What a project is for: its starting shape and the flow Alfred plans it
     // with. The ones not built yet are shown, and said to be coming.
     var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️' },
-                 { id: 'explainer', icon: '🎓' }, { id: 'podcast', icon: '🎙️' }, { id: 'recording', icon: '🔴' },
+                 { id: 'explainer', icon: '🎓' }, { id: 'podcast', icon: '🎙️' }, { id: 'recording', icon: '🔴', ready: true },
                  { id: 'free', icon: '✨', ready: true }];
     function kindIcon(k) { var f = KINDS.find(function (x) { return x.id === k; }); return f ? f.icon : '✨'; }
     function newProjectDialog() {
@@ -523,6 +523,20 @@
         }).join('') + '</div></div>';
       shots.forEach(function (s, i) {
         var t = chosen(s);
+        if (s.recorded) {
+          // A clip the person recorded: what it is, not how to make it.
+          var rs = (s.recording || {}).state;
+          if (i > 0) html += '<div class="link">✂</div>';
+          html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>🔴 ' + esc(s.title || (S.shot + ' ' + (i + 1))) + '</b>' +
+            (rs === 'processing' ? '<span class="pill run">' + S.rec_processing + '</span>' : rs === 'failed' ? '<span class="pill">' + S.rec_failed + '</span>' :
+             rs === 'recording' ? '<span class="pill run">● ' + S.rec_title + '</span>' : '<span class="muted">' + clock(s.seconds || 0) + '</span>') +
+            '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
+            '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
+            (t && t.file ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>' +
+              '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) + '</div>' : '') +
+            '</div>';
+          return;
+        }
         if (i > 0) html += '<div class="link">' + (s.continuity !== false ? '⛓ ' + S.continuity : '✂') + '</div>';
         var live = livePreview(s), board = chosenBoard(s);
         var media = live ? live : !(t && t.file) && board
@@ -553,7 +567,8 @@
           ((s.takes || []).length ? '<button data-retouch="' + s.id + '">' + S.retouch + '</button>' : '') + '</div>' +
           '</div></div></div>';
       });
-      html += '<div class="row"><button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
+      html += '<div class="row">' + (p.kind === 'recording' || p.kind === 'free' ? '<button class="primary" id="rec">🔴 ' + S.rec_title + '</button>' : '') +
+        '<button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
         '<span class="grow"></span>' +
         (shots.some(function (s) { return !(s.boards || []).length && s.prompt; })
           ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: shots.filter(function (s) { return !(s.boards || []).length && s.prompt; }).length }) + '</button>' : '') +
@@ -772,6 +787,7 @@
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
         if (b.id === 'preview') return previewPlayer();
+        if (b.id === 'rec') return recorder();
         if (b.id === 'ch-new') return characterDialog(null);
         if (d.chEdit) return characterDialog(cast.find(function (c) { return c.id === d.chEdit; }));
         if (d.chPortrait) {
@@ -1101,6 +1117,117 @@
           current = await api('projects/' + p.id); loadQueue(); drawTab();
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
       };
+    }
+
+    // Recording yourself: the screen, the camera, or both -- the camera in a
+    // corner over the screen, like a stream -- with the microphone. Pieces
+    // go up as they are made (a closed tab loses seconds, not the take), and
+    // stopping asks the Studio to join them into a clip of the project.
+    function recorder() {
+      var p = current, dlg = $('#dlg'), canScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+      var st = { rec: null, rid: null, n: 0, sent: 0, queue: Promise.resolve(), streams: [], ticker: null, t0: 0, paused: 0, pauseAt: 0 };
+      dlg.classList.add('wide');
+      dlg.innerHTML = '<h2>🔴 ' + S.rec_title + '</h2>' +
+        '<div class="row"><label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-screen" style="width:auto"' + (canScreen ? ' checked' : ' disabled') + '> ' + S.rec_screen + '</label>' +
+        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-cam" style="width:auto" checked> ' + S.rec_cam + '</label>' +
+        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-mic" style="width:auto" checked> ' + S.rec_mic + '</label></div>' +
+        (canScreen ? '' : '<p class="muted">' + S.rec_no_screen + '</p>') +
+        '<video id="rc-view" muted playsinline autoplay style="width:100%;background:#000;border-radius:8px;margin-top:8px"></video>' +
+        '<div class="row" style="margin-top:10px"><button class="primary" id="rc-start">' + S.rec_start + '</button>' +
+        '<button id="rc-pause" hidden>' + S.rec_pause + '</button><button class="danger" id="rc-stop" hidden>' + S.rec_stop + '</button>' +
+        '<span class="muted" id="rc-time"></span><span class="grow"></span><span class="muted" id="rc-up"></span>' +
+        '<button id="rc-no">' + S.cancel + '</button></div>';
+      dlg.showModal();
+      function clockNow() {
+        var sec = Math.max(0, ((st.pauseAt || Date.now()) - st.t0 - st.paused) / 1000);
+        $('#rc-time').textContent = '● ' + clock(sec);
+      }
+      function upState() { $('#rc-up').textContent = st.sent < st.n ? fmt('rec_uploading', { n: st.n - st.sent }) : (st.n ? S.rec_saved : ''); }
+      function release() {
+        st.streams.forEach(function (m) { m.getTracks().forEach(function (t) { t.stop(); }); });
+        if (st.ticker) st.ticker.terminate();
+        clearInterval(st.clock); dlg.classList.remove('wide');
+      }
+      function send(blob) {
+        var n = st.n++; upState();
+        st.queue = st.queue.then(async function () {
+          for (var attempt = 0; attempt < 5; attempt++) {
+            try {
+              var r = await fetch('/studio/api/projects/' + p.id + '/recordings/' + st.rid + '/chunk?n=' + n, {
+                method: 'POST', body: blob, headers: { 'X-CSRF-Token': CSRF, 'Content-Type': 'application/octet-stream' } });
+              if (r.ok) { st.sent++; upState(); return; }
+            } catch (e) { /* the network again, a moment later */ }
+            await new Promise(function (ok) { setTimeout(ok, 2000 * (attempt + 1)); });
+          }
+          toast(fmt('err', { e: 'piece ' + n }), true);
+        });
+      }
+      $('#rc-no').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); release(); dlg.close(); };
+      $('#rc-start').onclick = async function () {
+        var wantScreen = $('#rc-screen').checked, wantCam = $('#rc-cam').checked, wantMic = $('#rc-mic').checked;
+        if (!wantScreen && !wantCam) { toast(S.rec_need_source, true); return; }
+        var screen = null, cam = null, mic = null;
+        try {
+          if (wantScreen) { screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false }); st.streams.push(screen); }
+          if (wantCam) { cam = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }); st.streams.push(cam); }
+          if (wantMic) { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); st.streams.push(mic); }
+        } catch (e) { release(); toast(fmt('rec_denied', { e: e.message }), true); return; }
+        var video;
+        if (screen && cam) {
+          // One picture: the screen, and the camera in the bottom-right corner.
+          // Drawn on a worker's clock -- a page's own timers are slowed to a
+          // crawl while the person is in the window being recorded.
+          var sv = document.createElement('video'), cv = document.createElement('video');
+          sv.srcObject = screen; cv.srcObject = cam; sv.muted = cv.muted = true; sv.play(); cv.play();
+          var canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
+          var g = canvas.getContext('2d');
+          st.ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(0)},33)'], { type: 'text/javascript' })));
+          st.ticker.onmessage = function () {
+            g.fillStyle = '#000'; g.fillRect(0, 0, 1280, 720);
+            if (sv.videoWidth) {
+              var k = Math.min(1280 / sv.videoWidth, 720 / sv.videoHeight), w = sv.videoWidth * k, h = sv.videoHeight * k;
+              g.drawImage(sv, (1280 - w) / 2, (720 - h) / 2, w, h);
+            }
+            if (cv.videoWidth) {
+              var cw = 320, ch = cw * cv.videoHeight / cv.videoWidth;
+              g.drawImage(cv, 1280 - cw - 20, 720 - ch - 20, cw, ch);
+            }
+          };
+          video = canvas.captureStream(30).getVideoTracks()[0];
+        } else {
+          video = (screen || cam).getVideoTracks()[0];
+        }
+        // Sharing stopped from the browser's own bar ends the recording too.
+        if (screen) screen.getVideoTracks()[0].onended = function () { if (st.rec && st.rec.state !== 'inactive') $('#rc-stop').click(); };
+        var tracks = [video].concat(mic ? mic.getAudioTracks() : []);
+        var out = new MediaStream(tracks);
+        $('#rc-view').srcObject = out;
+        var type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(function (t) {
+          return window.MediaRecorder && MediaRecorder.isTypeSupported(t); });
+        try {
+          var n = (p.shots || []).filter(function (x) { return x.recorded; }).length + 1;
+          st.rid = (await api('projects/' + p.id + '/recordings', { method: 'POST', body: { title: fmt('rec_default_title', { n: n }) } })).id;
+          st.rec = new MediaRecorder(out, { mimeType: type, videoBitsPerSecond: 2500000 });
+        } catch (e) { release(); toast(fmt('err', { e: e.message }), true); return; }
+        st.rec.ondataavailable = function (e) { if (e.data && e.data.size) send(e.data); };
+        st.rec.onstop = async function () {
+          $('#rc-stop').disabled = true; $('#rc-pause').hidden = true;
+          await st.queue;
+          try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST' }); }
+          catch (e) { toast(fmt('err', { e: e.message }), true); }
+          release(); dlg.close();
+          current = await api('projects/' + p.id); drawTab();
+        };
+        st.rec.start(5000);
+        st.t0 = Date.now(); st.clock = setInterval(clockNow, 500);
+        $('#rc-start').hidden = true; $('#rc-pause').hidden = false; $('#rc-stop').hidden = false; $('#rc-no').hidden = true;
+        ['rc-screen', 'rc-cam', 'rc-mic'].forEach(function (id) { $('#' + id).disabled = true; });
+      };
+      $('#rc-pause').onclick = function () {
+        if (st.rec.state === 'recording') { st.rec.pause(); st.pauseAt = Date.now(); this.textContent = S.rec_resume; }
+        else { st.rec.resume(); st.paused += Date.now() - st.pauseAt; st.pauseAt = 0; this.textContent = S.rec_pause; }
+      };
+      $('#rc-stop').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); };
     }
 
     // The video as it stands, in the browser: each chosen take in order, a
