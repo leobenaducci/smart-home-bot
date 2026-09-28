@@ -744,6 +744,37 @@
           '<div class="row" style="margin-top:4px"><button data-review-redraw="' + s.id + '">🔄 ' + S.sb_review_redraw + '</button>' +
           '<button data-review-use="' + s.id + '">✍️ ' + S.sb_review_use + '</button></div>' : '') + '</div>';
     }
+    // The song the shots are cut to: the project's soundtrack, else its
+    // first song with a version.
+    function fitSong() {
+      var p = current, st = (p.settings || {}).soundtrack, a = st && itemById(st);
+      if (a && (a.takes || []).length) return a;
+      return (p.audio || []).find(function (x) { return (x.takes || []).length && x.kind !== 'voice'; }) || null;
+    }
+    // Every shot refitted to the song, keeping its place and its words: its
+    // length now starts and ends on the music (bars, section changes), on
+    // the Studio's steady beat grid. The song is listened to first if it
+    // has not been.
+    async function fitToSong(btn) {
+      var p = current, song = fitSong(), t = song && chosen(song);
+      var n = (p.shots || []).filter(function (s) { return !s.recorded; }).length;
+      if (!t || !n || !confirm(fmt('fit_confirm', { n: n }))) return;
+      btn.disabled = true; busy++;
+      try {
+        await flushSave();
+        for (var tries = 0; tries < 200; tries++) {
+          var r = await api('projects/' + p.id + '/items/' + song.id + '/analyze', { method: 'POST', body: { take: t.id } });
+          if (r.analysis) break;
+          if (r.failed) throw new Error(fmt('mv_listen_failed', { e: r.failed }));
+          btn.textContent = '🎵 ' + S.mv_listening;
+          await new Promise(function (ok) { setTimeout(ok, 3000); });
+        }
+        var res = await api('projects/' + p.id + '/retime', { method: 'POST', body: { song: song.id, take: t.id } });
+        current = await api('projects/' + p.id); drawTab();
+        toast(fmt('fit_done', { n: res.shots, bpm: Math.round(res.tempo) }) + (res.short.length ? ' ' + fmt('fit_short', { list: res.short.join(', ') }) : ''), !!res.short.length);
+      } catch (e) { toast(fmt('err', { e: e.message }), true); btn.disabled = false; btn.textContent = '🎵 ' + S.fit_button; }
+      finally { busy--; }
+    }
     function boardTab() {
       var p = current, shots = (p.shots || []).filter(function (s) { return !s.recorded; });
       if (!shots.length) return '<div class="card"><p class="muted">' + S.sb_empty + '</p></div>';
@@ -754,6 +785,7 @@
         (missing.length ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: missing.length }) + '</button>' : '') +
         (changed.length ? '<button id="sb-redraw-changed">🔄 ' + fmt('sb_redraw_changed', { n: changed.length }) + '</button>' : '') +
         '<button id="preview">▶ ' + S.sb_animatic + '</button>' +
+        (fitSong() ? '<button id="fit-song" title="' + esc(S.fit_help) + '">🎵 ' + S.fit_button + '</button>' : '') +
         (withFrames.length ? '<button id="sb-review-all" title="' + esc(S.sb_review_help) + '">👁 ' + fmt('sb_review_all', { n: withFrames.length }) + '</button>' +
           '<button id="sb-refine" title="' + esc(S.sb_refine_help) + '">🔁 ' + S.sb_refine + '</button>' : '') + '</div>' +
         '<p class="muted" style="margin-bottom:0">🎥 ' + (useBoards() ? S.sb_to_video : S.sb_to_video_off) + '</p></div><div class="sb-grid">';
@@ -854,6 +886,7 @@
       });
       html += '<div class="row">' + (p.kind === 'recording' || p.kind === 'free' ? '<button class="primary" id="rec">🔴 ' + S.rec_title + '</button>' : '') +
         '<button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
+        (fitSong() && shots.length ? '<button id="fit-song" title="' + esc(S.fit_help) + '">🎵 ' + S.fit_button + '</button>' : '') +
         '<span class="grow"></span>' +
         (shots.some(function (s) { return !(s.boards || []).length && s.prompt; })
           ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: shots.filter(function (s) { return !(s.boards || []).length && s.prompt; }).length }) + '</button>' : '') +
@@ -1320,6 +1353,7 @@
           toast(fmt('board_queued', { n: rq2.queued.length }));
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
+        if (b.id === 'fit-song') return fitToSong(b);
         if (d.sbCut) { itemById(d.sbCut).continuity = false; await saveNow(); drawTab(); return; }
         if (d.boardFrom) return boardFromDialog(d.boardFrom);
         if (b.id === 'sb-redraw-changed') {

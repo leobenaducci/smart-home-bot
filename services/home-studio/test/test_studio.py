@@ -369,6 +369,25 @@ else:
           names[0] == ("Instrumental", False) and ("Verso", True) in names and ("Coro", True) in names
           and names[-1] == ("Instrumental", False), names)
     check("  the beats are found (120 bpm clicks)", 100 < an["tempo"] < 140 and len(an["beats"]) >= 12, (an["tempo"], len(an["beats"])))
+    gaps = [b - a for a, b in zip(an["beats"], an["beats"][1:])]
+    check("  on a steady grid: one tempo, every beat the same distance apart",
+          an.get("grid") == 2 and abs(an["tempo"] - 120) < 1.0 and max(gaps) - min(gaps) < 0.005, (an["tempo"], min(gaps), max(gaps)))
+    fake_an = {"duration": 60.0, "tempo": 120.0, "beats": [0.25 + 0.5 * i for i in range(119)],
+               "bars": [0.25 + 2.0 * i for i in range(30)], "lines": [],
+               "sections": [{"name": "Verso", "start": 0.0, "end": 22.1, "sung": True},
+                            {"name": "Coro", "start": 22.1, "end": 60.0, "sung": True}]}
+    fitted = analysis.cuts_for(fake_an, 6)
+    ends = [c["end"] for c in fitted]
+    check("  refitting: exactly the shots asked for, covering the song end to end",
+          len(fitted) == 6 and fitted[0]["start"] == 0 and ends[-1] == 60.0
+          and all(abs(a["end"] - b["start"]) < 1e-6 for a, b in zip(fitted, fitted[1:])), ends)
+    check("  each cut on a bar line, and a section change sung just off its bar goes to the bar",
+          all(any(abs(e - b) <= 1 / 48 for b in fake_an["bars"]) for e in ends[:-1]) and any(abs(e - 22.25) < 1 / 48 for e in ends), ends)
+    try:
+        analysis.cuts_for(fake_an, 2)
+        check("  too few shots for the song is said, not stretched", False)
+    except ValueError:
+        check("  too few shots for the song is said, not stretched", True)
     cuts = analysis.plan_cuts(an, 4)
     check("  the cuts cover the song exactly, end to end",
           cuts[0]["start"] == 0 and cuts[-1]["end"] == an["duration"]
@@ -1245,6 +1264,36 @@ check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
+
+print("\n  the shots refitted to the song")
+import json  # noqa: E402
+rt = c.post("/api/projects", json={"name": "A la canción"}, headers=h(JUANA, "Juana")).json()
+rsong = c.put(f"/api/projects/{rt['id']}", json={"audio": [{"kind": "song", "lyrics": "[Coro]\nla"}],
+                                                "shots": [{"prompt": f"toma {i}", "seconds": 5} for i in range(6)]},
+              headers=h(JUANA, "Juana")).json()
+rdir = A.projects.dir(JUANA, rt["id"])
+(rdir / "takes").mkdir(exist_ok=True)
+shutil.copy(song_file, rdir / "takes" / "song.wav") if "song_file" in globals() else None
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=60", str(rdir / "takes" / "s.wav")], check=True)
+A.projects.add_take(JUANA, rt["id"], rsong["audio"][0]["id"], {"file": "takes/s.wav", "kind": "song"})
+stake = c.get(f"/api/projects/{rt['id']}", headers=h(JUANA, "Juana")).json()["audio"][0]["takes"][0]
+old_an = {"duration": 60.0, "tempo": 120.0, "beats": [0.25 + 0.5 * i for i in range(119)],
+          "bars": [0.25 + 2.0 * i for i in range(30)], "lines": [], "sections": [], "aligned": False}
+(rdir / "takes" / "an.json").write_text(json.dumps(old_an))
+A.projects.set_take_field(JUANA, rt["id"], rsong["audio"][0]["id"], stake["id"], "analysis", {"file": "takes/an.json", "tempo": 120})
+A.analysis.regrid = lambda an, song: {**an, "grid": 2}          # the CPU part, measured above
+first_shot = c.get(f"/api/projects/{rt['id']}", headers=h(JUANA, "Juana")).json()["shots"][0]["id"]
+A.projects.add_take(JUANA, rt["id"], first_shot, {"file": "takes/v.mp4", "seconds": 5.0})
+out = c.post(f"/api/projects/{rt['id']}/retime", json={}, headers=h(JUANA, "Juana")).json()
+after = c.get(f"/api/projects/{rt['id']}", headers=h(JUANA, "Juana")).json()
+check("  every shot keeps its place and its words, and gets its cut on the song",
+      out.get("shots") == 6 and [s["prompt"] for s in after["shots"]] == [f"toma {i}" for i in range(6)]
+      and all(s.get("exact") for s in after["shots"]) and abs(sum(s["seconds"] for s in after["shots"]) - 60.0) < 0.01
+      and after["settings"]["soundtrack"] == rsong["audio"][0]["id"], (out, [(s["start"], s["seconds"]) for s in after["shots"]]))
+check("  a video now shorter than its shot is named, to make again", out.get("short") == [1], out.get("short"))
+check("  an analysis from before the grid is given one, and keeps it",
+      json.loads((rdir / "takes" / "an.json").read_text()).get("grid") == 2)
+check("  nobody else's", c.post(f"/api/projects/{rt['id']}/retime", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 
 print("\n  a project's history, through the API")
 hq = c.post("/api/projects", json={"name": "Con historia"}, headers=h(JUANA, "Juana")).json()

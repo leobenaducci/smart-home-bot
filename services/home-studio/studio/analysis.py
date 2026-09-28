@@ -126,11 +126,57 @@ def sections_from(lines: list[dict], duration: float) -> list[dict]:
 
 
 def beats_of(song: Path) -> tuple[float, list[float]]:
+    """The song's tempo and beats: a steady grid when the song keeps one
+    tempo, which a generated song does, else the beat tracker's own beats.
+
+    The tracker's beats wander. On the first song checked, a steady 122 bpm
+    (0.492 s a beat), its beats came 0.395-0.557 s apart and it called the
+    tempo 123 -- a second and a half of drift by the end of the song, and a
+    tenth of its beats more than 150 ms off the music. A cut placed on one
+    lands visibly off the beat."""
     import librosa  # noqa: PLC0415 -- heavy, and only this needs it
     import numpy as np  # noqa: PLC0415
     y, sr = librosa.load(str(song), sr=22050, mono=True)
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, units="time")
-    return float(np.atleast_1d(tempo)[0]), [round(float(b), 3) for b in beats]
+    env = librosa.onset.onset_strength(y=y, sr=sr)
+    tempo, beats = librosa.beat.beat_track(onset_envelope=env, sr=sr, units="time")
+    tempo = float(np.atleast_1d(tempo)[0])
+    # The onset envelope rises one analysis hop after the sound does: on
+    # clicks at known times both the tracker and the grid put every beat
+    # 22-23 ms late (512 samples at 22050 Hz). Taken back here.
+    late = 512 / sr
+    times = librosa.times_like(env, sr=sr) - late
+    beats = [max(0.0, float(b) - late) for b in beats]
+    grid = steady_grid(env, times, len(y) / sr, tempo, beats)
+    if grid:
+        return grid
+    return tempo, [round(b, 3) for b in beats]
+
+
+def steady_grid(env, times, duration: float, tempo: float, beats: list[float]) -> tuple[float, list[float]] | None:
+    """One tempo and one phase for the whole song: those whose beats sit on
+    the most onset strength, searched within 3 % of the tracker's tempo. Used
+    only when the tracker's own beats mostly agree with it -- a song that
+    really changes tempo keeps the tracker's."""
+    import numpy as np  # noqa: PLC0415
+    if len(beats) < 16 or tempo <= 0:
+        return None
+    env = np.asarray(env, dtype=float)
+    env = env / (env.max() or 1.0)
+    p0, best = 60.0 / tempo, (-1.0, 0.0, 0.0)
+    for p in p0 * (1 + np.linspace(-0.03, 0.03, 241)):
+        k = np.arange(0, int(duration / p) + 1)
+        ph = np.arange(0, p, 0.002)
+        g = ph[:, None] + k[None, :] * p
+        m = np.nanmean(np.where(g <= duration, np.interp(g, times, env), np.nan), axis=1)
+        i = int(np.argmax(m))
+        if m[i] > best[0]:
+            best = (float(m[i]), float(p), float(ph[i]))
+    _, p, ph = best
+    grid = ph + np.arange(0, int((duration - ph) / p) + 1) * p
+    near = float(np.mean([np.min(np.abs(grid - b)) < 0.06 for b in beats]))
+    if near < 0.6:
+        return None
+    return 60.0 / p, [round(float(g), 3) for g in grid]
 
 
 def bars_from(beats: list[float], anchors: list[float]) -> list[float]:
@@ -259,14 +305,71 @@ def analyze(song: Path, lyrics: str, language: str, server: AudioServer | None,
     progress("beats", 0.85)
     tempo, beats = beats_of(song)
     sections = sections_from(lines, duration) if aligned else []
-    return {"duration": round(duration, 3), "tempo": round(tempo, 1), "beats": beats,
+    return {"duration": round(duration, 3), "tempo": round(tempo, 2), "beats": beats, "grid": 2,
             "bars": bars_from(beats, [s["start"] for s in sections if s["start"] > 0]),
             "lines": lines, "sections": sections, "aligned": aligned, "error": error,
             "language": language}
 
 
+def regrid(an: dict, song: Path) -> dict:
+    """An analysis from before the steady grid, given one: the beats and bars
+    again, the rest as it was. A few seconds on the CPU."""
+    tempo, beats = beats_of(song)
+    sections = an.get("sections") or []
+    return {**an, "tempo": round(tempo, 2), "beats": beats, "grid": 2,
+            "bars": bars_from(beats, [s["start"] for s in sections if s["start"] > 0])}
+
+
 def _frame(t: float) -> float:
     return round(round(t * FPS) / FPS, 4)
+
+
+def _snap_to_music(an: dict, points: list[float]) -> list[float]:
+    """A section's start is a sung line's, and a line is often sung a beat
+    before or after the bar it belongs to: each goes to the nearest bar line
+    within half a beat, else the nearest beat within half a beat."""
+    beat = 60.0 / float(an.get("tempo") or 120)
+    bars, beats = an.get("bars") or [], an.get("beats") or []
+    out = []
+    for t in points:
+        near_bar = min(bars, key=lambda b: abs(b - t)) if bars else None
+        near_beat = min(beats, key=lambda b: abs(b - t)) if beats else None
+        if near_bar is not None and abs(near_bar - t) <= beat / 2:
+            out.append(near_bar)
+        elif near_beat is not None and abs(near_beat - t) <= beat / 2:
+            out.append(near_beat)
+        else:
+            out.append(t)
+    return out
+
+
+def cuts_for(an: dict, n: int) -> list[dict]:
+    """Exactly `n` shots over the song, each cut on the music: the shots a
+    project already has, refitted to it. A cut aims at an even share of the
+    song and takes a section change within reach, else the nearest bar, else
+    the nearest beat."""
+    duration = float(an["duration"])
+    n = max(1, int(n))
+    if duration / n > MAX_SHOT:
+        raise ValueError(f"{n} shots cannot cover {round(duration)} s: a shot is at most {int(MAX_SHOT)} s")
+    share = duration / n
+    starts = sorted({s["start"] for s in an.get("sections") or []} | {s["end"] for s in an.get("sections") or []})
+    starts = _snap_to_music(an, [b for b in starts if MIN_SHOT <= b <= duration - MIN_SHOT])
+    bars, beats = an.get("bars") or [], an.get("beats") or []
+    bounds = [0.0]
+    for i in range(1, n):
+        target = i * share
+        lo = max(bounds[-1] + MIN_SHOT, target - share / 2)
+        hi = min(duration - (n - i) * MIN_SHOT, bounds[-1] + MAX_SHOT, target + share / 2)
+
+        def nearest(points, reach):
+            inside = [p for p in points if lo <= p <= hi and abs(p - target) <= reach]
+            return min(inside, key=lambda p: abs(p - target)) if inside else None
+        end = nearest(starts, share * 0.35) or nearest(bars, share * 0.5) or nearest(beats, share * 0.5) \
+            or min(max(target, lo), hi)
+        bounds.append(_frame(end))
+    bounds.append(round(duration, 4))
+    return [_describe(an, a, b) for a, b in zip(bounds, bounds[1:])]
 
 
 def plan_cuts(an: dict, shot_seconds: float) -> list[dict]:
@@ -282,7 +385,7 @@ def plan_cuts(an: dict, shot_seconds: float) -> list[dict]:
     duration = float(an["duration"])
     length = max(MIN_SHOT, min(MAX_SHOT, float(shot_seconds)))
     starts = sorted({s["start"] for s in an.get("sections") or []} | {s["end"] for s in an.get("sections") or []})
-    starts = [b for b in starts if MIN_SHOT <= b <= duration - MIN_SHOT]
+    starts = _snap_to_music(an, [b for b in starts if MIN_SHOT <= b <= duration - MIN_SHOT])
     bars, beats = an.get("bars") or [], an.get("beats") or []
     cuts, t = [], 0.0
     while duration - t > 1.0 / FPS:

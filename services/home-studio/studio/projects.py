@@ -458,6 +458,19 @@ class Projects:
             self._write(owner, pid, doc)
             return board
 
+    def retime(self, owner: str, pid: str, cuts: dict[str, tuple[float, float]], song_id: str) -> None:
+        """Shots given their place on the song: where each starts and how
+        long it is, cut to the music (`exact`). Their words are left alone."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            for shot in doc.get("shots") or []:
+                if shot["id"] in cuts:
+                    start, seconds = cuts[shot["id"]]
+                    shot.update(start=_clean("start", start, shot), seconds=_clean("seconds", seconds, shot), exact=True)
+            doc["settings"]["soundtrack"] = song_id
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+
     def stash_removed(self, owner: str, pid: str, item: dict) -> None:
         """An item's full record, kept when it leaves the timeline."""
         if not ID_RE.fullmatch(str(item.get("id") or "")):

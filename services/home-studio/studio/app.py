@@ -851,6 +851,57 @@ def song_score(pid: str, item_id: str, body: dict | None = None, me: Who = Depen
     return {"take": take["id"], "job": _public(store.get(job["id"]) or job, me)}
 
 
+def _listened(me: Who, pid: str, take: dict) -> dict:
+    """A song version's analysis, on the steady beat grid: one listened to
+    before the grid existed gets it the first time it is asked for (a few
+    seconds on the CPU), and keeps it."""
+    meta = take.get("analysis") or {}
+    if not meta.get("file"):
+        _bad(ProjectError("this version has not been listened to yet"), 409)
+    try:
+        path = projects.file(me.login, pid, meta["file"])
+        an = json.loads(path.read_text())
+        if an.get("grid") != 2:
+            an = analysis.regrid(an, projects.file(me.login, pid, take["file"]))
+            path.write_text(json.dumps(an, ensure_ascii=False))
+        return an
+    except (ProjectError, OSError, ValueError, KeyError) as exc:
+        _bad(exc, 400)
+
+
+@app.post("/api/projects/{pid}/retime")
+def retime_shots(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """The project's shots, as they are, refitted to its song: each keeps its
+    place and its words, and gets a length that starts and ends on the music
+    (the song's bars, its section changes). A shot whose video is now shorter
+    than its length is named, to be made again."""
+    body = body or {}
+    doc = _project(me, pid)
+    song_id = str(body.get("song") or doc["settings"].get("soundtrack") or "")
+    if not song_id:
+        song = next((a for a in doc.get("audio") or [] if a.get("takes")), None)
+        song_id = song["id"] if song else ""
+    if not song_id:
+        _bad(ProjectError("this project has no song to fit the shots to"), 409)
+    _doc, _item, take = _item_take(me, pid, song_id, str(body.get("take") or ""))
+    an = _listened(me, pid, take)
+    shots = [s for s in doc.get("shots") or [] if not s.get("recorded")]
+    if not shots:
+        _bad(ProjectError("no shots to fit"))
+    try:
+        cuts = analysis.cuts_for(an, len(shots))
+    except ValueError as exc:
+        _bad(exc)
+    plan = {s["id"]: c for s, c in zip(shots, cuts)}
+    projects.retime(me.login, pid, {sid: (c["start"], c["seconds"]) for sid, c in plan.items()}, song_id)
+    _remember(me, pid)
+    short = [i + 1 for i, s in enumerate(doc.get("shots") or [])
+             if s["id"] in plan and Projects.chosen_take(s) and float(Projects.chosen_take(s).get("seconds") or 0)
+             < plan[s["id"]]["seconds"] - 0.05]
+    return {"shots": len(cuts), "tempo": an["tempo"], "grid": an.get("grid") == 2, "short": short,
+            "cuts": cuts}
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/cuts")
 def music_video_cuts(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """Where a music video's cuts fall on this song, for shots of about
@@ -858,13 +909,10 @@ def music_video_cuts(pid: str, item_id: str, body: dict | None = None, me: Who =
     it. Arithmetic on the analysis; nothing is queued."""
     body = body or {}
     _doc, _item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
-    meta = take.get("analysis") or {}
-    if not meta.get("file"):
-        _bad(ProjectError("this version has not been listened to yet"), 409)
+    an = _listened(me, pid, take)
     try:
-        an = json.loads(projects.file(me.login, pid, meta["file"]).read_text())
         shot = float(body.get("shot_seconds") or 8)
-    except (ProjectError, OSError, ValueError, TypeError) as exc:
+    except (ValueError, TypeError) as exc:
         _bad(exc, 400)
     return {"take": take["id"], "duration": an["duration"], "tempo": an["tempo"],
             "aligned": an["aligned"], "error": an.get("error", ""),
