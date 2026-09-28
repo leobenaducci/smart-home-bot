@@ -87,6 +87,69 @@ own process, so one process decides what is on the card at any moment.
 - **The GGUF Q2_K text encoder** (`config: gguf_q2_k`): 8.5 GB of RAM instead
   of ~65 GB for BF16.
 
+## Kinds of project
+
+A project says what it is for (`kind`: music video, short film, explainer,
+podcast, recording, free). The kind decides the page's starting shape and the
+flow Alfred plans it with; every tool stays available in every kind. Only the
+music video and free have a flow today -- the others are listed as coming.
+
+## Storyboard
+
+A frame per shot before any video: a picture on the image model, about a
+minute, where the shot is ~25 minutes. `POST /api/projects/<p>/storyboard`
+queues one for every shot without one (or the shots named, to redraw), drawn
+with the project's look (`settings.look`, what the person said it should look
+like) ahead of the shot's description, at the image size nearest the video's
+shape (`recipes.BOARD_SIZE`). Frames are kept per shot (`boards`, the chosen
+one `board`), apart from its takes. A shot that starts fresh -- the first, or
+one that does not carry on from the one before -- starts from its chosen frame
+(`start_board`), so what was approved is where the video begins; a shot that
+carries on starts from the last frame of the one before, and its frame is only
+for looking at. Until a shot is made, the page and the preview download show
+its frame in its place: an animatic, timed to the song. The music video's
+planner draws the storyboard first unless asked to go straight to video.
+
+## Characters
+
+Who appears (`studio/characters.py`): a name, how they look (said the same
+way in every storyboard frame and shot they are cast in -- the words are what
+keep them recognisable), a personality (for the lines the assistant writes
+them), pictures (uploaded, or a 🎨 portrait drawn from their look) and a
+voice sample, recorded in the page or uploaded and kept as WAV, that their
+lines are cloned from (▶ try it). A shot lists its cast; the music video's
+planner is given the characters and names them on each shot.
+
+A character starts in its project and its scope only widens, when the
+person says so: this project -> all of mine -> the family's
+(`<data>/projects/<login>/<project>/characters/`, `<login>/.characters/`,
+`@family/characters/` -- `@` is never in a login). Widening moves the folder
+and keeps the id, so projects that cast it keep finding it. Nothing narrows:
+somebody else's film may be using a family character. Its creator and a parent
+may edit or delete one; anyone may cast it. All of it is under the Studio's
+data directory, in the same backups as the projects.
+
+Not measured yet, and the reason a face can still drift between frames: an
+image model that takes the character's picture as a reference (WanGP has
+editing models that do), and replacing H3's own voice in a shot's dialogue
+with the character's.
+
+## Recording (the Recording kind)
+
+🔴 in a Recording (or free) project: the screen, the camera or both -- the
+camera in a corner over the screen, drawn on a worker's clock because a
+page's own timers crawl while the person is in the window being recorded --
+with the microphone. The browser's recorder hands over a piece every five
+seconds, and each goes up as it is made (`/recordings/<id>/chunk?n=`, retried),
+so a closed tab or a dropped network loses seconds, not the take. Finishing
+joins the pieces in order -- they are one stream cut up -- and encodes the clip
+on the CPU (H.265, 30 fps), beside the card's queue; a clip that fails to
+encode keeps its pieces. Each recording is a clip of the project, in the same
+timeline as generated shots, so the preview, the film and the downloads work
+on it unchanged. Screen recording is a computer's browser only; in the
+Android app the camera also needs the app to grant it (it grants only the
+microphone today).
+
 ## A music video from a song
 
 The 🎬 button on a song, voice or instrumental that has a take. The Studio
@@ -121,6 +184,19 @@ mono (given 44.1 kHz it reports seconds at the wrong rate), and a separation
 request names a file the server opens, so the Studio's data is mounted in it at
 the same path. Without the audio unit -- or for a song with no words -- the
 cuts still follow the beat; only the words are lost.
+
+The preview can be downloaded ("⬇ with the music"): the same video as a
+file, rendered on the CPU beside the queue. Every shot is in place -- one not
+made yet is a still card with its description (`media.placeholder`) for the
+length it will have -- so the song runs under it unbroken, and every frame
+carries a watermark (`media.watermark`, drawn with Pillow rather than ffmpeg's
+drawtext, whose text needs escaping for any colon or quote in a description):
+PREVIEW in a corner, and the shot, its time in the song and its version along
+the bottom. It is a draft, so it is H.264 at a fast preset (`media.FAST`):
+seconds where H.265 takes a minute, and playable in every browser. The film
+itself stays H.265 and still leaves missing shots out; its song follows
+each shot's place in the video (`media.follow`), so a gap no longer puts the
+shots after it out of time with their words.
 
 A version can be marked the favourite (⭐): it is the one used, and a new
 version no longer takes its place.

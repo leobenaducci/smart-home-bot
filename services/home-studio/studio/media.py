@@ -27,6 +27,10 @@ class MediaError(RuntimeError):
 # (Firefox, most Linux desktops) cannot play these. Phones and the app can.
 X265 = ["-c:v", "libx265", "-preset", "medium", "-crf", "23", "-tag:v", "hvc1",
         "-pix_fmt", "yuv420p", "-x265-params", "log-level=error"]
+# A draft, not something kept: the preview's download. H.264 at a fast
+# preset takes seconds where H.265 takes a minute, plays in every browser,
+# and its larger file costs nothing for a file that is looked at and dropped.
+FAST = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
 
 
 def _run(args: list[str], timeout: int = 1800) -> str:
@@ -92,6 +96,17 @@ def compress_audio(src: Path) -> Path:
     return out
 
 
+def encode_recording(src: Path, out: Path) -> Path:
+    """A recording made in the page (WebM from the browser, variable frame
+    rate) as a kept clip: H.265 at a constant 30 fps with AAC sound."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-fflags", "+genpts", "-i", str(src), "-map", "0:v:0", "-map", "0:a?", "-r", "30",
+          *X265, "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)], timeout=7200)
+    if probe(out)["seconds"] <= 0:
+        raise MediaError("the recording could not be read")
+    return out
+
+
 def compress_video(src: Path) -> Path:
     """*src* re-encoded to H.265 in place: same name, same sound, so nothing
     that points at it has to change. Replaced only once the new file reads back
@@ -130,7 +145,8 @@ def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
 
 
 def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
-           lengths: list[float | None] | None = None) -> Path:
+           lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
+           fast: bool = False) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
@@ -156,10 +172,22 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
             info["seconds"] = keep
         args += ["-i", str(v)]
     w, h = infos[0]["width"] or 832, infos[0]["height"] or 480
+    # A transparent picture laid over a shot (a preview's watermark), each an
+    # input of its own after the shots, looped for as long as its shot lasts.
+    marks = list(marks or [None] * len(videos))
+    mark_input = {}
+    for i, mark in enumerate(marks):
+        if mark:
+            mark_input[i] = len(videos) + len(mark_input)
+            args += ["-loop", "1", "-framerate", "24", "-i", str(mark)]
     parts, n = [], len(videos)
     for i, info in enumerate(infos):
+        label = f"b{i}" if i in mark_input else f"v{i}"
         parts.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[v{i}]")
+                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[{label}]")
+        if i in mark_input:
+            parts.append(f"[{mark_input[i]}:v]scale={w}:{h},format=rgba[m{i}]")
+            parts.append(f"[b{i}][m{i}]overlay=0:0:shortest=1,format=yuv420p[v{i}]")
         if info["has_audio"]:
             parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
         else:
@@ -177,8 +205,124 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
         maps = ["[v]", "[a]"]
     _run([*args, "-filter_complex", ";".join(parts), "-map", maps[0], "-map", maps[1],
-          *X265, "-c:a", "aac", "-b:a", "192k",
+          *(FAST if fast else X265), "-c:a", "aac", "-b:a", "192k",
           "-movflags", "+faststart", str(out)])
+    return out
+
+
+FONT_DIR = Path("/usr/share/fonts/truetype/dejavu")
+
+
+def placeholder(title: str, text: str, seconds: float, size: tuple[int, int], out: Path) -> Path:
+    """A still, silent clip standing in for a shot not made yet: its title and
+    its description on a dark card, for as long as the shot will last -- what
+    the page's preview shows in its place, so a preview downloaded half-way
+    keeps the song running under the whole video."""
+    from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415 -- only this needs it
+    w, h = size
+    img = Image.new("RGB", (w, h), (34, 34, 34))
+    draw = ImageDraw.Draw(img)
+
+    def font(name: str, px: int):
+        try:
+            return ImageFont.truetype(str(FONT_DIR / name), px)
+        except OSError:
+            return ImageFont.load_default()
+    big, small = font("DejaVuSans-Bold.ttf", max(14, h // 14)), font("DejaVuSans.ttf", max(12, h // 24))
+    margin, y = w // 12, h // 5
+    draw.text((margin, y), title, font=big, fill=(236, 236, 236))
+    y += int(h / 14 * 1.8)
+    line, lines = "", []
+    for word in (text or "").split():
+        trial = f"{line} {word}".strip()
+        if draw.textlength(trial, font=small) > w - 2 * margin and line:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        lines.append(line)
+    for text_line in lines[: max(1, (h - y - margin) // int(h / 24 * 1.4))]:
+        draw.text((margin, y), text_line, font=small, fill=(190, 190, 190))
+        y += int(h / 24 * 1.4)
+    still = out.with_suffix(".png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(still)
+    _run(["-loop", "1", "-framerate", "24", "-i", str(still), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+          "-t", f"{seconds:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-shortest", str(out)])
+    still.unlink(missing_ok=True)
+    return out
+
+
+def still(image: Path, seconds: float, size: tuple[int, int], out: Path) -> Path:
+    """A picture held for *seconds* as a silent clip at *size* -- a storyboard
+    frame standing in for its shot until the shot is made."""
+    w, h = size
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-loop", "1", "-framerate", "24", "-i", str(image), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+          "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,format=yuv420p",
+          "-t", f"{seconds:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest", str(out)])
+    return out
+
+
+def watermark(badge: str, info: str, size: tuple[int, int], out: Path) -> Path:
+    """A transparent overlay marking a frame as a preview: `badge` in a corner,
+    `info` (the shot, its time in the song, its version) along the bottom.
+    Drawn here rather than by ffmpeg's drawtext, whose text needs escaping
+    for every colon and quote a shot's description might hold."""
+    from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
+    w, h = size
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    def font(name: str, px: int):
+        try:
+            return ImageFont.truetype(str(FONT_DIR / name), px)
+        except OSError:
+            return ImageFont.load_default()
+    bold, plain = font("DejaVuSans-Bold.ttf", max(12, h // 22)), font("DejaVuSans.ttf", max(11, h // 26))
+    pad = max(6, h // 60)
+    bw = int(draw.textlength(badge, font=bold)) + 2 * pad
+    bh = max(12, h // 22) + 2 * pad
+    draw.rectangle([pad, pad, pad + bw, pad + bh], fill=(198, 137, 43, 215))
+    draw.text((2 * pad, int(1.6 * pad)), badge, font=bold, fill=(255, 255, 255, 255))
+    strip = max(11, h // 26) + 2 * pad
+    draw.rectangle([0, h - strip - pad, w, h], fill=(0, 0, 0, 150))
+    draw.text((2 * pad, h - strip), info, font=plain, fill=(240, 240, 240, 255))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out)
+    return out
+
+
+def follow(song: Path, segments: list[tuple[float, float]], out: Path, delay: float = 0.0) -> Path:
+    """The song cut to a film's shots: for each (position, length), the song
+    from that position in the whole video for that long, one after another.
+
+    A film of the shots made so far skips the ones that are not: laying the
+    song from 0 under it put every shot after a gap out of time with the
+    words it was made for. `delay` is the song starting that late into the
+    video; before it, and past the song's end, is silence.
+    """
+    if not segments:
+        raise MediaError("no shots to follow")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = len(segments)
+    parts = [f"[0:a]aresample=48000,aformat=channel_layouts=stereo,asplit={n}" + "".join(f"[i{k}]" for k in range(n))]
+    for k, (pos, length) in enumerate(segments):
+        a = pos - delay
+        tail = f"apad=whole_dur={length:.4f},atrim=duration={length:.4f},asetpts=PTS-STARTPTS[s{k}]"
+        if a >= 0:
+            parts.append(f"[i{k}]atrim=start={a:.4f}:duration={length:.4f},asetpts=PTS-STARTPTS,{tail}")
+        elif a + length <= 0:
+            parts.append(f"[i{k}]atrim=duration=0.001,volume=0,{tail}")
+        else:
+            ms = int(round(-a * 1000))
+            parts.append(f"[i{k}]atrim=start=0:duration={length + a:.4f},asetpts=PTS-STARTPTS,"
+                         f"adelay={ms}|{ms},{tail}")
+    parts.append("".join(f"[s{k}]" for k in range(n)) + f"concat=n={n}:v=0:a=1[out]")
+    _run(["-i", str(song), "-filter_complex", ";".join(parts), "-map", "[out]",
+          "-c:a", "pcm_s16le", str(out)])
     return out
 
 

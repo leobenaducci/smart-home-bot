@@ -20,17 +20,20 @@ import hmac
 import json
 import logging
 import os
+import re
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import analysis, media, recipes
 from .manager import Manager
+from .characters import Characters
 from .projects import ProjectError, Projects
 from .store import Store
 
@@ -45,6 +48,7 @@ MAX_UPLOAD = 200 * 1024 * 1024
 
 store = Store(DATA / "queue" / "jobs.db")
 projects = Projects(DATA / "projects")
+characters = Characters(DATA / "projects")
 renders = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-render")
 render_state: dict[str, dict] = {}
 
@@ -65,7 +69,7 @@ def _notify(job: dict) -> None:
 
 
 manager = Manager(store, projects, DATA / "scratch", DATA / "logs", idle_s=IDLE_S, notify=_notify,
-                  audio=analysis.AudioServer(os.environ.get("STUDIO_AUDIO_URL", "")))
+                  audio=analysis.AudioServer(os.environ.get("STUDIO_AUDIO_URL", "")), characters=characters)
 app = FastAPI(title="home-studio", docs_url=None, redoc_url=None)
 
 
@@ -159,10 +163,25 @@ def _enqueue(me: Who, kind: str, params: dict, project: str = "", target: str = 
     return job
 
 
+# What the generic job door takes. The other kinds -- a storyboard frame, a
+# character's portrait, a song's analysis or repaint -- have routes of their
+# own that check who may ask; through here they skipped those checks.
+OPEN_KINDS = ("image", "song", "instrumental", "voice", "video_shot")
+# Params the manager fills in from what a project holds, as paths on disk or
+# references into somebody's files. Sent from outside they would name any
+# file the studio can read -- another person's -- so they never come in here.
+RESOLVED_PARAMS = ("start_image", "end_image", "voice_file", "source_video", "source_file",
+                   "start_board", "voice_char", "from_take")
+
+
 @app.post("/api/jobs")
 def add_job(body: dict, me: Who = Depends(who)):
+    kind = str(body.get("kind"))
+    if kind not in OPEN_KINDS:
+        _bad(ValueError(f"{kind} jobs are asked for through their own route"))
+    params = {k: v for k, v in dict(body.get("params") or {}).items() if k not in RESOLVED_PARAMS}
     try:
-        job = _enqueue(me, str(body.get("kind")), dict(body.get("params") or {}),
+        job = _enqueue(me, kind, params,
                        str(body.get("project") or ""), str(body.get("target") or ""),
                        str(body.get("title") or ""))
     except ProjectError as exc:
@@ -216,7 +235,244 @@ def list_projects(me: Who = Depends(who)):
 
 @app.post("/api/projects")
 def new_project(body: dict, me: Who = Depends(who)):
-    return projects.create(me.login, str(body.get("name") or ""))
+    return projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
+
+
+# -- characters ----------------------------------------------------------------
+def _project(me: Who, pid: str) -> dict:
+    try:
+        return projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+
+
+def _char_public(doc: dict, me: Who) -> dict:
+    return {**doc, "editable": Characters.may_edit(doc, me.login, me.admin)}
+
+
+@app.get("/api/projects/{pid}/characters")
+def list_characters(pid: str, me: Who = Depends(who)):
+    """Everyone who can be cast here: the project's, the person's, the family's."""
+    _project(me, pid)
+    return {"characters": [_char_public(c, me) for c in characters.list(me.login, pid)]}
+
+
+@app.post("/api/projects/{pid}/characters")
+def new_character(pid: str, body: dict, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        return _char_public(characters.create(me.login, pid, body), me)
+    except ProjectError as exc:
+        _bad(exc)
+
+
+@app.put("/api/projects/{pid}/characters/{cid}")
+def edit_character(pid: str, cid: str, body: dict, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        return _char_public(characters.update(cid, me.login, pid, body, me.admin), me)
+    except ProjectError as exc:
+        _bad(exc, 403)
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/widen")
+def widen_character(pid: str, cid: str, me: Who = Depends(who)):
+    """One scope wider: this project -> all of mine -> the family's."""
+    _project(me, pid)
+    try:
+        return _char_public(characters.widen(cid, me.login, pid, me.admin), me)
+    except ProjectError as exc:
+        _bad(exc, 403)
+
+
+@app.delete("/api/projects/{pid}/characters/{cid}")
+def delete_character(pid: str, cid: str, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        characters.delete(cid, me.login, pid, me.admin)
+    except ProjectError as exc:
+        _bad(exc, 403)
+    return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/upload")
+def character_upload(pid: str, cid: str, file: UploadFile = File(...), kind: str = Form("picture"),
+                     me: Who = Depends(who)):
+    # A plain def: a voice sample is converted with ffmpeg, which must not
+    # hold up every other request on the event loop while it runs.
+    _project(me, pid)
+    data = file.file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "too large")
+    try:
+        return _char_public(characters.add_file(cid, me.login, pid, file.filename or "file", data,
+                                                "voice" if kind == "voice" else "picture", me.admin), me)
+    except ProjectError as exc:
+        _bad(exc, 403)
+
+
+@app.get("/api/projects/{pid}/characters/{cid}/file/{rel:path}")
+def character_file(pid: str, cid: str, rel: str, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        path = characters.file(cid, me.login, pid, rel)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    # A character is seen by the whole family once shared, so its files are
+    # served as what they are allowed to be -- a picture or a sound -- never
+    # as whatever the name suggests (an .html or .svg would run as the viewer).
+    kinds = {".png": "image/png", ".jpg": "image/jpeg", ".wav": "audio/wav", ".mp3": "audio/mpeg"}
+    media_type = kinds.get(path.suffix.lower())
+    if not media_type:
+        _bad(ProjectError("no such file"), 404)
+    return FileResponse(path, media_type=media_type)
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/portrait")
+def character_portrait(pid: str, cid: str, me: Who = Depends(who)):
+    """A picture of the character drawn from its look, filed on it."""
+    doc = _project(me, pid)
+    try:
+        ch = characters.get(cid, me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    if not Characters.may_edit(ch, me.login, me.admin):
+        _bad(ProjectError("only whoever made this character can change its pictures"), 403)
+    if not ch.get("look"):
+        _bad(ValueError("describe how the character looks first"))
+    look = str(doc["settings"].get("look") or "").strip()
+    prompt = (f"{look}. " if look else "") + f"Character portrait of {ch['name']}: {ch['look']}. " \
+             "Full figure, facing the camera, plain background, clear light."
+    job = _enqueue(me, "portrait", {"prompt": prompt[:1500], "size": "832x1216", "admin": me.admin},
+                   pid, cid, title=ch["name"])
+    return {"queued": [_public(store.get(job["id"]) or job, me)]}
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/speak")
+def character_speak(pid: str, cid: str, body: dict | None = None, me: Who = Depends(who)):
+    """A line in the character's cloned voice, to hear it before casting it."""
+    _project(me, pid)
+    try:
+        ch = characters.get(cid, me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    if not ch.get("voice"):
+        _bad(ValueError("give the character a voice sample first"))
+    text = str((body or {}).get("text") or "").strip()[:600]
+    if not text:
+        _bad(ValueError("nothing to say"))
+    job = _enqueue(me, "voice", {"text": text, "voice_char": cid, "voice_text": ch.get("voice_text") or "",
+                                 "seconds": 30, "language": "es"}, pid, cid, title=ch["name"])
+    return {"queued": [_public(store.get(job["id"]) or job, me)]}
+
+
+# -- recordings (the Recording kind) --------------------------------------------
+RECORD_CHUNK_MAX = 32 * 1024 * 1024
+
+
+def _rec_dir(me: Who, pid: str, rid: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9]{6,32}", rid or ""):
+        _bad(ProjectError("no such recording"), 404)
+    return projects.dir(me.login, pid) / "recordings" / rid
+
+
+@app.post("/api/projects/{pid}/recordings")
+def start_recording(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """A new clip being recorded in the page. Its pieces arrive while it is
+    recorded, so closing the tab or losing the network loses seconds, not the
+    recording."""
+    _project(me, pid)
+    item = projects.add_recording(me.login, pid, str((body or {}).get("title") or ""))
+    _rec_dir(me, pid, item["id"]).mkdir(parents=True, exist_ok=True)
+    return item
+
+
+@app.post("/api/projects/{pid}/recordings/{rid}/chunk")
+async def recording_chunk(pid: str, rid: str, n: int, request: Request, me: Who = Depends(who)):
+    """One piece of the recording, numbered in the order it was made."""
+    d = _rec_dir(me, pid, rid)
+    if not d.is_dir():
+        _bad(ProjectError("no such recording"), 404)
+    data = await request.body()
+    if len(data) > RECORD_CHUNK_MAX:
+        raise HTTPException(413, "too large")
+    if not 0 <= n < 100000:
+        _bad(ValueError("bad piece number"))
+    (d / f"part-{n:06d}.webm").write_bytes(data)
+    return {"ok": True, "n": n}
+
+
+@app.post("/api/projects/{pid}/recordings/{rid}/finish")
+def finish_recording(pid: str, rid: str, me: Who = Depends(who)):
+    """The pieces joined in order -- a browser recording's pieces are one
+    stream cut up, so joined they are the file -- and encoded into a kept
+    clip on the CPU, beside the card's queue. The clip becomes its take."""
+    d = _rec_dir(me, pid, rid)
+    parts = sorted(d.glob("part-*.webm"))
+    if not parts:
+        _bad(ValueError("nothing was recorded"))
+    base = projects.dir(me.login, pid)
+    projects.set_item_field(me.login, pid, rid, "recording", {"state": "processing", "parts": len(parts)})
+
+    def work():
+        raw = d / "recording.webm"
+        try:
+            with open(raw, "wb") as out:
+                for part in parts:
+                    out.write(part.read_bytes())
+            take_dir = base / "takes" / rid
+            clip = media.encode_recording(raw, take_dir / f"{rid}-rec.mp4")
+            seconds = round(media.probe(clip)["seconds"], 2)
+            first = media.frame(clip, take_dir / f"{rid}-first.png", "first")
+            last = media.frame(clip, take_dir / f"{rid}-last.png", "last")
+            projects.add_take(me.login, pid, rid, {"file": str(clip.relative_to(base)), "kind": "recording",
+                                                   "seconds": seconds, "first": str(first.relative_to(base)),
+                                                   "last": str(last.relative_to(base))})
+            projects.set_item_field(me.login, pid, rid, "seconds", seconds)
+            projects.set_item_field(me.login, pid, rid, "recording", {"state": "done"})
+            shutil.rmtree(d, ignore_errors=True)
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("recording %s failed: %s", rid, exc)
+            # The pieces are kept: a recording that failed to encode is not lost.
+            projects.set_item_field(me.login, pid, rid, "recording", {"state": "failed", "error": str(exc)[:300]})
+
+    renders.submit(work)
+    return {"ok": True, "state": "processing"}
+
+
+@app.post("/api/projects/{pid}/storyboard")
+def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """A still for each shot, before any video: a minute a frame where a shot
+    is half an hour, so the whole film can be looked at -- and redrawn frame
+    by frame -- before the card is spent on it. `items` names the shots (a
+    redraw); none, every shot that has no frame yet. Each is drawn with the
+    project's look ahead of its description, so the frames read as one film."""
+    body = body or {}
+    try:
+        doc = projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    want = [str(i) for i in body.get("items") or []]
+    look = str(doc["settings"].get("look") or "").strip()
+    size = recipes.BOARD_SIZE.get(doc["settings"].get("resolution", "832x480"), "1344x768")
+    busy = {j["target"] for j in store.active() if j["owner"] == me.login and j["kind"] == "board"}
+    queued = []
+    for idx, shot in enumerate(doc.get("shots") or []):
+        if want and shot["id"] not in want:
+            continue
+        if not want and (shot.get("boards") or shot["id"] in busy):
+            continue
+        what = str(shot.get("prompt") or "").strip()
+        if not what:
+            continue
+        cast = characters.describe(shot.get("cast") or [], me.login, pid)
+        prompt = (f"{look}. " if look else "") + f"Film still: {what}" + (f" Characters: {cast}." if cast else "")
+        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size}, pid, shot["id"],
+                               shot.get("title") or f"{doc['name']} {idx + 1}")["id"])
+    if not queued:
+        _bad(ValueError("every shot already has a frame"))
+    sched = {j["id"]: j for j in store.schedule()}
+    return {"queued": [_public(sched.get(i) or store.get(i), me) for i in queued]}
 
 
 @app.get("/api/projects/{pid}")
@@ -380,6 +636,26 @@ def rework_song(pid: str, item_id: str, body: dict | None = None, me: Who = Depe
     return {"queued": [_public(store.get(job["id"]) or job, me)]}
 
 
+@app.delete("/api/projects/{pid}/renders/{name}")
+def delete_render(pid: str, name: str, me: Who = Depends(who)):
+    try:
+        projects.delete_render(me.login, pid, f"renders/{name}")
+    except ProjectError as exc:
+        _bad(exc, 404)
+    return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/board")
+def choose_board(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """Which storyboard frame of a shot is the chosen one. Its own call, not a
+    field of the page's save: a page holding an older copy would otherwise
+    choose the old frame again over one just drawn."""
+    try:
+        return projects.choose_board(me.login, pid, item_id, int((body or {}).get("index", -1)))
+    except (ProjectError, TypeError, ValueError) as exc:
+        _bad(exc, 404)
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/favorite")
 def favorite(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """Mark one version the favourite (or none, with no `take`): it is the one
@@ -443,6 +719,7 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
             chain_prev_job = ""
             continue
         params = {k: shot.get(k) for k in ("prompt", "soundscape", "music", "dialogue", "seconds", "exact")}
+        params["characters"] = characters.describe(shot.get("cast") or [], me.login, pid)
         params.update(language_name=lang, size=size, index=idx + 1)
         after = ""
         if idx > 0 and shot.get("continuity", True):
@@ -455,8 +732,15 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
         nxt = shots[idx + 1] if idx + 1 < len(shots) else None
         if nxt and nxt["id"] not in want and nxt.get("continuity", True) and Projects.chosen_take(nxt):
             params["end_at"] = nxt["id"]
+        starts_fresh = idx == 0 or not shot.get("continuity", True)
         if shot.get("refs"):
-            params["start_upload"] = shot["refs"][0] if idx == 0 or not shot.get("continuity", True) else None
+            params["start_upload"] = shot["refs"][0] if starts_fresh else None
+        # The approved storyboard frame is where a shot that does not carry
+        # on from the one before begins: what was looked at is what is made.
+        board = Projects.chosen_board(shot)
+        if board and starts_fresh and body.get("use_boards", True):
+            params["start_board"] = board["file"]
+            params.pop("start_upload", None)
         try:
             recipes.h3_prompt(params)
         except recipes.RecipeError as exc:
@@ -577,7 +861,12 @@ def edit_shot(pid: str, body: dict, me: Who = Depends(who)):
 @app.post("/api/projects/{pid}/render")
 def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     """Stitch the chosen takes into one film, with any audio items laid
-    under it. On the CPU, beside the card's queue, not in it."""
+    under it. On the CPU, beside the card's queue, not in it.
+
+    A song under it follows the shots: each shot made gets the stretch of the
+    song from where that shot sits in the whole video, so a film of the shots
+    made so far -- `preview`, the preview's download -- keeps every one in
+    time with its words across the gaps."""
     body = body or {}
     try:
         doc = projects.load(me.login, pid)
@@ -585,11 +874,34 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         _bad(exc, 404)
     base = projects.dir(me.login, pid)
     made = [(s, Projects.chosen_take(s)) for s in doc.get("shots") or []]
+    preview = bool(body.get("preview"))
     clips = [base / t["file"] for s, t in made if t]
     # A shot cut to the music is read only up to its cut.
     lengths = [float(s["seconds"]) if s.get("exact") and s.get("seconds") else None for s, t in made if t]
-    if not clips:
+    # The preview's download is the whole video: a shot not made yet is a
+    # placeholder card for its length (in the page's words), so the song runs
+    # under it unbroken, the way the page's preview plays it.
+    labels = body.get("labels") if isinstance(body.get("labels"), dict) else {}
+    # Where each made shot sits in the whole video, the missing ones counted
+    # at the length they will have.
+    segments, pos = [], 0.0
+    for s, t in made:
+        if s.get("exact") and s.get("seconds"):
+            length = float(s["seconds"])
+        elif t and t.get("seconds"):
+            length = float(t["seconds"])
+        else:
+            length = recipes.h3_frames(float(s.get("seconds") or 5)) / recipes.FPS
+        if t or preview:
+            segments.append((pos, length))
+        pos += length
+    # A preview of frames alone is an animatic, and fine; a film needs shots.
+    if not clips and not (preview and any(Projects.chosen_board(s) or s.get("prompt") for s, _t in made)):
         _bad(ValueError("no shot has a take yet"))
+    # One render of a project at a time: the page follows the project's one
+    # render state, and a second would hand it the first one's file.
+    if (render_state.get(f"{me.login}/{pid}") or {}).get("state") == "running":
+        _bad(ValueError("a film of this project is already being put together"), 409)
     tracks = []
     for m in body.get("tracks") or []:
         found = Projects.find(doc, str(m.get("item")))
@@ -600,15 +912,62 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     render_state[key] = {"state": "running", "started": time.time()}
 
     def work():
-        stamp = time.strftime("%Y%m%d-%H%M%S")
+        stamp = time.strftime("%Y%m%d-%H%M%S") + ("-preview" if preview else "")
         out = base / "renders" / f"{stamp}.mp4"
+        followed = []
         try:
-            film = media.stitch(clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
-                                crossfade=float(body.get("crossfade") or 0), lengths=lengths)
+            use_clips, use_lengths, use_marks = clips, lengths, None
+            if preview:
+                if clips:
+                    first = media.probe(clips[0])
+                    size = (first["width"] or 832, first["height"] or 480)
+                else:
+                    w, h = (doc["settings"].get("resolution") or "832x480").split("x")
+                    size = (int(w), int(h))
+                use_clips, use_lengths, use_marks = [], [], []
+                badge = str(labels.get("preview") or "PREVIEW")[:30].upper()
+
+                def clock(t: float) -> str:
+                    return f"{int(t // 60)}:{t % 60:04.1f}"
+                for n, ((s, t), (pos, length)) in enumerate(zip(made, segments), 1):
+                    info = (f"{str(labels.get('shot') or 'Shot')[:40]} {n}/{len(made)} · "
+                            f"{clock(pos)}-{clock(pos + length)}")
+                    if t:
+                        takes = s.get("takes") or []
+                        k = next((i for i, x in enumerate(takes) if x is t), len(takes) - 1) + 1
+                        info += f" · {str(labels.get('version') or 'version')[:30]} {k}/{len(takes)}"
+                    use_marks.append(media.watermark(badge, info, size, base / "renders" / f"{stamp}-mark{n}.png"))
+                    followed.append(use_marks[-1])
+                    if t:
+                        use_clips.append(base / t["file"])
+                        use_lengths.append(length if s.get("exact") else None)
+                    elif Projects.chosen_board(s):
+                        # Not made yet but drawn: the storyboard frame, held for
+                        # the shot's length -- an animatic of what is coming.
+                        card = media.still(base / Projects.chosen_board(s)["file"], length, size,
+                                           base / "renders" / f"{stamp}-card{n}.mp4")
+                    else:
+                        card = media.placeholder(f"{str(labels.get('shot') or 'Shot')[:40]} {n} · "
+                                                 f"{str(labels.get('missing') or 'not made yet')[:60]}",
+                                                 str(s.get("prompt") or "")[:600], length, size,
+                                                 base / "renders" / f"{stamp}-card{n}.mp4")
+                    if not t:
+                        followed.append(card)
+                        use_clips.append(card)
+                        use_lengths.append(None)
+            film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
+                                crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
+                                marks=use_marks, fast=preview)
             if tracks:
-                media.mix(film, tracks, out, keep_own=body.get("own_sound", True) is not False)
+                laid = []
+                for k, tr in enumerate(tracks):
+                    cut = media.follow(tr["file"], segments, base / "renders" / f"{stamp}-song{k}.wav",
+                                       delay=float(tr.get("start") or 0))
+                    followed.append(cut)
+                    laid.append({**tr, "file": cut, "start": 0})
+                media.mix(film, laid, out, keep_own=body.get("own_sound", True) is not False)
                 film.unlink(missing_ok=True)
-            projects.add_render(me.login, pid, {"file": str(out.relative_to(base)),
+            projects.add_render(me.login, pid, {"file": str(out.relative_to(base)), "preview": preview,
                                                 "seconds": round(media.probe(out)["seconds"], 1)})
             render_state[key] = {"state": "done", "file": str(out.relative_to(base))}
         except Exception as exc:                               # noqa: BLE001
@@ -617,6 +976,9 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             # probe left the state "running" and the page polling forever.
             log.warning("render %s failed: %s", key, exc)
             render_state[key] = {"state": "failed", "error": str(exc) or exc.__class__.__name__}
+        finally:
+            for f in followed:
+                f.unlink(missing_ok=True)
 
     renders.submit(work)
     return {"ok": True, "render": render_state[key]}

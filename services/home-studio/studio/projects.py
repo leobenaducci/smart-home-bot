@@ -35,12 +35,18 @@ EDITABLE = {
     # `exact`: a shot cut to the music -- generated a little long and trimmed
     # to `seconds` when the film is made. `start` is where the cut falls in
     # the song, for the page to show.
+    # `cast`: the characters in the shot, by id (studio/characters.py). The
+    # chosen storyboard frame is not here: it has its own call (choose_board),
+    # so a page holding an older copy cannot undo a frame just drawn.
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start"),
+              "exact", "start", "cast"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
+# What a project is for. It decides the page's starting shape and the
+# planning flow Alfred runs; every tool stays available in every kind.
+PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
 
 
 class ProjectError(ValueError):
@@ -87,6 +93,7 @@ class Projects:
             except (OSError, ValueError):
                 continue
             out.append({"id": doc["id"], "name": doc.get("name", ""), "updated": doc.get("updated", 0),
+                        "kind": doc.get("kind") or "free",
                         "shots": len(doc.get("shots") or []), "audio": len(doc.get("audio") or []),
                         "images": len(doc.get("images") or []),
                         "default": bool(doc.get("default")),
@@ -104,15 +111,16 @@ class Projects:
                     return take[key]
         return ""
 
-    def create(self, owner: str, name: str) -> dict:
+    def create(self, owner: str, name: str, kind: str = "free") -> dict:
         if not LOGIN_RE.fullmatch(owner or ""):
             raise ProjectError("unknown person")
+        kind = kind if kind in PROJECT_KINDS else "free"
         pid = _new_id()
         d = self.root / owner / pid
         for sub in ("takes", "uploads", "renders"):
             (d / sub).mkdir(parents=True, exist_ok=True)
         now = time.time()
-        doc = {"id": pid, "owner": owner, "name": (name or "Sin título").strip()[:80],
+        doc = {"id": pid, "owner": owner, "name": (name or "Sin título").strip()[:80], "kind": kind,
                "created": now, "updated": now,
                "settings": {"resolution": "832x480", "fps": 24, "language": "es"},
                "shots": [], "audio": [], "images": [], "renders": [], "uploads": []}
@@ -143,6 +151,8 @@ class Projects:
             doc = self.load(owner, pid)
             if "name" in incoming:
                 doc["name"] = str(incoming["name"] or doc["name"]).strip()[:80]
+            if incoming.get("kind") in PROJECT_KINDS:
+                doc["kind"] = incoming["kind"]
             if isinstance(incoming.get("settings"), dict):
                 s = incoming["settings"]
                 if re.fullmatch(r"\d{3,4}x\d{3,4}", str(s.get("resolution", ""))):
@@ -151,6 +161,10 @@ class Projects:
                     doc["settings"]["language"] = str(s["language"])
                 # The song a music video was made for: the preview plays it
                 # and the film is laid over it. An item id or nothing.
+                # The project's look: what every storyboard frame and shot is
+                # asked to share, so the pictures read as one film.
+                if "look" in s:
+                    doc["settings"]["look"] = str(s.get("look") or "")[:600]
                 if "soundtrack" in s:
                     st = str(s.get("soundtrack") or "")
                     doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""
@@ -195,6 +209,32 @@ class Projects:
             self._write(owner, doc["id"], doc)
             pointer.write_text(doc["id"])
             return doc
+
+    def add_recording(self, owner: str, pid: str, title: str) -> dict:
+        """A clip the person is recording (the Recording kind): a shot with no
+        description, whose take is what they recorded rather than what the
+        card made. `recording` says where it is: recording, processing, done
+        or failed."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            item = {"id": _new_id(), "title": str(title or "")[:80], "prompt": "", "seconds": 0.0,
+                    "takes": [], "chosen": -1, "recorded": True,
+                    "recording": {"state": "recording", "started": time.time()}}
+            doc.setdefault("shots", []).append(item)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return item
+
+    def set_item_field(self, owner: str, pid: str, item_id: str, key: str, value) -> None:
+        """One server-side field of one item (a recording's state)."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found:
+                raise ProjectError("no such item")
+            found[2][key] = value
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
 
     def append(self, owner: str, pid: str, section: str, items: list[dict]) -> list[dict]:
         """Add items to the end of a section, server-side, and return them with
@@ -267,6 +307,17 @@ class Projects:
         src, dst = self.dir(owner, pid), self.dir(owner, new["id"])
         for sub in ("takes", "uploads", "renders"):
             shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
+        # The project's own characters come too, with the same ids, so the
+        # copied shots' cast still finds them (the wider ones need no copy).
+        if (src / "characters").is_dir():
+            shutil.copytree(src / "characters", dst / "characters", dirs_exist_ok=True)
+            for f in (dst / "characters").glob("*/character.json"):
+                try:
+                    ch = json.loads(f.read_text())
+                except ValueError:
+                    continue
+                ch["project"] = new["id"]
+                f.write_text(json.dumps(ch, ensure_ascii=False, indent=1))
         doc.update(id=new["id"], name=new["name"], created=new["created"], updated=time.time())
         doc.pop("default", None)                        # a copy is an ordinary project
         self._write(owner, new["id"], doc)
@@ -377,6 +428,46 @@ class Projects:
             self._write(owner, pid, doc)
             return item
 
+    @staticmethod
+    def chosen_board(item: dict) -> dict | None:
+        boards = item.get("boards") or []
+        i = item.get("board", -1)
+        if isinstance(i, int) and 0 <= i < len(boards):
+            return boards[i]
+        return boards[-1] if boards else None
+
+    def choose_board(self, owner: str, pid: str, item_id: str, index: int) -> dict:
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found:
+                raise ProjectError("no such shot")
+            item = found[2]
+            if not -1 <= index < len(item.get("boards") or []):
+                raise ProjectError("no such frame")
+            item["board"] = index
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return item
+
+    def add_board(self, owner: str, pid: str, item_id: str, board: dict) -> dict:
+        """A storyboard frame for a shot: a still, cheap (a picture, not a
+        video), to look at before the card spends half an hour on the shot --
+        and, approved, the frame the shot's video starts from. The newest is
+        chosen; the earlier ones are kept to go back to."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found or found[0] != "shots":
+                raise ProjectError("the shot this frame was for is gone")
+            item = found[2]
+            board = {"id": _new_id(), "created": time.time(), **board}
+            item.setdefault("boards", []).append(board)
+            item["board"] = len(item["boards"]) - 1
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return board
+
     def set_take_field(self, owner: str, pid: str, item_id: str, take_id: str, key: str, value) -> None:
         """One server-side field of one version -- its analysis, its favourite
         mark. Never from the page's save, which cannot set a take's fields."""
@@ -424,6 +515,20 @@ class Projects:
             self._write(owner, pid, doc)
             return entry
 
+    def delete_render(self, owner: str, pid: str, rel: str) -> None:
+        """A film or preview gone from the project and the disk."""
+        if not re.fullmatch(r"renders/[A-Za-z0-9._-]+", rel or ""):
+            raise ProjectError("no such film")
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            before = len(doc.get("renders") or [])
+            doc["renders"] = [r for r in doc.get("renders") or [] if r.get("file") != rel]
+            if len(doc["renders"]) == before:
+                raise ProjectError("no such film")
+            self._unlink_inside(self.dir(owner, pid), rel)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+
     def add_render(self, owner: str, pid: str, render: dict) -> None:
         with self._lock(f"{owner}/{pid}"):
             doc = self.load(owner, pid)
@@ -442,6 +547,9 @@ def _clean(key: str, value: Any, item: dict) -> Any:
     if key == "chosen":
         n = len(item.get("takes") or [])
         return value if isinstance(value, int) and -1 <= value < n else item.get("chosen", -1)
+    if key == "board":
+        n = len(item.get("boards") or [])
+        return value if isinstance(value, int) and -1 <= value < n else item.get("board", -1)
     if key in ("continuity", "exact"):
         return bool(value)
     if key == "start":
@@ -456,6 +564,8 @@ def _clean(key: str, value: Any, item: dict) -> Any:
             return None
     if key == "kind":
         return value if value in AUDIO_KINDS else item.get("kind", "song")
+    if key == "cast":
+        return [str(v) for v in (value or [])[:8] if ID_RE.fullmatch(str(v))]
     if key == "refs":
         # Uploads by their relative path only; anything else is dropped.
         return [str(v) for v in (value or [])[:9] if re.fullmatch(r"uploads/[A-Za-z0-9._-]+", str(v))]

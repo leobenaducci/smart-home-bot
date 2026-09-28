@@ -22,10 +22,13 @@ VOICE_MODEL = "qwen3_tts_base"
 # `analyze` is a song listened to (studio/analysis.py): not WanGP's, run by the
 # manager itself on the Studio's audio.cpp -- in the same queue, so it never
 # shares the card with a render.
-KINDS = ("image", "song", "instrumental", "voice", "video_shot", "edit", "analyze", "repaint")
+# `board` is a storyboard frame: a picture made for a shot, on the image model.
+# `portrait` is a picture of a character, on the image model, filed on it.
+KINDS = ("image", "song", "instrumental", "voice", "video_shot", "edit", "analyze", "repaint", "board",
+         "portrait")
 MODEL_OF = {"image": IMAGE_MODEL, "song": SONG_MODEL, "instrumental": INSTRUMENTAL_MODEL,
             "voice": VOICE_MODEL, "video_shot": VIDEO_MODEL, "edit": VIDEO_MODEL,
-            "analyze": "audio.cpp", "repaint": "audio.cpp"}
+            "analyze": "audio.cpp", "repaint": "audio.cpp", "board": IMAGE_MODEL, "portrait": IMAGE_MODEL}
 
 FPS = 24
 # H3 takes 17n + 5 frames: 124 is ~5 s, 481 (its largest window) ~20 s.
@@ -48,6 +51,12 @@ def h3_frames(seconds: float) -> int:
     return max(H3_MIN_FRAMES, min(H3_MAX_FRAMES, n * H3_STEP + H3_OFFSET))
 
 
+# The picture size a storyboard frame is drawn at for each video size: the
+# image model's nearest shape, so the frame the shot starts from is framed
+# the way the shot will be.
+BOARD_SIZE = {"832x480": "1344x768", "480x832": "768x1344", "608x352": "1344x768", "640x640": "1024x1024"}
+
+
 def h3_frames_at_least(seconds: float) -> int:
     """The smallest H3 frame count that lasts at least *seconds*: for a shot cut
     to the music, which is made a little long and trimmed to its cut."""
@@ -66,6 +75,10 @@ def h3_prompt(shot: dict, language: str = "Spanish", index: int = 1) -> str:
     desc = str(shot.get("prompt") or "").strip()
     if not desc:
         raise RecipeError("a shot needs a description")
+    # Who is in it, as their characters say they look -- the same words in
+    # every shot they are cast in, which is what keeps them recognisable.
+    if str(shot.get("characters") or "").strip():
+        desc += f" Characters: {str(shot['characters']).strip()}."
     seconds = shot.get("seconds") or 5
     lines = [f"integrated_multimodal_description: [Shot {index}] A {seconds:g}-second single take. {desc}"]
     dialogue = str(shot.get("dialogue") or "").strip()
@@ -84,7 +97,7 @@ def settings_for(kind: str, p: dict) -> dict:
     if kind not in KINDS:
         raise RecipeError(f"unknown kind {kind!r}")
     seed = int(p.get("seed", -1))
-    if kind == "image":
+    if kind in ("image", "board", "portrait"):
         size = p.get("size") if p.get("size") in IMAGE_SIZES else IMAGE_SIZES[0]
         if not str(p.get("prompt") or "").strip():
             raise RecipeError("a picture needs a description")
@@ -162,6 +175,10 @@ def estimate_note(kind: str, p: dict) -> str:
         return "voz"
     if kind == "analyze":
         return "escuchar una canción"
+    if kind == "board":
+        return "storyboard"
+    if kind == "portrait":
+        return "retrato de un personaje"
     if kind == "repaint":
         return f"rehacer {max(1, round(float(p.get('end') or 0) - float(p.get('start') or 0)))} s de una canción"
     return "imagen"

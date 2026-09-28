@@ -109,11 +109,16 @@
     /* The theme's own card colours. A <dialog> takes the browser's white and
        black otherwise, which on a dark household theme put the theme's pale
        text on white: help lines and estimates that could not be read. */
+    /* `margin: auto` is what centres a modal <dialog>, and the reset at the
+       top of this sheet (`* { margin: 0 }`) took it away: every dialog opened
+       in the top-left corner. Tall ones scroll inside rather than off-screen. */
     dialog { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; max-width: 520px; width: 92vw;
-             background: var(--paper-2); color: var(--ink); }
+             background: var(--paper-2); color: var(--ink); margin: auto; max-height: 90vh; overflow: auto; }
+    dialog.wide { max-width: 900px; }
     dialog h2 { color: var(--ink); }
     dialog p.muted { font-size: .86rem; line-height: 1.45; }
     dialog::backdrop { background: rgba(0,0,0,.4); }
+    img.board { width: 100%; border-radius: var(--r-sm); display: block; }
     img.live { width: 100%; border-radius: var(--r-sm); display: block; background: #000; }
     dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }
   </style>
@@ -155,6 +160,7 @@
     if (!document.getElementById('gpu')) return;
     var S = {{ strings | tojson }};
     var IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+    var ME = {{ user|tojson }};
     var CSRF = document.querySelector('meta[name=csrf-token]').content;
     var $ = function (sel, root) { return (root || document).querySelector(sel); };
     function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
@@ -188,8 +194,34 @@
     // to the phone's downloads (the `download` attribute alone does nothing
     // in a WebView). The extension is the file's own; the portal adds it.
     function dlLink(pid, rel, name) {
-      return '<a class="btn" download href="' + fileUrl(pid, rel) + '?download=' + encodeURIComponent(name) + '">⬇ ' + S.download + '</a>';
+      var ext = (rel.match(/\.[A-Za-z0-9]+$/) || [''])[0];
+      return '<a class="btn" download data-save="' + esc(name + ext) + '" href="' + fileUrl(pid, rel) + '?download=' + encodeURIComponent(name) + '">⬇ ' + S.download + '</a>';
     }
+    // In a browser the page fetches the file itself and saves it. Handing
+    // the link to the browser's download manager failed on the portal's own
+    // certificate: the person accepted it for the page, the download manager
+    // makes a request of its own and refuses it, and Chrome says "check
+    // internet connection" (2026-09-28). The Android app is the exception --
+    // its WebView cannot save a blob, and it hands an attachment to the
+    // phone's downloads -- so there the link is followed as it is.
+    var IN_APP = /\bwv\b/.test(navigator.userAgent) || !!window.AndroidDeviceKey;
+    async function saveFile(url, name) {
+      if (IN_APP) { location.href = url; return; }
+      var r = await fetch(url, { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var blob = await r.blob(), link = document.createElement('a');
+      link.href = URL.createObjectURL(blob); link.download = name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(function () { URL.revokeObjectURL(link.href); }, 60000);
+    }
+    document.addEventListener('click', function (ev) {
+      var a = ev.target.closest && ev.target.closest('a[data-save]');
+      if (!a || IN_APP) return;
+      ev.preventDefault();
+      var label = a.innerHTML; a.textContent = '…';
+      saveFile(a.href, a.dataset.save).catch(function (e) { toast(fmt('err', { e: e.message }), true); })
+        .finally(function () { a.innerHTML = label; });
+    });
 
     // ── The card and the queue ───────────────────────────────────────────
     var queueState = null;
@@ -247,25 +279,46 @@
     });
 
     // ── Projects ────────────────────────────────────────────────────────────
+    // What a project is for: its starting shape and the flow Alfred plans it
+    // with. The ones not built yet are shown, and said to be coming.
+    var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️' },
+                 { id: 'explainer', icon: '🎓' }, { id: 'podcast', icon: '🎙️' }, { id: 'recording', icon: '🔴', ready: true },
+                 { id: 'free', icon: '✨', ready: true }];
+    function kindIcon(k) { var f = KINDS.find(function (x) { return x.id === k; }); return f ? f.icon : '✨'; }
+    function newProjectDialog() {
+      var dlg = $('#dlg');
+      dlg.innerHTML = '<h2>' + S.new_project + '</h2><label class="f">' + S.new_project_name + '</label>' +
+        '<input id="np-name" value="' + esc(S.untitled) + '"><label class="f">' + S.new_project_kind + '</label>' +
+        KINDS.map(function (k) {
+          return '<label class="choice"' + (k.ready ? '' : ' style="opacity:.55"') + '><input type="radio" name="np-kind" value="' + k.id + '"' +
+            (k.id === 'music_video' ? ' checked' : '') + (k.ready ? '' : ' disabled') + '> ' + k.icon + ' <span><b>' + S['pkind_' + k.id] + '</b>' +
+            (k.ready ? '' : ' <span class="pill">' + S.kind_soon + '</span>') + '<br><span class="muted">' + S['pkind_' + k.id + '_about'] + '</span></span></label>';
+        }).join('') +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="np-no">' + S.cancel + '</button><button class="primary" id="np-go">' + S.new_project + '</button></div>';
+      dlg.showModal();
+      $('#np-no').onclick = function () { dlg.close(); };
+      $('#np-go').onclick = async function () {
+        var kind = dlg.querySelector('input[name="np-kind"]:checked').value;
+        var p = await api('projects', { method: 'POST', body: { name: $('#np-name').value.trim() || S.untitled, kind: kind } });
+        dlg.close(); openProject(p.id);
+      };
+    }
     async function loadList() {
       var d = await api('projects');
       var html = '<div class="pcard new" data-new="1"><div class="cover">＋</div><div class="body"><div class="name">' + S.new_project + '</div></div></div>';
       d.projects.forEach(function (p) {
         var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
-        html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : '🎬') + '</div>' +
+        html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + '</div>' +
           '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
-          '</div><div class="muted">🎬 ' + p.shots + ' · 🎵 ' + p.audio + ' · 🖼️ ' + p.images + '</div></div></div>';
+          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + ' · 🎬 ' + p.shots + ' · 🎵 ' + p.audio + ' · 🖼️ ' + p.images + '</div></div></div>';
       });
       $('#plist').innerHTML = html;
       if (!d.projects.length) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + S.empty_projects + '</p>');
     }
     $('#plist').addEventListener('click', async function (ev) {
       var c = ev.target.closest('.pcard'); if (!c) return;
-      if (c.dataset.new) {
-        var name = prompt(S.new_project_name, S.untitled); if (name === null) return;
-        var p = await api('projects', { method: 'POST', body: { name: name } });
-        openProject(p.id);
-      } else openProject(c.dataset.id);
+      if (c.dataset.new) newProjectDialog();
+      else openProject(c.dataset.id);
     });
 
     // ── The editor ─────────────────────────────────────────────────────────
@@ -277,8 +330,88 @@
     // What a song is about is only an input for Alfred, not part of the
     // project; kept here so a redraw does not empty the box.
     var themes = {};
+    // The characters this project can cast (its own, the person's, the
+    // family's), loaded with it and again after any change to one.
+    var cast = [];
+    async function loadCast() {
+      try { cast = (await api('projects/' + current.id + '/characters')).characters; } catch (e) { cast = []; }
+    }
+    function charUrl(c, rel) {
+      return '/studio/api/projects/' + current.id + '/characters/' + c.id + '/file/' + rel.split('/').map(encodeURIComponent).join('/');
+    }
+    function castTab() {
+      var html = cast.length ? '' : '<p class="muted">' + S.ch_none + '</p>';
+      cast.forEach(function (c) {
+        var pic = (c.pictures || [])[c.portrait >= 0 ? c.portrait : 0];
+        html += '<div class="card"><div class="row" style="align-items:flex-start">' +
+          (pic ? '<img src="' + charUrl(c, pic) + '" style="width:96px;border-radius:8px" alt="">' : '<div style="font-size:2.4rem">👤</div>') +
+          '<div class="grow"><b>' + esc(c.name) + '</b> <span class="pill">' + S['ch_scope_' + c.scope] + '</span>' +
+          '<p class="muted" style="margin-top:4px">' + esc(c.look || '') + '</p>' +
+          (c.personality ? '<p class="muted">💬 ' + esc(c.personality) + '</p>' : '') +
+          ((c.voice_tests || {})[ME] ? '<audio controls preload="none" src="' + charUrl(c, c.voice_tests[ME]) + '"></audio>' : '') +
+          '<div class="row" style="margin-top:8px">' +
+          (c.editable ? '<button data-ch-edit="' + c.id + '">✏️ ' + S.ch_edit + '</button>' : '') +
+          (c.editable && c.look ? '<button data-ch-portrait="' + c.id + '">' + S.ch_portrait + '</button>' : '') +
+          (c.voice ? '<button data-ch-speak="' + c.id + '">' + S.ch_speak + '</button>' : '') +
+          (c.editable && c.scope !== 'family' ? '<button data-ch-widen="' + c.id + '">' + S[c.scope === 'project' ? 'ch_widen_person' : 'ch_widen_family'] + '</button>' : '') +
+          (c.editable ? '<button class="danger" data-ch-del="' + c.id + '">🗑</button>' : '') +
+          '</div></div></div></div>';
+      });
+      return html + '<button id="ch-new">＋ 👤 ' + S.ch_new + '</button>';
+    }
+    // A character, new or edited: who they are, how they look and talk, and
+    // the sample their voice is cloned from -- uploaded or recorded here.
+    function characterDialog(c) {
+      var dlg = $('#dlg'), rec = null, chunks = [], voiceBlob = null;
+      c = c || { name: '', look: '', personality: '', voice_text: '' };
+      dlg.innerHTML = '<h2>👤 ' + (c.id ? esc(c.name) : S.ch_new) + '</h2>' +
+        '<label class="f">' + S.ch_name + '</label><input id="ch-name" value="' + esc(c.name) + '">' +
+        '<label class="f">' + S.ch_look + '</label><textarea id="ch-look" rows="3" placeholder="' + esc(S.ch_look_ph) + '">' + esc(c.look) + '</textarea>' +
+        '<label class="f">' + S.ch_personality + '</label><textarea id="ch-pers" rows="3" placeholder="' + esc(S.ch_personality_ph) + '">' + esc(c.personality) + '</textarea>' +
+        '<label class="f">' + S.ch_voice + '</label><div class="row"><input type="file" id="ch-vfile" accept="audio/*" style="width:auto">' +
+        '<button id="ch-rec">' + S.ch_record + '</button><span class="muted" id="ch-vstate">' + (c.voice ? '✓' : '') + '</span></div>' +
+        '<label class="f">' + S.ch_voice_text + '</label><input id="ch-vtext" value="' + esc(c.voice_text || '') + '">' +
+        '<label class="f">' + S.ch_pictures + '</label><input type="file" id="ch-pics" accept="image/*" multiple style="width:auto">' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ch-no">' + S.cancel + '</button><button class="primary" id="ch-go">' + S.ch_save + '</button></div>';
+      dlg.showModal();
+      $('#ch-no').onclick = function () { if (rec) rec.stop(); dlg.close(); };
+      $('#ch-rec').onclick = async function () {
+        var b = this;
+        if (rec) { rec.stop(); return; }
+        try {
+          var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          rec = new MediaRecorder(stream); chunks = [];
+          rec.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
+          rec.onstop = function () {
+            stream.getTracks().forEach(function (t) { t.stop(); });
+            voiceBlob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' }); rec = null;
+            b.textContent = S.ch_record; $('#ch-vstate').textContent = '✓ ' + Math.round(voiceBlob.size / 1024) + ' KB';
+          };
+          rec.start(); b.textContent = S.ch_stop; $('#ch-vstate').textContent = '●';
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
+      $('#ch-go').onclick = async function () {
+        var go = this; go.disabled = true;
+        try {
+          var body = { name: $('#ch-name').value, look: $('#ch-look').value, personality: $('#ch-pers').value,
+                       voice_text: $('#ch-vtext').value };
+          var saved = c.id ? await api('projects/' + current.id + '/characters/' + c.id, { method: 'PUT', body: body })
+                           : await api('projects/' + current.id + '/characters', { method: 'POST', body: body });
+          async function send(file, kind, name) {
+            var fd = new FormData(); fd.append('file', file, name || file.name); fd.append('kind', kind);
+            await api('projects/' + current.id + '/characters/' + saved.id + '/upload', { method: 'POST', body: fd });
+          }
+          if ($('#ch-vfile').files[0]) await send($('#ch-vfile').files[0], 'voice');
+          else if (voiceBlob) await send(voiceBlob, 'voice', 'grabacion.' + ((voiceBlob.type.split('/')[1] || 'webm').split(';')[0]));
+          for (var i = 0; i < $('#ch-pics').files.length; i++) await send($('#ch-pics').files[i], 'picture');
+          dlg.close(); await loadCast(); drawTab();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); go.disabled = false; }
+      };
+    }
     async function openProject(pid) {
       current = await api('projects/' + pid);
+      await loadCast();
+      if (current.kind === 'music_video' && !(current.shots || []).length) tab = 'audio';
       history.replaceState(null, '', '/studio?project=' + pid);
       $('#v-list').hidden = true; $('#v-edit').hidden = false;
       drawEditor();
@@ -309,6 +442,25 @@
       return '<img class="live" data-src="' + src + '" src="' + src + '?t=' + Date.now() + '" alt="">' +
         '<div class="muted" style="font-size:.76rem">' + S.live_preview + '</div>';
     }
+    function chosenBoard(item) {
+      var b = item.boards || [], i = item.board;
+      return (i >= 0 && i < b.length) ? b[i] : b[b.length - 1];
+    }
+    // The shot's storyboard frames: which one is chosen, and draw another.
+    function boardRow(s) {
+      var b = s.boards || [], cur = b.indexOf(chosenBoard(s));
+      return '<div class="takes"><span class="muted">🖼️ ' + S.storyboard + ':</span>' + b.map(function (_, i) {
+        return '<button data-board-choose="' + s.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + '</button>';
+      }).join('') + '<button data-board="' + s.id + '">' + (b.length ? S.board_redraw : S.board_draw) + '</button></div>';
+    }
+    // Who is in the shot: their looks go into its frame and its video.
+    function castRow(s) {
+      if (!cast.length) return '';
+      return '<div class="takes"><span class="muted">👤 ' + S.ch_in_shot + ':</span>' + cast.map(function (c) {
+        var on = (s.cast || []).indexOf(c.id) >= 0;
+        return '<button data-cast-toggle="' + s.id + '" data-ch="' + c.id + '" class="' + (on ? 'on' : '') + '">' + esc(c.name) + '</button>';
+      }).join('') + '</div>';
+    }
     function chosen(item) {
       var t = item.takes || [], i = item.chosen;
       return (i >= 0 && i < t.length) ? t[i] : t[t.length - 1];
@@ -337,15 +489,17 @@
       var html = '<div class="row"><button id="back">← ' + S.back + '</button>' +
         '<input id="pname" class="grow" style="font-weight:800;font-size:1.05rem" value="' + esc(p.name) + '">' +
         '<span class="muted" id="saved">' + S.saved + '</span></div>' +
-        '<div class="tabs">' + ['video', 'audio', 'images', 'files'].map(function (t) {
+        '<div class="tabs">' + ['video', 'audio', 'images', 'cast', 'files'].map(function (t) {
           return '<button data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
         }).join('') + '<span class="grow"></span><button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div>' +
+        (p.kind === 'music_video' ? '<p class="note">🎵 ' + S.mv_steps + '</p>' : '') +
         '<div id="tabbody"></div>';
       $('#v-edit').innerHTML = html;
       drawTab();
     }
     function drawTab() {
       var body = $('#tabbody');
+      if (tab === 'cast') { body.innerHTML = castTab(); return; }
       if (tab === 'video') body.innerHTML = videoTab();
       else if (tab === 'audio') body.innerHTML = audioTab();
       else if (tab === 'images') body.innerHTML = imagesTab();
@@ -370,9 +524,25 @@
         }).join('') + '</div></div>';
       shots.forEach(function (s, i) {
         var t = chosen(s);
+        if (s.recorded) {
+          // A clip the person recorded: what it is, not how to make it.
+          var rs = (s.recording || {}).state;
+          if (i > 0) html += '<div class="link">✂</div>';
+          html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>🔴 ' + esc(s.title || (S.shot + ' ' + (i + 1))) + '</b>' +
+            (rs === 'processing' ? '<span class="pill run">' + S.rec_processing + '</span>' : rs === 'failed' ? '<span class="pill">' + S.rec_failed + '</span>' :
+             rs === 'recording' ? '<span class="pill run">● ' + S.rec_title + '</span>' : '<span class="muted">' + clock(s.seconds || 0) + '</span>') +
+            '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
+            '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
+            (t && t.file ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>' +
+              '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) + '</div>' : '') +
+            '</div>';
+          return;
+        }
         if (i > 0) html += '<div class="link">' + (s.continuity !== false ? '⛓ ' + S.continuity : '✂') + '</div>';
-        var live = livePreview(s);
-        var media = live ? live : t && t.file
+        var live = livePreview(s), board = chosenBoard(s);
+        var media = live ? live : !(t && t.file) && board
+          ? '<img class="board" src="' + fileUrl(p.id, board.file) + '" alt=""><div class="muted" style="font-size:.76rem">🖼️ ' + S.storyboard + '</div>'
+          : t && t.file
           ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '"></video>'
           : '<span>' + S.no_take + '</span>';
         var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
@@ -382,7 +552,8 @@
           '<span class="grow"></span><button data-up="' + s.id + '" title="' + S.move_up + '">↑</button><button data-down="' + s.id + '" title="' + S.move_down + '">↓</button>' +
           '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + S.remove + '">✕</button></div>' +
           '<div class="shot"><div><div class="media">' + media + '</div>' + takesRow(s) +
-          (t && t.file ? '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + S.shot + ' ' + (i + 1)) + '</div>' : '') + '</div><div>' +
+          (t && t.file ? '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + S.shot + ' ' + (i + 1)) + '</div>' : '') +
+          boardRow(s) + castRow(s) + '</div><div>' +
           '<label class="f">' + S.shot_what + '</label><textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           '<label class="f">' + S.shot_says + '</label><textarea data-f="dialogue" data-id="' + s.id + '" rows="2" placeholder="' + esc(S.shot_says_ph) + '">' + esc(s.dialogue) + '</textarea>' +
           '<div class="row"><div class="grow"><label class="f">' + S.shot_sound + '</label><input data-f="soundscape" data-id="' + s.id + '" placeholder="' + esc(S.shot_sound_ph) + '" value="' + esc(s.soundscape) + '"></div>' +
@@ -397,8 +568,11 @@
           ((s.takes || []).length ? '<button data-retouch="' + s.id + '">' + S.retouch + '</button>' : '') + '</div>' +
           '</div></div></div>';
       });
-      html += '<div class="row"><button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
+      html += '<div class="row">' + (p.kind === 'recording' || p.kind === 'free' ? '<button class="primary" id="rec">🔴 ' + S.rec_title + '</button>' : '') +
+        '<button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
         '<span class="grow"></span>' +
+        (shots.some(function (s) { return !(s.boards || []).length && s.prompt; })
+          ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: shots.filter(function (s) { return !(s.boards || []).length && s.prompt; }).length }) + '</button>' : '') +
         ((p.jobs || []).length ? '<button class="danger" id="cancel-all">✕ ' + fmt('cancel_all', { n: p.jobs.length }) + '</button>' : '') +
         '<button class="primary" id="gen-pending">' + S.generate_pending + '</button>' +
         (shots.length ? '<button id="preview">▶ ' + S.preview + '</button>' : '') +
@@ -409,8 +583,9 @@
       if (renders.length) {
         html += '<h2 style="margin-top:20px">' + S.renders + '</h2>' + renders.map(function (r) {
           return '<div class="card"><video controls preload="metadata" style="width:100%;border-radius:8px" src="' + fileUrl(p.id, r.file) + '"></video>' +
-            '<div class="row"><span class="muted">' + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
-            dlLink(p.id, r.file, p.name) + '</div></div>';
+            '<div class="row"><span class="muted">' + (r.preview ? '▶ ' + S.preview + ' · ' : '') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
+            dlLink(p.id, r.file, p.name) +
+            '<button class="danger" data-del-render="' + esc(r.file.replace(/^renders\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div></div>';
         }).join('');
       }
       return html;
@@ -575,6 +750,11 @@
           await api('projects/' + p.id + '/items/' + d.delTake + '/takes/' + d.take, { method: 'DELETE' });
           current = await api('projects/' + p.id); drawTab(); return;
         }
+        if (d.delRender) {
+          if (!confirm(S.delete_render_confirm)) return;
+          await api('projects/' + p.id + '/renders/' + encodeURIComponent(d.delRender), { method: 'DELETE' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
         if (d.delUpload) {
           if (!confirm(S.delete_upload_confirm)) return;
           await flushSave();
@@ -614,6 +794,47 @@
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
         if (b.id === 'preview') return previewPlayer();
+        if (b.id === 'rec') return recorder();
+        if (b.id === 'ch-new') return characterDialog(null);
+        if (d.chEdit) return characterDialog(cast.find(function (c) { return c.id === d.chEdit; }));
+        if (d.chPortrait) {
+          var rp = await api('projects/' + p.id + '/characters/' + d.chPortrait + '/portrait', { method: 'POST' });
+          toast(fmt('queued_note', { n: Math.max(0, (rp.queued[0].position || 1) - 1), t: dur(rp.queued[0].starts_in || 0) }));
+          loadQueue(); return;
+        }
+        if (d.chSpeak) {
+          var who = cast.find(function (c) { return c.id === d.chSpeak; });
+          var line = prompt(S.ch_speak_what, fmt('ch_speak_ph', { name: who.name })); if (!line) return;
+          var rs = await api('projects/' + p.id + '/characters/' + d.chSpeak + '/speak', { method: 'POST', body: { text: line } });
+          toast(fmt('queued_note', { n: Math.max(0, (rs.queued[0].position || 1) - 1), t: dur(rs.queued[0].starts_in || 0) }));
+          loadQueue(); return;
+        }
+        if (d.chWiden) {
+          if (!confirm(S.ch_widen_confirm)) return;
+          await api('projects/' + p.id + '/characters/' + d.chWiden + '/widen', { method: 'POST' });
+          await loadCast(); drawTab(); return;
+        }
+        if (d.chDel) {
+          if (!confirm(S.ch_delete_confirm)) return;
+          await api('projects/' + p.id + '/characters/' + d.chDel, { method: 'DELETE' });
+          await loadCast(); drawTab(); return;
+        }
+        if (d.castToggle) {
+          var sh = itemById(d.castToggle), list = (sh.cast || []).slice(), at = list.indexOf(d.ch);
+          if (at >= 0) list.splice(at, 1); else list.push(d.ch);
+          sh.cast = list; await saveNow(); drawTab(); return;
+        }
+        if (d.board || b.id === 'board-all') {
+          await saveNow();
+          var rb = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: d.board ? { items: [d.board] } : {} });
+          toast(fmt('board_queued', { n: rb.queued.length }));
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (d.boardChoose) {
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + d.boardChoose + '/board', { method: 'POST', body: { index: Number(d.i) } });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
         if (d.retouch) return retouch(d.retouch);
         if (b.id === 'long-scene') return longScene();
         if (b.id === 'render') return renderDialog();
@@ -733,7 +954,9 @@
           return '<option value="' + v + '"' + (v === 8 ? ' selected' : '') + '>' + v + ' ' + S.sec + '</option>'; }).join('') + '</select>' +
         (refs.length ? '<label class="f">' + S.mv_ref + '</label><select id="mv-ref"><option value="">' + S.none + '</option>' +
           refs.map(function (u) { return '<option value="' + esc(u.file) + '">' + esc(u.name) + '</option>'; }).join('') + '</select>' : '') +
-        '<label class="row" style="font-size:.86rem;margin-top:10px"><input type="checkbox" id="mv-now" style="width:auto" checked> ' + S.mv_generate_now + '</label>' +
+        '<label class="f">' + S.mv_then + '</label><select id="mv-then">' +
+          '<option value="board" selected>🖼️ ' + S.mv_then_board + '</option><option value="video">🎥 ' + S.mv_then_video + '</option>' +
+          '<option value="none">' + S.mv_then_none + '</option></select>' +
         '<p class="muted" id="mv-est"></p>' +
         (existing ? '<p class="note">' + fmt('mv_existing', { n: existing }) + '</p>' : '') +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="mv-no">' + S.cancel + '</button><button class="primary" id="mv-go" disabled>' + S.mv_go + '</button></div>';
@@ -746,7 +969,8 @@
       function estimate() {
         var plan = cuts || evenPlan(), rate = (queueState && queueState.video_rate) || 360;
         var video = plan.reduce(function (x, c) { return x + c.seconds; }, 0);
-        $('#mv-est').textContent = fmt('mv_estimate', { n: plan.length, s: Math.round(video), t: dur(rate * video) });
+        $('#mv-est').textContent = fmt('mv_estimate', { n: plan.length, s: Math.round(video), t: dur(rate * video) }) +
+          ' · ' + fmt('mv_board_estimate', { t: dur(plan.length * 60) });
       }
       async function loadCuts() {
         if (!heard) { cuts = null; return estimate(); }
@@ -781,27 +1005,37 @@
       $('#mv-len').onchange = loadCuts;
       $('#mv-no').onclick = function () { dlg.close(); };
       $('#mv-go').onclick = async function () {
-        var go = this, plan = cuts || evenPlan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', now = $('#mv-now').checked;
+        var go = this, plan = cuts || evenPlan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', then = $('#mv-then').value;
+        var idea = $('#mv-idea').value.trim();
         go.disabled = true; go.textContent = S.mv_planning; busy++;
         try {
           await flushSave();
           var r = await api('music-video', { method: 'POST', body: { shots: plan.length, seconds: total, kind: a.kind || 'song',
             lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '',
-            idea: $('#mv-idea').value.trim(), plan: cuts || [] } });
+            idea: idea, plan: cuts || [],
+            characters: cast.map(function (c) { return { name: c.name, look: c.look, personality: c.personality }; }) } });
           var fresh = await api('projects/' + p.id);
           var before = (fresh.shots || []).length;
           r.shots.forEach(function (sh, i) {
             var cont = i > 0 && sh.continues, c = plan[i] || {};
+            var who = (sh.cast || []).map(function (n) {
+              var m = cast.find(function (x) { return x.name.toLowerCase() === String(n).toLowerCase(); });
+              return m && m.id;
+            }).filter(Boolean);
             fresh.shots.push(newItem(Object.assign({ prompt: sh.prompt, seconds: c.seconds || 8, continuity: cont,
-                                                     refs: !cont && ref ? [ref] : [] },
+                                                     refs: !cont && ref ? [ref] : [], cast: who },
                                                    cuts ? { exact: true, start: c.start } : {})));
           });
-          fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id });
+          // The look is the project's, so every frame and shot is asked for it.
+          fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id }, idea ? { look: idea } : {});
           current = fresh; await saveNow();
           var ids = current.shots.slice(before).map(function (sh) { return sh.id; });
           dlg.close(); tab = 'video'; drawEditor();
           toast(fmt('mv_added', { n: ids.length }));
-          if (now && ids.length) await generate(ids);
+          if (then === 'board' && ids.length) {
+            var rq = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: ids } });
+            toast(fmt('board_queued', { n: rq.queued.length })); current = await api('projects/' + p.id); loadQueue(); drawTab();
+          } else if (then === 'video' && ids.length) await generate(ids);
         } catch (e) {
           toast(e.message, true); go.disabled = false; go.textContent = S.mv_go;
         } finally { busy--; }
@@ -896,6 +1130,117 @@
       };
     }
 
+    // Recording yourself: the screen, the camera, or both -- the camera in a
+    // corner over the screen, like a stream -- with the microphone. Pieces
+    // go up as they are made (a closed tab loses seconds, not the take), and
+    // stopping asks the Studio to join them into a clip of the project.
+    function recorder() {
+      var p = current, dlg = $('#dlg'), canScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+      var st = { rec: null, rid: null, n: 0, sent: 0, queue: Promise.resolve(), streams: [], ticker: null, t0: 0, paused: 0, pauseAt: 0 };
+      dlg.classList.add('wide');
+      dlg.innerHTML = '<h2>🔴 ' + S.rec_title + '</h2>' +
+        '<div class="row"><label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-screen" style="width:auto"' + (canScreen ? ' checked' : ' disabled') + '> ' + S.rec_screen + '</label>' +
+        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-cam" style="width:auto" checked> ' + S.rec_cam + '</label>' +
+        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-mic" style="width:auto" checked> ' + S.rec_mic + '</label></div>' +
+        (canScreen ? '' : '<p class="muted">' + S.rec_no_screen + '</p>') +
+        '<video id="rc-view" muted playsinline autoplay style="width:100%;background:#000;border-radius:8px;margin-top:8px"></video>' +
+        '<div class="row" style="margin-top:10px"><button class="primary" id="rc-start">' + S.rec_start + '</button>' +
+        '<button id="rc-pause" hidden>' + S.rec_pause + '</button><button class="danger" id="rc-stop" hidden>' + S.rec_stop + '</button>' +
+        '<span class="muted" id="rc-time"></span><span class="grow"></span><span class="muted" id="rc-up"></span>' +
+        '<button id="rc-no">' + S.cancel + '</button></div>';
+      dlg.showModal();
+      function clockNow() {
+        var sec = Math.max(0, ((st.pauseAt || Date.now()) - st.t0 - st.paused) / 1000);
+        $('#rc-time').textContent = '● ' + clock(sec);
+      }
+      function upState() { $('#rc-up').textContent = st.sent < st.n ? fmt('rec_uploading', { n: st.n - st.sent }) : (st.n ? S.rec_saved : ''); }
+      function release() {
+        st.streams.forEach(function (m) { m.getTracks().forEach(function (t) { t.stop(); }); });
+        if (st.ticker) st.ticker.terminate();
+        clearInterval(st.clock); dlg.classList.remove('wide');
+      }
+      function send(blob) {
+        var n = st.n++; upState();
+        st.queue = st.queue.then(async function () {
+          for (var attempt = 0; attempt < 5; attempt++) {
+            try {
+              var r = await fetch('/studio/api/projects/' + p.id + '/recordings/' + st.rid + '/chunk?n=' + n, {
+                method: 'POST', body: blob, headers: { 'X-CSRF-Token': CSRF, 'Content-Type': 'application/octet-stream' } });
+              if (r.ok) { st.sent++; upState(); return; }
+            } catch (e) { /* the network again, a moment later */ }
+            await new Promise(function (ok) { setTimeout(ok, 2000 * (attempt + 1)); });
+          }
+          toast(fmt('err', { e: 'piece ' + n }), true);
+        });
+      }
+      $('#rc-no').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); release(); dlg.close(); };
+      $('#rc-start').onclick = async function () {
+        var wantScreen = $('#rc-screen').checked, wantCam = $('#rc-cam').checked, wantMic = $('#rc-mic').checked;
+        if (!wantScreen && !wantCam) { toast(S.rec_need_source, true); return; }
+        var screen = null, cam = null, mic = null;
+        try {
+          if (wantScreen) { screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false }); st.streams.push(screen); }
+          if (wantCam) { cam = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }); st.streams.push(cam); }
+          if (wantMic) { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); st.streams.push(mic); }
+        } catch (e) { release(); toast(fmt('rec_denied', { e: e.message }), true); return; }
+        var video;
+        if (screen && cam) {
+          // One picture: the screen, and the camera in the bottom-right corner.
+          // Drawn on a worker's clock -- a page's own timers are slowed to a
+          // crawl while the person is in the window being recorded.
+          var sv = document.createElement('video'), cv = document.createElement('video');
+          sv.srcObject = screen; cv.srcObject = cam; sv.muted = cv.muted = true; sv.play(); cv.play();
+          var canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
+          var g = canvas.getContext('2d');
+          st.ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(0)},33)'], { type: 'text/javascript' })));
+          st.ticker.onmessage = function () {
+            g.fillStyle = '#000'; g.fillRect(0, 0, 1280, 720);
+            if (sv.videoWidth) {
+              var k = Math.min(1280 / sv.videoWidth, 720 / sv.videoHeight), w = sv.videoWidth * k, h = sv.videoHeight * k;
+              g.drawImage(sv, (1280 - w) / 2, (720 - h) / 2, w, h);
+            }
+            if (cv.videoWidth) {
+              var cw = 320, ch = cw * cv.videoHeight / cv.videoWidth;
+              g.drawImage(cv, 1280 - cw - 20, 720 - ch - 20, cw, ch);
+            }
+          };
+          video = canvas.captureStream(30).getVideoTracks()[0];
+        } else {
+          video = (screen || cam).getVideoTracks()[0];
+        }
+        // Sharing stopped from the browser's own bar ends the recording too.
+        if (screen) screen.getVideoTracks()[0].onended = function () { if (st.rec && st.rec.state !== 'inactive') $('#rc-stop').click(); };
+        var tracks = [video].concat(mic ? mic.getAudioTracks() : []);
+        var out = new MediaStream(tracks);
+        $('#rc-view').srcObject = out;
+        var type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(function (t) {
+          return window.MediaRecorder && MediaRecorder.isTypeSupported(t); });
+        try {
+          var n = (p.shots || []).filter(function (x) { return x.recorded; }).length + 1;
+          st.rid = (await api('projects/' + p.id + '/recordings', { method: 'POST', body: { title: fmt('rec_default_title', { n: n }) } })).id;
+          st.rec = new MediaRecorder(out, { mimeType: type, videoBitsPerSecond: 2500000 });
+        } catch (e) { release(); toast(fmt('err', { e: e.message }), true); return; }
+        st.rec.ondataavailable = function (e) { if (e.data && e.data.size) send(e.data); };
+        st.rec.onstop = async function () {
+          $('#rc-stop').disabled = true; $('#rc-pause').hidden = true;
+          await st.queue;
+          try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST' }); }
+          catch (e) { toast(fmt('err', { e: e.message }), true); }
+          release(); dlg.close();
+          current = await api('projects/' + p.id); drawTab();
+        };
+        st.rec.start(5000);
+        st.t0 = Date.now(); st.clock = setInterval(clockNow, 500);
+        $('#rc-start').hidden = true; $('#rc-pause').hidden = false; $('#rc-stop').hidden = false; $('#rc-no').hidden = true;
+        ['rc-screen', 'rc-cam', 'rc-mic'].forEach(function (id) { $('#' + id).disabled = true; });
+      };
+      $('#rc-pause').onclick = function () {
+        if (st.rec.state === 'recording') { st.rec.pause(); st.pauseAt = Date.now(); this.textContent = S.rec_resume; }
+        else { st.rec.resume(); st.paused += Date.now() - st.pauseAt; st.pauseAt = 0; this.textContent = S.rec_pause; }
+      };
+      $('#rc-stop').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); };
+    }
+
     // The video as it stands, in the browser: each chosen take in order, a
     // card for the ones not made yet, and the soundtrack underneath, moved to
     // where each shot starts so the two stay together. Nothing is rendered.
@@ -906,9 +1251,13 @@
       var segs = [], at = 0;
       (p.shots || []).forEach(function (s, i) {
         var t = chosen(s), len = s.exact ? +s.seconds : ((t && t.seconds) || s.seconds || 5);
-        segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', prompt: s.prompt || '', start: at, len: len });
+        var bd = chosenBoard(s);
+        segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', board: bd ? fileUrl(p.id, bd.file) : '',
+                    prompt: s.prompt || '', start: at, len: len });
         at += len;
       });
+      dlg.classList.add('wide');
+      dlg.addEventListener('close', function () { dlg.classList.remove('wide'); }, { once: true });
       dlg.innerHTML = '<h2>▶ ' + S.preview + '</h2>' +
         '<div id="pv-stage" style="position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">' +
         '<video id="pv-v" playsinline style="width:100%;height:100%;object-fit:contain"></video>' +
@@ -917,7 +1266,8 @@
         (tracks.length ? '<label class="f" style="margin:0">' + S.soundtrack + '</label><select id="pv-a" style="width:auto"><option value="">' + S.none + '</option>' +
           tracks.map(function (a) { return '<option value="' + a.id + '"' + (a.id === st ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' : '') +
         '</div><label class="row" style="font-size:.86rem"><input type="checkbox" id="pv-m" style="width:auto"' + (st ? ' checked' : '') + '> ' + S.mute_shots + '</label>' +
-        '<div class="row" style="margin-top:12px"><button id="pv-play" class="primary">▶</button><span class="grow"></span><button id="pv-no">' + S.preview_close + '</button></div>';
+        '<div class="row" style="margin-top:12px"><button id="pv-play" class="primary">▶</button><span class="grow"></span>' +
+        '<button id="pv-dl">⬇ ' + S.preview_download + '</button><button id="pv-no">' + S.preview_close + '</button></div>';
       dlg.showModal();
       var v = $('#pv-v'), card = $('#pv-card'), audio = new Audio(), idx = 0, timer = null, playing = false;
       function song() { var sel = $('#pv-a'); var a = sel && sel.value ? itemById(sel.value) : null; return a ? fileUrl(p.id, chosen(a).file) : ''; }
@@ -943,7 +1293,10 @@
           v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
         } else {
           v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex';
-          card.innerHTML = '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
+          card.innerHTML = seg.board
+            ? '<img src="' + seg.board + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">' +
+              '<span class="pill" style="position:absolute;left:8px;top:8px">🖼️ ' + S.storyboard + ' · ' + S.shot + ' ' + seg.n + '</span>'
+            : '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
           timer = setTimeout(function () { if (playing) show(idx + 1); }, seg.len * 1000);
         }
       }
@@ -952,6 +1305,30 @@
         playing = true; this.textContent = '⏸'; show(idx);
       };
       $('#pv-m').onchange = function () { v.muted = this.checked; };
+      // The same video as a file: every shot in place -- the ones not made
+      // yet as a card -- with the song under it, and a preview watermark
+      // saying which shot, where in the song and which version each is.
+      $('#pv-dl').onclick = async function () {
+        var b = this, sel = $('#pv-a');
+        var songs = sel && sel.value ? [{ item: sel.value, volume: 1, start: 0 }] : [];
+        b.disabled = true; b.textContent = S.preview_rendering;
+        try {
+          await api('projects/' + p.id + '/render', { method: 'POST', body: {
+            preview: true, crossfade: 0, tracks: songs, own_sound: !($('#pv-m').checked && songs.length),
+            labels: { preview: S.preview, shot: S.shot, missing: S.preview_missing, version: S.take } } });
+          var r = null;
+          for (var i = 0; i < 600; i++) {
+            await new Promise(function (ok) { setTimeout(ok, 3000); });
+            r = (await api('projects/' + p.id)).render;
+            if (!r || r.state !== 'running') break;
+          }
+          if (r && r.state === 'done') {
+            await saveFile(fileUrl(p.id, r.file) + '?download=' + encodeURIComponent(p.name + ' - ' + S.preview),
+                           p.name + ' - ' + S.preview + '.mp4');
+          } else toast(S.render_failed + (r && r.error ? ': ' + r.error : ''), true);
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+        finally { b.disabled = false; b.textContent = '⬇ ' + S.preview_download; }
+      };
       $('#pv-no').onclick = function () { stop(); dlg.close(); };
       dlg.addEventListener('close', stop, { once: true });
     }
@@ -995,7 +1372,7 @@
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
       var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),
-        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length; }); })]);
+        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length + ':' + (i.boards || []).length; }); })]);
       if (sig !== lastSig) {
         lastSig = sig;
         // Never redraw under somebody's cursor: the new takes wait for the
