@@ -1838,6 +1838,7 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # has no name: an empty one hides the page and its menu entry, where an
         # address that answers nothing would offer a studio that is not there.
         "studio_url": studio_url(cfg),
+        "studio_on": "1" if studio_url(cfg) else "",
         # Whatever GPU exporter the household already runs, or empty. See the
         # note in the example config for why this stack does not ship one.
         "gpu_exporter_url": str(
@@ -3930,6 +3931,12 @@ def image_model_env(cfg: dict) -> dict:
         value = models.get(role, "")
         if not value:
             continue
+        # The Studio switched off with a drawing role still on it: export
+        # nothing, so the skill says it has no model rather than posting to a
+        # door that answers "not configured".
+        if value.startswith("studio:") and not (
+                (cfg.get("services") or {}).get("home-studio") or {}).get("enabled"):
+            continue
         env[prefixed] = value
         # `studio:<model>`: the house's own Studio draws it, through the one
         # queue on its card (docs/home-studio.md). Reached through the portal,
@@ -4650,6 +4657,12 @@ def apply_service_renames(cfg: dict) -> None:
 # somebody switched it on. Nothing deploys until they do.
 NEW_SERVICES = {
     "registry": {"enabled": False, "host": "hub", "port": 21040},
+    # Off, and it matters more than for most: `.get("enabled", True)` would
+    # otherwise deploy an 18 GB CUDA image onto a card for a household that
+    # upgraded past 2026-09-28 and never asked for a studio.
+    "home-studio": {"enabled": False, "host": "compute", "port": 21035, "gpu": True,
+                    "gpu_device": "0", "idle_s": 600, "mem_limit": "36g",
+                    "house_only": True},
     # Off, but present: both nanobot units interpolate
     # `{services.home-search.port}` and `.vane_port` unconditionally, so a
     # config written before home-search existed would fail to deploy the

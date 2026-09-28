@@ -53,7 +53,7 @@ own process, so one process decides what is on the card at any moment.
     phone / browser ── portal /studio (page) ── /studio/api/* ──┐
     Alfred ── skill `studio` ── portal /studio/api/* ───────────┤  login, name, parent?
                                                                ▼  + derived secret
-                                    home-studio :21040  (FastAPI, one process)
+                                    home-studio :<port>  (FastAPI, one process)
                                       ├─ store.py     the queue (SQLite), fair order, estimates
                                       ├─ projects.py  per-login projects on disk
                                       ├─ manager.py   one job at a time; continuity; filing
@@ -110,6 +110,42 @@ takes in order in the browser with the soundtrack moved to each shot's start,
 and a card with the description where a shot is not made yet. Every queued or
 running item has its own cancel, and the Video tab a cancel for all of them.
 
+While it works the bar is honest about what it knows. WanGP's steps place
+it where there are steps; a stage with none -- ACE-Step's lyrics-to-music, a
+model loading -- moves with how much of this kind of job's usual time on this
+card has gone, never reaching the stage's end, because WanGP's own figure there
+is not a measure (it says 100% as the stage starts, and a song sat at 95% for
+five minutes looking stuck).
+
+## Deleting
+
+A version (a take) is deleted with its 🗑: the clip or picture and the frames
+taken from it leave the disk, and the item keeps its other versions. A file
+somebody uploaded is deleted the same way from Files, and whatever pointed at
+it -- a shot's start picture, a voice's sample -- lets go. Both are explicit
+requests by id (`DELETE /api/projects/<p>/items/<i>/takes/<t>`,
+`/uploads/<name>`) and ask first. A card's ✕ only takes the item out of the
+project; its versions stay on disk until the project is deleted. That is on
+purpose: the page saves the whole project, so a page holding an older copy
+sends fewer items than there are, and a save must never be able to delete a
+file.
+
+## Optional, and what off means
+
+`home-studio` is off in the example and arrives off on an upgrade
+(`NEW_SERVICES` in deploy.py -- without that, a config with no block would
+read as on and build an 18 GB CUDA image). Off is off everywhere, not only
+the container:
+
+- the portal gets no `STUDIO_URL`, answers `/studio` with "not configured"
+  and leaves Studio out of the apps menu;
+- the assistants lose the `studio` skill (`when_service` on both units), so
+  it is not in any prompt;
+- a drawing role still set to `studio:…` exports nothing and the drawing
+  skill says it has no model, rather than posting to a door that is closed;
+- the entry page shows no Studio button (`HOME_STACK_STUDIO`; a copy on shared
+  hosting sets it in its own environment, next to the portal's address).
+
 ## Where things live
 
 Everything on the big disk (`/mnt/data`), nothing on the system SSD except
@@ -134,8 +170,8 @@ the generator an H.264 copy of the shot, never the kept file.
 
 ## Settings
 
-`services.home-studio`: `enabled`, `port` (21040), `gpu`, `gpu_device` (the
-card it owns), `idle_s`, `mem_limit` (the container's RAM cap, 36g: H3 streams
+`services.home-studio`: `enabled`, `port` (21035), `gpu`, `gpu_device` (the
+card it owns; "0" by default, the free one on a machine with two), `idle_s`, `mem_limit` (the container's RAM cap, 36g: H3 streams
 weights through RAM, and an out-of-memory must stay its own). `dns.studio`
 names its host for the portal. WanGP is pinned (`STUDIO_WANGP_REF`, the
 Dockerfile's `WANGP_REF`): bump it on purpose and measure again.

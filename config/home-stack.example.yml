@@ -479,10 +479,11 @@ services:
     # state disk, and a lot of RAM while a video renders.
     enabled: false
     host: compute
-    port: 21040
+    port: 21035
     gpu: true
-    # The card it owns. Nothing else should be placed on it.
-    gpu_device: "1"
+    # The card it owns. Nothing else should be placed on it: on a machine
+    # with two, the one nothing else uses; on a machine with one, it shares.
+    gpu_device: "0"
     # Seconds with nothing to do before the model is unloaded and the card
     # and RAM are given back.
     idle_s: 600

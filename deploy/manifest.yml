@@ -294,6 +294,10 @@ services:
           # has. Same class as the literal port above.
           HOME_STACK_PORTAL_URL: "https://{dns.portal}:{services.home-core.port}"
           HOME_STACK_DOMAIN: "{site.domain}"
+          # Whether the entry page offers the Studio: "1" while home-studio is
+          # on, empty otherwise. A copy served elsewhere (shared hosting) sets
+          # it in its own environment, like the portal's address.
+          HOME_STACK_STUDIO: "{derived.studio_on}"
         state:
           - { path: "{paths.state}/home-core/users.json",
               mount: /var/www/html/users.json,
@@ -588,6 +592,11 @@ services:
           # container is not deployed, and nanobot dials whatever is listed.
           crawl4ai:
             disable_mcp: [crawl4ai]
+          # The Studio skill only where there is a Studio. Off, its name and
+          # description would still enter every prompt, and every "make me a
+          # song" would end in the portal's "not configured".
+          home-studio:
+            disable_skills: [studio]
           # The browser, reached over the container network. Off, its entry goes
           # too: `http://browser-use:21034` does not resolve when the container
           # is not deployed, and that is a failed connect on every message.
@@ -908,6 +917,11 @@ services:
           # container is not deployed, and nanobot dials whatever is listed.
           crawl4ai:
             disable_mcp: [crawl4ai]
+          # The Studio skill only where there is a Studio. Off, its name and
+          # description would still enter every prompt, and every "make me a
+          # song" would end in the portal's "not configured".
+          home-studio:
+            disable_skills: [studio]
           # The browser, reached over the container network. Off, its entry goes
           # too: `http://browser-use:21034` does not resolve when the container
           # is not deployed, and that is a failed connect on every message.
