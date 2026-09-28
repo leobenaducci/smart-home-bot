@@ -432,6 +432,37 @@ else:
                             "stream=nb_read_frames", "-of", "csv=p=0", str(trimmed)], capture_output=True, text=True).stdout.strip()
     check("  and the film reads it only up to its cut, to the frame (12 + 24)", frames == "36", frames)
 
+    print("\na preview as a file: the song in place, cards for missing shots, a watermark")
+
+    def loud(path, start, length):
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(start), "-t", str(length), "-i", str(path),
+                              "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+        line = next((l for l in out.splitlines() if "max_volume" in l), "max_volume: -91 dB")
+        return float(line.split("max_volume:")[1].split("dB")[0].replace("-inf", "-91"))
+    beep = tmp / "beep.wav"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "aevalsrc='if(between(t,2,3),sin(2*PI*440*t),0)':s=48000:d=4", str(beep)], check=True)
+    cut = media.follow(beep, [(0.0, 1.0), (2.0, 1.0)], tmp / "followed.wav")
+    check("  each shot gets the song from where it sits: silence for 0-1 s, then the 2-3 s tone",
+          abs(media.probe(cut)["seconds"] - 2.0) < 0.05 and loud(cut, 0.1, 0.8) < -60 and loud(cut, 1.1, 0.8) > -20,
+          (media.probe(cut)["seconds"], loud(cut, 0.1, 0.8), loud(cut, 1.1, 0.8)))
+    late = media.follow(beep, [(2.0, 1.0)], tmp / "late.wav", delay=1.0)
+    check("  and a song starting later is followed from its own start", loud(late, 0.1, 0.8) < -60, loud(late, 0.1, 0.8))
+    card = media.placeholder("Toma 2 · Todavía no se generó", "Un pelícano en una moto, al atardecer",
+                             1.5, (160, 96), tmp / "card.mp4")
+    check("  a missing shot is a still card for its length, with sound to stitch",
+          abs(media.probe(card)["seconds"] - 1.5) < 0.1 and media.probe(card)["has_audio"], media.probe(card))
+    mark = media.watermark("VISTA PREVIA", "Toma 1/2 · 0:00.0-0:01.0 · Versión 1/1", (160, 96), tmp / "mark.png")
+    marked = media.stitch([projects.dir(JUANA, p["id"]) / Projects.chosen_take(doc["shots"][0])["file"], card],
+                          tmp / "marked.mp4", marks=[mark, None])
+    frame = tmp / "frame.png"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(marked), "-frames:v", "1", str(frame)], check=True)
+    from PIL import Image
+    px = Image.open(frame).convert("RGB").getpixel((8, 8))
+    check("  the watermark is on the frames (the badge's colour in the corner)",
+          px[0] > 150 and 90 < px[1] < 180 and px[2] < 110, px)
+    check("  and the film is the shot then the card", 2.3 < media.probe(marked)["seconds"] < 2.7, media.probe(marked))
+
     print("\nhow long the queue says a shot takes grows with the shot")
     five = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 5}})
     twenty = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 20}})
@@ -522,6 +553,31 @@ check("  the lyrics sent become the song's", sng_now["lyrics"] == "[Coro]\nlo lo
 check("  a stretch outside the song is refused",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/rework", json={"start": 50, "end": 900},
              headers=h(JUANA, "Juana")).status_code == 400)
+vp = c.post("/api/projects", json={"name": "Vista"}, headers=h(JUANA, "Juana")).json()
+c.put(f"/api/projects/{vp['id']}", json={"shots": [{"prompt": "uno", "seconds": 5}, {"prompt": "dos", "seconds": 5}]},
+      headers=h(JUANA, "Juana"))
+vdoc = c.get(f"/api/projects/{vp['id']}", headers=h(JUANA, "Juana")).json()
+clip = A.projects.dir(JUANA, vp["id"]) / "takes" / "one.mp4"
+clip.parent.mkdir(parents=True, exist_ok=True)
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
+                "-i", "sine=frequency=440", "-t", "2", "-shortest", "-pix_fmt", "yuv420p", str(clip)], check=True)
+A.projects.add_take(JUANA, vp["id"], vdoc["shots"][0]["id"], {"file": "takes/one.mp4", "seconds": 2.0})
+r = c.post(f"/api/projects/{vp['id']}/render", json={"preview": True, "labels": {"preview": "Vista previa", "shot": "Toma",
+                                                                                    "missing": "Todavía no", "version": "Versión"}},
+           headers=h(JUANA, "Juana")).json()
+deadline = time.time() + 180
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{vp['id']}", headers=h(JUANA, "Juana")).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.5)
+rend = (st.get("renders") or [{}])[-1]
+check("  a preview render is the whole video: the made shot and a card for the missing one",
+      st["render"]["state"] == "done" and rend.get("preview") is True
+      and abs(rend.get("seconds", 0) - (2.0 + 124 / 24)) < 0.3, (st.get("render"), rend))
+check("  and leaves nothing of its own behind but the film",
+      sorted(x.name for x in (A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()) == [rend["file"].split("/")[-1]],
+      list((A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()))
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 

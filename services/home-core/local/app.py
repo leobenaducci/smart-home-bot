@@ -21616,6 +21616,7 @@ STUDIO_UI_KEYS = (
     'favorite_set', 'favorite_clear',
     'rs_button', 'rs_title', 'rs_mode_part', 'rs_mode_all', 'rs_pick', 'rs_range', 'rs_no_lines',
     'rs_similar', 'rs_keep_voice', 'rs_go',
+    'preview_download', 'preview_rendering',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',

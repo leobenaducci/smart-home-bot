@@ -577,7 +577,12 @@ def edit_shot(pid: str, body: dict, me: Who = Depends(who)):
 @app.post("/api/projects/{pid}/render")
 def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     """Stitch the chosen takes into one film, with any audio items laid
-    under it. On the CPU, beside the card's queue, not in it."""
+    under it. On the CPU, beside the card's queue, not in it.
+
+    A song under it follows the shots: each shot made gets the stretch of the
+    song from where that shot sits in the whole video, so a film of the shots
+    made so far -- `preview`, the preview's download -- keeps every one in
+    time with its words across the gaps."""
     body = body or {}
     try:
         doc = projects.load(me.login, pid)
@@ -585,9 +590,27 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         _bad(exc, 404)
     base = projects.dir(me.login, pid)
     made = [(s, Projects.chosen_take(s)) for s in doc.get("shots") or []]
+    preview = bool(body.get("preview"))
     clips = [base / t["file"] for s, t in made if t]
     # A shot cut to the music is read only up to its cut.
     lengths = [float(s["seconds"]) if s.get("exact") and s.get("seconds") else None for s, t in made if t]
+    # The preview's download is the whole video: a shot not made yet is a
+    # placeholder card for its length (in the page's words), so the song runs
+    # under it unbroken, the way the page's preview plays it.
+    labels = body.get("labels") if isinstance(body.get("labels"), dict) else {}
+    # Where each made shot sits in the whole video, the missing ones counted
+    # at the length they will have.
+    segments, pos = [], 0.0
+    for s, t in made:
+        if s.get("exact") and s.get("seconds"):
+            length = float(s["seconds"])
+        elif t and t.get("seconds"):
+            length = float(t["seconds"])
+        else:
+            length = recipes.h3_frames(float(s.get("seconds") or 5)) / recipes.FPS
+        if t or preview:
+            segments.append((pos, length))
+        pos += length
     if not clips:
         _bad(ValueError("no shot has a take yet"))
     tracks = []
@@ -600,15 +623,52 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     render_state[key] = {"state": "running", "started": time.time()}
 
     def work():
-        stamp = time.strftime("%Y%m%d-%H%M%S")
+        stamp = time.strftime("%Y%m%d-%H%M%S") + ("-preview" if preview else "")
         out = base / "renders" / f"{stamp}.mp4"
+        followed = []
         try:
-            film = media.stitch(clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
-                                crossfade=float(body.get("crossfade") or 0), lengths=lengths)
+            use_clips, use_lengths, use_marks = clips, lengths, None
+            if preview:
+                first = media.probe(clips[0])
+                size = (first["width"] or 832, first["height"] or 480)
+                use_clips, use_lengths, use_marks = [], [], []
+                badge = str(labels.get("preview") or "PREVIEW")[:30].upper()
+
+                def clock(t: float) -> str:
+                    return f"{int(t // 60)}:{t % 60:04.1f}"
+                for n, ((s, t), (pos, length)) in enumerate(zip(made, segments), 1):
+                    info = (f"{str(labels.get('shot') or 'Shot')[:40]} {n}/{len(made)} · "
+                            f"{clock(pos)}-{clock(pos + length)}")
+                    if t:
+                        takes = s.get("takes") or []
+                        k = next((i for i, x in enumerate(takes) if x is t), len(takes) - 1) + 1
+                        info += f" · {str(labels.get('version') or 'version')[:30]} {k}/{len(takes)}"
+                    use_marks.append(media.watermark(badge, info, size, base / "renders" / f"{stamp}-mark{n}.png"))
+                    followed.append(use_marks[-1])
+                    if t:
+                        use_clips.append(base / t["file"])
+                        use_lengths.append(length if s.get("exact") else None)
+                    else:
+                        card = media.placeholder(f"{str(labels.get('shot') or 'Shot')[:40]} {n} · "
+                                                 f"{str(labels.get('missing') or 'not made yet')[:60]}",
+                                                 str(s.get("prompt") or "")[:600], length, size,
+                                                 base / "renders" / f"{stamp}-card{n}.mp4")
+                        followed.append(card)
+                        use_clips.append(card)
+                        use_lengths.append(None)
+            film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
+                                crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
+                                marks=use_marks)
             if tracks:
-                media.mix(film, tracks, out, keep_own=body.get("own_sound", True) is not False)
+                laid = []
+                for k, tr in enumerate(tracks):
+                    cut = media.follow(tr["file"], segments, base / "renders" / f"{stamp}-song{k}.wav",
+                                       delay=float(tr.get("start") or 0))
+                    followed.append(cut)
+                    laid.append({**tr, "file": cut, "start": 0})
+                media.mix(film, laid, out, keep_own=body.get("own_sound", True) is not False)
                 film.unlink(missing_ok=True)
-            projects.add_render(me.login, pid, {"file": str(out.relative_to(base)),
+            projects.add_render(me.login, pid, {"file": str(out.relative_to(base)), "preview": preview,
                                                 "seconds": round(media.probe(out)["seconds"], 1)})
             render_state[key] = {"state": "done", "file": str(out.relative_to(base))}
         except Exception as exc:                               # noqa: BLE001
@@ -617,6 +677,9 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             # probe left the state "running" and the page polling forever.
             log.warning("render %s failed: %s", key, exc)
             render_state[key] = {"state": "failed", "error": str(exc) or exc.__class__.__name__}
+        finally:
+            for f in followed:
+                f.unlink(missing_ok=True)
 
     renders.submit(work)
     return {"ok": True, "render": render_state[key]}

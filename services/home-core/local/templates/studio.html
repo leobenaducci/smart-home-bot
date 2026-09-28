@@ -109,8 +109,12 @@
     /* The theme's own card colours. A <dialog> takes the browser's white and
        black otherwise, which on a dark household theme put the theme's pale
        text on white: help lines and estimates that could not be read. */
+    /* `margin: auto` is what centres a modal <dialog>, and the reset at the
+       top of this sheet (`* { margin: 0 }`) took it away: every dialog opened
+       in the top-left corner. Tall ones scroll inside rather than off-screen. */
     dialog { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; max-width: 520px; width: 92vw;
-             background: var(--paper-2); color: var(--ink); }
+             background: var(--paper-2); color: var(--ink); margin: auto; max-height: 90vh; overflow: auto; }
+    dialog.wide { max-width: 900px; }
     dialog h2 { color: var(--ink); }
     dialog p.muted { font-size: .86rem; line-height: 1.45; }
     dialog::backdrop { background: rgba(0,0,0,.4); }
@@ -909,6 +913,8 @@
         segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', prompt: s.prompt || '', start: at, len: len });
         at += len;
       });
+      dlg.classList.add('wide');
+      dlg.addEventListener('close', function () { dlg.classList.remove('wide'); }, { once: true });
       dlg.innerHTML = '<h2>▶ ' + S.preview + '</h2>' +
         '<div id="pv-stage" style="position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">' +
         '<video id="pv-v" playsinline style="width:100%;height:100%;object-fit:contain"></video>' +
@@ -917,7 +923,8 @@
         (tracks.length ? '<label class="f" style="margin:0">' + S.soundtrack + '</label><select id="pv-a" style="width:auto"><option value="">' + S.none + '</option>' +
           tracks.map(function (a) { return '<option value="' + a.id + '"' + (a.id === st ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' : '') +
         '</div><label class="row" style="font-size:.86rem"><input type="checkbox" id="pv-m" style="width:auto"' + (st ? ' checked' : '') + '> ' + S.mute_shots + '</label>' +
-        '<div class="row" style="margin-top:12px"><button id="pv-play" class="primary">▶</button><span class="grow"></span><button id="pv-no">' + S.preview_close + '</button></div>';
+        '<div class="row" style="margin-top:12px"><button id="pv-play" class="primary">▶</button><span class="grow"></span>' +
+        '<button id="pv-dl">⬇ ' + S.preview_download + '</button><button id="pv-no">' + S.preview_close + '</button></div>';
       dlg.showModal();
       var v = $('#pv-v'), card = $('#pv-card'), audio = new Audio(), idx = 0, timer = null, playing = false;
       function song() { var sel = $('#pv-a'); var a = sel && sel.value ? itemById(sel.value) : null; return a ? fileUrl(p.id, chosen(a).file) : ''; }
@@ -952,6 +959,31 @@
         playing = true; this.textContent = '⏸'; show(idx);
       };
       $('#pv-m').onchange = function () { v.muted = this.checked; };
+      // The same video as a file: every shot in place -- the ones not made
+      // yet as a card -- with the song under it, and a preview watermark
+      // saying which shot, where in the song and which version each is.
+      $('#pv-dl').onclick = async function () {
+        var b = this, sel = $('#pv-a');
+        var songs = sel && sel.value ? [{ item: sel.value, volume: 1, start: 0 }] : [];
+        b.disabled = true; b.textContent = S.preview_rendering;
+        try {
+          await api('projects/' + p.id + '/render', { method: 'POST', body: {
+            preview: true, crossfade: 0, tracks: songs, own_sound: !($('#pv-m').checked && songs.length),
+            labels: { preview: S.preview, shot: S.shot, missing: S.preview_missing, version: S.take } } });
+          var r = null;
+          for (var i = 0; i < 600; i++) {
+            await new Promise(function (ok) { setTimeout(ok, 3000); });
+            r = (await api('projects/' + p.id)).render;
+            if (!r || r.state !== 'running') break;
+          }
+          if (r && r.state === 'done') {
+            var link = document.createElement('a');
+            link.href = fileUrl(p.id, r.file) + '?download=' + encodeURIComponent(p.name + ' - ' + S.preview);
+            link.download = ''; document.body.appendChild(link); link.click(); link.remove();
+          } else toast(S.render_failed + (r && r.error ? ': ' + r.error : ''), true);
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+        finally { b.disabled = false; b.textContent = '⬇ ' + S.preview_download; }
+      };
       $('#pv-no').onclick = function () { stop(); dlg.close(); };
       dlg.addEventListener('close', stop, { once: true });
     }

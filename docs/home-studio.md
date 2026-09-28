@@ -122,6 +122,17 @@ request names a file the server opens, so the Studio's data is mounted in it at
 the same path. Without the audio unit -- or for a song with no words -- the
 cuts still follow the beat; only the words are lost.
 
+The preview can be downloaded ("⬇ with the music"): the same video as a
+file, rendered on the CPU beside the queue. Every shot is in place -- one not
+made yet is a still card with its description (`media.placeholder`) for the
+length it will have -- so the song runs under it unbroken, and every frame
+carries a watermark (`media.watermark`, drawn with Pillow rather than ffmpeg's
+drawtext, whose text needs escaping for any colon or quote in a description):
+PREVIEW in a corner, and the shot, its time in the song and its version along
+the bottom. The film itself still leaves missing shots out; its song follows
+each shot's place in the video (`media.follow`), so a gap no longer puts the
+shots after it out of time with their words.
+
 A version can be marked the favourite (⭐): it is the one used, and a new
 version no longer takes its place.
 
