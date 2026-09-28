@@ -912,7 +912,7 @@
       dlg.innerHTML = '<h2>▶ ' + S.preview + '</h2>' +
         '<div id="pv-stage" style="position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">' +
         '<video id="pv-v" playsinline style="width:100%;height:100%;object-fit:contain"></video>' +
-        '<div id="pv-card" hidden style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:16px;color:#eee;font-size:.9rem;background:#222"></div></div>' +
+        '<div id="pv-card" style="position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:16px;color:#eee;font-size:.9rem;background:#222"></div></div>' +
         '<div class="row" style="margin-top:8px"><span id="pv-at" class="muted"></span><span class="grow"></span>' +
         (tracks.length ? '<label class="f" style="margin:0">' + S.soundtrack + '</label><select id="pv-a" style="width:auto"><option value="">' + S.none + '</option>' +
           tracks.map(function (a) { return '<option value="' + a.id + '"' + (a.id === st ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' : '') +
@@ -934,13 +934,15 @@
           audio.play().catch(function () {});
         }
         if (seg.file) {
-          card.hidden = true; v.hidden = false; v.muted = $('#pv-m').checked;
+          // style.display, not `hidden`: the card's own inline `display` beat
+          // the attribute, and it covered every shot (2026-09-28).
+          card.style.display = 'none'; v.style.visibility = 'visible'; v.muted = $('#pv-m').checked;
           v.src = seg.file; v.play().catch(function () {});
           v.onended = function () { if (playing) show(idx + 1); };
           // A shot made long for its cut is shown only up to the cut.
           v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
         } else {
-          v.pause(); v.hidden = true; card.hidden = false;
+          v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex';
           card.innerHTML = '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
           timer = setTimeout(function () { if (playing) show(idx + 1); }, seg.len * 1000);
         }
