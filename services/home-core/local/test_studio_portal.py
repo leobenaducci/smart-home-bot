@@ -114,7 +114,8 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "mute_shots", "soundtrack", "live_preview", "cancel_all", "cancel_all_confirm",
             "delete_take", "delete_take_confirm", "delete_upload_confirm", "remove_confirm",
             "mv_listening", "mv_heard", "mv_heard_nowords", "mv_listen_failed", "shot_cut",
-            "favorite_set", "favorite_clear"):
+            "favorite_set", "favorite_clear", "rs_button", "rs_title", "rs_mode_part", "rs_mode_all",
+            "rs_pick", "rs_range", "rs_no_lines", "rs_similar", "rs_keep_voice", "rs_go"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
 
 print("\na music video is planned by Alfred, shot by shot")

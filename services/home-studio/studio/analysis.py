@@ -38,6 +38,7 @@ from . import media
 log = logging.getLogger("studio.analysis")
 
 SEP_MODEL = "mel_band_roformer_q8_0"
+MUSIC_MODEL = "ace_step_turbo_q8_0"
 ALIGN_MODEL = "qwen3_forced_aligner_0_6b_q8_0"
 TAG_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 # Shot lengths, in seconds. H3 makes up to 20 s; under ~2.5 s a shot is a
@@ -167,6 +168,27 @@ class AudioServer:
                               data={"model": ALIGN_MODEL, "text": text, "language": language})
         r.raise_for_status()
         return r.json().get("words") or []
+
+    def repaint(self, song: Path, work: Path, *, start: float, end: float, lyrics: str,
+                style: str, language: str, seed: int) -> Path:
+        """The song again with only `start`..`end` made anew -- a changed line
+        sung in place, the rest the original (ACE-Step's repaint route). The
+        model takes 48 kHz stereo."""
+        wav = media.to_wav(song, work / "source.wav", rate=48000, channels=2)
+        r = requests.post(f"{self.url}/v1/tasks/run", timeout=1800, json={
+            "model": MUSIC_MODEL, "task": "gen", "task_route": "repaint", "audio": str(wav),
+            "text": style or "song", "lyrics": lyrics, "language": language, "seed": seed,
+            "repaint_start": round(start, 3), "repaint_end": round(end, 3)})
+        r.raise_for_status()
+        # One track comes back whole, as `audio` (measured; a separation's
+        # stems come as `named_audio_outputs` instead).
+        data = r.json()
+        audio = data.get("audio") or next((o.get("audio") for o in data.get("named_audio_outputs") or []), None)
+        if not audio:
+            raise RuntimeError("the repaint returned no audio")
+        out = work / "repainted.wav"
+        out.write_bytes(base64.b64decode(audio))
+        return out
 
     def wait_idle(self, timeout: float = 60.0) -> None:
         """Until nothing is loaded on the card, so the next render has it

@@ -446,7 +446,8 @@
         html += (t && t.file ? '<audio controls preload="none" src="' + fileUrl(p.id, t.file) + '"></audio>' : '') + takesRow(a) +
           '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
           (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) +
-            '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>' : '') + '</div></div>';
+            '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>' +
+            (kind === 'song' ? '<button data-rs="' + a.id + '">✏️ ' + S.rs_button + '</button>' : '') : '') + '</div></div>';
       });
       html += '<div class="row"><button data-add-audio="song">＋ 🎤 ' + S.add_song + '</button><button data-add-audio="instrumental">＋ 🎹 ' + S.add_instrumental + '</button>' +
         '<button data-add-audio="voice">＋ 🗣️ ' + S.add_voice + '</button></div>';
@@ -595,6 +596,7 @@
         }
         if (d.lyrics) return lyricsDialog(d.lyrics, b);
         if (d.mv) return musicVideo(d.mv);
+        if (d.rs) return retouchSong(d.rs);
         if (d.cancelJob) {
           if (!confirm(S.cancel_confirm)) return;
           await api('jobs/' + d.cancelJob, { method: 'DELETE' });
@@ -803,6 +805,94 @@
         } catch (e) {
           toast(e.message, true); go.disabled = false; go.textContent = S.mv_go;
         } finally { busy--; }
+      };
+    }
+
+    // A new version of a song from the one shown. "A part": its lines, each
+    // with the time it is sung (the Studio listens first if it has not), and
+    // only the lines changed or ticked are made again -- the rest is the
+    // original. "All of it": the whole song again, held to the original.
+    function retouchSong(id) {
+      var p = current, a = itemById(id), t = chosen(a), dlg = $('#dlg'), lines = null, closed = false;
+      var words = (t && t.lyrics) || a.lyrics || '';
+      dlg.innerHTML = '<h2>✏️ ' + S.rs_title + '</h2>' +
+        '<label class="choice"><input type="radio" name="rs-mode" value="part" checked> ' + S.rs_mode_part + '</label>' +
+        '<label class="choice"><input type="radio" name="rs-mode" value="all"> ' + S.rs_mode_all + '</label>' +
+        '<div id="rs-part"><p class="note" id="rs-status">' + S.mv_listening + '</p><div id="rs-lines"></div><p class="muted" id="rs-range"></p></div>' +
+        '<div id="rs-all" hidden><label class="f">' + S.lyrics + '</label><textarea id="rs-lyrics" rows="8">' + esc(words) + '</textarea>' +
+        '<label class="f">' + S.rs_similar + ': <span id="rs-sv">80</span>%</label><input type="range" id="rs-s" min="50" max="95" value="80">' +
+        '<label class="row" style="font-size:.86rem;margin-top:8px"><input type="checkbox" id="rs-v" style="width:auto" checked> ' + S.rs_keep_voice + '</label></div>' +
+        '<label class="f">' + S.style + '</label><input id="rs-style" value="' + esc(a.style || '') + '">' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="rs-no">' + S.cancel + '</button><button class="primary" id="rs-go">' + S.rs_go + '</button></div>';
+      dlg.showModal();
+      dlg.addEventListener('close', function () { closed = true; }, { once: true });
+      function mode() { return dlg.querySelector('input[name="rs-mode"]:checked').value; }
+      dlg.querySelectorAll('input[name="rs-mode"]').forEach(function (r) {
+        r.onchange = function () { $('#rs-part').hidden = mode() !== 'part'; $('#rs-all').hidden = mode() !== 'all'; };
+      });
+      $('#rs-s').oninput = function () { $('#rs-sv').textContent = this.value; };
+      // Which seconds the marked lines cover, with a little air either side so
+      // the new words do not start mid-breath.
+      function range() {
+        var marked = (lines || []).filter(function (l, i) {
+          var box = $('#rs-l' + i); return box && (box.checked || $('#rs-t' + i).value.trim() !== l.text);
+        });
+        if (!marked.length) return null;
+        var dur = (t && t.seconds) || a.seconds || 60;
+        return { start: Math.max(0, Math.min.apply(null, marked.map(function (l) { return l.start; })) - 0.3),
+                 end: Math.min(dur, Math.max.apply(null, marked.map(function (l) { return l.end; })) + 0.3) };
+      }
+      function showRange() {
+        var r = range();
+        $('#rs-range').textContent = r ? fmt('rs_range', { a: clock(r.start), b: clock(r.end) }) : S.rs_pick;
+      }
+      async function listen() {
+        while (!closed) {
+          var r;
+          try { r = await api('projects/' + p.id + '/items/' + a.id + '/analyze', { method: 'POST', body: { take: t.id } }); }
+          catch (e) { r = { failed: e.message }; }
+          if (r.analysis) {
+            lines = (r.lines || []).filter(function (l) { return l.start != null; });
+            if (!lines.length) { $('#rs-status').textContent = fmt('rs_no_lines', { e: r.analysis.error || '' }); return; }
+            $('#rs-status').textContent = S.rs_pick;
+            $('#rs-lines').innerHTML = lines.map(function (l, i) {
+              return '<div class="row" style="margin:4px 0"><input type="checkbox" id="rs-l' + i + '" style="width:auto">' +
+                '<span class="muted" style="min-width:3.2em">' + clock(l.start) + '</span>' +
+                '<input class="grow" id="rs-t' + i + '" value="' + esc(l.text) + '" style="width:auto"></div>';
+            }).join('');
+            $('#rs-lines').addEventListener('input', showRange);
+            $('#rs-lines').addEventListener('change', showRange);
+            return showRange();
+          }
+          if (r.failed) { $('#rs-status').textContent = fmt('mv_listen_failed', { e: r.failed }); return; }
+          await new Promise(function (ok) { setTimeout(ok, 3000); });
+        }
+      }
+      listen();
+      $('#rs-no').onclick = function () { dlg.close(); };
+      $('#rs-go').onclick = async function () {
+        var body = { take: t.id, style: $('#rs-style').value };
+        if (mode() === 'part') {
+          var r = range();
+          if (!r) { toast(S.rs_pick, true); return; }
+          // The song's words with the changed lines put in, tags and all.
+          var i = 0, lyr = words.split('\n').map(function (raw) {
+            if (!raw.trim() || /^\s*\[.*\]\s*$/.test(raw) || !lines || i >= lines.length) return raw;
+            var now = $('#rs-t' + i).value.trim(); i++;
+            return now || raw;
+          }).join('\n');
+          Object.assign(body, { lyrics: lyr, start: r.start, end: r.end });
+        } else {
+          Object.assign(body, { lyrics: $('#rs-lyrics').value, strength: $('#rs-s').value / 100, keep_voice: $('#rs-v').checked });
+        }
+        try {
+          await flushSave();
+          var j = await api('projects/' + p.id + '/items/' + a.id + '/rework', { method: 'POST', body: body });
+          dlg.close();
+          var first = (j.queued || [])[0];
+          if (first) toast(fmt('queued_note', { n: Math.max(0, (first.position || 1) - 1), t: dur(first.starts_in || 0) }));
+          current = await api('projects/' + p.id); loadQueue(); drawTab();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
       };
     }
 

@@ -1,4 +1,5 @@
 # The Studio's own audio.cpp: music tools on the Studio's card, not a voice.
+# Separation, lyric alignment, and ACE-Step for repainting part of a song.
 #
 # Deployed as a unit of home-studio (deploy/manifest.yml), from this directory
 # so it builds the same image as audio-cpp's CUDA overlay. It serves two tasks
@@ -34,6 +35,9 @@ services:
       - AUDIOCPP_ASR_PACKAGES=none
       - AUDIOCPP_SEP_PACKAGES=mel_band_roformer_q8_0
       - AUDIOCPP_ALIGN_PACKAGES=qwen3_forced_aligner_0_6b_q8_0
+      # ACE-Step 1.5 turbo (~6 GB), for repainting a stretch of a song -- a
+      # changed line sung in place. WanGP's ACE-Step has no repaint route.
+      - AUDIOCPP_GEN_PACKAGES=ace_step_turbo_q8_0
       - AUDIOCPP_SERVER_ARGS=--host 0.0.0.0 --no-ui --idle-unload-ms 5000 --max-loaded-models 1
     volumes:
       # The same package cache as the house's voice instance: one copy of

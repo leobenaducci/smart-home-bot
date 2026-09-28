@@ -192,6 +192,8 @@ class Manager:
     def _run(self, job: dict) -> None:
         if job["kind"] == "analyze":
             return self._analyze(job)
+        if job["kind"] == "repaint":
+            return self._repaint(job)
         try:
             params = self._resolve(job)
             settings = recipes.settings_for(job["kind"], params)
@@ -296,6 +298,37 @@ class Manager:
             if self.audio and self.audio.url:
                 self.audio.wait_idle()
 
+    def _repaint(self, job: dict) -> None:
+        """Only a stretch of a song made again, on the audio unit's ACE-Step.
+
+        ACE-Step there is ~6 GB, so the video generator is let go first if it
+        is resident -- the next video job loads it again, which is the price of
+        sharing one card -- and the audio server unloads when it is done."""
+        self.store.update(job["id"], state="running", started=time.time(), progress=0.05, phase="loading_model")
+        work = self.scratch / job["id"]
+        try:
+            if not (self.audio and self.audio.url):
+                raise RuntimeError("the Studio's audio unit is not configured")
+            p = self._resolve(job)
+            if self.worker:
+                self.worker.stop()
+                self.worker = None
+            self.store.update(job["id"], progress=0.2, phase="inference")
+            made = self.audio.repaint(Path(p["source_file"]), work, start=float(p["start"]), end=float(p["end"]),
+                                      lyrics=str(p.get("lyrics") or ""), style=str(p.get("style") or ""),
+                                      language=str(p.get("language") or "es"), seed=int(time.time()) % 1_000_000)
+            files = self._file(job, [made])
+            self.store.update(job["id"], state="done", finished=time.time(), progress=1.0, phase="", files=files)
+            self._notify(job, ok=True)
+        except Exception as exc:                               # noqa: BLE001 -- reported on the job
+            log.exception("repaint %s failed", job["id"])
+            self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc)[:500])
+            self._notify(job, ok=False)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            if self.audio and self.audio.url:
+                self.audio.wait_idle()
+
     # -- before and after ---------------------------------------------------
     def _resolve(self, job: dict) -> dict:
         """The job's params with every reference turned into a file on disk,
@@ -322,6 +355,14 @@ class Manager:
             p["start_image"] = str(self.projects.file(owner, pid, p["start_upload"]))
         if p.get("voice_upload"):
             p["voice_file"] = str(self.projects.file(owner, pid, p["voice_upload"]))
+        if p.get("from_take"):
+            # The version a retouch starts from, read when it runs: deleted in
+            # the meantime is a clear failure, not a retouch of another one.
+            found = Projects.find(doc, job["target"])
+            src = next((t for t in (found[2].get("takes") or []) if t.get("id") == p["from_take"]), None) if found else None
+            if not src:
+                raise ProjectError("the version to retouch is gone")
+            p["source_file"] = str(base / src["file"])
         if job["kind"] == "edit":
             found = Projects.find(doc, job["target"])
             take = Projects.chosen_take(found[2]) if found else None
@@ -347,6 +388,12 @@ class Manager:
         take_dir = dest_root / "takes" / (job["target"] or job["id"])
         take_dir.mkdir(parents=True, exist_ok=True)
         rel_files, take = [], {"job": job["id"], "kind": job["kind"]}
+        # A song's version remembers the words it was sung with: a retouch can
+        # change them, and the version kept should not say otherwise.
+        if job["kind"] in ("song", "repaint") and job["params"].get("lyrics") is not None:
+            take["lyrics"] = str(job["params"]["lyrics"])[:4000]
+        if job["params"].get("from_take"):
+            take["from"] = job["params"]["from_take"]
         for i, src in enumerate(produced):
             dst = take_dir / f"{job['id']}-{i}{src.suffix.lower()}"
             shutil.move(str(src), dst)

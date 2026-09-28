@@ -295,7 +295,14 @@ def analyze_song(pid: str, item_id: str, body: dict | None = None, me: Who = Dep
     the page to wait on. Listening takes about a minute on the card."""
     _doc, item, take = _item_take(me, pid, item_id, str((body or {}).get("take") or ""))
     if (take.get("analysis") or {}).get("file"):
-        return {"take": take["id"], "analysis": take["analysis"]}
+        # With each sung line's time, for a retouch that redoes only a line.
+        lines = []
+        try:
+            an = json.loads(projects.file(me.login, pid, take["analysis"]["file"]).read_text())
+            lines = [{k: l.get(k) for k in ("text", "section", "start", "end")} for l in an.get("lines") or []]
+        except (ProjectError, OSError, ValueError):
+            pass
+        return {"take": take["id"], "analysis": take["analysis"], "lines": lines}
     for job in store.active():
         if job["owner"] == me.login and job["kind"] == "analyze" and job["target"] == item_id \
                 and job["params"].get("take") == take["id"]:
@@ -331,6 +338,46 @@ def music_video_cuts(pid: str, item_id: str, body: dict | None = None, me: Who =
             "aligned": an["aligned"], "error": an.get("error", ""),
             "sections": [{k: s[k] for k in ("name", "start", "end", "sung")} for s in an["sections"]],
             "cuts": analysis.plan_cuts(an, shot)}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/rework")
+def rework_song(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """A new version of a song made from one it already has.
+
+    With `start`/`end`: a **repaint** -- only those seconds are made again
+    (a changed line, a bar that went wrong) and the rest is the original,
+    on the audio unit's ACE-Step. Without: a **cover** of the whole song, held
+    to the original by `strength` and keeping its singer's timbre if
+    `keep_voice`. Either way the lyrics and style sent become the song's.
+    """
+    body = body or {}
+    doc, item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    if (item.get("kind") or "song") != "song":
+        _bad(ValueError("only a song can be retouched this way"))
+    lyrics = str(body.get("lyrics") if body.get("lyrics") is not None else item.get("lyrics") or "")[:4000]
+    style = str(body.get("style") if body.get("style") is not None else item.get("style") or "")[:400]
+    projects.save(me.login, pid, {"audio": [
+        {**a, "lyrics": lyrics, "style": style} if a["id"] == item_id else a for a in doc.get("audio") or []]})
+    params = {"lyrics": lyrics, "style": style, "from_take": take["id"],
+              "language": item.get("language") or (doc.get("settings") or {}).get("language") or "es",
+              "seconds": float(take.get("seconds") or item.get("seconds") or 60)}
+    if body.get("start") is not None and body.get("end") is not None:
+        try:
+            start, end = float(body["start"]), float(body["end"])
+        except (TypeError, ValueError) as exc:
+            _bad(exc)
+        if not 0 <= start < end <= params["seconds"] + 0.5:
+            _bad(ValueError("that stretch is not inside the song"))
+        job = _enqueue(me, "repaint", {**params, "start": round(start, 3), "end": round(end, 3)}, pid, item_id,
+                       title=item.get("title") or "")
+    else:
+        try:
+            strength = max(0.1, min(1.0, float(body.get("strength") or 0.8)))
+        except (TypeError, ValueError) as exc:
+            _bad(exc)
+        job = _enqueue(me, "song", {**params, "strength": strength, "keep_voice": bool(body.get("keep_voice")),
+                                    "bpm": item.get("bpm")}, pid, item_id, title=item.get("title") or "")
+    return {"queued": [_public(store.get(job["id"]) or job, me)]}
 
 
 @app.post("/api/projects/{pid}/items/{item_id}/favorite")

@@ -390,6 +390,38 @@ else:
           store2.get(ja["id"])["state"] == "done" and (projects.dir(JUANA, p["id"]) / got["analysis"]["file"]).is_file(),
           (store2.get(ja["id"]), got.get("analysis")))
     check("  without starting the generator for it", fake.seen[-1].get("model_type") != "audio.cpp")
+    print("\nretouching a song")
+    cover = recipes.settings_for("song", {"lyrics": "[Coro]\nla", "style": "rock", "seconds": 20,
+                                          "source_file": "/data/x.mp3", "strength": 0.85, "keep_voice": True})
+    check("  the whole song again is ACE-Step's cover of the version, held to it",
+          cover["audio_prompt_type"] == "AB" and cover["audio_guide"] == cover["audio_guide2"] == "/data/x.mp3"
+          and cover["audio_scale"] == 0.85, cover)
+    check("  and without keeping the voice, only the cover",
+          recipes.settings_for("song", {"lyrics": "x", "source_file": "/d/x.mp3"})["audio_prompt_type"] == "A")
+
+    class FakeRepaint(FakeAudio):
+        def repaint(self, song, work, *, start, end, lyrics, style, language, seed):
+            work.mkdir(parents=True, exist_ok=True)
+            out = work / "repainted.wav"
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(song), str(out)], check=True)
+            self.asked = {"start": start, "end": end, "lyrics": lyrics}
+            return out
+    mgr.audio = FakeRepaint()
+    before = len(Projects.find(projects.load(JUANA, p["id"]), sid)[2]["takes"])
+    jr = store2.add(owner=JUANA, owner_name="Juana", kind="repaint", model="audio.cpp",
+                    params={"from_take": real_take["id"], "start": 0.2, "end": 0.6, "lyrics": "[Coro]\nnueva línea",
+                            "style": "rock", "language": "es", "seconds": 1}, project=p["id"], target=sid)
+    mgr.wake()
+    deadline = time.time() + 120
+    while time.time() < deadline and store2.get(jr["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    after = Projects.find(projects.load(JUANA, p["id"]), sid)[2]["takes"]
+    new = after[-1] if len(after) > before else {}
+    check("  a repaint of a stretch lands as a new version, from the one asked for",
+          store2.get(jr["id"])["state"] == "done" and new.get("from") == real_take["id"]
+          and mgr.audio.asked["start"] == 0.2 and mgr.audio.asked["end"] == 0.6, (store2.get(jr["id"]), new))
+    check("  kept as MP3, remembering the words it was sung with",
+          new.get("file", "").endswith(".mp3") and new.get("lyrics") == "[Coro]\nnueva línea", new)
     check("  a shot cut to the music is made at least as long as its cut",
           recipes.h3_frames_at_least(7.9) / 24 >= 7.9 and recipes.h3_frames_at_least(7.9) - 17 < 7.9 * 24
           and recipes.settings_for("video_shot", {"prompt": "x", "seconds": 7.9, "exact": True})["video_length"]
@@ -479,6 +511,17 @@ check("  asking to listen queues one job, however often it is asked",
 check("  and the plan waits for it",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/cuts", json={"shot_seconds": 8},
              headers=h(JUANA, "Juana")).status_code == 409)
+r = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/rework",
+           json={"lyrics": "[Coro]\nle le", "start": 1, "end": 3}, headers=h(JUANA, "Juana")).json()
+check("  a stretch to redo queues a repaint", r["queued"][0]["kind"] == "repaint", r)
+r = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/rework",
+           json={"lyrics": "[Coro]\nlo lo", "strength": 0.7, "keep_voice": True}, headers=h(JUANA, "Juana")).json()
+check("  and no stretch, a cover of the whole song", r["queued"][0]["kind"] == "song", r)
+sng_now = next(a for a in c.get(f"/api/projects/{pj['id']}", headers=h(JUANA, "Juana")).json()["audio"] if a["id"] == sng["id"])
+check("  the lyrics sent become the song's", sng_now["lyrics"] == "[Coro]\nlo lo", sng_now.get("lyrics"))
+check("  a stretch outside the song is refused",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/rework", json={"start": 50, "end": 900},
+             headers=h(JUANA, "Juana")).status_code == 400)
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 

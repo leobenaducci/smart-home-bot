@@ -144,6 +144,24 @@ card has gone, never reaching the stage's end, because WanGP's own figure there
 is not a measure (it says 100% as the stage starts, and a song sat at 95% for
 five minutes looking stuck).
 
+## Changing a song
+
+✏️ on a song's version, two ways, each a new version (the one it came from is
+kept, and the new one remembers the words it was sung with):
+
+- **A part.** The song's lines, each at the time it is sung (the song is
+  listened to first if it has not been). The lines ticked or rewritten set the
+  stretch -- with 0.3 s of air either side -- and only that is made again,
+  with the new words: ACE-Step's *repaint* on the audio unit (audio.cpp;
+  WanGP's ACE-Step has no repaint route). Measured on a 20-second excerpt with
+  3.6 s repainted: every second outside the stretch identical to the original
+  (correlation 1.00), the stretch itself new (0.26-0.39), blending back at its
+  edges. ACE-Step there is ~6 GB, so the manager lets the video generator go
+  before a repaint; the next video job loads it again.
+- **All of it, close to this one.** ACE-Step's *cover* mode on WanGP: the whole
+  song again from the version, held to it by "how close" (Source Audio
+  Strength, 50-95%), keeping the singer's timbre too if asked.
+
 ## Deleting
 
 A version (a take) is deleted with its 🗑: the clip or picture and the frames

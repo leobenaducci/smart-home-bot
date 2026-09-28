@@ -22,10 +22,10 @@ VOICE_MODEL = "qwen3_tts_base"
 # `analyze` is a song listened to (studio/analysis.py): not WanGP's, run by the
 # manager itself on the Studio's audio.cpp -- in the same queue, so it never
 # shares the card with a render.
-KINDS = ("image", "song", "instrumental", "voice", "video_shot", "edit", "analyze")
+KINDS = ("image", "song", "instrumental", "voice", "video_shot", "edit", "analyze", "repaint")
 MODEL_OF = {"image": IMAGE_MODEL, "song": SONG_MODEL, "instrumental": INSTRUMENTAL_MODEL,
             "voice": VOICE_MODEL, "video_shot": VIDEO_MODEL, "edit": VIDEO_MODEL,
-            "analyze": "audio.cpp"}
+            "analyze": "audio.cpp", "repaint": "audio.cpp"}
 
 FPS = 24
 # H3 takes 17n + 5 frames: 124 is ~5 s, 481 (its largest window) ~20 s.
@@ -98,6 +98,16 @@ def settings_for(kind: str, p: dict) -> dict:
                "seed": seed, "custom_settings": {"language": str(p.get("language") or "es")}}
         if p.get("bpm"):
             out["custom_settings"]["bpm"] = int(p["bpm"])
+        # A retouch of a song already made: ACE-Step's cover mode, the whole
+        # song again held to the original by `strength` (WanGP's Source Audio
+        # Strength), and its singer's timbre kept too when asked. Not a repaint
+        # of one stretch -- that is the audio unit's (studio/analysis.py).
+        if p.get("source_file"):
+            keep_voice = bool(p.get("keep_voice"))
+            out.update(audio_prompt_type="AB" if keep_voice else "A", audio_guide=p["source_file"],
+                       audio_scale=max(0.1, min(1.0, float(p.get("strength") or 0.8))))
+            if keep_voice:
+                out["audio_guide2"] = p["source_file"]
         return out
     if kind == "instrumental":
         if not str(p.get("style") or "").strip():
@@ -152,6 +162,8 @@ def estimate_note(kind: str, p: dict) -> str:
         return "voz"
     if kind == "analyze":
         return "escuchar una canción"
+    if kind == "repaint":
+        return f"rehacer {max(1, round(float(p.get('end') or 0) - float(p.get('start') or 0)))} s de una canción"
     return "imagen"
 
 

@@ -21614,6 +21614,8 @@ STUDIO_UI_KEYS = (
     'delete_take', 'delete_take_confirm', 'delete_upload_confirm', 'remove_confirm',
     'mv_listening', 'mv_heard', 'mv_heard_nowords', 'mv_listen_failed', 'shot_cut',
     'favorite_set', 'favorite_clear',
+    'rs_button', 'rs_title', 'rs_mode_part', 'rs_mode_all', 'rs_pick', 'rs_range', 'rs_no_lines',
+    'rs_similar', 'rs_keep_voice', 'rs_go',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
