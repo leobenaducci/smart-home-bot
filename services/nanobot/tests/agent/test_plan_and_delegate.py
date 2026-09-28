@@ -192,6 +192,28 @@ async def test_long_work_goes_to_pi_when_the_household_asks(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_a_scheduled_message_is_written_now_whatever_its_label(tmp_path, monkeypatch):
+    # The morning greeting (2026-09-28): its instructions were labelled `long`,
+    # went to pi, and the person got pi's reasoning instead of a greeting. An
+    # inline turn is answered here, on the everyday runner, with no plan.
+    for label in ("long", "background"):
+        loop = _loop(tmp_path, label)
+        loop.subagents.harness.long_tasks = True
+        monkeypatch.setattr(loop.subagents, "_harness_endpoint", lambda powerful=False: object())
+        used = {}
+
+        async def run(spec, _used=used):
+            _used["runner"] = True
+            return AgentRunResult(final_content="Buenos días", messages=list(spec.initial_messages))
+        monkeypatch.setattr(loop.runner, "run", run)
+        reply, _t, _m, stop, _i = await loop._run_agent_loop(
+            _msgs(), session=Session(key=f"websocket:{CHAT}"), channel="websocket", chat_id=CHAT,
+            inline=True)
+        assert reply == "Buenos días" and stop != "delegated" and not loop.subagents.spawn.called, label
+        assert used.get("runner"), label
+
+
+@pytest.mark.asyncio
 async def test_long_work_stays_here_when_pi_cannot_take_it(tmp_path, monkeypatch):
     # On, but pi is not reachable (not installed, harness off, no endpoint):
     # the plan runs in the chat as before rather than failing in the background.
