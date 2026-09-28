@@ -18,6 +18,7 @@ A retake never deletes the take before it; a deleted project moves to
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 import threading
@@ -38,8 +39,9 @@ EDITABLE = {
     # `cast`: the characters in the shot, by id (studio/characters.py). The
     # chosen storyboard frame is not here: it has its own call (choose_board),
     # so a page holding an older copy cannot undo a frame just drawn.
+    # `description`, `chapters`: a recording's, written with the assistant.
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "cast"),
+              "exact", "start", "cast", "description", "chapters"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -225,6 +227,39 @@ class Projects:
             self._write(owner, pid, doc)
             return item
 
+    def interrupt_running(self) -> int:
+        """Mark what was running beside the queue as failed: a transcript, a
+        silence trim, a recording being encoded. Called at start-up -- that
+        work lived in the stopped process, and a state left "running" never
+        showed its button again. A recording's pieces are still on disk, so
+        encoding it can simply be asked for again."""
+        n = 0
+        for doc_path in sorted(self.root.glob("*/*/project.json")):
+            owner, pid = doc_path.parent.parent.name, doc_path.parent.name
+            if not LOGIN_RE.fullmatch(owner) or not ID_RE.fullmatch(pid):
+                continue
+            with self._lock(f"{owner}/{pid}"):
+                try:
+                    doc = self.load(owner, pid)
+                except ProjectError:
+                    continue
+                changed = False
+                for item in doc.get("shots") or []:
+                    if (item.get("trim") or {}).get("state") == "running":
+                        item["trim"] = {"state": "failed", "error": "interrupted"}
+                        changed = True
+                    if (item.get("recording") or {}).get("state") == "processing":
+                        item["recording"] = {"state": "failed", "error": "interrupted"}
+                        changed = True
+                    for take in item.get("takes") or []:
+                        if (take.get("transcript") or {}).get("state") == "running":
+                            take["transcript"] = {**take["transcript"], "state": "failed", "error": "interrupted"}
+                            changed = True
+                if changed:
+                    n += 1
+                    self._write(owner, pid, doc)
+        return n
+
     def set_item_field(self, owner: str, pid: str, item_id: str, key: str, value) -> None:
         """One server-side field of one item (a recording's state)."""
         with self._lock(f"{owner}/{pid}"):
@@ -403,6 +438,8 @@ class Projects:
             for key in ("file", "first", "last"):
                 self._unlink_inside(base, str(take.get(key) or ""))
             self._unlink_inside(base, str((take.get("analysis") or {}).get("file") or ""))
+            for key in ("file", "srt"):
+                self._unlink_inside(base, str((take.get("transcript") or {}).get(key) or ""))
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
             return item
@@ -564,6 +601,21 @@ def _clean(key: str, value: Any, item: dict) -> Any:
             return None
     if key == "kind":
         return value if value in AUDIO_KINDS else item.get("kind", "song")
+    if key == "chapters":
+        out = []
+        for c in (value or [])[:30]:
+            try:
+                at = float(c.get("start"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            # A finite time inside a day: `inf` stored here made every later
+            # GET of the project a 500 (JSON has no infinity).
+            if not math.isfinite(at):
+                continue
+            out.append({"start": max(0.0, min(86400.0, round(at, 2))), "title": str(c.get("title") or "")[:80]})
+        return sorted((c for c in out if c["title"]), key=lambda c: c["start"])
+    if key == "description":
+        return str(value or "")[:2000]
     if key == "cast":
         return [str(v) for v in (value or [])[:8] if ID_RE.fullmatch(str(v))]
     if key == "refs":

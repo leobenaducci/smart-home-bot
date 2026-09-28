@@ -572,6 +572,13 @@ check("  and when each should start", all(j["position"] and j["starts_in"] is no
 jid = q_tomi[0]["id"]
 check("  Tomi cannot cancel Juana's job", c.delete(f"/api/jobs/{jid}", headers=h(TOMI, "Tomi")).status_code == 404)
 check("  a parent can", c.delete(f"/api/jobs/{jid}", headers=h(MORA, "Mora", admin=True)).status_code == 200)
+c.post("/api/admin/pause", json={"reason": "update"}, headers=h(MORA, "Mora", admin=True))
+st_q = c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]
+check("  a pause says why: an update is not a parent's decision", st_q["paused"] and st_q["pause_reason"] == "update", st_q)
+c.post("/api/admin/pause", json={}, headers=h(MORA, "Mora", admin=True))
+check("  and a parent's pause has no reason to show",
+      c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]["pause_reason"] == "")
+c.post("/api/admin/resume", json={}, headers=h(MORA, "Mora", admin=True))
 check("  and a child cannot pause the card", c.post("/api/admin/pause", json={}, headers=h(JUANA, "Juana")).status_code == 403)
 check("  Juana cannot open Tomi's projects",
       c.get(f"/api/projects/{pj['id']}", headers=h(TOMI, "Tomi")).status_code == 404)
@@ -794,6 +801,107 @@ check("  finished, the pieces are one clip, kept as H.265 with its sound and len
       clipd["recording"]["state"] == "done" and kept.is_file() and media.probe(kept)["codec"] == "hevc"
       and media.probe(kept)["has_audio"] and 2.8 < clipd["seconds"] < 3.2, (clipd, kept))
 check("  and the pieces are gone", not (A.projects.dir(JUANA, rp["id"]) / "recordings" / rec["id"]).exists())
+print("\n  a recording's transcript, subtitles and silences")
+check("  subtitles in SubRip form", media.srt([{"start": 1.5, "end": 3.25, "text": " Hola "}, {"start": 3.5, "end": 4, "text": ""}])
+      == "1\n00:00:01,500 --> 00:00:03,250\nHola\n", media.srt([{"start": 1.5, "end": 3.25, "text": " Hola "}]))
+
+
+class _Heard:
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"segments": [{"start": 0.2, "end": 1.4, "text": " Hola, esto es una prueba."},
+                             {"start": 1.6, "end": 2.8, "text": "Y esto también."}]}
+
+
+heard = []
+A.WHISPER_URL = "http://whisper.invalid/transcribe"
+_post = A.requests.post
+A.requests.post = lambda url, **kw: heard.append((url, kw.get("data"))) or _Heard()
+A.TRANSCRIBE_PIECE_S = 1.0   # the 3-second recording goes as three pieces
+try:
+    c.post(f"/api/projects/{rp['id']}/items/{rec['id']}/transcribe", json={}, headers=h(JUANA, "Juana"))
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        tk = Projects.chosen_take(next(x for x in c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+                                       if x["id"] == rec["id"]))
+        if (tk.get("transcript") or {}).get("state") != "running":
+            break
+        time.sleep(0.3)
+finally:
+    A.requests.post = _post
+tr = tk.get("transcript") or {}
+check("  the recording's speech goes to the recogniser, in the project's language",
+      heard and heard[0][0] == A.WHISPER_URL and heard[0][1]["language"] == "es", heard)
+check("  a recording goes to the recogniser a piece at a time", len(heard) == 3, len(heard))
+check("  each piece's times moved to where it sits in the recording",
+      tr.get("state") == "done" and "00:00:02,200 --> 00:00:03,400" in (A.projects.dir(JUANA, rp["id"]) / tr["srt"]).read_text(), tr)
+check("  and comes back as a transcript and subtitles on the version",
+      tr.get("state") == "done" and "Hola, esto es una prueba." in tr.get("text", "")
+      and "00:00:00,200 --> 00:00:01,400" in (A.projects.dir(JUANA, rp["id"]) / tr["srt"]).read_text(), tr)
+c.post(f"/api/projects/{rp['id']}/render", json={"subtitles": True}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 180
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.5)
+check("  a film can burn them in", st["render"]["state"] == "done", st.get("render"))
+talk = tmp / "talk.mp4"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
+                "-i", "aevalsrc='if(lt(t,2)+gt(t,5),sin(2*PI*300*t),0)':s=48000:d=7", "-t", "7", "-shortest",
+                "-pix_fmt", "yuv420p", str(talk)], check=True)
+trimmed, removed = media.cut_silences(talk, tmp / "talk-trim.mp4")
+check("  a long silence is cut, keeping a little air either side",
+      2.2 < removed < 2.6 and 4.4 < media.probe(trimmed)["seconds"] < 4.8, (removed, media.probe(trimmed)["seconds"]))
+try:
+    media.cut_silences(trimmed, tmp / "again.mp4", min_s=2.0)
+    check("  and a clip with none left says so", False)
+except media.MediaError:
+    check("  and a clip with none left says so", True)
+c.post(f"/api/projects/{rp['id']}/items/{rec['id']}/trim", json={}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 60
+while time.time() < deadline:
+    tr_state = next(x for x in c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+                    if x["id"] == rec["id"]).get("trim") or {}
+    if tr_state.get("state") != "running":
+        break
+    time.sleep(0.3)
+check("  trimming a clip with no long silence says so, and keeps the clip",
+      tr_state.get("state") == "failed" and "no silence" in tr_state.get("error", ""), tr_state)
+rdoc = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()
+c.put(f"/api/projects/{rp['id']}", json={"shots": [dict(x, description="Paso a paso.",
+                                                        chapters=[{"start": 95, "title": "Aflojar"}, {"start": "x", "title": "?"},
+                                                                  {"start": 0, "title": "Intro"}, {"start": 30, "title": ""}])
+                                                   for x in rdoc["shots"]]}, headers=h(JUANA, "Juana"))
+kept_ch = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"][0]
+check("  a recording keeps its description and chapters, in order, the unreadable ones dropped",
+      kept_ch["description"] == "Paso a paso." and kept_ch["chapters"] == [{"start": 0.0, "title": "Intro"}, {"start": 95.0, "title": "Aflojar"}],
+      kept_ch.get("chapters"))
+check("  subtitles and trimming are for recordings",
+      c.post(f"/api/projects/{sbp['id']}/items/{sdoc['shots'][0]['id']}/transcribe", json={}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/{sdoc['shots'][0]['id']}/trim", json={}, headers=h(JUANA, "Juana")).status_code == 400)
+# Sent as a request would be crafted by hand: a literal 1e999 in the JSON,
+# which Python reads as infinity (the page's own parser cannot send it).
+import json as _json
+raw_body = _json.dumps({"shots": [dict(x, chapters=[{"start": "__INF__", "title": "nunca"}, {"start": 5, "title": "ok"}])
+                                  for x in c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"]]})
+c.put(f"/api/projects/{rp['id']}", content=raw_body.replace('"__INF__"', "1e999"),
+      headers={**h(JUANA, "Juana"), "Content-Type": "application/json"})
+gi = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana"))
+check("  a chapter time that is not a real one is dropped, and the project still opens",
+      gi.status_code == 200 and gi.json()["shots"][0]["chapters"] == [{"start": 5.0, "title": "ok"}], gi.status_code)
+A.projects.set_item_field(JUANA, rp["id"], rec["id"], "trim", {"state": "running"})
+A.projects.set_take_field(JUANA, rp["id"], rec["id"], Projects.chosen_take(clipd)["id"], "transcript",
+                          {**tr, "state": "running"})
+check("  work cut off by a restart is marked interrupted, not left running", A.projects.interrupt_running() >= 1)
+after = next(x for x in c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == rec["id"])
+check("  so the page offers it again",
+      after["trim"]["state"] == "failed" and Projects.chosen_take(after)["transcript"]["state"] == "failed", after.get("trim"))
+srt_left = A.projects.dir(JUANA, rp["id"]) / tr["srt"]
+A.projects.delete_take(JUANA, rp["id"], rec["id"], Projects.chosen_take(after)["id"])
+check("  deleting a version takes its transcript with it", not srt_left.exists())
 empty = c.post(f"/api/projects/{rp['id']}/recordings", json={}, headers=h(JUANA, "Juana")).json()
 check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)

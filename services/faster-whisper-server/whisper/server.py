@@ -28,13 +28,16 @@ async def health():
 
 
 @app.post("/transcribe")
-async def transcribe(
+def transcribe(
     file: UploadFile = File(...),
     initial_prompt: str = Form(default=""),
     language: str = Form(default=""),
 ):
+    # A plain def, so FastAPI runs it in its thread pool: as `async def` the
+    # model ran on the event loop and froze every other request -- /health
+    # included -- for as long as a transcription took.
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        tmp.write(await file.read())
+        tmp.write(file.file.read())
         tmp_path = tmp.name
 
     segments, info = model.transcribe(

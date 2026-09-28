@@ -163,7 +163,10 @@
     var ME = {{ user|tojson }};
     var CSRF = document.querySelector('meta[name=csrf-token]').content;
     var $ = function (sel, root) { return (root || document).querySelector(sel); };
-    function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    // Quotes too: this goes inside value="..." and title="..." all over the
+    // page, and a title with a quote in it was cut at the quote.
+    function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s);
+      return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
     function fmt(key, vars) { return (S[key] || key).replace(/\{(\w+)\}/g, function (_, k) { return vars[k]; }); }
     function dur(s) {
       s = Math.max(0, Math.round(s || 0));
@@ -230,7 +233,14 @@
       try { queueState = await api('queue'); } catch (e) { $('#gpu-text').textContent = S.unreachable; return; }
       var q = queueState, run = q.running, g = $('#gpu');
       g.classList.toggle('busy', !!run); g.classList.toggle('paused', !!q.status.paused);
-      $('#gpu-text').textContent = q.status.paused ? S.card_paused : run
+      // Paused means the next job waits, not that the one on the card stops:
+      // say both when both are true, and why, so a shot still moving does
+      // not sit under a word that says it is not.
+      var why = q.status.pause_reason === 'update' ? S.card_paused_update : S.card_paused;
+      $('#gpu-text').textContent = q.status.paused && run
+        ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) }) +
+          ' · ' + fmt('card_paused_after', { why: why })
+        : q.status.paused ? why : run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) })
         : S.card_free;
       $('#gpu .bar i').style.width = run ? Math.round(run.progress * 100) + '%' : '0';
@@ -461,6 +471,73 @@
         return '<button data-cast-toggle="' + s.id + '" data-ch="' + c.id + '" class="' + (on ? 'on' : '') + '">' + esc(c.name) + '</button>';
       }).join('') + '</div>';
     }
+    // What can be done with a recorded clip: its subtitles (the house's
+    // speech recogniser) and taking its long silences out (a new version).
+    function recordingTools(s, t, p, i) {
+      var tr = t.transcript || {}, trim = s.trim || {}, html = '';
+      if (tr.state === 'running') html += '<span class="pill run">' + S.rec_subs_running + '</span>';
+      else if (tr.state === 'done') html += dlLink(p.id, tr.srt, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))).replace('⬇ ' + S.download, '⬇ .srt');
+      else html += '<button data-transcribe="' + s.id + '">' + S.rec_subs + '</button>' +
+                   (tr.state === 'failed' ? '<span class="muted">' + S.rec_subs_failed + '</span>' : '');
+      if (tr.state === 'done') html += '<button data-describe="' + s.id + '">' + S.rec_describe + '</button>';
+      if (trim.state === 'running') html += '<span class="pill run">' + S.rec_trim_running + '</span>';
+      else html += '<button data-trim="' + s.id + '">' + S.rec_trim + '</button>' +
+        (trim.state === 'done' ? '<span class="muted">' + fmt('rec_trim_done', { s: Math.round(trim.removed || 0) }) + '</span>' :
+         trim.state === 'failed' ? '<span class="muted">' + fmt('rec_trim_failed', { e: esc(trim.error || '') }) + '</span>' : '');
+      return html;
+    }
+    function transcriptView(t, s) {
+      var tr = t.transcript || {}, html = '';
+      if (s && (s.description || (s.chapters || []).length)) {
+        html += '<div style="margin-top:8px">' + (s.description ? '<p style="font-size:.9rem">' + esc(s.description) + '</p>' : '') +
+          ((s.chapters || []).length ? '<ul style="margin:6px 0 0 18px;font-size:.86rem">' + s.chapters.map(function (c) {
+            return '<li><span class="muted">' + chapterClock(c.start) + '</span> ' + esc(c.title) + '</li>'; }).join('') + '</ul>' : '') + '</div>';
+      }
+      return html + (tr.state === 'done' && tr.text ? '<details style="margin-top:6px"><summary class="muted">' + S.rec_transcript + '</summary>' +
+        '<p style="margin-top:6px;font-size:.88rem">' + esc(tr.text) + '</p></details>' : '');
+    }
+    // "1:23" and "1:02:03": the form video sites read chapters in.
+    function chapterClock(sec) {
+      sec = Math.max(0, Math.floor(sec || 0));
+      var h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = ('0' + sec % 60).slice(-2);
+      return h ? h + ':' + ('0' + m).slice(-2) + ':' + x : m + ':' + x;
+    }
+    function chaptersText(s) {
+      return (s.description ? s.description + '\n\n' : '') + (s.chapters || []).map(function (c) {
+        return chapterClock(c.start) + ' ' + c.title; }).join('\n');
+    }
+    // A recording's title, description and chapters, written by Alfred from
+    // its timed transcript and edited here before they are kept.
+    async function describeClip(id, btn) {
+      var p = current, s = itemById(id), t = chosen(s), tr = (t || {}).transcript || {};
+      btn.disabled = true; btn.textContent = S.rec_describing;
+      try {
+        var segs = await (await fetch(fileUrl(p.id, tr.file))).json();
+        var r = await api('describe', { method: 'POST', body: { segments: segs, language: p.settings.language || 'es', take: t.id } });
+        var dlg = $('#dlg');
+        dlg.innerHTML = '<h2>' + S.rec_describe + '</h2>' +
+          '<label class="f">' + S.rec_desc_title + '</label><input id="ds-t" value="' + esc(r.title) + '">' +
+          '<label class="f">' + S.rec_desc_description + '</label><textarea id="ds-d" rows="4">' + esc(r.description) + '</textarea>' +
+          '<label class="f">' + S.rec_desc_chapters + '</label><textarea id="ds-c" rows="8">' +
+          esc(r.chapters.map(function (c) { return chapterClock(c.start) + ' ' + c.title; }).join('\n')) + '</textarea>' +
+          '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ds-no">' + S.cancel + '</button><button class="primary" id="ds-go">' + S.ch_save + '</button></div>';
+        dlg.showModal();
+        $('#ds-no').onclick = function () { dlg.close(); };
+        $('#ds-go').onclick = async function () {
+          // Each chapter line is "m:ss Title" or "h:mm:ss Title", as shown.
+          var chapters = $('#ds-c').value.split('\n').map(function (line) {
+            var m = line.trim().match(/^(\d+(?::\d{1,2}){1,2})\s+(.+)$/);
+            if (!m) return null;
+            var sec = m[1].split(':').reduce(function (acc, x) { return acc * 60 + Number(x); }, 0);
+            return { start: sec, title: m[2] };
+          }).filter(Boolean);
+          var it = itemById(id);
+          it.title = $('#ds-t').value.trim() || it.title; it.description = $('#ds-d').value.trim(); it.chapters = chapters;
+          await saveNow(); dlg.close(); drawTab();
+        };
+      } catch (e) { toast(e.message || S.rec_desc_failed, true); }
+      finally { btn.disabled = false; btn.textContent = S.rec_describe; }
+    }
     function chosen(item) {
       var t = item.takes || [], i = item.chosen;
       return (i >= 0 && i < t.length) ? t[i] : t[t.length - 1];
@@ -531,10 +608,15 @@
           html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>🔴 ' + esc(s.title || (S.shot + ' ' + (i + 1))) + '</b>' +
             (rs === 'processing' ? '<span class="pill run">' + S.rec_processing + '</span>' : rs === 'failed' ? '<span class="pill">' + S.rec_failed + '</span>' :
              rs === 'recording' ? '<span class="pill run">● ' + S.rec_title + '</span>' : '<span class="muted">' + clock(s.seconds || 0) + '</span>') +
+            (rs === 'failed' ? '<button data-rec-retry="' + s.id + '">' + S.rec_retry + '</button>' : '') +
             '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
             '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
             (t && t.file ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>' +
-              '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) + '</div>' : '') +
+              takesRow(s) +
+              '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) +
+              recordingTools(s, t, p, i) +
+              (s.description || (s.chapters || []).length ? '<button data-copy-chapters="' + s.id + '">' + S.rec_desc_copy + '</button>' : '') +
+              '</div>' + transcriptView(t, s) : '') +
             '</div>';
           return;
         }
@@ -795,6 +877,21 @@
         }
         if (b.id === 'preview') return previewPlayer();
         if (b.id === 'rec') return recorder();
+        if (d.describe) return describeClip(d.describe, b);
+        if (d.recRetry) {
+          await api('projects/' + p.id + '/recordings/' + d.recRetry + '/finish', { method: 'POST' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.copyChapters) {
+          try { await navigator.clipboard.writeText(chaptersText(itemById(d.copyChapters))); toast(S.rec_desc_copied); }
+          catch (e) { toast(fmt('err', { e: e.message }), true); }
+          return;
+        }
+        if (d.transcribe || d.trim) {
+          await api('projects/' + p.id + '/items/' + (d.transcribe || d.trim) + '/' + (d.transcribe ? 'transcribe' : 'trim'),
+                    { method: 'POST', body: {} });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
         if (b.id === 'ch-new') return characterDialog(null);
         if (d.chEdit) return characterDialog(cast.find(function (c) { return c.id === d.chEdit; }));
         if (d.chPortrait) {
@@ -1338,6 +1435,8 @@
       var soundtrack = (p.settings || {}).soundtrack || '';
       dlg.innerHTML = '<h2>' + S.render + '</h2>' +
         '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-x" style="width:auto"> ' + S.render_crossfade + '</label>' +
+        ((p.shots || []).some(function (s) { return ((chosen(s) || {}).transcript || {}).state === 'done'; })
+          ? '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-subs" style="width:auto" checked> ' + S.render_subs + '</label>' : '') +
         (audio.length ? '<label class="f">' + S.render_music + '</label><select id="rd-a"><option value="">' + S.none + '</option>' +
           audio.map(function (a) { return '<option value="' + a.id + '"' + (a.id === soundtrack ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' +
           '<div class="row"><div class="grow"><label class="f">' + S.render_volume + '</label><input type="range" id="rd-v" min="0" max="150" value="' + (soundtrack ? 100 : 80) + '"></div>' +
@@ -1352,6 +1451,7 @@
         try {
           var mute = $('#rd-m');
           await api('projects/' + p.id + '/render', { method: 'POST', body: { crossfade: $('#rd-x').checked ? 0.5 : 0, tracks: tracks,
+                                                                              subtitles: !!($('#rd-subs') && $('#rd-subs').checked),
                                                                               own_sound: !(mute && mute.checked && tracks.length) } });
           dlg.close(); current = await api('projects/' + p.id); drawTab(); watchRender();
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
@@ -1372,7 +1472,12 @@
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
       var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),
-        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length + ':' + (i.boards || []).length; }); })]);
+        // Work done beside the queue (a transcript, a trim, a recording being
+        // encoded) has no job to watch, so its state is part of what is
+        // compared -- the tab redraws when it finishes, under the same guards.
+        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) {
+          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.recording || {}).state,
+                  ((chosen(i) || {}).transcript || {}).state].join(':'); }); })]);
       if (sig !== lastSig) {
         lastSig = sig;
         // Never redraw under somebody's cursor: the new takes wait for the

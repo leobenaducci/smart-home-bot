@@ -35,6 +35,7 @@ from nanobot.utils.profiling import PROFILER
 from nanobot.utils.profile_panel import PANEL_HTML as _PROFILE_PANEL_HTML
 from nanobot.utils.shell_log import get_execs, clear_execs
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
+from nanobot.utils import standing_context
 
 __all__ = (
     "MAX_FILE_SIZE",
@@ -1024,7 +1025,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                         )
                         try:
                             await agent_loop.subagents.spawn(
-                                task=text,
+                                task=standing_context.for_prompt(text),
                                 # What was being talked about. Without it the
                                 # subagent gets the question and nothing else,
                                 # and a question that refers to the thing on
@@ -1124,7 +1125,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                 )
                 try:
                     await agent_loop.subagents.spawn(
-                        task=text,
+                        task=standing_context.for_prompt(text),
                         context=_escalation_context(agent_loop, session_key),
                         complex=powerful,       # see the timeout branch above
                         origin_channel=_channel,

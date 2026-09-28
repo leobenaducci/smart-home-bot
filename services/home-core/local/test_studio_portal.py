@@ -119,15 +119,21 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "preview_download", "preview_rendering",
             "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "mv_steps", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
             "tab_cast", "ch_none", "ch_new", "ch_edit", "ch_name", "ch_look", "ch_look_ph", "ch_personality", "ch_personality_ph", "ch_voice", "ch_voice_text", "ch_record", "ch_stop", "ch_pictures", "ch_save", "ch_portrait", "ch_speak", "ch_speak_what", "ch_speak_ph", "ch_widen_person", "ch_widen_family", "ch_scope_project", "ch_scope_person", "ch_scope_family", "ch_widen_confirm", "ch_delete_confirm", "ch_in_shot",
-            "rec_title", "rec_screen", "rec_cam", "rec_mic", "rec_start", "rec_pause", "rec_resume", "rec_stop", "rec_uploading", "rec_saved", "rec_processing", "rec_failed", "rec_no_screen", "rec_need_source", "rec_default_title", "rec_denied", "delete_render_confirm"):
+            "rec_title", "rec_screen", "rec_cam", "rec_mic", "rec_start", "rec_pause", "rec_resume", "rec_stop", "rec_uploading", "rec_saved", "rec_processing", "rec_failed", "rec_no_screen", "rec_need_source", "rec_default_title", "rec_denied", "delete_render_confirm",
+            "rec_subs", "rec_subs_running", "rec_subs_failed", "rec_transcript", "rec_trim", "rec_trim_running", "rec_trim_done", "rec_trim_failed", "render_subs",
+            "rec_describe", "rec_describing", "rec_desc_title", "rec_desc_description", "rec_desc_chapters", "rec_desc_copy", "rec_desc_copied", "rec_desc_failed", "card_paused_update", "card_paused_after", "rec_retry"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
 
 print("\na music video is planned by Alfred, shot by shot")
 plans = []
 
 
+chats = []
+
+
 def _planner(username, chat_id, text, timeout, profile=None):
     asked.append(text)
+    chats.append(chat_id)
     return plans.pop(0) if plans else ""
 
 
@@ -180,6 +186,26 @@ asked.clear()
 plans[:] = ["no json here", "still none"]
 r = client.post("/studio/api/music-video", headers=HOME, json={"shots": 2, "seconds": 16})
 check("and a second miss is an error, not a half-made video", r.status_code == 502 and len(asked) == 2, r.status_code)
+
+print("\na recording's title, description and chapters, from its transcript")
+asked.clear()
+plans[:] = ['{"title": "Cómo cambiar una rueda", "description": "Paso a paso.", '
+            '"chapters": [{"start": 95, "title": "Aflojar"}, {"start": 3, "title": "Intro"}]}']
+r = client.post("/studio/api/describe", headers=HOME, json={"language": "es", "take": "abc123def456", "segments": [
+    {"start": 0.5, "end": 4, "text": "Hoy vamos a cambiar una rueda"}, {"start": 95, "end": 99, "text": "Primero aflojamos"}]})
+out = r.get_json() or {}
+check("each recording version is its own conversation",
+      chats and chats[-1].endswith(":stu-describe-abc123def456"), chats[-1:])
+check("Alfred reads the transcript with its times", "[1:35] Primero aflojamos" in (asked[0] if asked else ""), (asked or [""])[0][:300])
+check("and the chapters come back in order, the first at 0:00",
+      r.status_code == 200 and [c["start"] for c in out.get("chapters", [])] == [0.0, 95.0], out)
+asked.clear()
+plans[:] = ["no json", ""]
+check("a reply without one is an error", client.post("/studio/api/describe", headers=HOME,
+      json={"segments": [{"start": 0, "text": "x"}]}).status_code == 502)
+asked.clear()
+check("and nothing to read is refused before asking",
+      client.post("/studio/api/describe", headers=HOME, json={"segments": []}).status_code == 400 and not asked)
 
 print("\na file asked for as a download comes back as an attachment")
 A.STUDIO_URL, A.STUDIO_SECRET = "http://studio.invalid", "s" * 32

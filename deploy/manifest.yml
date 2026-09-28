@@ -1476,6 +1476,10 @@ services:
           # Where "done" goes: the portal tells the person on their phone.
           STUDIO_NOTIFY_URL: "https://{dns.portal}:{services.home-core.port}/studio/api/notify"
           STUDIO_AUDIO_URL: "http://audio-cpp-studio:8080"
+          # The house's speech recogniser, for a recording's transcript and
+          # subtitles: speech is what it is tuned for (not singing -- lyrics
+          # are aligned by the audio unit instead).
+          WHISPER_URL: "http://{dns.whisper}:{services.faster-whisper.port}/transcribe"
         state:
           # Projects, the queue, takes and renders: the household's own work.
           - { path: "{paths.state}/home-studio/data", mount: /data, env: STUDIO_DATA_DIR }

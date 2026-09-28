@@ -150,6 +150,22 @@ on it unchanged. Screen recording is a computer's browser only; in the
 Android app the camera also needs the app to grant it (it grants only the
 microphone today).
 
+What a recording gets afterwards, each on the CPU pool beside the card:
+**subtitles** -- its speech sent to the house's speech recogniser (faster-whisper,
+on its own card; tuned for speech, which is why lyrics go to the aligner
+instead), kept on the version as a transcript and SubRip `.srt`, downloadable
+and burnt into a film when asked (libass, DejaVu Sans) -- and **taking out its
+long silences**: stretches below -35 dB for over 1.2 s are cut, leaving 0.3 s
+either side so no word is clipped, as a new version with the original kept.
+A trimmed version needs its own subtitles; the transcript belongs to the
+version it was made from.
+
+With a transcript, ✨ asks the person's assistant for a title, a short
+description and chapters -- where the talk changes subject, at the times the
+transcript gives, the first at 0:00 (`/studio/api/describe`). They are edited
+before they are kept on the clip, and copied as one text in the "0:00 Title"
+form video sites read chapters from.
+
 ## A music video from a song
 
 The 🎬 button on a song, voice or instrumental that has a take. The Studio

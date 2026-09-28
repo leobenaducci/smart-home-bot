@@ -114,6 +114,9 @@ class Manager:
         # to its owner while the card works, removed when it finishes.
         self.previews: dict[str, Path] = {}
         self.paused = False
+        # Why the card is paused, for the page to say: "update" when the
+        # deployer holds it to restart the studio, "" when a parent did.
+        self.pause_reason = ""
         self._cancelling: set[str] = set()
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -151,7 +154,7 @@ class Manager:
     def status(self) -> dict:
         return {"worker": bool(self.worker and self.worker.alive()),
                 "model": self.worker.model if self.worker else "",
-                "paused": self.paused}
+                "paused": self.paused, "pause_reason": self.pause_reason if self.paused else ""}
 
     # -- the loop -----------------------------------------------------------
     def _loop(self) -> None:

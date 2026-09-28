@@ -1652,6 +1652,30 @@ def _standing(block):
     return f'{STANDING_OPEN}\n{block}\n{STANDING_CLOSE}'
 
 
+# This turn's context: what goes beside the person's words on this message
+# only -- where they are, what was sent to them in the background since they
+# last wrote, the message they reply to. nanobot shows it to the model and
+# keeps it in history like any text; its router leaves it out, because it is
+# not what the person asked. Counted in, a two-line reminder with the day's
+# location alerts read as "a long message" and went to a background sub-agent
+# (2026-09-28). Same literals as `TURN_OPEN`/`TURN_CLOSE` in nanobot.
+TURN_OPEN = '[[[turn-context]]]'
+TURN_CLOSE = '[[[/turn-context]]]'
+_TURN_MARKER_LINE_RE = re.compile(
+    r'^[ \t]*(?:%s|%s)[ \t]*\n?' % (re.escape(TURN_OPEN), re.escape(TURN_CLOSE)), re.MULTILINE)
+_TURN_MARKER_RE = re.compile(r'(?:%s|%s)' % (re.escape(TURN_OPEN), re.escape(TURN_CLOSE)))
+
+
+def _turn_context(block):
+    return f'{TURN_OPEN}\n{block}\n{TURN_CLOSE}'
+
+
+def _strip_turn_markers(text):
+    """The person's own text without our turn markers: typed in, they would
+    take part of what they wrote out of what decides how it is handled."""
+    return _TURN_MARKER_RE.sub('', _TURN_MARKER_LINE_RE.sub('', text or ''))
+
+
 def _strip_standing_markers(text):
     """Remove every marker from *text*, keeping what surrounds it.
 
@@ -6146,20 +6170,21 @@ def _compose_turn_content(username, content, images, docs, space, seed=None,
     is what was said before this thread existed": the branch's second turn
     would have forgotten it.
     """
+    content = _strip_turn_markers(content)
     loc_line = _location_context_line(username)
-    text = f"{loc_line}\n{content}" if loc_line else content
+    text = f"{_turn_context(loc_line)}\n{content}" if loc_line else content
     # Directly above the question, because that is what it is about. Somebody
     # who swipes a message and writes "and the other one?" has said something
     # with no referent otherwise -- Alfred gets the words and not the thing they
     # point at, and answers the wrong message or asks which one they meant.
     reply_block = _reply_block(reply_to)
     if reply_block:
-        text = f'{reply_block}\n\n{text}' if text else reply_block
+        text = f'{_turn_context(reply_block)}\n\n{text}' if text else _turn_context(reply_block)
     # Above that, what Alfred sent from the background since they last wrote:
     # a reminder is what "No puedo" is about.
     events_block = '' if seed else _event_context_block(username, content, space)
     if events_block:
-        text = f'{events_block}\n\n{text}' if text else events_block
+        text = f'{_turn_context(events_block)}\n\n{text}' if text else _turn_context(events_block)
     # Attachments first, the person's question last: what they actually asked
     # should sit next to the answer, not sixty thousand characters above it.
     doc_block = _documents_block(docs)
@@ -21633,10 +21658,14 @@ STUDIO_UI_KEYS = (
     'rec_processing', 'rec_failed', 'rec_no_screen', 'rec_need_source', 'rec_default_title',
     'rec_denied',
     'delete_render_confirm',
+    'rec_subs', 'rec_subs_running', 'rec_subs_failed', 'rec_transcript', 'rec_trim',
+    'rec_trim_running', 'rec_trim_done', 'rec_trim_failed', 'render_subs',
+    'rec_describe', 'rec_describing', 'rec_desc_title', 'rec_desc_description', 'rec_desc_chapters',
+    'rec_desc_copy', 'rec_desc_copied', 'rec_desc_failed',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
-    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_after', 'rec_retry',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
@@ -21863,6 +21892,73 @@ def studio_music_video():
     if shots is None:
         return jsonify(error=t('studio.mv_failed')), 502
     return jsonify(shots=shots)
+
+
+def _studio_parse_description(text):
+    """{title, description, chapters} from whatever Alfred answered: the first
+    JSON object in it, chapters sorted and starting at 0:00."""
+    if not text:
+        return None
+    start, end = text.find('{'), text.rfind('}')
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    if not isinstance(raw, dict) or not str(raw.get('title') or '').strip():
+        return None
+    chapters = []
+    for c in raw.get('chapters') or []:
+        try:
+            chapters.append({'start': max(0.0, float(c.get('start'))), 'title': str(c.get('title') or '').strip()[:80]})
+        except (TypeError, ValueError, AttributeError):
+            continue
+    chapters = sorted((c for c in chapters if c['title']), key=lambda c: c['start'])[:30]
+    if chapters:
+        chapters[0]['start'] = 0.0
+    return {'title': str(raw['title']).strip()[:100], 'description': str(raw.get('description') or '').strip()[:2000],
+            'chapters': chapters}
+
+
+@app.route('/studio/api/describe', methods=['POST'])
+@api_login_required
+def studio_describe():
+    """A recording's title, description and chapters, written by the person's
+    own assistant from its timed transcript: chapters start where the talk
+    changes subject, at the times the transcript gives."""
+    if not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    lines = []
+    for s in (d.get('segments') or [])[:2000]:
+        try:
+            at = float(s.get('start'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        lines.append(f"[{int(at // 60)}:{int(at % 60):02d}] {str(s.get('text') or '').strip()[:400]}")
+    if not lines:
+        return jsonify(error=t('studio.rec_desc_failed')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(str(d.get('language') or 'es'), 'Spanish')
+    transcript = "\n".join(lines)[:60000]
+    prompt = (
+        f"Here is the transcript of a recording, with the time each part is said at:\n{transcript}\n\n"
+        f"Write, in {language}: a title (under 70 characters, saying what it is about), a description "
+        "(2 to 4 sentences, for someone deciding whether to watch it) and chapters -- 3 to 10 points "
+        "where the subject changes, each at the time from the transcript where it starts, the first at 0:00, "
+        "each with a short title. Answer with only a JSON object, no code fence and no other text: "
+        '{"title": "...", "description": "...", "chapters": [{"start": 0, "title": "..."}, ...]} '
+        "with each start in seconds."
+    )
+    # One conversation per recording version: shared by the day, the second
+    # recording was described with the first one's transcript in its history.
+    take = re.sub(r'[^a-z0-9]', '', str(d.get('take') or ''))[:32] or 'x'
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-describe-{take}'
+    out = _studio_parse_description(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S))
+    if out is None:
+        return jsonify(error=t('studio.rec_desc_failed')), 502
+    return jsonify(out)
 
 
 @app.route('/studio/v1/images/generations', methods=['POST'])
