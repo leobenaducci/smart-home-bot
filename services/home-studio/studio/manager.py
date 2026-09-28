@@ -97,6 +97,9 @@ class Manager:
         self.idle_s, self.notify = idle_s, notify
         self._factory = worker_factory or (lambda: Worker(self.scratch, self.logs / "worker.log"))
         self.worker: Worker | None = None
+        # The latest in-progress picture of the running job, by job id: shown
+        # to its owner while the card works, removed when it finishes.
+        self.previews: dict[str, Path] = {}
         self.paused = False
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -194,10 +197,15 @@ class Manager:
                 continue
             if msg["kind"] == "progress":
                 self.store.update(job["id"], progress=overall_progress(msg), phase=msg.get("phase", "")[:60])
+            elif msg["kind"] == "preview" and msg.get("file"):
+                self.previews[job["id"]] = Path(msg["file"])
             elif msg["kind"] == "done":
                 result = msg
                 break
         worker.last_used = time.time()
+        stale = self.previews.pop(job["id"], None)
+        if stale:
+            stale.unlink(missing_ok=True)
         if result is None:
             self.worker = None
             self.store.update(job["id"], state="failed", finished=time.time(),

@@ -21607,7 +21607,10 @@ STUDIO_UI_KEYS = (
     'language', 'add_song', 'add_instrumental', 'add_voice', 'kind_song', 'kind_instrumental',
     'kind_voice', 'song_theme', 'song_theme_ph', 'write_lyrics', 'writing_lyrics', 'lyrics',
     'lyrics_mode_edit', 'lyrics_mode_new', 'lyrics_confirm_new', 'lyrics_notes', 'lyrics_notes_ph',
-    'lyrics_go',
+    'lyrics_go', 'music_video', 'mv_help', 'mv_idea', 'mv_idea_ph', 'mv_shot_len', 'mv_ref',
+    'mv_generate_now', 'mv_estimate', 'mv_existing', 'mv_go', 'mv_planning', 'mv_failed', 'mv_added',
+    'preview', 'preview_missing', 'preview_close', 'mute_shots', 'soundtrack', 'live_preview',
+    'cancel_all', 'cancel_all_confirm',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
@@ -21724,6 +21727,87 @@ def studio_lyrics():
     if not text:
         return jsonify(error=t('studio.lyrics_failed')), 502
     return jsonify(lyrics=text.strip())
+
+
+STUDIO_PLAN_TIMEOUT_S = 240
+
+
+def _studio_parse_plan(text, n):
+    """The shots Alfred planned, from whatever it answered: the first JSON
+    array in the text, each entry a description and whether it continues the
+    shot before. Exactly `n`, or None -- the page has already split the song
+    into `n` pieces of time, and a plan of another length would not fit."""
+    if not text:
+        return None
+    start, end = text.find('['), text.rfind(']')
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    shots = []
+    for i, entry in enumerate(raw if isinstance(raw, list) else []):
+        if isinstance(entry, str):
+            entry = {'prompt': entry}
+        if not isinstance(entry, dict) or not str(entry.get('prompt') or '').strip():
+            continue
+        shots.append({'prompt': str(entry['prompt']).strip()[:1200],
+                      'continues': bool(entry.get('continues')) and bool(shots)})
+    return shots if len(shots) == n else None
+
+
+@app.route('/studio/api/music-video', methods=['POST'])
+@api_login_required
+def studio_music_video():
+    """The shots of a music video, planned by the person's own assistant from
+    a song (or a voice, or an instrumental) already in the project.
+
+    The page decides how many shots and how long each is -- that is arithmetic
+    on the song's length -- and asks Alfred only for what to show in each, in
+    order, following the lyrics. It then adds the shots and queues them, so
+    every one is an ordinary shot the person can rewrite and redo."""
+    if not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    try:
+        n = max(1, min(80, int(d.get('shots') or 0)))
+        seconds = max(5, min(600, int(float(d.get('seconds') or 0))))
+    except (TypeError, ValueError):
+        return jsonify(error=t('studio.mv_failed')), 400
+    kind = str(d.get('kind') or 'song')
+    words = str(d.get('lyrics') or d.get('text') or '').strip()[:4000]
+    style = str(d.get('style') or '').strip()[:300]
+    title = str(d.get('title') or '').strip()[:120]
+    idea = str(d.get('idea') or '').strip()[:1000]
+    each = max(1, round(seconds / n))
+    prompt = (
+        f"Plan a music video for {'a song' if kind == 'song' else 'a narration' if kind == 'voice' else 'an instrumental piece'}"
+        + (f' called "{title}"' if title else '') + f", {seconds} seconds long, as exactly {n} shots of about {each} seconds each, in order.\n"
+        + (f"Musical style: {style}.\n" if style else "")
+        + (f"What the person wants it to look like: {idea}\n" if idea else "")
+        + (f"The words, which the shots should follow in order (each shot covers about "
+           f"1/{n} of them):\n{words}\n" if words else "There are no words; follow the music's mood and build.\n")
+        + "For each shot write one description for a text-to-video model, in English: who and "
+          "what is on screen, the setting, the action, the camera (framing and movement), the "
+          "light and the mood -- 1 to 3 sentences, concrete and visual, no sounds, no quotes of the "
+          "lyrics, no text on screen. Keep the same characters and look across shots, describing "
+          "them the same way each time. Mark `continues: true` when a shot is the same moment "
+          "carrying on from the one before (same place, same action, no cut); otherwise false. "
+          "The first shot is always false.\n"
+          f'Answer with only a JSON array of exactly {n} objects: [{{"prompt": "...", "continues": false}}, ...]'
+    )
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-video'
+    shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S), n)
+    if shots is None:
+        # Once more, saying what went wrong: the usual miss is a count off by one.
+        again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only "
+                 f"the JSON array, exactly {n} entries.")
+        shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S), n)
+    if shots is None:
+        return jsonify(error=t('studio.mv_failed')), 502
+    return jsonify(shots=shots)
 
 
 @app.route('/studio/v1/images/generations', methods=['POST'])

@@ -164,15 +164,16 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0) -> Path:
     return out
 
 
-def mix(video: Path, tracks: list[dict], out: Path) -> Path:
+def mix(video: Path, tracks: list[dict], out: Path, keep_own: bool = True) -> Path:
     """Audio tracks under a film: each {file, start, volume}. The film's own
-    sound stays; a song or a narration is laid over it from *start*."""
+    sound stays unless *keep_own* is false -- a music video wants the song and
+    not the sound each shot was generated with."""
     if not tracks:
         raise MediaError("no track to mix")
     info = probe(video)
     args = ["-i", str(video)]
     parts, labels = [], []
-    if info["has_audio"]:
+    if info["has_audio"] and keep_own:
         parts.append("[0:a]aresample=48000[a0]")
         labels.append("[a0]")
     for i, t in enumerate(tracks, 1):

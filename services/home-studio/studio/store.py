@@ -28,6 +28,10 @@ ACTIVE = ("queued", "running")
 # (docs/home-studio.md). Replaced by the median of what each kind really took.
 DEFAULT_SECONDS = {"image": 60, "song": 330, "instrumental": 300, "voice": 90,
                    "video_shot": 1800, "edit": 1800}
+# Kinds whose time grows with the seconds they make: estimated per second of
+# video, so a 20-second shot is not promised in the time of a 5-second one --
+# a music video queues dozens of them.
+PER_SECOND = ("video_shot", "edit")
 # A model load that is not needed when the same model ran last.
 LOAD_SECONDS = {"image": 10, "song": 60, "instrumental": 60, "voice": 30,
                 "video_shot": 240, "edit": 240}
@@ -223,6 +227,35 @@ class Store:
         rows.sort()
         return float(rows[len(rows) // 2])
 
+    def rate(self, kind: str) -> float:
+        """Card seconds per second of video for *kind*: the median of what it
+        took here lately, else the default shot's time over five seconds."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT finished - started, params FROM jobs WHERE kind=? AND state='done' "
+                "AND started IS NOT NULL ORDER BY finished DESC LIMIT 15", (kind,)).fetchall()
+        rates = []
+        for took, params in rows:
+            try:
+                secs = float(json.loads(params).get("seconds") or 0)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if secs > 0 and took and took > 0:
+                rates.append(took / secs)
+        if not rates:
+            return DEFAULT_SECONDS.get(kind, 1800) / 5.0
+        rates.sort()
+        return rates[len(rates) // 2]
+
+    def seconds_for_job(self, job: dict) -> float:
+        if job["kind"] in PER_SECOND:
+            try:
+                secs = float((job.get("params") or {}).get("seconds") or 5)
+            except (TypeError, ValueError):
+                secs = 5.0
+            return self.rate(job["kind"]) * max(1.0, secs)
+        return self.seconds_for(job["kind"])
+
     def schedule(self, loaded_model: str = "") -> list[dict]:
         """The order with a start estimate for each job, from now."""
         running = self.running()
@@ -232,14 +265,15 @@ class Store:
         if running:
             # What is left of the running job: its typical length times the
             # share not done yet, never less than half a minute.
-            left = max(30.0, self.seconds_for(running["kind"]) * (1 - running["progress"]))
+            left = max(30.0, self.seconds_for_job(running) * (1 - running["progress"]))
             clock = now + left
             model = running["model"]
         out = []
         for i, job in enumerate(self.order(loaded_model), 1):
             swap = LOAD_SECONDS.get(job["kind"], 60) if job["model"] != model else 0
+            took = self.seconds_for_job(job)
             out.append({**job, "position": i, "starts_in": round(clock - now),
-                        "takes": round(self.seconds_for(job["kind"]) + swap)})
-            clock += self.seconds_for(job["kind"]) + swap
+                        "takes": round(took + swap)})
+            clock += took + swap
             model = job["model"]
         return out

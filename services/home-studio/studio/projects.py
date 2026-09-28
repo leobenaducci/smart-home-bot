@@ -145,6 +145,11 @@ class Projects:
                     doc["settings"]["resolution"] = s["resolution"]
                 if str(s.get("language", "")) and len(str(s["language"])) <= 5:
                     doc["settings"]["language"] = str(s["language"])
+                # The song a music video was made for: the preview plays it
+                # and the film is laid over it. An item id or nothing.
+                if "soundtrack" in s:
+                    st = str(s.get("soundtrack") or "")
+                    doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""
             for section in SECTIONS:
                 if not isinstance(incoming.get(section), list):
                     continue

@@ -124,6 +124,7 @@ def _public(job: dict, me: Who) -> dict:
                    error=job["error"])
     if mine:
         out["files"] = job["files"]
+        out["preview"] = job["id"] in manager.previews
     return out
 
 
@@ -133,7 +134,10 @@ def queue(me: Who = Depends(who)):
     running = store.running()
     return {"running": _public(running, me) if running else None,
             "queued": [_public(j, me) for j in sched],
-            "status": manager.status(), "is_admin": me.admin}
+            "status": manager.status(), "is_admin": me.admin,
+            # Card seconds per second of video, for the page to say how long
+            # a music video will take before it is queued.
+            "video_rate": round(store.rate("video_shot"))}
 
 
 @app.get("/api/jobs")
@@ -163,6 +167,17 @@ def add_job(body: dict, me: Who = Depends(who)):
         _bad(exc, 404)
     sched = {j["id"]: j for j in store.schedule()}
     return _public(sched.get(job["id"], job), me)
+
+
+@app.get("/api/jobs/{job_id}/preview")
+def job_preview(job_id: str, me: Who = Depends(who)):
+    """What the running job looks like so far. Its owner's only: the queue
+    tells everybody what is running, never what it shows."""
+    job = store.get(job_id)
+    path = manager.previews.get(job_id)
+    if not job or job["owner"] != me.login or not path or not path.is_file():
+        raise HTTPException(404, "no preview")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -449,7 +464,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             film = media.stitch(clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
                                 crossfade=float(body.get("crossfade") or 0))
             if tracks:
-                media.mix(film, tracks, out)
+                media.mix(film, tracks, out, keep_own=body.get("own_sound", True) is not False)
                 film.unlink(missing_ok=True)
             projects.add_render(me.login, pid, {"file": str(out.relative_to(base)),
                                                 "seconds": round(media.probe(out)["seconds"], 1)})

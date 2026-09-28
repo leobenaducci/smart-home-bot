@@ -87,6 +87,29 @@ own process, so one process decides what is on the card at any moment.
 - **The GGUF Q2_K text encoder** (`config: gguf_q2_k`): 8.5 GB of RAM instead
   of ~65 GB for BF16.
 
+## A music video from a song
+
+The 🎬 button on a song, voice or instrumental that has a take. The page cuts
+the take's length into shots of the chosen length (5-15 s, default 8) -- that
+is arithmetic, so the video always covers the song -- and the portal asks the
+person's own assistant only what each shot shows, following the words in order
+(`/studio/api/music-video`: exactly N descriptions as JSON, asked once more if
+the count is off). The shots land in the Video tab as ordinary shots, queued if
+asked, with the song remembered as the project's `settings.soundtrack`: the
+film dialog then preselects it and mutes the shots' own sound.
+
+It is slow: H3 measured ~5 card-minutes per second
+of video here, so a three-minute song is hours. The dialog says how many from
+`video_rate` in `/api/queue` (the median of this card's own shots), and the
+queue's estimates scale with each shot's seconds (`Store.seconds_for_job`).
+
+While it works: the shot on the card shows WanGP's own in-progress picture
+(decoded from the latents on the CPU, written by the worker every few seconds,
+`GET /api/jobs/<id>/preview`, the owner's only); ▶ Preview plays the chosen
+takes in order in the browser with the soundtrack moved to each shot's start,
+and a card with the description where a shot is not made yet. Every queued or
+running item has its own cancel, and the Video tab a cancel for all of them.
+
 ## Where things live
 
 Everything on the big disk (`/mnt/data`), nothing on the system SSD except

@@ -1,5 +1,5 @@
-"""The Studio's two portal-side pieces: what "lyrics with Alfred" asks the
-assistant for, and how a file is handed over as a download.
+"""The Studio's portal-side pieces: what "lyrics with Alfred" and the music
+video ask the assistant for, and how a file is handed over as a download.
 
 Run: python local/test_studio_portal.py   (needs Flask; skips loudly without it)
 
@@ -108,8 +108,46 @@ I18N = next(d for d in (os.path.join(SRC, "i18n"), os.path.join(SRC, "..", "..",
 CATALOGUES = {loc: json.load(open(os.path.join(I18N, f"{loc}.json"), encoding="utf-8"))
               for loc in ("en", "es")}
 for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics_notes",
-            "lyrics_notes_ph", "lyrics_go"):
+            "lyrics_notes_ph", "lyrics_go", "music_video", "mv_help", "mv_idea", "mv_idea_ph",
+            "mv_shot_len", "mv_ref", "mv_generate_now", "mv_estimate", "mv_existing", "mv_go",
+            "mv_planning", "mv_failed", "mv_added", "preview", "preview_missing", "preview_close",
+            "mute_shots", "soundtrack", "live_preview", "cancel_all", "cancel_all_confirm"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
+
+print("\na music video is planned by Alfred, shot by shot")
+plans = []
+
+
+def _planner(username, chat_id, text, timeout, profile=None):
+    asked.append(text)
+    return plans.pop(0) if plans else ""
+
+
+A._run_nanobot_turn = _planner
+asked.clear()
+plans[:] = ['Here you go:\n[{"prompt": "A girl on a bike at night", "continues": true},'
+            ' {"prompt": "Close-up of her smile", "continues": true}, "Neon street, wide shot"]']
+r = client.post("/studio/api/music-video", headers=HOME, json={
+    "shots": 3, "seconds": 24, "kind": "song", "lyrics": MINE, "style": "synthpop",
+    "title": "Noche", "idea": "80s film look"})
+shots = (r.get_json() or {}).get("shots") or []
+check("three shots come back, read out of the prose around them", r.status_code == 200 and len(shots) == 3, r.data[:200])
+check("the first never continues anything", shots and shots[0]["continues"] is False, shots[:1])
+check("a later one keeps what Alfred said", len(shots) > 1 and shots[1]["continues"] is True, shots)
+check("a bare string is a shot too", len(shots) > 2 and shots[2]["prompt"] == "Neon street, wide shot", shots)
+prompt = asked[0] if asked else ""
+check("Alfred is given the words, the length, the count and the look",
+      MINE in prompt and "24 seconds" in prompt and "exactly 3" in prompt and "80s film look" in prompt, prompt[:300])
+
+asked.clear()
+plans[:] = ['[{"prompt": "one"}]', '[{"prompt": "one"}, {"prompt": "two"}]']
+r = client.post("/studio/api/music-video", headers=HOME, json={"shots": 2, "seconds": 16})
+check("a plan of the wrong length is asked for again, once", r.status_code == 200 and len(asked) == 2
+      and len(r.get_json()["shots"]) == 2, (r.status_code, len(asked)))
+asked.clear()
+plans[:] = ["no json here", "still none"]
+r = client.post("/studio/api/music-video", headers=HOME, json={"shots": 2, "seconds": 16})
+check("and a second miss is an error, not a half-made video", r.status_code == 502 and len(asked) == 2, r.status_code)
 
 print("\na file asked for as a download comes back as an attachment")
 A.STUDIO_URL, A.STUDIO_SECRET = "http://studio.invalid", "s" * 32

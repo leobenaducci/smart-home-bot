@@ -16,6 +16,7 @@ writes its console to:
     {"kind": "ready"}
     {"kind": "progress", "id", "phase", "progress", "step", "steps"}
     {"kind": "done", "id", "success", "files", "errors", "seconds"}
+    {"kind": "preview", "id", "file"}      the latest in-progress picture, a JPEG
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ import threading
 import time
 from pathlib import Path
 
+# How often an in-progress picture is written: a step is tens of seconds on
+# this card, so this mostly means "every step" without ever meaning more.
+PREVIEW_EVERY_S = 3.0
 WANGP = Path(os.environ.get("WANGP_ROOT", "/opt/wangp"))
 # SDPA: SageAttention breaks H3's text encoder (WanGP issue #2182). Profile 5
 # is the low-VRAM, RAM-heavy one the 12 GB card needs for H3.
@@ -80,9 +84,25 @@ def main() -> int:
             send(kind="done", id=job_id, success=False, files=[], errors=[str(exc)[:500]], seconds=0)
             continue
         current.update(id=job_id, job=job)
-        last = None
+        last, last_preview = None, 0.0
+        preview_file = scratch / "previews" / f"{job_id}.jpg"
         for ev in job.events.iter(timeout=1.0):
-            if ev.kind == "progress":
+            if ev.kind == "preview" and time.time() - last_preview >= PREVIEW_EVERY_S:
+                # What the denoiser has so far, decoded from the latents on the
+                # CPU by WanGP itself. Written whole and renamed, so a reader
+                # never gets half a JPEG.
+                image = getattr(ev.data, "image", None)
+                if image is not None:
+                    try:
+                        preview_file.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = preview_file.with_suffix(".tmp")
+                        image.convert("RGB").save(tmp, "JPEG", quality=80)
+                        tmp.replace(preview_file)
+                        send(kind="preview", id=job_id, file=str(preview_file))
+                        last_preview = time.time()
+                    except Exception:                      # noqa: BLE001 -- a preview is never worth a job
+                        pass
+            elif ev.kind == "progress":
                 p = ev.data
                 now = (p.phase, round(float(p.progress or 0), 3), p.current_step)
                 if now != last:

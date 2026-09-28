@@ -108,6 +108,7 @@
       padding: 10px 16px; border-radius: var(--r); font-size: .84rem; display: none; z-index: 20; max-width: 92vw; }
     dialog { border: 0; border-radius: var(--r-lg); padding: 16px; max-width: 520px; width: 92vw; }
     dialog::backdrop { background: rgba(0,0,0,.4); }
+    img.live { width: 100%; border-radius: var(--r-sm); display: block; background: #000; }
     dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }
   </style>
   <link rel="stylesheet" href="/theme.css">
@@ -283,13 +284,24 @@
     function jobFor(itemId) { return (current.jobs || []).find(function (j) { return j.target === itemId; }); }
     function statusPill(item) {
       var j = jobFor(item.id);
-      if (j && j.state === 'running') return '<span class="pill run">' + S.state_running + ' ' + Math.round(j.progress * 100) + '%</span>';
+      // Anything queued or on the card can be stopped from its own card.
+      var stop = j ? ' <button class="danger" data-cancel-job="' + j.id + '">✕ ' + S.cancel + '</button>' : '';
+      if (j && j.state === 'running') return '<span class="pill run">' + S.state_running + ' ' + Math.round(j.progress * 100) + '%</span>' + stop;
       if (j && j.state === 'queued') {
         var qj = queueState && queueState.queued.find(function (x) { return x.id === j.id; });
         return '<span class="pill run">' + S.state_queued + (qj ? ' ' + fmt('position', { n: qj.position }) + ' · ' +
-          (qj.starts_in ? fmt('starts_in', { t: dur(qj.starts_in) }) : S.starts_now) : '') + '</span>';
+          (qj.starts_in ? fmt('starts_in', { t: dur(qj.starts_in) }) : S.starts_now) : '') + '</span>' + stop;
       }
       return (item.takes || []).length ? '<span class="pill ok">' + S.state_done + '</span>' : '<span class="pill">' + S.no_take + '</span>';
+    }
+    // What the card has so far for a running job of this person's, refreshed
+    // by the timer at the bottom while it works. Null when there is none yet.
+    function livePreview(item) {
+      var j = jobFor(item.id);
+      if (!j || j.state !== 'running' || !j.preview) return null;
+      var src = '/studio/api/jobs/' + j.id + '/preview';
+      return '<img class="live" data-src="' + src + '" src="' + src + '?t=' + Date.now() + '" alt="">' +
+        '<div class="muted" style="font-size:.76rem">' + S.live_preview + '</div>';
     }
     function chosen(item) {
       var t = item.takes || [], i = item.chosen;
@@ -341,7 +353,8 @@
       shots.forEach(function (s, i) {
         var t = chosen(s);
         if (i > 0) html += '<div class="link">' + (s.continuity !== false ? '⛓ ' + S.continuity : '✂') + '</div>';
-        var media = t && t.file
+        var live = livePreview(s);
+        var media = live ? live : t && t.file
           ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '"></video>'
           : '<span>' + S.no_take + '</span>';
         var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
@@ -364,7 +377,10 @@
           '</div></div></div>';
       });
       html += '<div class="row"><button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
-        '<span class="grow"></span><button class="primary" id="gen-pending">' + S.generate_pending + '</button>' +
+        '<span class="grow"></span>' +
+        ((p.jobs || []).length ? '<button class="danger" id="cancel-all">✕ ' + fmt('cancel_all', { n: p.jobs.length }) + '</button>' : '') +
+        '<button class="primary" id="gen-pending">' + S.generate_pending + '</button>' +
+        (shots.length ? '<button id="preview">▶ ' + S.preview + '</button>' : '') +
         '<button id="render">🎞️ ' + S.render + '</button></div>';
       var renders = (p.renders || []).slice().reverse();
       if (p.render && p.render.state === 'running') html += '<div class="note">' + S.render_running + '</div>';
@@ -408,7 +424,8 @@
         }
         html += (t && t.file ? '<audio controls preload="none" src="' + fileUrl(p.id, t.file) + '"></audio>' : '') + takesRow(a) +
           '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
-          (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) : '') + '</div></div>';
+          (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) +
+            '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>' : '') + '</div></div>';
       });
       html += '<div class="row"><button data-add-audio="song">＋ 🎤 ' + S.add_song + '</button><button data-add-audio="instrumental">＋ 🎹 ' + S.add_instrumental + '</button>' +
         '<button data-add-audio="voice">＋ 🗣️ ' + S.add_voice + '</button></div>';
@@ -426,6 +443,7 @@
           '<div class="row"><label class="f" style="margin:0">' + S.size + '</label><select style="width:auto" data-f="size" data-id="' + im.id + '">' + sizes.map(function (s) {
             return '<option value="' + s[0] + '"' + ((im.size || '1024x1024') === s[0] ? ' selected' : '') + '>' + S[s[1]] + '</option>';
           }).join('') + '</select><span class="grow"></span><button class="primary" data-gen="' + im.id + '">' + ((im.takes || []).length ? S.regenerate : S.generate) + '</button></div>' +
+          (livePreview(im) ? '<div style="margin-top:8px;max-width:320px">' + livePreview(im) + '</div>' : '') +
           ((im.takes || []).length ? '<div class="gallery">' + im.takes.map(function (t, k) {
             return '<div><a href="' + fileUrl(p.id, t.file) + '" target="_blank"><img loading="lazy" src="' + fileUrl(p.id, t.file) + '" alt=""></a>' +
               '<div class="row" style="margin-top:4px">' + dlLink(p.id, t.file, p.name + ' - ' + (n + 1) + '.' + (k + 1)) + '</div></div>';
@@ -533,6 +551,24 @@
           return;
         }
         if (d.lyrics) return lyricsDialog(d.lyrics, b);
+        if (d.mv) return musicVideo(d.mv);
+        if (d.cancelJob) {
+          if (!confirm(S.cancel_confirm)) return;
+          await api('jobs/' + d.cancelJob, { method: 'DELETE' });
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (b.id === 'cancel-all') {
+          var pending = (p.jobs || []).slice();
+          if (!pending.length || !confirm(fmt('cancel_all_confirm', { n: pending.length }))) return;
+          // The queued ones first: stopping the running one first would let
+          // the next start on the card before its own cancel arrived.
+          pending.sort(function (x, y) { return (x.state === 'running') - (y.state === 'running'); });
+          for (var k = 0; k < pending.length; k++) {
+            try { await api('jobs/' + pending[k].id, { method: 'DELETE' }); } catch (e) { /* already finished */ }
+          }
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (b.id === 'preview') return previewPlayer();
         if (d.retouch) return retouch(d.retouch);
         if (b.id === 'long-scene') return longScene();
         if (b.id === 'render') return renderDialog();
@@ -626,14 +662,132 @@
         dlg.close(); await saveNow(); drawTab();
       };
     }
+    // A music video from a song (or a voice, or an instrumental) already made:
+    // the song's length is cut into shots here, Alfred says what each shows,
+    // and they land in the Video tab as ordinary shots -- queued, if asked --
+    // with the song remembered as the project's soundtrack.
+    function splitSeconds(total, n) {
+      var base = Math.floor(total / n), extra = total - base * n, out = [];
+      for (var i = 0; i < n; i++) out.push(Math.max(5, base + (i < extra ? 1 : 0)));
+      return out;
+    }
+    function musicVideo(id) {
+      var p = current, a = itemById(id), t = chosen(a), dlg = $('#dlg');
+      var total = Math.max(5, Math.round((t && t.seconds) || a.seconds || 60));
+      var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
+      var existing = (p.shots || []).length;
+      dlg.innerHTML = '<h2>🎬 ' + S.music_video + '</h2><p class="muted">' + S.mv_help + '</p>' +
+        '<label class="f">' + S.mv_idea + '</label><textarea id="mv-idea" rows="3" placeholder="' + esc(S.mv_idea_ph) + '"></textarea>' +
+        '<label class="f">' + S.mv_shot_len + '</label><select id="mv-len">' + [5, 8, 10, 15].map(function (v) {
+          return '<option value="' + v + '"' + (v === 8 ? ' selected' : '') + '>' + v + ' ' + S.sec + '</option>'; }).join('') + '</select>' +
+        (refs.length ? '<label class="f">' + S.mv_ref + '</label><select id="mv-ref"><option value="">' + S.none + '</option>' +
+          refs.map(function (u) { return '<option value="' + esc(u.file) + '">' + esc(u.name) + '</option>'; }).join('') + '</select>' : '') +
+        '<label class="row" style="font-size:.86rem;margin-top:10px"><input type="checkbox" id="mv-now" style="width:auto" checked> ' + S.mv_generate_now + '</label>' +
+        '<p class="muted" id="mv-est"></p>' +
+        (existing ? '<p class="note">' + fmt('mv_existing', { n: existing }) + '</p>' : '') +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="mv-no">' + S.cancel + '</button><button class="primary" id="mv-go">' + S.mv_go + '</button></div>';
+      dlg.showModal();
+      function plan() { var n = Math.min(80, Math.max(1, Math.round(total / Number($('#mv-len').value)))); return { n: n, secs: splitSeconds(total, n) }; }
+      function estimate() {
+        var pl = plan(), rate = (queueState && queueState.video_rate) || 360;
+        var video = pl.secs.reduce(function (x, y) { return x + y; }, 0);
+        $('#mv-est').textContent = fmt('mv_estimate', { n: pl.n, s: video, t: dur(rate * video) });
+      }
+      estimate();
+      $('#mv-len').onchange = estimate;
+      $('#mv-no').onclick = function () { dlg.close(); };
+      $('#mv-go').onclick = async function () {
+        var go = this, pl = plan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', now = $('#mv-now').checked;
+        go.disabled = true; go.textContent = S.mv_planning; busy++;
+        try {
+          await flushSave();
+          var r = await api('music-video', { method: 'POST', body: { shots: pl.n, seconds: total, kind: a.kind || 'song',
+            lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '', idea: $('#mv-idea').value.trim() } });
+          var fresh = await api('projects/' + p.id);
+          var before = (fresh.shots || []).length;
+          r.shots.forEach(function (sh, i) {
+            var cont = i > 0 && sh.continues;
+            fresh.shots.push(newItem({ prompt: sh.prompt, seconds: pl.secs[i], continuity: cont,
+                                       refs: !cont && ref ? [ref] : [] }));
+          });
+          fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id });
+          current = fresh; await saveNow();
+          var ids = current.shots.slice(before).map(function (sh) { return sh.id; });
+          dlg.close(); tab = 'video'; drawEditor();
+          toast(fmt('mv_added', { n: ids.length }));
+          if (now && ids.length) await generate(ids);
+        } catch (e) {
+          toast(e.message, true); go.disabled = false; go.textContent = S.mv_go;
+        } finally { busy--; }
+      };
+    }
+
+    // The video as it stands, in the browser: each chosen take in order, a
+    // card for the ones not made yet, and the soundtrack underneath, moved to
+    // where each shot starts so the two stay together. Nothing is rendered.
+    function previewPlayer() {
+      var p = current, dlg = $('#dlg');
+      var tracks = (p.audio || []).filter(function (a) { return chosen(a) && chosen(a).file; });
+      var st = (p.settings || {}).soundtrack || (tracks[0] && tracks[0].id) || '';
+      var segs = [], at = 0;
+      (p.shots || []).forEach(function (s, i) {
+        var t = chosen(s), len = (t && t.seconds) || s.seconds || 5;
+        segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', prompt: s.prompt || '', start: at, len: len });
+        at += len;
+      });
+      dlg.innerHTML = '<h2>▶ ' + S.preview + '</h2>' +
+        '<div id="pv-stage" style="position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">' +
+        '<video id="pv-v" playsinline style="width:100%;height:100%;object-fit:contain"></video>' +
+        '<div id="pv-card" hidden style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:16px;color:#eee;font-size:.9rem;background:#222"></div></div>' +
+        '<div class="row" style="margin-top:8px"><span id="pv-at" class="muted"></span><span class="grow"></span>' +
+        (tracks.length ? '<label class="f" style="margin:0">' + S.soundtrack + '</label><select id="pv-a" style="width:auto"><option value="">' + S.none + '</option>' +
+          tracks.map(function (a) { return '<option value="' + a.id + '"' + (a.id === st ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' : '') +
+        '</div><label class="row" style="font-size:.86rem"><input type="checkbox" id="pv-m" style="width:auto"' + (st ? ' checked' : '') + '> ' + S.mute_shots + '</label>' +
+        '<div class="row" style="margin-top:12px"><button id="pv-play" class="primary">▶</button><span class="grow"></span><button id="pv-no">' + S.preview_close + '</button></div>';
+      dlg.showModal();
+      var v = $('#pv-v'), card = $('#pv-card'), audio = new Audio(), idx = 0, timer = null, playing = false;
+      function song() { var sel = $('#pv-a'); var a = sel && sel.value ? itemById(sel.value) : null; return a ? fileUrl(p.id, chosen(a).file) : ''; }
+      function stop() { playing = false; clearTimeout(timer); v.pause(); audio.pause(); $('#pv-play').textContent = '▶'; }
+      function show(i) {
+        clearTimeout(timer);
+        if (i >= segs.length) { stop(); idx = 0; return; }
+        idx = i; var seg = segs[i];
+        $('#pv-at').textContent = S.shot + ' ' + seg.n + ' / ' + segs.length + ' · ' + Math.floor(seg.start) + ' s';
+        var src = song();
+        if (src) {
+          if (audio.src.indexOf(src) < 0) audio.src = src;
+          if (Math.abs(audio.currentTime - seg.start) > 0.3) audio.currentTime = seg.start;
+          audio.play().catch(function () {});
+        }
+        if (seg.file) {
+          card.hidden = true; v.hidden = false; v.muted = $('#pv-m').checked;
+          v.src = seg.file; v.play().catch(function () {});
+          v.onended = function () { if (playing) show(idx + 1); };
+        } else {
+          v.pause(); v.hidden = true; card.hidden = false;
+          card.innerHTML = '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
+          timer = setTimeout(function () { if (playing) show(idx + 1); }, seg.len * 1000);
+        }
+      }
+      $('#pv-play').onclick = function () {
+        if (playing) return stop();
+        playing = true; this.textContent = '⏸'; show(idx);
+      };
+      $('#pv-m').onchange = function () { v.muted = this.checked; };
+      $('#pv-no').onclick = function () { stop(); dlg.close(); };
+      dlg.addEventListener('close', stop, { once: true });
+    }
+
     function renderDialog() {
       var p = current, dlg = $('#dlg'), audio = (p.audio || []).filter(function (a) { return (a.takes || []).length; });
+      var soundtrack = (p.settings || {}).soundtrack || '';
       dlg.innerHTML = '<h2>' + S.render + '</h2>' +
         '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-x" style="width:auto"> ' + S.render_crossfade + '</label>' +
         (audio.length ? '<label class="f">' + S.render_music + '</label><select id="rd-a"><option value="">' + S.none + '</option>' +
-          audio.map(function (a) { return '<option value="' + a.id + '">' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' +
-          '<div class="row"><div class="grow"><label class="f">' + S.render_volume + '</label><input type="range" id="rd-v" min="0" max="150" value="80"></div>' +
-          '<div class="grow"><label class="f">' + S.render_start + '</label><input type="number" id="rd-t" min="0" value="0"></div></div>' : '') +
+          audio.map(function (a) { return '<option value="' + a.id + '"' + (a.id === soundtrack ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' +
+          '<div class="row"><div class="grow"><label class="f">' + S.render_volume + '</label><input type="range" id="rd-v" min="0" max="150" value="' + (soundtrack ? 100 : 80) + '"></div>' +
+          '<div class="grow"><label class="f">' + S.render_start + '</label><input type="number" id="rd-t" min="0" value="0"></div></div>' +
+          '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-m" style="width:auto"' + (soundtrack ? ' checked' : '') + '> ' + S.mute_shots + '</label>' : '') +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="rd-no">' + S.cancel + '</button><button class="primary" id="rd-go">' + S.render_go + '</button></div>';
       dlg.showModal();
       $('#rd-no').onclick = function () { dlg.close(); };
@@ -641,7 +795,9 @@
         var tracks = [], a = $('#rd-a');
         if (a && a.value) tracks.push({ item: a.value, volume: $('#rd-v').value / 100, start: Number($('#rd-t').value) || 0 });
         try {
-          await api('projects/' + p.id + '/render', { method: 'POST', body: { crossfade: $('#rd-x').checked ? 0.5 : 0, tracks: tracks } });
+          var mute = $('#rd-m');
+          await api('projects/' + p.id + '/render', { method: 'POST', body: { crossfade: $('#rd-x').checked ? 0.5 : 0, tracks: tracks,
+                                                                              own_sound: !(mute && mute.checked && tracks.length) } });
           dlg.close(); current = await api('projects/' + p.id); drawTab(); watchRender();
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
       };
@@ -660,7 +816,7 @@
       if (!current || dirty || saving || busy || document.querySelector('dialog[open]')) return;
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
-      var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20)]; }),
+      var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),
         ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length; }); })]);
       if (sig !== lastSig) {
         lastSig = sig;
@@ -675,6 +831,12 @@
     loadList();
     loadQueue();
     setInterval(loadQueue, 5000);
+    // The in-progress pictures change under the same URL; fetched again only
+    // while the page is looked at.
+    setInterval(function () {
+      if (document.hidden) return;
+      document.querySelectorAll('img.live').forEach(function (img) { img.src = img.dataset.src + '?t=' + Date.now(); });
+    }, 4000);
     document.addEventListener('visibilitychange', function () { if (!document.hidden) loadQueue(); });
     window.addEventListener('beforeunload', flushSave);
     var want = new URLSearchParams(location.search).get('project');

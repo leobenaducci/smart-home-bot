@@ -128,6 +128,7 @@ class FakeWorker:
         if "run" not in msg:
             return
         self.seen.append(msg["settings"])
+        self.previews = getattr(self, "previews", [])
         out = Path(msg["output_dir"])
         out.mkdir(parents=True, exist_ok=True)
         mt = msg["settings"]["model_type"]
@@ -144,8 +145,12 @@ class FakeWorker:
             f = out / "song.wav"
             subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330",
                             "-t", "1", str(f)], check=True)
+        pv = out / "preview.jpg"
+        pv.write_bytes(b"\xff\xd8 not really a jpeg")
+        self.previews.append(pv)
         with self._lock:
             self._out += [{"kind": "progress", "id": msg["run"], "progress": 0.5, "phase": "Denoising"},
+                          {"kind": "preview", "id": msg["run"], "file": str(pv)},
                           {"kind": "done", "id": msg["run"], "success": True, "files": [str(f)], "errors": []}]
             self._lock.notify_all()
 
@@ -185,6 +190,8 @@ else:
     check("  the second started from the first's last frame, read when it ran",
           fake.seen[1].get("image_start", "").endswith(t1["last"]), fake.seen[1])
     check("  each person is told when their job is done", len(notified) == 2 and all(n["ok"] for n in notified))
+    check("  an in-progress picture is kept while a job runs, and removed when it ends",
+          fake.previews and not mgr.previews and not any(pv.exists() for pv in fake.previews), (mgr.previews, fake.previews))
     # A retake of the first shot, now that the second exists: it must end on the second's first frame.
     j3 = store2.add(owner=JUANA, owner_name="Juana", kind="video_shot", model=recipes.VIDEO_MODEL,
                     params={"prompt": "dos otra vez", "seconds": 5, "end_at": second["id"]},
@@ -240,6 +247,22 @@ else:
     mixed = media.mix(film, [{"file": song_dir / st["file"], "volume": 0.8}], tmp / "mixed.mp4")
     check("  and a song laid under it keeps the picture as it was",
           media.probe(mixed)["codec"] == "hevc" and media.probe(mixed)["has_audio"], media.probe(mixed))
+
+    def loudest(path):
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        line = next((l for l in out.splitlines() if "max_volume" in l), "max_volume: -inf dB")
+        return float(line.split("max_volume:")[1].split("dB")[0].strip().replace("inf", "1e9").replace("-1e9", "-1e9"))
+    silent = media.mix(film, [{"file": song_dir / st["file"], "volume": 0.0}], tmp / "mute.mp4", keep_own=False)
+    check("  a music video can drop the shots' own sound: with the song at zero it is silent",
+          loudest(silent) < -80 and loudest(mixed) > -40, (loudest(silent), loudest(mixed)))
+
+    print("\nhow long the queue says a shot takes grows with the shot")
+    five = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 5}})
+    twenty = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 20}})
+    check("  a 20-second shot is four 5-second ones", abs(twenty - 4 * five) < 1e-6 and five > 0, (five, twenty))
+    check("  measured from what this card did", store2.rate("video_shot") < 60, store2.rate("video_shot"))
+    check("  and a default before it has done any", Store(tmp / "empty.db").rate("video_shot") == 360)
     mgr.stop()
 
 print("\nthe API: who sees what")
@@ -276,6 +299,30 @@ check("  a parent can", c.delete(f"/api/jobs/{jid}", headers=h(MORA, "Mora", adm
 check("  and a child cannot pause the card", c.post("/api/admin/pause", json={}, headers=h(JUANA, "Juana")).status_code == 403)
 check("  Juana cannot open Tomi's projects",
       c.get(f"/api/projects/{pj['id']}", headers=h(TOMI, "Tomi")).status_code == 404)
+
+song_id = doc["shots"][0]["id"]
+c.put(f"/api/projects/{pj['id']}", json={"settings": {"soundtrack": song_id}}, headers=h(JUANA, "Juana"))
+check("  a project remembers the song its video is for",
+      c.get(f"/api/projects/{pj['id']}", headers=h(JUANA, "Juana")).json()["settings"].get("soundtrack") == song_id)
+c.put(f"/api/projects/{pj['id']}", json={"settings": {"soundtrack": "../x"}}, headers=h(JUANA, "Juana"))
+check("  and only as an item id",
+      c.get(f"/api/projects/{pj['id']}", headers=h(JUANA, "Juana")).json()["settings"].get("soundtrack") == "")
+
+live = [j for j in c.get("/api/queue", headers=h(JUANA, "Juana")).json()["queued"] if j["mine"]][0]["id"]
+pv = tmp / "live.jpg"
+pv.write_bytes(b"\xff\xd8 frame")
+A.manager.previews[live] = pv
+mine = [j for j in c.get("/api/queue", headers=h(JUANA, "Juana")).json()["queued"] if j["id"] == live][0]
+check("  the owner is told a job has a picture so far", mine.get("preview") is True, mine)
+r = c.get(f"/api/jobs/{live}/preview", headers=h(JUANA, "Juana"))
+check("  and can see it, never cached", r.status_code == 200 and r.content == pv.read_bytes()
+      and r.headers.get("cache-control") == "no-store", (r.status_code, r.headers.get("cache-control")))
+check("  nobody else can -- not even a parent",
+      c.get(f"/api/jobs/{live}/preview", headers=h(TOMI, "Tomi")).status_code == 404
+      and c.get(f"/api/jobs/{live}/preview", headers=h(MORA, "Mora", admin=True)).status_code == 404)
+theirs = [j for j in c.get("/api/queue", headers=h(TOMI, "Tomi")).json()["queued"] if j["id"] == live][0]
+check("  nor learns that one exists", "preview" not in theirs, theirs)
+A.manager.previews.clear()
 
 print("\nthe default project, for what the assistant is asked")
 d1 = c.get("/api/default-project", headers=h(JUANA, "Juana")).json()
