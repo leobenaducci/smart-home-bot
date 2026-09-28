@@ -1087,7 +1087,13 @@ def _strip_skill_invocation_text(content: str | None) -> str:
     # never arrives, so the fenced pattern above cannot match and the object is
     # removed by the unfenced pass, leaving "```json" dangling at the end. That
     # is what reached the chat on every camera turn.
-    out = _ORPHAN_FENCE_RE.sub("", out)
+    #
+    # Only when a fence really is left open, by count. The pattern alone also
+    # matches the *closing* fence of an ordinary code block, and then every
+    # reply ending in one -- a script, the Studio's JSON shot list -- read as a
+    # broken invocation and was replaced with "nothing was executed".
+    if out.count("```") % 2 == 1:
+        out = _ORPHAN_FENCE_RE.sub("", out)
     return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
