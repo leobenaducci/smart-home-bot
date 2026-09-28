@@ -19,6 +19,10 @@ services:
       - STUDIO_SECRET=${STUDIO_SECRET}
       - STUDIO_NOTIFY_URL=${STUDIO_NOTIFY_URL:-}
       - STUDIO_IDLE_S=${STUDIO_IDLE_S:-600}
+      # The Studio's audio.cpp (the `audio` unit): vocals and lyric timing for
+      # a music video. By container name on nanobot-net; unset, a song is
+      # still analysed for its beats, just without its words.
+      - STUDIO_AUDIO_URL=${STUDIO_AUDIO_URL:-}
       - WANGP_PROFILE=${STUDIO_WANGP_PROFILE:-5}
       - HF_HOME=/data/hf-cache
       - NO_PROXY=localhost,127.0.0.1

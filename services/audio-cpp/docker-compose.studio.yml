@@ -1,0 +1,50 @@
+# The Studio's own audio.cpp: music tools on the Studio's card, not a voice.
+#
+# Deployed as a unit of home-studio (deploy/manifest.yml), from this directory
+# so it builds the same image as audio-cpp's CUDA overlay. It serves two tasks
+# the Studio needs to put pictures to a song: separating the vocals from the
+# music (Mel-Band RoFormer) and aligning the song's known lyrics to them word by
+# word (Qwen3 forced aligner). docs/home-studio.md has the measurements.
+#
+# The card is the video generator's, so this holds nothing while idle: one
+# model at a time, unloaded five seconds after it last ran, and the Studio's
+# manager runs analysis as a job in its own queue -- never beside a render --
+# and waits for /v1/models to say nothing is loaded before the next one.
+#
+# No published port: only the Studio talks to it, over nanobot-net.
+networks:
+  default:
+    name: nanobot-net
+    external: true
+
+services:
+  audio-cpp-studio:
+    # The CPU build; docker-compose.studio.gpu.yml swaps in the CUDA one and
+    # asks for the card, when `services.home-studio.gpu` is on.
+    build:
+      context: .
+      args:
+        AUDIOCPP_REF: ${AUDIOCPP_REF:-v0.7.2}
+    image: audio-cpp:latest
+    container_name: audio-cpp-studio
+    restart: unless-stopped
+    environment:
+      - AUDIOCPP_PORT=8080
+      - AUDIOCPP_TTS_PACKAGES=none
+      - AUDIOCPP_ASR_PACKAGES=none
+      - AUDIOCPP_SEP_PACKAGES=mel_band_roformer_q8_0
+      - AUDIOCPP_ALIGN_PACKAGES=qwen3_forced_aligner_0_6b_q8_0
+      - AUDIOCPP_SERVER_ARGS=--host 0.0.0.0 --no-ui --idle-unload-ms 5000 --max-loaded-models 1
+    volumes:
+      # The same package cache as the house's voice instance: one copy of
+      # each model on disk, whichever instance downloaded it.
+      - ${AUDIOCPP_MODELS_DIR}:/models
+      # The Studio's data, at the path the Studio itself uses, read-only: a
+      # separation request names a file, and this server opens it.
+      - ${STUDIO_DATA_DIR}:/data:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s

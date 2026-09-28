@@ -1433,6 +1433,33 @@ services:
     tier: none
     icon: "🎬"
     units:
+      # The Studio's own audio.cpp, on the Studio's card: separating a song's
+      # vocals and aligning its lyrics to them, for a music video that follows
+      # the words. Built from audio-cpp's directory so it is the same image as
+      # that service's CUDA build; first, because the studio calls it.
+      - name: audio
+        dir: services/audio-cpp
+        compose:
+          - docker-compose.studio.yml
+          - { file: docker-compose.studio.gpu.yml, when: services.home-studio.gpu }
+        compose_project: home-studio-audio
+        build: true
+        pre_remove_containers: [audio-cpp-studio]
+        pre_create_networks: [nanobot-net]
+        env:
+          STUDIO_GPU_DEVICE: "{services.home-studio.gpu_device}"
+        state:
+          # The same package cache as audio-cpp's: one copy of each model.
+          - { path: "{paths.state}/audio-cpp/models", mount: /models,
+              env: AUDIOCPP_MODELS_DIR, backup: skip }
+          # Read-only here: it opens the files the Studio names.
+          - { path: "{paths.state}/home-studio/data", mount: "/data (read-only)",
+              env: STUDIO_DATA_DIR }
+        verify:
+          # The first start downloads ~1.4 GB of models before it answers.
+          - container_healthy: audio-cpp-studio
+            fail_message: "the Studio's audio.cpp is not answering; music videos will not follow the words"
+            timeout: 900
       - name: studio
         dir: services/home-studio
         compose:
@@ -1449,6 +1476,7 @@ services:
           STUDIO_MEM_LIMIT: "{services.home-studio.mem_limit}"
           # Where "done" goes: the portal tells the person on their phone.
           STUDIO_NOTIFY_URL: "https://{dns.portal}:{services.home-core.port}/studio/api/notify"
+          STUDIO_AUDIO_URL: "http://audio-cpp-studio:8080"
         state:
           # Projects, the queue, takes and renders: the household's own work.
           - { path: "{paths.state}/home-studio/data", mount: /data, env: STUDIO_DATA_DIR }
