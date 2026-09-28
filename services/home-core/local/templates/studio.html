@@ -108,6 +108,7 @@
       padding: 10px 16px; border-radius: var(--r); font-size: .84rem; display: none; z-index: 20; max-width: 92vw; }
     dialog { border: 0; border-radius: var(--r-lg); padding: 16px; max-width: 520px; width: 92vw; }
     dialog::backdrop { background: rgba(0,0,0,.4); }
+    dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }
   </style>
   <link rel="stylesheet" href="/theme.css">
 </head>
@@ -521,7 +522,7 @@
           if (ids.length) generate(ids);
           return;
         }
-        if (d.lyrics) return writeLyrics(d.lyrics, b);
+        if (d.lyrics) return lyricsDialog(d.lyrics, b);
         if (d.retouch) return retouch(d.retouch);
         if (b.id === 'long-scene') return longScene();
         if (b.id === 'render') return renderDialog();
@@ -534,14 +535,41 @@
       if (first) toast(fmt('queued_note', { n: Math.max(0, (first.position || 1) - 1), t: dur(first.starts_in || 0) }));
       current = await api('projects/' + current.id); await loadQueue(); drawTab();
     }
-    async function writeLyrics(id, btn) {
-      var item = itemById(id), theme = document.querySelector('[data-theme="' + id + '"]').value;
+    // Asked first, always: what Alfred brings back replaces the box. With
+    // lyrics already there the default is to keep them and change only what
+    // the person says (or just polish them); a new song is the other choice
+    // and says that it replaces them.
+    function lyricsDialog(id, btn) {
+      var theme = document.querySelector('[data-theme="' + id + '"]').value.trim();
+      var box = document.querySelector('textarea[data-f="lyrics"][data-id="' + id + '"]');
+      var has = !!(box && box.value.trim());
       themes[id] = theme;
+      if (!has && !theme) { toast(S.lyrics_need_theme, true); return; }
+      var dlg = $('#dlg');
+      dlg.innerHTML = '<h2>' + S.write_lyrics + '</h2>' +
+        (has ? '<label class="choice"><input type="radio" name="ly-mode" value="edit" checked> ' + S.lyrics_mode_edit + '</label>' +
+               '<label class="choice"><input type="radio" name="ly-mode" value="new"> ' + S.lyrics_mode_new + '</label>'
+             : '<p>' + fmt('lyrics_confirm_new', { theme: esc(theme) }) + '</p>') +
+        '<label class="f">' + S.lyrics_notes + '</label><textarea id="ly-notes" rows="3" placeholder="' + esc(S.lyrics_notes_ph) + '"></textarea>' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ly-no">' + S.cancel + '</button><button class="primary" id="ly-go">' + S.lyrics_go + '</button></div>';
+      dlg.showModal();
+      $('#ly-no').onclick = function () { dlg.close(); };
+      $('#ly-go').onclick = function () {
+        var picked = dlg.querySelector('input[name="ly-mode"]:checked');
+        var mode = picked ? picked.value : 'new';
+        if (mode === 'new' && !theme) { toast(S.lyrics_need_theme, true); return; }
+        var notes = $('#ly-notes').value.trim();
+        dlg.close();
+        writeLyrics(id, btn, mode, notes, mode === 'edit' ? box.value : '');
+      };
+    }
+    async function writeLyrics(id, btn, mode, notes, lyrics) {
+      var item = itemById(id), theme = themes[id] || '';
       btn.disabled = true; btn.textContent = S.writing_lyrics;
       busy++;
       try {
         await flushSave();
-        var r = await api('lyrics', { method: 'POST', body: { theme: theme, style: item.style, language: item.language || current.settings.language, seconds: item.seconds } });
+        var r = await api('lyrics', { method: 'POST', body: { mode: mode, notes: notes, lyrics: lyrics, theme: theme, style: item.style, language: item.language || current.settings.language, seconds: item.seconds } });
         // Looked up again: the project may have been reloaded while Alfred wrote.
         var now = itemById(id);
         if (now) { now.lyrics = r.lyrics; markDirty(); }

@@ -21606,6 +21606,8 @@ STUDIO_UI_KEYS = (
     'render_failed', 'renders', 'download', 'resolution', 'res_wide', 'res_tall', 'res_square',
     'language', 'add_song', 'add_instrumental', 'add_voice', 'kind_song', 'kind_instrumental',
     'kind_voice', 'song_theme', 'song_theme_ph', 'write_lyrics', 'writing_lyrics', 'lyrics',
+    'lyrics_mode_edit', 'lyrics_mode_new', 'lyrics_confirm_new', 'lyrics_notes', 'lyrics_notes_ph',
+    'lyrics_go',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
@@ -21667,26 +21669,56 @@ def studio_notify():
 def studio_lyrics():
     """Lyrics written by the person's own assistant, in ACE-Step's shape:
     section tags on their own lines, verses of similar length. The model that
-    writes is the household's; the card that sings is the studio's."""
+    writes is the household's; the card that sings is the studio's.
+
+    Two modes, and the page asks which before calling: `new` writes a song
+    from the theme, `edit` keeps the lyrics sent and changes only what `notes`
+    asks for -- or, with no notes, polishes them without rewriting them."""
     if not _studio_reachable():
         abort(404)
     username = session['user']
     d = request.get_json(silent=True) or {}
+    mode = 'edit' if d.get('mode') == 'edit' else 'new'
     theme = str(d.get('theme') or '').strip()[:600]
-    if not theme:
+    lyrics = str(d.get('lyrics') or '').strip()[:4000]
+    notes = str(d.get('notes') or '').strip()[:1000]
+    if mode == 'edit' and not lyrics:
+        mode = 'new'
+    if mode == 'new' and not theme:
         return jsonify(error=t('studio.lyrics_need_theme')), 400
     language = {'es': 'Spanish', 'en': 'English'}.get(str(d.get('language') or 'es'), 'Spanish')
-    seconds = max(20, min(600, int(d.get('seconds') or 90)))
+    try:
+        seconds = max(20, min(600, int(float(d.get('seconds') or 90))))
+    except (TypeError, ValueError):
+        seconds = 90
     style = str(d.get('style') or '').strip()[:200]
-    prompt = (
-        f"Write original song lyrics in {language} about: {theme}.\n"
-        + (f"Musical style: {style}.\n" if style else "")
-        + f"The song lasts about {seconds} seconds, so write about {max(2, seconds // 20)} short sections.\n"
+    rules = (
         "Format rules (for a singing model): put each section tag on its own line, such as "
         "[Verse], [Chorus], [Bridge], [Outro]; separate sections with a blank line; 6-10 "
         "syllables per line and similar line lengths within a section; no explanations, no "
         "title, no quotes -- only the tagged lyrics."
     )
+    if mode == 'edit':
+        prompt = (
+            f"Here are the lyrics of a song in {language}"
+            + (f" about: {theme}" if theme else "") + ".\n"
+            + (f"Musical style: {style}.\n" if style else "")
+            + (f"Change only this: {notes}\nLeave every other line exactly as it is -- same "
+               "words, same order, same section tags.\n" if notes else
+               "Improve them without rewriting them: fix the meter and the rhymes, tighten "
+               "weak lines, and keep the meaning, the language, the sections and every line "
+               "that already works.\n")
+            + rules + " Answer with the complete lyrics, changed lines and unchanged ones.\n\n"
+            + "LYRICS:\n" + lyrics
+        )
+    else:
+        prompt = (
+            f"Write original song lyrics in {language} about: {theme}.\n"
+            + (f"Musical style: {style}.\n" if style else "")
+            + (f"Also: {notes}\n" if notes else "")
+            + f"The song lasts about {seconds} seconds, so write about {max(2, seconds // 20)} short sections.\n"
+            + rules
+        )
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-lyrics'
     text = _run_nanobot_turn(username, chat_id, prompt, STUDIO_LYRICS_TIMEOUT_S)
     if not text:
