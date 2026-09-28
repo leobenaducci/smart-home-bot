@@ -3622,7 +3622,8 @@ HOUSE_ONLY_APPS = {
 
 # App key -> the name it goes by in the Apps menu.
 _APP_LINK_NAMES = {'cameras': 'Cameras', 'files': 'Files', 'tasks': 'Chores',
-                   'grocery': 'Shopping', 'menu': 'Menu', 'studio': 'Studio'}
+                   'grocery': 'Shopping', 'menu': 'Menu', 'studio': 'Studio',
+                   'lights': 'Lights'}
 CHAT_HOUSE_ONLY_LINKS = tuple(
     [_APP_LINK_NAMES[key] for key in sorted(HOUSE_ONLY_APPS)
      if key in _APP_LINK_NAMES]
@@ -3830,7 +3831,22 @@ def _chat_external_links():
         links = [link for link in links if link['name'] != 'Code']
     if not _studio_configured():
         links = [link for link in links if link['name'] != 'Studio']
-    return links + _extension_menu_links()['casa']
+    return [_link_in_language(link) for link in links + _extension_menu_links()['casa']]
+
+
+def _link_in_language(link):
+    """A menu link with its name and description in the reader's language:
+    `nav.app_<name>` and `nav.app_<name>_help`, when the catalogue has them.
+    The names in CHAT_APP_LINKS and in a plugin's tile are English and are
+    what the house-only rules match on, so they are translated here, last --
+    the Spanish page read "Cameras", "Studio" and "Lights"."""
+    slug = re.sub(r'[^a-z0-9]+', '_', str(link.get('name') or '').lower()).strip('_')
+    name, desc = t(f'nav.app_{slug}'), t(f'nav.app_{slug}_help')
+    return {**link,
+            # What code and tests match on: the name before translation.
+            'key': link.get('name'),
+            'name': name if name and name != f'nav.app_{slug}' else link.get('name'),
+            'description': desc if desc and desc != f'nav.app_{slug}_help' else link.get('description', '')}
 
 
 @app.route('/chat/apps')
@@ -3852,7 +3868,7 @@ def chat_apps():
     VPS does, and each tells the truth about itself.
     """
     return jsonify(
-        links=[{'name': l['name'], 'url': l['url'], 'icon': l['icon'],
+        links=[{'key': l.get('key', l['name']), 'name': l['name'], 'url': l['url'], 'icon': l['icon'],
                 'description': l['description']} for l in _chat_external_links()],
         at_home=_at_home(),
     )
@@ -4936,6 +4952,26 @@ def camaras_proxy(path):
     if house_only('cameras') and not _at_home():
         return jsonify(error='Available only at home or over the VPN.'), 404
     return _house_proxy(CAMERAS_APP_URL, '/camaras', path)
+
+
+# The Lights app (the household's `smart-lights` plugin), mounted like the
+# cameras: same-origin, so it opens inside the Alfred app instead of in a
+# browser tab on a raw LAN address, and the portal's own /theme.css reaches it.
+# The app already reads X-Forwarded-Prefix and fetches /luces/_csrf (above);
+# only this route was missing, so the tile pointed at http://<hub>:5010.
+@app.route('/luces')
+@login_required
+def luces_root():
+    return redirect('/luces/')
+
+
+@app.route('/luces/', defaults={'path': ''}, methods=_PROXY_METHODS)
+@app.route('/luces/<path:path>', methods=_PROXY_METHODS)
+@login_required
+def luces_proxy(path):
+    if house_only('lights') and not _at_home():
+        return jsonify(error='Available only at home or over the VPN.'), 404
+    return _house_proxy(LIGHTS_APP_URL, '/luces', path)
 
 
 # ---------------------------------------------------------------------------

@@ -1889,7 +1889,9 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 # different question and a different setting.
 # The Studio as well (2026-09-28): the household wants it on the wifi or the
 # VPN only, like the cameras.
-HOUSE_ONLY_APPS = {"home-cameras": "cameras", "home-studio": "studio"}
+# And the lights, when a household plugin serves them (`smart-lights`, mounted
+# by the portal at /luces): switches for the whole house are not a public page.
+HOUSE_ONLY_APPS = {"home-cameras": "cameras", "home-studio": "studio", "smart-lights": "lights"}
 
 
 # Which host each `dns:` name stands in front of, so a name left blank can fall

@@ -845,6 +845,21 @@ def _settings_gate(request, rest):
 #
 # HomeWeb does its own admin check on top of all five: the pages redirect a
 # non-admin away and the APIs answer 403.
+@app.api_route("/luces{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_luces(request: Request, rest: str):
+    """The Lights app, mounted by HomeCore at /luces (the household's lights
+    plugin). House-only by default, like the cameras: refused off the wifi and
+    the VPN before anything reaches HomeCore."""
+    refused = _lan_only(request, "lights")
+    if refused:
+        return refused
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/luces", rest, request.url.query), user)
+
+
 @app.api_route("/studio{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_studio(request: Request, rest: str):
     """The Studio page and /studio/api/* (home-studio, docs/home-studio.md).

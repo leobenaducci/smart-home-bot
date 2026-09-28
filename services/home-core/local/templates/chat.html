@@ -1318,7 +1318,7 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
   <a class="app-item app-link" href="{{ x.url }}"
      {% if lan %}target="_blank" rel="noopener noreferrer"{% endif %}
      role="menuitem"
-     title="{{ x.description }}{% if lan %} — only on the house network{% endif %}">
+     title="{{ x.description }}{% if lan %} — {{ t('nav.lan_only_note') }}{% endif %}">
     {{ x.icon }} {{ x.title or x.name }}{% if lan %}<span class="app-ext">casa</span>{% endif %}
   </a>
   {% endfor %}
@@ -1405,7 +1405,7 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
             <a class="app-item app-link" href="{{ l.url }}"
                {% if lan %}target="_blank" rel="noopener noreferrer"{% endif %}
                role="menuitem"
-               title="{{ l.description }}{% if lan %} — only on the house network{% endif %}">
+               title="{{ l.description }}{% if lan %} — {{ t('nav.lan_only_note') }}{% endif %}">
               {{ l.icon }} {{ l.name }}{% if lan %}<span class="app-ext">casa</span>{% endif %}
             </a>
             {% endfor %}
@@ -7167,7 +7167,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
         a.className = 'app-item app-link';
         a.href = l.url;
         a.setAttribute('role', 'menuitem');
-        a.title = l.description + (lan ? ' — only on the house network' : '');
+        a.title = l.description + (lan ? ' — ' + {{ t('nav.lan_only_note')|tojson }} : '');
         if (lan) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
         a.textContent = l.icon + ' ' + l.name + ' ';
         if (lan) {

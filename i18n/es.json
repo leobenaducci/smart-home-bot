@@ -1476,5 +1476,12 @@
   "studio.err": "Algo salió mal: {e}",
   "studio.min": "min",
   "studio.sec": "s",
-  "studio.hours": "h"
+  "studio.hours": "h",
+  "nav.app_cameras": "Cámaras",
+  "nav.app_cameras_help": "Lo que ven las cámaras de la casa",
+  "nav.app_studio": "Estudio",
+  "nav.app_studio_help": "Videos, imágenes y canciones, hechos en la placa de la casa",
+  "nav.app_lights": "Luces",
+  "nav.app_lights_help": "Cada luz y cada botón de la casa",
+  "nav.lan_only_note": "solo en la red de la casa"
 }

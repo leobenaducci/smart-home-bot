@@ -1474,5 +1474,12 @@
   "studio.err": "Something went wrong: {e}",
   "studio.min": "min",
   "studio.sec": "s",
-  "studio.hours": "h"
+  "studio.hours": "h",
+  "nav.app_cameras": "Cameras",
+  "nav.app_cameras_help": "What the house cameras can see",
+  "nav.app_studio": "Studio",
+  "nav.app_studio_help": "Video, pictures and songs, made on the house's own card",
+  "nav.app_lights": "Lights",
+  "nav.app_lights_help": "Every light and wall button in the house",
+  "nav.lan_only_note": "only on the house network"
 }
