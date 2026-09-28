@@ -1,6 +1,6 @@
 ---
 name: studio
-description: "Invoke with JSON: {\"skill\":\"studio\",\"action\":\"...\"}. The house Studio: generate on the house's own card -- make_image(prompt, [size]) | make_song(lyrics, style, [seconds], [language]) | make_instrumental(style, [seconds]) | make_video(description, [seconds], [dialogue], [sound]) | studio_queue() | my_projects(). Use it when a message asks to make, draw, generate or compose a picture, a photo, a song, music, a jingle or a video. Everything goes into a project the person can open, change and redo in the Studio page."
+description: "Invoke with JSON: {\"skill\":\"studio\",\"action\":\"...\"}. The house Studio: generate on the house's own card -- make_image(prompt, [size]) | make_song(lyrics, style, [seconds], [language]) | make_instrumental(style, [seconds]) | make_video(description, [seconds], [dialogue], [sound]) | studio_queue() | my_projects(). Use it when a message asks to make, draw, generate or compose a picture, a photo, a song, music, a jingle or a video. Everything goes into the person's default Studio project, where they can open, change and redo it."
 # On demand: the description carries the invocation and the API.
 metadata: {"nanobot":{"translatable":true}}
 ---
@@ -9,9 +9,10 @@ metadata: {"nanobot":{"translatable":true}}
 
 The house has its own generator on a card of its own. Every request is queued
 behind everybody else's -- it is one card for the whole family -- and the
-person gets a notification when theirs is ready. It lands in a project of
-theirs in the Studio page (the Apps menu → Studio), where they can watch it,
-redo it, change part of it or put a film together.
+person gets a notification when theirs is ready. It lands in their **default
+Studio project** ("Alfred") -- one place for everything asked of you -- in the
+Studio page (the Apps menu → Studio), where they can watch it, redo it,
+change part of it, move it into a project of its own or put a film together.
 
 Write the JSON block as plain text in your reply; the system intercepts and
 runs it. Never exec, curl, or Python you write.

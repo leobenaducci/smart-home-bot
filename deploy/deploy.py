@@ -3904,6 +3904,19 @@ def image_model_env(cfg: dict) -> dict:
         if not value:
             continue
         env[prefixed] = value
+        # `studio:<model>`: the house's own Studio draws it, through the one
+        # queue on its card (docs/home-studio.md). Reached through the portal,
+        # which forwards it as the member the assistant serves -- so the
+        # picture lands in that person's default project, and no assistant
+        # holds a key that could act as anyone else.
+        if value.startswith("studio:"):
+            env[bare] = value.split(":", 1)[1]
+            portal = str((cfg.get("dns") or {}).get("portal") or "").strip()
+            port = ((cfg.get("services") or {}).get("home-core") or {}).get("port", 21001)
+            if portal:
+                env["IMAGE_API_URL" if role == "image_normal" else "IMAGE_API_URL_HIGH"] = (
+                    f"https://{portal}:{port}/studio/v1/images/generations")
+            continue
         name, provider = split_model(value)
         # The bare id, for whoever posts it to an API. Exported for every
         # provider rather than only Together, because the skill that draws now

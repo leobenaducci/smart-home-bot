@@ -22,16 +22,17 @@ def _curl(method, path, data=None):
 def _minutes(s):
     return max(1, round((s or 0) / 60))
 
-def _project(name, **items):
-    # A project per request: the person finds it in the Studio, and can redo it there.
-    p = _curl("POST", "projects", {"name": name[:60]})
-    if "id" not in p:
-        return None, p
-    saved = _curl("PUT", f"projects/{p['id']}", items)
-    return saved, None
+def _default():
+    # The person's default Studio project: everything asked of Alfred lands
+    # there, one place to find loose requests, and each can be redone there.
+    d = _curl("GET", "default-project")
+    return d.get("id"), (None if d.get("id") else d)
 
-def _queue(pid, ids):
-    r = _curl("POST", f"projects/{pid}/generate", {"items": ids})
+def _add(section, items):
+    pid, err = _default()
+    if err:
+        return err
+    r = _curl("POST", f"projects/{pid}/items", {"section": section, "items": items, "generate": True})
     q = r.get("queued") or []
     if not q:
         return r
@@ -40,31 +41,31 @@ def _queue(pid, ids):
             "starts_in_minutes": _minutes(first.get("starts_in")),
             "takes_minutes": _minutes(sum((j.get("takes") or 0) for j in q)),
             "project": pid, "open": f"/studio?project={pid}",
-            "note": "Queued on the house's card. The person gets a notification when it is ready; it is NOT done yet."}
+            "note": "Queued on the house's card, in the person's default Studio project (Alfred). "
+                    "They get a notification when it is ready; it is NOT done yet."}
 
 def make_image(prompt, size="1024x1024"):
-    doc, err = _project(prompt, images=[{"prompt": prompt, "size": size}])
-    return err or _queue(doc["id"], [doc["images"][0]["id"]])
+    return _add("images", [{"prompt": prompt, "size": size, "title": prompt[:60]}])
 
 def make_song(lyrics, style="", seconds=90, language="es", title=""):
-    doc, err = _project(title or (style or "Canción"), audio=[{"kind": "song", "title": title, "lyrics": lyrics,
-                                                       "style": style, "seconds": int(seconds), "language": language}])
-    return err or _queue(doc["id"], [doc["audio"][0]["id"]])
+    return _add("audio", [{"kind": "song", "title": title or style[:60], "lyrics": lyrics,
+                           "style": style, "seconds": int(seconds), "language": language}])
 
 def make_instrumental(style, seconds=60, title=""):
-    doc, err = _project(title or style, audio=[{"kind": "instrumental", "title": title, "style": style, "seconds": int(seconds)}])
-    return err or _queue(doc["id"], [doc["audio"][0]["id"]])
+    return _add("audio", [{"kind": "instrumental", "title": title or style[:60], "style": style,
+                           "seconds": int(seconds)}])
 
 def make_video(description, seconds=5, dialogue="", sound="", music="", title=""):
-    # Shots of up to 15 s, each continuing the one before.
+    # Shots of up to 15 s, each continuing the one before -- except the first,
+    # which starts fresh: the shot before it in the project is another request.
     seconds = max(5, min(300, float(seconds)))
     n = max(1, math.ceil(seconds / 15))
     each = max(5, min(20, round(seconds / n)))
     shots = [{"prompt": description + (f" (part {i + 1} of {n}, continuing the same action)" if n > 1 else ""),
-              "seconds": each, "continuity": True, "soundscape": sound, "music": music,
+              "seconds": each, "continuity": i > 0, "soundscape": sound, "music": music,
+              "title": (title or description)[:60],
               "dialogue": dialogue if i == 0 else ""} for i in range(n)]
-    doc, err = _project(title or description, shots=shots)
-    return err or _queue(doc["id"], [s["id"] for s in doc["shots"]])
+    return _add("shots", shots)
 
 def studio_queue():
     q = _curl("GET", "queue")

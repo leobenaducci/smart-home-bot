@@ -85,8 +85,11 @@ class Projects:
             out.append({"id": doc["id"], "name": doc.get("name", ""), "updated": doc.get("updated", 0),
                         "shots": len(doc.get("shots") or []), "audio": len(doc.get("audio") or []),
                         "images": len(doc.get("images") or []),
+                        "default": bool(doc.get("default")),
                         "cover": self._cover(doc)})
-        return sorted(out, key=lambda d: -d["updated"])
+        # The default project first: it is where anything asked of the
+        # assistant went, which is what somebody is usually looking for.
+        return sorted(out, key=lambda d: (not d["default"], -d["updated"]))
 
     @staticmethod
     def _cover(doc: dict) -> str:
@@ -160,6 +163,51 @@ class Projects:
             self._write(owner, pid, doc)
             return doc
 
+    def default(self, owner: str, name: str = "Alfred") -> dict:
+        """The person's default project: where whatever the assistant is asked
+        for lands when nobody named a project -- one place to find loose
+        requests, instead of a project per picture. Made on first use; its id
+        is remembered in `<owner>/.default`, and a deleted one is made again.
+        """
+        if not LOGIN_RE.fullmatch(owner or ""):
+            raise ProjectError("unknown person")
+        pointer = self.root / owner / ".default"
+        with self._lock(f"{owner}/.default"):
+            try:
+                pid = pointer.read_text().strip()
+                doc = self.load(owner, pid)
+                if not doc.get("default"):
+                    raise ProjectError("not the default any more")
+                return doc
+            except (OSError, ProjectError):
+                pass
+            doc = self.create(owner, name)
+            doc["default"] = True
+            self._write(owner, doc["id"], doc)
+            pointer.write_text(doc["id"])
+            return doc
+
+    def append(self, owner: str, pid: str, section: str, items: list[dict]) -> list[dict]:
+        """Add items to the end of a section, server-side, and return them with
+        their ids. Unlike `save` it leaves every other item as it is -- which is
+        what lets two requests land in one project without either replacing
+        the other's."""
+        if section not in SECTIONS:
+            raise ProjectError(f"no section {section}")
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            added = []
+            for item in items[:50]:
+                base = {"id": _new_id(), "takes": [], "chosen": -1}
+                for key in EDITABLE[section]:
+                    if key in item:
+                        base[key] = _clean(key, item[key], base)
+                added.append(base)
+            doc.setdefault(section, []).extend(added)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return added
+
     def delete(self, owner: str, pid: str) -> None:
         src = self.dir(owner, pid)
         if not src.is_dir():
@@ -175,6 +223,7 @@ class Projects:
         for sub in ("takes", "uploads", "renders"):
             shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
         doc.update(id=new["id"], name=new["name"], created=new["created"], updated=time.time())
+        doc.pop("default", None)                        # a copy is an ordinary project
         self._write(owner, new["id"], doc)
         return doc
 

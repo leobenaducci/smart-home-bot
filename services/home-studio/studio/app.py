@@ -324,6 +324,76 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
     return {"queued": [_public(sched.get(i) or store.get(i), me) for i in queued]}
 
 
+@app.get("/api/default-project")
+def default_project(name: str = "Alfred", me: Who = Depends(who)):
+    """The person's default project -- loose requests land here."""
+    return projects.default(me.login, name)
+
+
+@app.post("/api/projects/{pid}/items")
+def add_items(pid: str, body: dict, me: Who = Depends(who)):
+    """Add items to a project without touching the rest of it, and queue
+    them when asked (`generate`). For requests that come from somewhere other
+    than the page -- the assistant -- which must never replace what is there."""
+    section = str(body.get("section") or "")
+    try:
+        added = projects.append(me.login, pid, section, list(body.get("items") or []))
+    except ProjectError as exc:
+        _bad(exc, 404)
+    out = {"items": [a["id"] for a in added]}
+    if body.get("generate") and added:
+        out["queued"] = generate(pid, {"items": out["items"]}, me)["queued"]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The drawing skill's door: Together's /v1/images/generations dialect, so the
+# assistant's `images` skill draws here by pointing IMAGE_API_URL at it. Every
+# picture it asks for goes into the person's default project, through the one
+# queue, like anything else on this card.
+#
+# The skill waits for a picture, and the card may be busy with somebody's
+# film for many minutes. So this waits a while and then answers "queued"
+# instead of an image; the skill says so, and the person is notified when it
+# is ready, like any other studio job.
+IMAGE_WAIT_S = float(os.environ.get("STUDIO_IMAGE_WAIT_S", "170"))
+
+
+def _nearest_size(width: int, height: int) -> str:
+    want = (width or 1024) / (height or 1024)
+    return min(recipes.IMAGE_SIZES, key=lambda s: abs(int(s.split("x")[0]) / int(s.split("x")[1]) - want))
+
+
+@app.post("/v1/images/generations")
+def images_generations(body: dict, me: Who = Depends(who)):
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+    doc = projects.default(me.login)
+    item = projects.append(me.login, doc["id"], "images", [{
+        "prompt": prompt, "title": prompt[:60],
+        "size": _nearest_size(int(body.get("width") or 1024), int(body.get("height") or 1024))}])[0]
+    job_id = generate(doc["id"], {"items": [item["id"]]}, me)["queued"][0]["id"]
+    deadline = time.time() + IMAGE_WAIT_S
+    while time.time() < deadline:
+        job = store.get(job_id)
+        if job["state"] == "done":
+            path = projects.dir(me.login, doc["id"]) / job["files"][0]
+            import base64
+            return {"created": int(time.time()), "model": recipes.IMAGE_MODEL, "studio_project": doc["id"],
+                    "data": [{"b64_json": base64.b64encode(path.read_bytes()).decode()}]}
+        if job["state"] in ("failed", "cancelled"):
+            raise HTTPException(502, job["error"] or f"the picture was {job['state']}")
+        time.sleep(1.5)
+    sched = {j["id"]: j for j in store.schedule()}
+    j = sched.get(job_id) or store.get(job_id)
+    return JSONResponse({"queued": True, "id": job_id, "studio_project": doc["id"],
+                         "position": j.get("position"), "starts_in": j.get("starts_in"),
+                         "message": "The house's card is busy: the picture is queued in the Studio "
+                                    "(the person's default project) and they will be notified when it is ready."},
+                        status_code=202)
+
+
 @app.post("/api/projects/{pid}/edit")
 def edit_shot(pid: str, body: dict, me: Who = Depends(who)):
     """Change part of a shot: re-generate it from its own video, anchored to

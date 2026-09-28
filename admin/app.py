@@ -3183,6 +3183,11 @@ def _t_or(key: str, fallback: str, **params) -> str:
     return text
 
 
+# An image slot pointed at the house's Studio instead of a hosted provider
+# (the deployer turns it into the Studio's door behind the portal).
+STUDIO_IMAGE_MODEL = "studio:z_image"
+
+
 def refresh_catalogue(cfg: dict, recheck: bool = False) -> dict:
     return model_catalogue.refresh(
         MODELS_CACHE, model_endpoints(cfg), recheck,
@@ -3558,6 +3563,12 @@ def models_page():
     chosen = ((cfg.get("assistant") or {}).get("models") or {})
     every = {m["id"]: m for m in model_catalogue.all_models(catalogue)}
     image_choices = model_catalogue.image_models(catalogue)
+    # The house's own Studio draws too (docs/home-studio.md): offered while it
+    # is on, and kept while a slot names it even if it is not, so a save of
+    # this card can never quietly clear a slot that points there.
+    studio_on = bool(((cfg.get("services") or {}).get("home-studio") or {}).get("enabled"))
+    if studio_on or STUDIO_IMAGE_MODEL in (chosen.get("image_normal"), chosen.get("image_high")):
+        image_choices = [{"id": STUDIO_IMAGE_MODEL, "name": "Z-Image Turbo", "provider": "studio"}] + image_choices
     image_slots = [{"key": key,
                     "label": _t_or(f"admin.models.slot_{key}", spec["label"]),
                     "why": _t_or(f"admin.models.slot_{key}_why", spec["why"]),
@@ -3909,7 +3920,8 @@ def models_page():
         options=sorted(({**m, "group": _picker_group(m)} for m in every.values()),
                        key=lambda m: (m["provider"], m["id"])),
         model_groups=groups,
-        provider_labels={g["provider"]: g["label"] for g in groups},
+        provider_labels={**{g["provider"]: g["label"] for g in groups},
+                         "studio": _t_or("admin.models.source_studio", "the house's Studio (GPU)")},
         sources=_source_settings(cfg),
         roles=list((cfg.get("hosts") or {}).keys()),
         checked_at=(time.strftime("%Y-%m-%d %H:%M", time.localtime(checked))

@@ -261,3 +261,56 @@ class TestItIsOfferedToTheModel:
 
     def test_search_and_get_still_are(self):
         assert set(fi.ACTIONS) == {"search", "get", "draw"}
+
+
+class TestTheHouseStudio:
+    """`studio:z_image` on an image slot (2026-09-28): the drawing goes to the
+    house's Studio through the portal, as the person this assistant serves,
+    and lands in their default Studio project -- or waits in its queue."""
+
+    URL = "https://portal.test:21001/studio/v1/images/generations"
+
+    @pytest.fixture(autouse=True)
+    def _studio(self, monkeypatch):
+        monkeypatch.setenv("IMAGE_API_MODEL", "z_image")
+        monkeypatch.setenv("IMAGE_API_URL", self.URL)
+        monkeypatch.setenv("HOMECORE_USER_ID", "999000111")
+        monkeypatch.setenv("HOMECORE_PROXY_TOKEN", "member-token")
+
+    def _answer(self, monkeypatch, payload):
+        seen = {}
+
+        class R:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return json.dumps(self.body).encode()
+
+        def fake(req, timeout=None, context=None):
+            seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+            seen["context"] = context
+            return R(payload)
+        monkeypatch.setattr(fi.urllib.request, "urlopen", fake)
+        return seen
+
+    def test_it_goes_as_the_person_and_keeps_the_picture(self, monkeypatch):
+        import base64
+        seen = self._answer(monkeypatch, {"data": [{"b64_json": base64.b64encode(b"\x89PNGx").decode()}]})
+        out = fi.draw({"prompt": "a boat", "filename": "boat.png"})
+        assert seen["headers"]["x-proxy-user"] == "999000111"
+        assert seen["headers"]["x-proxy-secret"] == "member-token"
+        assert "authorization" not in seen["headers"]
+        assert seen["context"] is not None                 # the portal's own certificate
+        assert out["file"] == "media/boat.png" and out["local"] and not out["paid"]
+
+    def test_a_busy_card_is_queued_not_a_picture(self, monkeypatch):
+        self._answer(monkeypatch, {"queued": True, "position": 2, "starts_in": 900})
+        out = fi.draw({"prompt": "a boat"})
+        assert out["queued"] is True and "file" not in out
+        assert out["starts_in_minutes"] == 15 and "NO" in out["message"]
+
+    def test_the_room_assistant_has_no_person_to_draw_for(self, monkeypatch):
+        monkeypatch.delenv("HOMECORE_USER_ID")
+        seen = self._answer(monkeypatch, {})
+        out = fi.draw({"prompt": "a boat"})
+        assert "error" in out and "headers" not in seen

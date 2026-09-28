@@ -21592,6 +21592,7 @@ STUDIO_LYRICS_TIMEOUT_S = 120
 
 # Every string the Studio page shows, handed to its script in one object.
 STUDIO_UI_KEYS = (
+    'default_project',
     'title', 'subtitle', 'not_configured', 'unreachable', 'lyrics_need_theme', 'lyrics_failed',
     'projects', 'new_project', 'new_project_name', 'untitled', 'empty_projects', 'back',
     'duplicate', 'delete', 'delete_confirm', 'saved', 'saving', 'save_failed', 'tab_video',
@@ -21691,6 +21692,26 @@ def studio_lyrics():
     if not text:
         return jsonify(error=t('studio.lyrics_failed')), 502
     return jsonify(lyrics=text.strip())
+
+
+@app.route('/studio/v1/images/generations', methods=['POST'])
+@api_login_required
+def studio_images():
+    """The assistant's drawing skill, pointed at the house's Studio
+    (`studio:z_image` on an image slot): forwarded as the member it serves, so
+    the picture lands in their default project and waits in the one queue.
+    The Studio answers within ~3 minutes -- the picture, or "queued"."""
+    if not _studio_configured():
+        return jsonify(error=t('studio.not_configured')), 503
+    if not _studio_reachable():
+        abort(404)
+    try:
+        r = requests.post(f'{STUDIO_URL}/v1/images/generations', headers=_studio_headers(session['user']),
+                          json=request.get_json(silent=True) or {}, timeout=(5, 200))
+    except requests.RequestException as exc:
+        app.logger.warning('studio: drawing failed: %s', exc)
+        return jsonify(error=t('studio.unreachable')), 502
+    return Response(r.content, status=r.status_code, content_type=r.headers.get('Content-Type', 'application/json'))
 
 
 @app.route('/studio/api/<path:sub>', methods=['GET', 'POST', 'PUT', 'DELETE'])

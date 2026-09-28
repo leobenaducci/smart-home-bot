@@ -239,6 +239,30 @@ check("  and a child cannot pause the card", c.post("/api/admin/pause", json={},
 check("  Juana cannot open Tomi's projects",
       c.get(f"/api/projects/{pj['id']}", headers=h(TOMI, "Tomi")).status_code == 404)
 
+print("\nthe default project, for what the assistant is asked")
+d1 = c.get("/api/default-project", headers=h(JUANA, "Juana")).json()
+d2 = c.get("/api/default-project", headers=h(JUANA, "Juana")).json()
+check("  made once, then the same one", d1["id"] == d2["id"] and d1.get("default") is True, (d1["id"], d2["id"]))
+lst = c.get("/api/projects", headers=h(JUANA, "Juana")).json()["projects"]
+check("  and listed first", lst[0]["id"] == d1["id"] and lst[0]["default"], [x["name"] for x in lst])
+r1 = c.post(f"/api/projects/{d1['id']}/items", json={"section": "images", "items": [{"prompt": "un gato"}]},
+            headers=h(JUANA, "Juana")).json()
+r2 = c.post(f"/api/projects/{d1['id']}/items", json={"section": "images", "items": [{"prompt": "un perro"}], "generate": True},
+            headers=h(JUANA, "Juana")).json()
+imgs = c.get(f"/api/projects/{d1['id']}", headers=h(JUANA, "Juana")).json()["images"]
+check("  two requests add two items; neither replaces the other",
+      [i["prompt"] for i in imgs] == ["un gato", "un perro"] and len(r2.get("queued") or []) == 1, imgs)
+A.IMAGE_WAIT_S = 0.5
+r = c.post("/v1/images/generations", json={"prompt": "a red boat", "width": 1344, "height": 768},
+           headers=h(JUANA, "Juana"))
+check("  the drawing door queues in the default project and says so when the card is busy",
+      r.status_code == 202 and r.json()["queued"] and r.json()["studio_project"] == d1["id"], (r.status_code, r.text[:200]))
+imgs = c.get(f"/api/projects/{d1['id']}", headers=h(JUANA, "Juana")).json()["images"]
+check("  at the size nearest the one asked for", imgs[-1]["prompt"] == "a red boat" and imgs[-1]["size"] == "1344x768",
+      imgs[-1])
+check("  and nobody else's default project is involved",
+      c.get("/api/default-project", headers=h(TOMI, "Tomi")).json()["id"] != d1["id"])
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")
 raise SystemExit(1 if failures else 0)

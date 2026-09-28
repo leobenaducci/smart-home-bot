@@ -1482,5 +1482,7 @@
   "nav.app_lights": "Lights",
   "nav.app_lights_help": "Every light and wall button in the house",
   "nav.lan_only_note": "only on the house network",
-  "entry.studio": "Studio"
+  "entry.studio": "Studio",
+  "admin.models.source_studio": "the house's Studio (GPU)",
+  "studio.default_project": "Requests to Alfred"
 }
