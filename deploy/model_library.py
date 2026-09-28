@@ -71,11 +71,24 @@ def _get(path: str, timeout: int = 10) -> dict:
         return json.load(r)
 
 
-def ollama_models() -> list[dict]:
-    try:
-        rows = _get("/api/tags").get("models") or []
-    except (OSError, ValueError):
-        return []
+def ollama_models(wait_s: float = 0) -> list[dict] | None:
+    """What Ollama's store holds, or None when Ollama did not answer.
+
+    None is not "no models": the refresh runs right after an apply restarts
+    the servers, and on 2026-09-26 it read an Ollama still coming up as an
+    empty store -- the library lost all 22 Ollama models and every test result
+    recorded for them, and kept showing only the GGUF files until the next
+    apply. *wait_s* is how long to keep asking while it comes up.
+    """
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            rows = _get("/api/tags").get("models") or []
+            break
+        except (OSError, ValueError):
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(2)
     out = []
     for m in rows:
         d = m.get("details") or {}
@@ -125,10 +138,19 @@ def save_library(config_dir: Path, doc: dict) -> None:
     tmp.replace(path)
 
 
-def refresh(config_dir: Path) -> dict:
-    """The inventory, with each model's recorded tests, written for the page."""
+def refresh(config_dir: Path, wait_s: float = 60) -> dict:
+    """The inventory, with each model's recorded tests, written for the page.
+
+    An Ollama that does not answer within *wait_s* keeps the Ollama models the
+    library last saw, tests included, and says so (`ollama_unreachable`):
+    stale is honest, empty is wrong.
+    """
     doc = load_library(config_dir)
-    models = ollama_models() + file_models()
+    from_ollama = ollama_models(wait_s)
+    doc["ollama_unreachable"] = from_ollama is None
+    if from_ollama is None:
+        from_ollama = [m for m in doc.get("models") or [] if m.get("store") == "ollama"]
+    models = from_ollama + file_models()
     for m in models:
         m["engines"] = engines_for(m)
     doc["models"] = models

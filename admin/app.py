@@ -8275,7 +8275,7 @@ def _library_view(cfg: dict) -> dict:
     queued = []
     with contextlib.suppress(OSError, ValueError):
         queued = json.loads((CONFIG.parent / LIBRARY_QUEUE).read_text()) or []
-    return {"models": rows, "queued": queued,
+    return {"models": rows, "queued": queued, "ollama_unreachable": bool(doc.get("ollama_unreachable")),
             "at": time.strftime("%Y-%m-%d %H:%M", time.localtime(doc["at"])) if doc.get("at") else "",
             "disk_free_gib": round(int(doc.get("disk_free") or 0) / 2**30) if doc.get("disk_free") else None}
 

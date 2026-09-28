@@ -344,6 +344,36 @@ check("  a real file name still passes",
 check("  a model a setup uses is not deleted",
       "used by a setup" in ML.delete("gemma4:e4b", {"gemma4:e4b"}))
 
+# An Ollama still coming up after an apply is not an empty store (2026-09-26:
+# the library lost every Ollama model and its tests that way).
+_cd = pathlib.Path(tempfile.mkdtemp())
+_real_get, _real_files = ML._get, ML.file_models
+ML.file_models = lambda models_dir=None: []
+ML._get = lambda path, timeout=10: {"models": [{"name": "gemma4:e4b", "size": 9, "details": {}}]}
+ML.save_library(_cd, {"tests": {"gemma4:e4b": {"ollama": {"ok": True}}}})
+_doc = ML.refresh(_cd, wait_s=0)
+check("  a refresh lists what Ollama has", [m["id"] for m in _doc["models"]] == ["gemma4:e4b"]
+      and not _doc["ollama_unreachable"], _doc)
+
+
+def _down(path, timeout=10):
+    raise OSError("connection refused")
+
+
+ML._get = _down
+_doc = ML.refresh(_cd, wait_s=0)
+check("  Ollama not answering keeps its models as they were",
+      [m["id"] for m in _doc["models"]] == ["gemma4:e4b"] and _doc["ollama_unreachable"], _doc)
+check("  and their test results", _doc["tests"].get("gemma4:e4b", {}).get("ollama", {}).get("ok") is True,
+      _doc["tests"])
+_calls = []
+ML._get = lambda path, timeout=10: (_calls.append(1), _down(path) if len(_calls) < 2 else
+                                    {"models": [{"name": "qwen3.5:9b", "size": 1, "details": {}}]})[1]
+_doc = ML.refresh(_cd, wait_s=10)
+check("  and it waits for one that is coming up", [m["id"] for m in _doc["models"]] == ["qwen3.5:9b"]
+      and not _doc["ollama_unreachable"] and len(_calls) == 2, (_doc, _calls))
+ML._get, ML.file_models = _real_get, _real_files
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))

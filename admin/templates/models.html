@@ -888,6 +888,7 @@
       <span class="muted small">{{ t('admin.models.library_summary', n=lib.models|length) }}{% if lib.disk_free_gib is not none %} · {{ t('admin.models.library_disk', gib=lib.disk_free_gib) }}{% endif %}</span></summary>
     <p class="help">{{ t('admin.models.library_help') }}</p>
     {% if lib.queued %}<p class="small warn">{{ t('admin.models.library_queued', n=lib.queued|length) }}</p>{% endif %}
+    {% if lib.ollama_unreachable %}<p class="small warn">{{ t('admin.models.library_stale', at=lib.at) }}</p>{% endif %}
     {% if lib.models %}
     <div class="scroll">
     <table class="lib-table small">
