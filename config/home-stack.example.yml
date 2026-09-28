@@ -1063,11 +1063,19 @@ cloud:
     # where the phone is.
     #
     # Empty falls through to the proxy's own default, Tailscale's range. Add a
-    # CIDR to widen it. Deliberately not a place for your public address: that
-    # would show house-only links to anyone on your home wifi with no VPN at
-    # all, break silently when your ISP changes it, and behind CGNAT would not
-    # even be your household.
+    # CIDR to widen it. Not a place for your public address: it would break
+    # silently when your ISP changes it. See the switch below instead.
     home_networks: []
+    # Let the home wifi count as home for the app, with no VPN. The copy of the
+    # proxy at home reports the address the house goes out on to the VPS every
+    # few minutes, and the VPS treats requests from that address as inside --
+    # so an ISP change is followed on its own, and a house that stops
+    # reporting stops counting after twenty minutes.
+    #
+    # Off by default, and worth deciding knowingly: anybody on your wifi who
+    # can sign in sees the house-only apps (cameras, lights, the studio), and
+    # behind CGNAT your public address is shared with other households.
+    home_address_is_home: false
 
     # Where the home end of the reverse tunnel lands on the VPS loopback. The
     # proxy has no other route to your machine, and nothing on the VPS listens

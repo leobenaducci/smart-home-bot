@@ -9,6 +9,7 @@ does for a browser session (resolving the user's nanobot_id, streaming, etc).
 The Android app is a thin WebView pointing at this server; on login it receives a
 long-lived HttpOnly cookie and is dropped straight into /chat?embed=1.
 """
+import asyncio
 import ipaddress
 import logging
 import os
@@ -36,6 +37,7 @@ from auth import (
 )
 from users import find_user
 import devices
+import house_address
 import ntfy_config
 
 # ---------------------------------------------------------------------------
@@ -67,13 +69,14 @@ IS_LAN_COPY = os.environ.get("IS_LAN_COPY", "0") not in ("0", "false", "")
 # the LAN copy: the Android app hard-codes a single URL, the public one, so it
 # always arrives *here*.
 #
-# Tailscale's range by default, and deliberately nothing else. The tempting
-# alternative was the household's own public address, which would have let the
-# app show these on the home wifi with no VPN at all -- and it is the wrong
-# signal: it treats "came from the same building" as "came in privately", it
-# breaks silently the day the ISP changes the address, and on a shared or
-# CGNAT-ed address it is not even the same household. LAN or VPN means LAN or
-# VPN.
+# Tailscale's range by default, and nothing else unless the household says so.
+# The household's own public address is the other way in, and it is opt-in
+# (`cloud.vps.home_address_is_home`, see house_address.py): it lets the app show
+# these on the home wifi with no VPN, and it means "came from the same
+# building" counts as "came in privately" -- on a shared or CGNAT-ed address,
+# not even the same household. So it is never a range typed here, which is what
+# broke silently the day the ISP changed the address: it is learned from the
+# house, and forgotten when the house stops confirming it.
 #
 # 172.16.0.0/12 is *not* here on purpose: the VPS's own network lives in it, so
 # a hop added in front of Caddy would turn every caller in the world into the
@@ -110,9 +113,10 @@ def _from_house(request: Request) -> bool:
 
     True for every request the copy on hub serves -- it is only reachable from
     the LAN, so the question is already answered -- and, on the public copy, for
-    a caller whose address is on the VPN. Nothing else: a public address is
-    away, including the household's own, and an empty `HOME_NETWORKS` makes this
-    False for everybody.
+    a caller whose address is on the VPN. And, only when the household turned
+    it on, for a caller arriving from the address the house itself last
+    reported from (house_address.py). Nothing else: an empty `HOME_NETWORKS`
+    with that switch off makes this False for everybody.
     """
     if IS_LAN_COPY:
         return True
@@ -123,7 +127,15 @@ def _from_house(request: Request) -> bool:
         addr = ipaddress.ip_address(_client_ip(request))
     except ValueError:
         return False
-    return any(addr in net for net in HOME_NETWORKS)
+    if any(addr in net for net in HOME_NETWORKS):
+        return True
+    return house_address.enabled() and HOUSE_ADDRESS.matches(str(addr))
+
+
+# Where the house last reported from, beside the enrolled devices. Only ever
+# written on the public copy, and only by a report signed with the proxy secret.
+HOUSE_ADDRESS = house_address.Record(
+    os.path.join(os.path.dirname(devices.DB_PATH) or ".", "house-address.json"))
 
 NTFY_BASE_URL = os.environ.get("NTFY_BASE_URL", "").rstrip("/")
 
@@ -190,6 +202,13 @@ _client = httpx.AsyncClient(
 @app.on_event("startup")
 async def _startup():
     devices.init_db()
+    # The copy at home reports where the house is to the public one. Only when
+    # the household turned it on and there is a VPS to tell.
+    beacon_address = os.environ.get("HOUSE_BEACON_ADDRESS", "").strip()
+    beacon_name = os.environ.get("HOUSE_BEACON_NAME", "").strip()
+    if IS_LAN_COPY and house_address.enabled() and beacon_address and beacon_name:
+        asyncio.get_running_loop().create_task(
+            house_address.report_forever(beacon_address, beacon_name))
 
 
 @app.on_event("shutdown")
@@ -494,6 +513,30 @@ def _client_ip(request: Request) -> str:
         if hops:
             return hops[-1]
     return request.client.host if request.client else "unknown"
+
+
+@app.post(house_address.REPORT_PATH)
+async def house_address_report(request: Request):
+    """The house saying where it is (see house_address.py). The address is the
+    one this request arrived from -- never anything in its body -- and a report
+    is refused unless it is signed with the proxy secret, fresh and new.
+
+    404 when the switch is off, and on the copy at home: there it is not a thing
+    this host does, and it answers the way every unrouted path answers.
+    """
+    if IS_LAN_COPY or not house_address.enabled():
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    try:
+        body = await request.json()
+        ts = int(body.get("ts"))
+        sig = str(body.get("sig") or "")
+    except (ValueError, TypeError, AttributeError):
+        return JSONResponse({"ok": False}, status_code=400)
+    why = HOUSE_ADDRESS.accept(ts, sig, _client_ip(request))
+    if why:
+        logger.info("house address report refused: %s", why)
+        return JSONResponse({"ok": False}, status_code=403)
+    return {"ok": True}
 
 
 @app.post("/enroll/complete")

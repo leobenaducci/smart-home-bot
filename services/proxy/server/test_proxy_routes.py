@@ -132,6 +132,8 @@ try:
     # as inside showed the house-only links on the home wifi with no VPN at all.
     # A documentation-range address on purpose: the real one is household data
     # and does not belong in a tracked file.
+    # With `home_address_is_home` off, which is the default: the address is
+    # still not inside even once the house has reported from it.
     r = client.get("/camaras/", follow_redirects=False,
                    headers={"X-Forwarded-For": "203.0.113.200"})
     check("nor does a household's own public address", r.status_code == 404,
@@ -336,6 +338,82 @@ _code_route = next((r for r in main.app.routes
 check("  GET only", _code_route is not None
       and set(_code_route.methods or []) <= {"GET", "HEAD"},
       _code_route and _code_route.methods)
+
+print("\nthe house's own address, when the household turned that on")
+# Opt-in (`cloud.vps.home_address_is_home`). The address is never typed: the
+# copy at home reports it, and the VPS records the hop Caddy saw. So the three
+# things that must hold are that a report cannot be forged, cannot name an
+# address other than its own, and stops counting when the house goes quiet.
+import time as _time
+import house_address as _ha
+
+_os_env = dict(os.environ)
+os.environ["PROXY_SHARED_SECRET"] = "s" * 32
+os.environ["HOUSE_ADDRESS_IS_HOME"] = "1"
+_rec_path = _tempfile.mktemp(suffix=".json")
+main.HOUSE_ADDRESS = _ha.Record(_rec_path)
+# Public resolvers' addresses, not a household's: the recorder refuses the
+# documentation ranges (they are not global), and a real house's address is
+# household data.
+HOUSE = "8.8.4.4"
+try:
+    def report(ts=None, sig=None, xff=HOUSE, body=None):
+        ts = int(_time.time()) if ts is None else ts
+        payload = body if body is not None else {"ts": ts, "sig": _ha.sign(ts) if sig is None else sig}
+        return client.post(_ha.REPORT_PATH, json=payload, headers={"X-Forwarded-For": xff})
+
+    r = client.get("/camaras/", follow_redirects=False, headers={"X-Forwarded-For": HOUSE})
+    check("before any report, the address is away", r.status_code == 404, r.status_code)
+
+    check("an unsigned report is refused", report(sig="0" * 64).status_code == 403)
+    check("a report signed with another secret is refused",
+          report(sig=_ha.sign(int(_time.time()), b"x" * 32)).status_code == 403)
+    check("an old report is refused",
+          report(ts=int(_time.time()) - 3600).status_code == 403)
+    check("a report from a private address records nothing",
+          report(xff="192.168.88.10").status_code == 403 and main.HOUSE_ADDRESS.address == "",
+          main.HOUSE_ADDRESS.address)
+    check("a malformed report is refused", report(body={"ts": "x"}).status_code == 400)
+
+    ts = int(_time.time())
+    r = report(ts=ts, xff=f"198.51.100.9, {HOUSE}")
+    check("a signed report is accepted", r.status_code == 200, r.text)
+    check("and records the hop Caddy saw, not the first one",
+          main.HOUSE_ADDRESS.address == HOUSE, main.HOUSE_ADDRESS.address)
+    check("the same report twice is refused",
+          report(ts=ts).status_code == 403)
+
+    r = client.get("/camaras/", follow_redirects=False, headers={"X-Forwarded-For": HOUSE})
+    check("then the house's address is at home", r.status_code == 302, r.status_code)
+    r = client.get("/camaras/", follow_redirects=False,
+                   headers={"X-Forwarded-For": f"{HOUSE}, 198.51.100.9"})
+    check("and claiming it in a forged hop buys nothing", r.status_code == 404, r.status_code)
+
+    check("it survives a restart", _ha.Record(_rec_path).matches(HOUSE))
+    check("and stops counting when the house goes quiet",
+          not main.HOUSE_ADDRESS.matches(HOUSE, now=_time.time() + _ha.TTL_S + 1))
+
+    # A renumbered house: the next report moves the address, and the old one
+    # is somebody else's now.
+    _time.sleep(1.1)
+    report(xff="1.0.0.1")
+    check("an ISP change is followed",
+          main._from_house(_Req("1.0.0.1")) and not main._from_house(_Req(HOUSE)))
+
+    os.environ["HOUSE_ADDRESS_IS_HOME"] = "0"
+    check("switched off, the recorded address is away again",
+          not main._from_house(_Req("1.0.0.1")))
+    check("and reports are not a thing this host takes", report().status_code == 404)
+    os.environ["HOUSE_ADDRESS_IS_HOME"] = "1"
+    main.IS_LAN_COPY = True
+    try:
+        check("the copy at home takes no reports", report().status_code == 404)
+    finally:
+        main.IS_LAN_COPY = False
+finally:
+    os.environ.clear()
+    os.environ.update(_os_env)
+    main.HOUSE_ADDRESS = _ha.Record(_tempfile.mktemp(suffix=".json"))
 
 print()
 if failures:

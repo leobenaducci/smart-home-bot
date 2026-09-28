@@ -1850,6 +1850,7 @@ def derive(cfg: dict, secrets: dict) -> dict:
         "ollama_cloud_api_key": cloud_key or "disabled",
         "house_only_apps": house_only_apps(cfg),
         "home_networks": home_networks(cfg),
+        **house_address_report(cfg),
         # For a consumer on host networking. See ollama_endpoints().
         "ollama_url_host": endpoints.get("ollama_host", ("", ""))[0],
     }
@@ -2090,11 +2091,10 @@ def home_networks(cfg: dict) -> str:
     apart is the VPN, and the proxy defaults to Tailscale's range on its own --
     so this is empty unless the household adds to it.
 
-    Explicitly *not* the household's public address. That would show the
-    house-only links on the home wifi with no VPN at all, which is not what
-    "LAN or VPN" means: it reads "same building" as "came in privately", it
-    breaks silently when the ISP changes the address, and behind CGNAT it is
-    not even the same household.
+    Never the household's public address as a typed range: it breaks silently
+    the day the ISP changes it. A household that wants its home wifi to count
+    says `home_address_is_home` instead, and the address is learned from the
+    house -- see house_address_report().
 
     Empty is not "nobody": the compose file carries the real default and an
     empty export falls through to it.
@@ -2104,6 +2104,33 @@ def home_networks(cfg: dict) -> str:
     if isinstance(nets, str):
         nets = nets.split(",")
     return ",".join(str(n).strip() for n in nets if str(n).strip())
+
+
+def house_address_report(cfg: dict) -> dict:
+    """Whether the house's own public address counts as being at home, and
+    where the copy at home reports it to.
+
+    Off unless `cloud.vps.home_address_is_home` says so. On, the Android app
+    shows the house-only apps on the home wifi without the VPN -- it dials the
+    public name, so it reaches the VPS from the address the house goes out on.
+    That is a household's choice to make knowingly: anybody on that wifi who can
+    sign in is "at home", and behind CGNAT so is the neighbour's house.
+
+    The address is never configured. The copy at home reports every few
+    minutes, and the VPS records whichever public address the report arrived
+    from (services/proxy/server/house_address.py) -- so an ISP renumbering the
+    house is followed, and a house that stops reporting stops counting.
+
+    It dials `cloud.vps.host` rather than the domain: inside the house the
+    domain answers the house's own proxy, which is the split horizon working.
+    """
+    vps = ((cfg.get("cloud") or {}).get("vps") or {})
+    on = bool(vps.get("enabled") and vps.get("home_address_is_home"))
+    host = str(vps.get("host") or "").strip() if on else ""
+    domain = str(vps.get("domain") or "").strip() if on else ""
+    return {"house_address_is_home": "1" if on else "0",
+            "house_beacon_address": host if host and domain else "",
+            "house_beacon_name": domain if host and domain else ""}
 
 
 def house_only_apps(cfg: dict) -> str:

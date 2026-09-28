@@ -2246,6 +2246,13 @@ services:
           AUTH_MODE: upstream
           HOUSE_ONLY_APPS: "{derived.house_only_apps}"
           CHAT_PROXY_DATA_DIR: "{paths.state}/local-proxy"
+          # When `cloud.vps.home_address_is_home` is on, this copy tells the
+          # VPS where the house is, every few minutes, so the app on the home
+          # wifi counts as home there. Empty, it reports nothing. See
+          # house_address_report() in deploy.py.
+          HOUSE_ADDRESS_IS_HOME: "{derived.house_address_is_home}"
+          HOUSE_BEACON_ADDRESS: "{derived.house_beacon_address}"
+          HOUSE_BEACON_NAME: "{derived.house_beacon_name}"
         # This was declared one level up, under the service, where the
         # deployer never looks: `guard_state_paths()` never saw it and the
         # directory was never created. It survived only because the unit's
@@ -2332,10 +2339,12 @@ optional_services:
           AUTH_MODE: upstream
           HOUSE_ONLY_APPS: "{derived.house_only_apps}"
           # Which addresses count as inside the house on the public copy. The
-          # app always arrives here, so the VPN is what distinguishes it; the
-          # household's own public address deliberately does not. Empty falls
-          # through to the compose default rather than meaning "nobody".
+          # app always arrives here, so the VPN is what distinguishes it. Empty
+          # falls through to the compose default rather than meaning "nobody".
           HOME_NETWORKS: "{derived.home_networks}"
+          # The household's own public address, learned from the copy at home,
+          # counts as inside only when `cloud.vps.home_address_is_home` says so.
+          HOUSE_ADDRESS_IS_HOME: "{derived.house_address_is_home}"
           PUBLISH_ENTRY_PAGE: "{cloud.vps.serve_entry_page}"
         # Rendered from cloud.vps.domain. The file in git named an internal
         # hostname, which is the one thing a public host cannot be called, so

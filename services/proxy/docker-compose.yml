@@ -31,6 +31,13 @@ services:
       # empty export would replace this with "nobody" rather than falling
       # through to it. See `home_networks()` in deploy.py.
       HOME_NETWORKS: ${HOME_NETWORKS:-100.64.0.0/10}
+      # Off unless the household says so: the house's own public address,
+      # reported by the copy at home, counting as inside. See house_address.py.
+      HOUSE_ADDRESS_IS_HOME: ${HOUSE_ADDRESS_IS_HOME:-0}
+      # Only on the copy at home: where to report to, by address, and the public
+      # name to check TLS against. Empty reports nothing.
+      HOUSE_BEACON_ADDRESS: ${HOUSE_BEACON_ADDRESS:-}
+      HOUSE_BEACON_NAME: ${HOUSE_BEACON_NAME:-}
       PUBLISH_ENTRY_PAGE: ${PUBLISH_ENTRY_PAGE:-false}
       DEVICES_DB_PATH: /app/data/devices.db
       NTFY_CONFIG_FILE: /app/data/ntfy_config.json
