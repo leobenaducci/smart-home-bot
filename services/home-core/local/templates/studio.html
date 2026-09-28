@@ -106,7 +106,13 @@
     footer { text-align: center; font-size: .72rem; color: var(--ink-soft); margin: 30px 0; }
     #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--wall); color: #fff;
       padding: 10px 16px; border-radius: var(--r); font-size: .84rem; display: none; z-index: 20; max-width: 92vw; }
-    dialog { border: 0; border-radius: var(--r-lg); padding: 16px; max-width: 520px; width: 92vw; }
+    /* The theme's own card colours. A <dialog> takes the browser's white and
+       black otherwise, which on a dark household theme put the theme's pale
+       text on white: help lines and estimates that could not be read. */
+    dialog { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; max-width: 520px; width: 92vw;
+             background: var(--paper-2); color: var(--ink); }
+    dialog h2 { color: var(--ink); }
+    dialog p.muted { font-size: .86rem; line-height: 1.45; }
     dialog::backdrop { background: rgba(0,0,0,.4); }
     img.live { width: 100%; border-radius: var(--r-sm); display: block; background: #000; }
     dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }

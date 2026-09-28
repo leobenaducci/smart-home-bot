@@ -21797,14 +21797,15 @@ def studio_music_video():
           "them the same way each time. Mark `continues: true` when a shot is the same moment "
           "carrying on from the one before (same place, same action, no cut); otherwise false. "
           "The first shot is always false.\n"
-          f'Answer with only a JSON array of exactly {n} objects: [{{"prompt": "...", "continues": false}}, ...]'
+          f'Answer with only a JSON array of exactly {n} objects, with no code fence and no other '
+          f'text: [{{"prompt": "...", "continues": false}}, ...]'
     )
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-video'
     shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S), n)
     if shots is None:
         # Once more, saying what went wrong: the usual miss is a count off by one.
         again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only "
-                 f"the JSON array, exactly {n} entries.")
+                 f"the JSON array, exactly {n} entries, no code fence.")
         shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S), n)
     if shots is None:
         return jsonify(error=t('studio.mv_failed')), 502
