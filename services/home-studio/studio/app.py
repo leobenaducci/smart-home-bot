@@ -789,6 +789,15 @@ def delete_take(pid: str, item_id: str, take_id: str, me: Who = Depends(who)):
         _bad(exc, 404)
 
 
+@app.post("/api/projects/{pid}/references")
+def add_reference(pid: str, body: dict, me: Who = Depends(who)):
+    """A picture made in this project, kept as a reference picture."""
+    try:
+        return projects.reference_from(me.login, pid, str(body.get("file") or ""), str(body.get("name") or ""))
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
 @app.delete("/api/projects/{pid}/uploads/{name}")
 def delete_upload(pid: str, name: str, me: Who = Depends(who)):
     try:

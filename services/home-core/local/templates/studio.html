@@ -853,10 +853,19 @@
           ((im.takes || []).length ? '<div class="gallery">' + im.takes.map(function (t, k) {
             return '<div><a href="' + fileUrl(p.id, t.file) + '" target="_blank"><img loading="lazy" src="' + fileUrl(p.id, t.file) + '" alt=""></a>' +
               '<div class="row" style="margin-top:4px">' + dlLink(p.id, t.file, p.name + ' - ' + (n + 1) + '.' + (k + 1)) +
+              refButton(t.file, (im.title || p.name) + ' ' + (n + 1) + '.' + (k + 1)) +
               (t.id ? favButton(im.id, t) + delTake(im.id, t.id) : '') + '</div></div>';
           }).join('') + '</div>' : '') + '</div>';
       });
       return html + '<button id="add-image">＋ 🖼️ ' + S.add_image + '</button>';
+    }
+
+    // A picture made here, kept as a reference: what a shot can start from.
+    // Marked once it is one; the reference is a copy, deleted on its own.
+    function refButton(file, name) {
+      var has = (current.uploads || []).some(function (u) { return u.kind === 'reference' && u.source === file; });
+      return has ? '<span class="pill ok" title="' + esc(S.ref_is) + '">📌 ✓</span>'
+        : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" title="' + esc(S.ref_add) + '">📌 ' + S.ref_add_short + '</button>';
     }
 
     // Files
@@ -1053,6 +1062,12 @@
           var rb = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: d.board ? { items: [d.board] } : {} });
           toast(fmt('board_queued', { n: rb.queued.length }));
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (d.asRef) {
+          await flushSave();
+          await api('projects/' + p.id + '/references', { method: 'POST', body: { file: d.asRef, name: d.name || '' } });
+          toast(S.ref_added);
+          current = await api('projects/' + p.id); drawTab(); return;
         }
         if (b.id === 'sb-redraw-changed') {
           await saveNow();

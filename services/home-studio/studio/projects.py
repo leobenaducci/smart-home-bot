@@ -552,6 +552,28 @@ class Projects:
             self._write(owner, pid, doc)
             return entry
 
+    def reference_from(self, owner: str, pid: str, rel: str, name: str = "") -> dict:
+        """A picture the Studio made in this project, filed as a reference
+        too -- what a shot can start from and a character's look can be drawn
+        after. A copy, so deleting either leaves the other; asked twice for
+        the same picture, the reference already filed is the answer."""
+        if not re.fullmatch(r"(?:takes|boards)/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp)", rel or "") or ".." in rel:
+            raise ProjectError("only a picture made here can become a reference")
+        src = self.file(owner, pid, rel)
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            for u in doc.get("uploads") or []:
+                if u.get("source") == rel and u.get("kind") == "reference":
+                    return u
+            dest = f"uploads/{_new_id()}-{src.name}"
+            shutil.copyfile(src, self.dir(owner, pid) / dest)
+            entry = {"file": dest, "name": (str(name or "").strip() or src.name)[:80], "kind": "reference",
+                     "source": rel, "created": time.time()}
+            doc.setdefault("uploads", []).append(entry)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return entry
+
     def delete_render(self, owner: str, pid: str, rel: str) -> None:
         """A film or preview gone from the project and the disk."""
         if not re.fullmatch(r"renders/[A-Za-z0-9._-]+", rel or ""):

@@ -21645,7 +21645,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_make_videos', 'sb_videos_confirm', 'sb_no_frame_warn', 'sb_stale_warn', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_make_videos', 'sb_videos_confirm', 'sb_no_frame_warn', 'sb_stale_warn', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
     'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',

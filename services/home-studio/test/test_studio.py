@@ -609,6 +609,25 @@ theirs = [j for j in c.get("/api/queue", headers=h(TOMI, "Tomi")).json()["queued
 check("  nor learns that one exists", "preview" not in theirs, theirs)
 A.manager.previews.clear()
 
+im_rel = "takes/pic1.png"
+(A.projects.dir(JUANA, pj["id"]) / "takes").mkdir(exist_ok=True)
+(A.projects.dir(JUANA, pj["id"]) / im_rel).write_bytes(b"\x89PNG picture")
+r1 = c.post(f"/api/projects/{pj['id']}/references", json={"file": im_rel, "name": "gato"}, headers=h(JUANA, "Juana")).json()
+r2 = c.post(f"/api/projects/{pj['id']}/references", json={"file": im_rel}, headers=h(JUANA, "Juana")).json()
+ups = c.get(f"/api/projects/{pj['id']}", headers=h(JUANA, "Juana")).json()["uploads"]
+check("  a picture made here becomes a reference, once however often it is asked",
+      r1.get("kind") == "reference" and r1["file"] == r2["file"] and r1["file"].startswith("uploads/")
+      and [u["source"] for u in ups if u.get("source")] == [im_rel], (r1, r2, ups))
+check("  as a copy: the reference goes, the picture stays",
+      c.delete(f"/api/projects/{pj['id']}/{r1['file'].replace('uploads/', 'uploads/', 1)}", headers=h(JUANA, "Juana")).status_code == 200
+      and (A.projects.dir(JUANA, pj["id"]) / im_rel).is_file())
+check("  and only a picture made here",
+      c.post(f"/api/projects/{pj['id']}/references", json={"file": "project.json"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{pj['id']}/references", json={"file": "takes/../../x.png"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{pj['id']}/references", json={"file": "takes/none.png"}, headers=h(JUANA, "Juana")).status_code == 404)
+check("  and nobody else's",
+      c.post(f"/api/projects/{pj['id']}/references", json={"file": im_rel}, headers=h(TOMI, "Tomi")).status_code == 404)
+
 sng = c.put(f"/api/projects/{pj['id']}", json={"audio": [{"kind": "song", "lyrics": "[Coro]\nla la"}]},
             headers=h(JUANA, "Juana")).json()["audio"][0]
 check("  a song with no version cannot be listened to",
