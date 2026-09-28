@@ -47,11 +47,13 @@ Studio's card, serving music tools instead of a voice:
 | Task | Package | For |
 |---|---|---|
 | `sep` | `mel_band_roformer_q8_0` (241 MB) | separating a song's vocals |
+| `sep` | `htdemucs_q8_0` (62 MB) | a song's four stems, for a score's play-along tracks |
+| `midi` | `muscriptor_small_f32` (412 MB) | the notes in a song, for its guitar and piano parts |
 | `align` | `qwen3_forced_aligner_0_6b_q8_0` (1.1 GB) | placing the known lyrics on them, word by word |
 | `gen` | `ace_step_turbo_q8_0` (5.8 GB) | repainting a stretch of a song |
 
-The entrypoint takes these as `AUDIOCPP_SEP_PACKAGES`, `AUDIOCPP_ALIGN_PACKAGES`
-and `AUDIOCPP_GEN_PACKAGES` beside the TTS and ASR lists (`none` or empty for
+The entrypoint takes these as `AUDIOCPP_SEP_PACKAGES`, `AUDIOCPP_ALIGN_PACKAGES`,
+`AUDIOCPP_GEN_PACKAGES` and `AUDIOCPP_MIDI_PACKAGES` beside the TTS and ASR lists (`none` or empty for
 a task the instance does not serve), and extra server flags as
 `AUDIOCPP_SERVER_ARGS`. The Studio's instance holds one model at a time and
 unloads it five seconds after use, because its card belongs to the video

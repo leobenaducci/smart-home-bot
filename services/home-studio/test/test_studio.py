@@ -11,6 +11,7 @@ People are the invented household: Tomi and Mora (parents), Juana.
 """
 import os
 import shutil
+from collections import Counter
 import subprocess
 import sys
 import tempfile
@@ -183,8 +184,12 @@ else:
                   notify=notified.append, worker_factory=lambda: fake)
     doc = projects.load(JUANA, p["id"])
     first, second = doc["shots"]
+    fr = projects.dir(JUANA, p["id"]) / "takes" / "fr.png"
+    fr.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=160x96", "-frames:v", "1",
+                    str(fr)], check=True)
     j1 = store2.add(owner=JUANA, owner_name="Juana", kind="video_shot", model=recipes.VIDEO_MODEL,
-                    params={"prompt": "dos", "seconds": 5}, project=p["id"], target=first["id"])
+                    params={"prompt": "dos", "seconds": 5, "start_board": "takes/fr.png"}, project=p["id"], target=first["id"])
     j2 = store2.add(owner=JUANA, owner_name="Juana", kind="video_shot", model=recipes.VIDEO_MODEL,
                     params={"prompt": "uno", "seconds": 5, "continue_from": first["id"]},
                     project=p["id"], target=second["id"], after=j1["id"])
@@ -197,6 +202,8 @@ else:
     check("  both shots made, filed as takes with their first and last frames",
           t1 and t2 and all((projects.dir(JUANA, p["id"]) / t[k]).is_file() for t in (t1, t2) for k in ("file", "first", "last")),
           (store2.get(j2["id"]), t1, t2))
+    check("  a video remembers the frame it started from, and one that continued has none",
+          t1.get("board") == "takes/fr.png" and "board" not in t2, (t1, t2))
     check("  the second started from the first's last frame, read when it ran",
           fake.seen[1].get("image_start", "").endswith(t1["last"]), fake.seen[1])
     check("  each person is told when their job is done", len(notified) == 2 and all(n["ok"] for n in notified))
@@ -390,6 +397,133 @@ else:
           store2.get(ja["id"])["state"] == "done" and (projects.dir(JUANA, p["id"]) / got["analysis"]["file"]).is_file(),
           (store2.get(ja["id"]), got.get("analysis")))
     check("  without starting the generator for it", fake.seen[-1].get("model_type") != "audio.cpp")
+
+    print("\na song written out: guitar as notes and tab, piano on two staves")
+    from studio import score
+    import xml.etree.ElementTree as ET
+
+    def strum(t0, pitches, inst, length=0.24, idx=[0]):
+        out = []
+        for pch in pitches:
+            idx[0] += 1
+            out += [{"type": "start", "pitch": pch, "start_time": round(t0, 2), "index": idx[0], "instrument": inst},
+                    {"type": "end", "end_time": round(t0 + length, 2), "start_event_index": idx[0]}]
+        return out
+    # 118 bpm, the first downbeat at 0.31 s: C, G, Am, F a bar each, strummed
+    # in eighths, and a picked line on the electric over the last two bars.
+    beat_s, t0 = 60 / 118, 0.31
+    shapes = [[48, 52, 55, 60, 64], [43, 47, 50, 55, 59, 67], [45, 52, 57, 60, 64], [41, 48, 53, 57, 60, 65]]
+    evs = []
+    for bar in range(8):
+        for k in range(8):
+            evs += strum(t0 + (bar * 4 + k / 2) * beat_s, shapes[bar % 4], "acoustic_guitar")
+    for k, pch in enumerate([64, 67, 69, 72, 71, 69, 67, 64] * 2):
+        evs += strum(t0 + (24 + k / 2) * beat_s, [pch], "clean_electric_guitar", length=0.2)
+    for k in range(16):
+        evs += strum(t0 + k * 2 * beat_s, [36 + (k % 4) * 2, 72 + k % 3], "acoustic_piano", length=0.9)
+    evs += strum(5.0, [30], "acoustic_guitar")                   # below the low E: out of the tab
+    evs += strum(7.0, [60], "distorted_electric_guitar")         # heard once: noise, not a part
+    notes = [n for n in score.notes_from_events(evs) if n["instrument"] in score.INSTRUMENTS]
+    b, first = score.fit_grid(notes, 123.0)
+    check("  the tempo comes from the notes, not the beat tracker's guess",
+          abs(60 / b - 118) < 0.2, 60 / b)
+    check("  and the bar starts where the chords change",
+          abs(((first - t0) / (4 * b) + 0.5) % 1 - 0.5) * 4 * b < 0.03, (first, t0))
+    check("  chords are named from their notes, the bass first",
+          score.chord_name(shapes[0])[1:] == ("major", "") and score.chord_name(shapes[2])[1:] == ("minor", "m")
+          and score.chord_name([43, 47, 50, 55, 59, 67])[0] == 7 and score.chord_name([60]) is None
+          and score.chord_name([52, 59, 64]) == (4, "power", "5"))
+    xml, meta = score.build(evs, 123.0, "Prueba <1>")
+    check("  one part per instrument heard, and a stray note is not a part",
+          [t["id"] for t in meta["tracks"]] == ["acoustic_guitar", "clean_electric_guitar", "acoustic_piano"], meta["tracks"])
+    root = ET.fromstring(xml.split("\n", 2)[2])
+    sums = []
+    for part in root.findall("part"):
+        for m in part.findall("measure"):
+            pos = {}
+            for el in m.findall("note"):
+                if el.find("chord") is None:
+                    st = el.findtext("staff") or "1"
+                    pos[st] = pos.get(st, 0) + int(el.findtext("duration"))
+            sums += list(pos.values())
+    check("  every bar of every staff adds up to a bar", sums and set(sums) == {16}, Counter(sums))
+    check("  the title is escaped", root.findtext("work/work-title") == "Prueba <1>")
+    frets_ok = True
+    for n in root.iter("note"):
+        tech = n.find("notations/technical")
+        if tech is None:
+            continue
+        stp, alt, octv = n.findtext("pitch/step"), int(n.findtext("pitch/alter") or 0), int(n.findtext("pitch/octave"))
+        midi = (octv + 1) * 12 + "C D EF G A B".index(stp) + alt
+        string, fret = int(tech.findtext("string")), int(tech.findtext("fret"))
+        frets_ok &= score.TUNING[6 - string] + fret == midi and 0 <= fret <= score.MAX_FRET
+    check("  every tab number is the note it stands for, on a real string", frets_ok)
+    first_c = [n for n in root.find("part").iter("note") if n.find("notations/technical") is not None][:5]
+    check("  an open chord is fingered open, not up the neck",
+          max(int(n.findtext("notations/technical/fret")) for n in first_c) <= 3,
+          [n.findtext("notations/technical/fret") for n in first_c])
+    check("  and the harmony is written above it", [h.findtext("root/root-step") for h in root.find("part").iter("harmony")][:4]
+          == ["C", "G", "A", "F"], [h.findtext("root/root-step") for h in root.find("part").iter("harmony")][:6])
+    check("  the page gets a whole-number tempo and the exact one to follow the song by",
+          meta["score_tempo"] == 118 and abs(meta["tempo"] - 118) < 0.2 and meta["start"] <= t0 + 0.03)
+
+    class FakeScoreAudio:
+        url = "http://audio"
+
+        def __init__(self):
+            self.asked = None
+
+        def separate_stems(self, song, work):
+            out = {}
+            for k in ("vocals", "drums", "bass", "other"):
+                out[k] = work / f"stem-{k}.wav"
+                subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=2",
+                                str(out[k])], check=True)
+            return out
+
+        def notes(self, song, work, instruments):
+            self.asked = instruments
+            return evs, b"MThd fake"
+
+        def wait_idle(self, timeout=60.0):
+            pass
+    mgr.audio = FakeScoreAudio()
+    js = store2.add(owner=JUANA, owner_name="Juana", kind="score", model="audio.cpp",
+                    params={"take": real_take["id"]}, project=p["id"], target=sid)
+    mgr.wake()
+    deadline = time.time() + 120
+    while time.time() < deadline and store2.get(js["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    got = next(t for t in Projects.find(projects.load(JUANA, p["id"]), sid)[2]["takes"] if t["id"] == real_take["id"])
+    sc = got.get("score") or {}
+    base_dir = projects.dir(JUANA, p["id"])
+    check("  a score job files the score, the notes and two play-along tracks on the version",
+          store2.get(js["id"])["state"] == "done" and sc.get("state") == "done"
+          and all((base_dir / sc[k]).is_file() for k in ("file", "midi", "minus", "part"))
+          and sc["dir"].startswith(f"takes/{sid}/"), (store2.get(js["id"]), sc))
+    check("  asking the notes of guitars and piano only", set(mgr.audio.asked) == set(score.INSTRUMENTS), mgr.audio.asked)
+    mgr.audio = None
+    jf = store2.add(owner=JUANA, owner_name="Juana", kind="score", model="audio.cpp",
+                    params={"take": real_take["id"]}, project=p["id"], target=sid)
+    mgr.wake()
+    while time.time() < deadline and store2.get(jf["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    got = next(t for t in Projects.find(projects.load(JUANA, p["id"]), sid)[2]["takes"] if t["id"] == real_take["id"])
+    check("  without the audio unit it fails, and says so on the version",
+          store2.get(jf["id"])["state"] == "failed" and got["score"]["state"] == "failed", got.get("score"))
+    projects.set_take_field(JUANA, p["id"], sid, real_take["id"], "score", sc)
+    extra = projects.append(JUANA, p["id"], "audio", [{"kind": "song", "title": "otra"}])[0]
+    xt = projects.add_take(JUANA, p["id"], extra["id"], {"file": sc["minus"], "kind": "song"})
+    xdir = f"takes/{extra['id']}/{xt['id']}-score"
+    (base_dir / xdir).mkdir(parents=True)
+    (base_dir / xdir / "score.musicxml").write_text("x")
+    projects.set_take_field(JUANA, p["id"], extra["id"], xt["id"], "score", {"state": "done", "dir": xdir})
+    projects.delete_take(JUANA, p["id"], extra["id"], xt["id"])
+    check("  deleting a version takes its scores and stems with it", not (base_dir / xdir).exists())
+    xt2 = projects.add_take(JUANA, p["id"], extra["id"], {"file": sc["minus"], "kind": "song"})
+    projects.set_take_field(JUANA, p["id"], extra["id"], xt2["id"], "score", {"state": "done", "dir": "takes"})
+    projects.delete_take(JUANA, p["id"], extra["id"], xt2["id"])
+    check("  and never a folder that is not one version's", (base_dir / sc["file"]).is_file())
     print("\nretouching a song")
     cover = recipes.settings_for("song", {"lyrics": "[Coro]\nla", "style": "rock", "seconds": 20,
                                           "source_file": "/data/x.mp3", "strength": 0.85, "keep_voice": True})
@@ -472,7 +606,8 @@ else:
                                     "settings": {"look": "película de los 80, neón"}})
     sdoc = projects.load(JUANA, sb["id"])
     jb = store2.add(owner=JUANA, owner_name="Juana", kind="board", model=recipes.IMAGE_MODEL,
-                    params={"prompt": "película de los 80. Film still: un pelícano", "size": "1344x768"},
+                    params={"prompt": "película de los 80. Film still: un pelícano", "size": "1344x768",
+                            "shot_prompt": "la moto salta"},
                     project=sb["id"], target=sdoc["shots"][1]["id"])
     # The repaint above let the generator go; a new one says it is ready.
     with fake._lock:
@@ -485,6 +620,7 @@ else:
     shot2 = projects.load(JUANA, sb["id"])["shots"][1]
     check("  a frame lands on its shot as a storyboard frame, not as a take",
           len(shot2.get("boards") or []) == 1 and not shot2.get("takes")
+          and shot2["boards"][0].get("prompt") == "la moto salta"
           and (projects.dir(JUANA, sb["id"]) / Projects.chosen_board(shot2)["file"]).is_file(), (store2.get(jb["id"]), shot2))
     check("  the image recipe draws it at the shot's shape",
           recipes.settings_for("board", {"prompt": "x", "size": recipes.BOARD_SIZE["480x832"]})["resolution"] == "768x1344")
@@ -540,6 +676,112 @@ else:
     check("  measured from what this card did", store2.rate("video_shot") < 60, store2.rate("video_shot"))
     check("  and a default before it has done any", Store(tmp / "empty.db").rate("video_shot") == 360)
     mgr.stop()
+
+print("\na project's words under version control")
+from studio.history import History
+hp = Projects(tmp / "hist")
+hc = Characters(tmp / "hist")
+hist = History(hp, hc)
+hdoc = hp.create(JUANA, "Historia", "music_video")
+hpid = hdoc["id"]
+r1 = hist.record(JUANA, hpid, JUANA, "Juana")
+check("  a new project's first revision", r1 and hist.log(JUANA, hpid)["revisions"][0]["subject"] == "Proyecto creado",
+      hist.log(JUANA, hpid))
+hp.save(JUANA, hpid, {"shots": [{"prompt": "uno", "seconds": 5}]})
+r2 = hist.record(JUANA, hpid, JUANA, "Juana")
+s1 = hp.load(JUANA, hpid)["shots"][0]["id"]
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+r2b = hist.record(JUANA, hpid, JUANA, "Juana")
+revs = hist.log(JUANA, hpid)["revisions"]
+check("  saves close together by the same person are one revision",
+      len(revs) == 2 and revs[0]["subject"].startswith("Toma 1") and r2b != r2, revs)
+hdir = hp.dir(JUANA, hpid) / ".history"
+item_file = (hdir / "items" / f"{s1}.json").read_text()
+check("  a plain git repository, one readable file per item, words only",
+      (hdir / ".git").is_dir() and '"uno bis"' in item_file and "takes" not in item_file
+      and subprocess.run(["git", "-C", str(hdir), "log", "--oneline"], capture_output=True).returncode == 0)
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis y algo"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+check("  typed and undone within a revision leaves it as it was",
+      [r["rev"] for r in hist.log(JUANA, hpid)["revisions"]] == [r["rev"] for r in revs], hist.log(JUANA, hpid)["revisions"])
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+hist.record(JUANA, hpid, JUANA, "Juana")
+revs = hist.log(JUANA, hpid)["revisions"]
+tagged = revs[0]["rev"]
+hist.tag(JUANA, hpid, tagged, "primera versión", JUANA, "Juana")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "tres"}]})
+r3 = hist.record(JUANA, hpid, JUANA, "Juana", via="Alfred")
+revs = hist.log(JUANA, hpid)["revisions"]
+check("  a change by the person's assistant is its own revision, and says so",
+      len(revs) == 3 and revs[0]["author"] == "Juana (Alfred)", revs[:1])
+hp.add_take(JUANA, hpid, s1, {"file": "takes/x.mp4", "seconds": 5})
+check("  a version made by the card is not a revision", hist.record(JUANA, hpid, JUANA, "Juana") is None)
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "cuatro"}, {"prompt": "dos", "seconds": 5}]})
+r4 = hist.record(JUANA, hpid, JUANA, "Juana")
+s2 = hp.load(JUANA, hpid)["shots"][1]["id"]
+shown = hist.show(JUANA, hpid, r4)["changes"]
+check("  a revision shows what changed, before and after, by name",
+      {(c["label"], c.get("field_label"), c.get("before"), c.get("after")) for c in shown if c["on"] == "item" and c.get("field")}
+      == {("Toma 1", "descripción", "tres", "cuatro")} and any(c.get("change") == "added" and c["label"] == "Toma 2" for c in shown), shown)
+out = hist.revert(JUANA, hpid, r3, JUANA, "Juana")
+check("  reverting a change made over since is reported, not forced",
+      out["conflicts"] and hp.load(JUANA, hpid)["shots"][0]["prompt"] == "cuatro", out)
+out = hist.revert(JUANA, hpid, r4, JUANA, "Juana")
+now = hp.load(JUANA, hpid)
+check("  reverting a revision undoes exactly it: the words back, the added shot out",
+      not out["conflicts"] and [x["prompt"] for x in now["shots"]] == ["tres"] and now["shots"][0]["takes"], (out, now["shots"]))
+check("  and is a revision of its own", hist.log(JUANA, hpid)["revisions"][0]["kind"] == "revert")
+hp.add_take(JUANA, hpid, s1, {"file": "takes/y.mp4", "seconds": 5})
+back = hist.restore(JUANA, hpid, r2b, JUANA, "Juana")
+now = hp.load(JUANA, hpid)
+check("  going back to a revision: its words, its shots -- and the versions made since stay",
+      [x["prompt"] for x in now["shots"]] == ["uno bis"] and len(now["shots"][0]["takes"]) == 2, now["shots"])
+(hp.dir(JUANA, hpid) / "takes").mkdir(exist_ok=True)
+(hp.dir(JUANA, hpid) / "takes" / "z.mp4").write_bytes(b"x")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}, {"prompt": "con versión", "seconds": 5}]})
+s3 = hp.load(JUANA, hpid)["shots"][1]["id"]
+hp.add_take(JUANA, hpid, s3, {"file": "takes/z.mp4", "seconds": 5})
+with_s3 = hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
+hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hist.restore(JUANA, hpid, with_s3, JUANA, "Juana")
+back_s3 = next((x for x in hp.load(JUANA, hpid)["shots"] if x["id"] == s3), None)
+check("  a shot deleted on the page comes back with its versions", back_s3 and back_s3["takes"]
+      and back_s3["takes"][0]["file"] == "takes/z.mp4", back_s3)
+tags = hist.log(JUANA, hpid)["tags"]
+check("  tags keep a name, accents and all, on a revision", [t["name"] for t in tags] == ["primera versión"]
+      and tags[0]["rev"] == tagged, tags)
+hist.untag(JUANA, hpid, tags[0]["ref"])
+check("  and can be taken off", hist.log(JUANA, hpid)["tags"] == [])
+try:
+    hist.revert(JUANA, hpid, hist.log(JUANA, hpid)["revisions"][-1]["rev"], JUANA, "Juana")
+    check("  the first revision cannot be undone (it would take everything out)", False)
+except ProjectError:
+    check("  the first revision cannot be undone (it would take everything out)", True)
+try:
+    hist.show(JUANA, hpid, "HEAD; rm -rf /")
+    check("  a revision is a hash, nothing else", False)
+except ProjectError:
+    check("  a revision is a hash, nothing else", True)
+old = hp.create(JUANA, "De antes", "free")
+hp.save(JUANA, old["id"], {"images": [{"prompt": "un faro"}]})
+check("  a project from before the history gets its first revision, once",
+      hist.begin_all() >= 1 and hist.begin_all() == 0
+      and [r["subject"] for r in hist.log(JUANA, old["id"])["revisions"]] == ["Historial iniciado"])
+cp = hp.duplicate(JUANA, hpid)
+check("  a copy keeps the history it was copied from",
+      len(hist.log(JUANA, cp["id"])["revisions"]) == len(hist.log(JUANA, hpid)["revisions"]))
+hch = hc.create(JUANA, hpid, {"name": "Bruma", "look": "un pelícano"})
+hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hc.update(hch["id"], JUANA, hpid, {"look": "un pelícano con casco"})
+rc = hist.record(JUANA, hpid, JUANA, "Juana", kind="checkpoint")
+hist.revert(JUANA, hpid, rc, JUANA, "Juana")
+check("  a character's words are kept and reverted too",
+      hc.get(hch["id"], JUANA, hpid)["look"] == "un pelícano", hc.get(hch["id"], JUANA, hpid))
 
 print("\nthe API: who sees what")
 os.environ["STUDIO_DATA"] = str(tmp / "api")
@@ -607,6 +849,25 @@ theirs = [j for j in c.get("/api/queue", headers=h(TOMI, "Tomi")).json()["queued
 check("  nor learns that one exists", "preview" not in theirs, theirs)
 A.manager.previews.clear()
 
+im_rel = "takes/pic1.png"
+(A.projects.dir(JUANA, pj["id"]) / "takes").mkdir(exist_ok=True)
+(A.projects.dir(JUANA, pj["id"]) / im_rel).write_bytes(b"\x89PNG picture")
+r1 = c.post(f"/api/projects/{pj['id']}/references", json={"file": im_rel, "name": "gato"}, headers=h(JUANA, "Juana")).json()
+r2 = c.post(f"/api/projects/{pj['id']}/references", json={"file": im_rel}, headers=h(JUANA, "Juana")).json()
+ups = c.get(f"/api/projects/{pj['id']}", headers=h(JUANA, "Juana")).json()["uploads"]
+check("  a picture made here becomes a reference, once however often it is asked",
+      r1.get("kind") == "reference" and r1["file"] == r2["file"] and r1["file"].startswith("uploads/")
+      and [u["source"] for u in ups if u.get("source")] == [im_rel], (r1, r2, ups))
+check("  as a copy: the reference goes, the picture stays",
+      c.delete(f"/api/projects/{pj['id']}/{r1['file'].replace('uploads/', 'uploads/', 1)}", headers=h(JUANA, "Juana")).status_code == 200
+      and (A.projects.dir(JUANA, pj["id"]) / im_rel).is_file())
+check("  and only a picture made here",
+      c.post(f"/api/projects/{pj['id']}/references", json={"file": "project.json"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{pj['id']}/references", json={"file": "takes/../../x.png"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{pj['id']}/references", json={"file": "takes/none.png"}, headers=h(JUANA, "Juana")).status_code == 404)
+check("  and nobody else's",
+      c.post(f"/api/projects/{pj['id']}/references", json={"file": im_rel}, headers=h(TOMI, "Tomi")).status_code == 404)
+
 sng = c.put(f"/api/projects/{pj['id']}", json={"audio": [{"kind": "song", "lyrics": "[Coro]\nla la"}]},
             headers=h(JUANA, "Juana")).json()["audio"][0]
 check("  a song with no version cannot be listened to",
@@ -619,6 +880,27 @@ check("  asking to listen queues one job, however often it is asked",
 check("  and the plan waits for it",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/cuts", json={"shot_seconds": 8},
              headers=h(JUANA, "Juana")).status_code == 409)
+sc0 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={}, headers=h(JUANA, "Juana")).json()
+sc1 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json()
+sc2 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json()
+check("  a song's scores are only made when asked, and asked twice they are one job",
+      sc0.get("none") and sc1.get("job") and sc1["job"]["id"] == sc2["job"]["id"] and sc1["job"]["kind"] == "score", (sc0, sc1, sc2))
+check("  nobody else can ask for them",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(TOMI, "Tomi")).status_code == 404)
+A.manager.cancel(sc1["job"]["id"])
+stake = sc1["take"]
+sdir = f"takes/{sng['id']}/{stake}-score"
+(A.projects.dir(JUANA, pj["id"]) / sdir).mkdir(parents=True, exist_ok=True)
+(A.projects.dir(JUANA, pj["id"]) / sdir / "score.musicxml").write_text("<score-partwise/>")
+A.projects.set_take_field(JUANA, pj["id"], sng["id"], stake, "score",
+                          {"state": "done", "dir": sdir, "file": f"{sdir}/score.musicxml", "tempo": 120.0})
+sc3 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json()
+check("  once written they are served, not made again", sc3.get("score", {}).get("file") == f"{sdir}/score.musicxml", sc3)
+A.projects.set_take_field(JUANA, pj["id"], sng["id"], stake, "score", {"state": "failed", "error": "boom"})
+check("  a failure is reported, not retried on its own",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/score", json={"start": True}, headers=h(JUANA, "Juana")).json().get("failed") == "boom")
+A.projects.set_take_field(JUANA, pj["id"], sng["id"], stake, "score",
+                          {"state": "done", "dir": sdir, "file": f"{sdir}/score.musicxml"})
 r = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/rework",
            json={"lyrics": "[Coro]\nle le", "start": 1, "end": 3}, headers=h(JUANA, "Juana")).json()
 check("  a stretch to redo queues a repaint", r["queued"][0]["kind"] == "repaint", r)
@@ -674,6 +956,7 @@ r = c.post(f"/api/projects/{sbp['id']}/storyboard", json={}, headers=h(JUANA, "J
 check("  asking for the storyboard queues a frame per shot with a description",
       len(r.get("queued") or []) == 2 and all(q["kind"] == "board" for q in r["queued"]), r)
 job = A.store.get(r["queued"][0]["id"])
+check("  and remembers the description it was drawn from", job["params"].get("shot_prompt") == "uno", job["params"])
 check("  drawn with the project's look first, at the video's shape",
       job["params"]["prompt"].startswith("neón, noche. Film still: uno") and job["params"]["size"] == "1344x768", job["params"])
 check("  asked again while they are being drawn, nothing is queued twice",
@@ -688,6 +971,14 @@ for jid in (q["id"] for q in r["queued"]):
 g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
 gp = A.store.get(g["queued"][0]["id"])["params"]
 check("  a shot that starts fresh starts from its approved frame", gp.get("start_board") == "takes/f.png", gp)
+A.manager.cancel(g["queued"][0]["id"])
+c.put(f"/api/projects/{sbp['id']}", json={"settings": {"use_storyboard": False}}, headers=h(JUANA, "Juana"))
+g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
+check("  with the storyboard switched off for the project, it does not",
+      "start_board" not in A.store.get(g["queued"][0]["id"])["params"], A.store.get(g["queued"][0]["id"])["params"])
+A.manager.cancel(g["queued"][0]["id"])
+c.put(f"/api/projects/{sbp['id']}", json={"settings": {"use_storyboard": True}}, headers=h(JUANA, "Juana"))
+g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
 A.projects.add_board(JUANA, sbp["id"], sdoc["shots"][1]["id"], {"file": "takes/f.png"})
 c.put(f"/api/projects/{sbp['id']}", json={"shots": [dict(x, board=0) for x in sdoc["shots"]]}, headers=h(JUANA, "Juana"))
 s1 = c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]
@@ -695,6 +986,18 @@ check("  a page's save cannot move the chosen frame back (a newer one stays chos
 c.post(f"/api/projects/{sbp['id']}/items/{s1['id']}/board", json={"index": 0}, headers=h(JUANA, "Juana"))
 check("  choosing one is its own call",
       c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]["board"] == 0)
+s0 = sdoc["shots"][0]["id"]
+bf = c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/f.png"}, headers=h(JUANA, "Juana")).json()
+s0doc = next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s0)
+check("  a picture in the project becomes a shot's chosen frame, as a copy, with the shot's description",
+      Projects.chosen_board(s0doc)["file"] == bf["file"] and bf["file"].startswith(f"takes/{s0}/frame-")
+      and bf["source"] == "takes/f.png" and bf["prompt"] == s0doc["prompt"].strip()
+      and (A.projects.dir(JUANA, sbp["id"]) / bf["file"]).is_file(), bf)
+check("  only a picture of this project, and only on a shot",
+      c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "project.json"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/../../x.png"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/nope/board_from", json={"file": "takes/f.png"}, headers=h(JUANA, "Juana")).status_code == 404
+      and c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/f.png"}, headers=h(TOMI, "Tomi")).status_code == 404)
 clip2 = A.projects.dir(JUANA, sbp["id"]) / "takes" / "one.mp4"
 subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
                 "-i", "sine=frequency=440", "-t", "2", "-shortest", "-pix_fmt", "yuv420p", str(clip2)], check=True)
@@ -907,6 +1210,28 @@ check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
+
+print("\n  a project's history, through the API")
+hq = c.post("/api/projects", json={"name": "Con historia"}, headers=h(JUANA, "Juana")).json()
+c.put(f"/api/projects/{hq['id']}", json={"shots": [{"prompt": "hola", "seconds": 5}]}, headers=h(JUANA, "Juana"))
+via = {**h(JUANA, "Juana"), "X-Studio-Via": "Alfred"}
+c.post(f"/api/projects/{hq['id']}/items", json={"section": "images", "items": [{"prompt": "un gato"}]}, headers=via)
+lg = c.get(f"/api/projects/{hq['id']}/history", headers=h(JUANA, "Juana")).json()
+check("  every save is in the history by the time it is asked for, the assistant's marked as its",
+      [r["author"] for r in lg["revisions"]] == ["Juana (Alfred)", "Juana", "Juana"]
+      and lg["revisions"][-1]["kind"] == "start", lg["revisions"])
+check("  nobody else can read it", c.get(f"/api/projects/{hq['id']}/history", headers=h(TOMI, "Tomi")).status_code == 404)
+check("  a revision that is not one is a 404",
+      c.get(f"/api/projects/{hq['id']}/history/zzzz", headers=h(JUANA, "Juana")).status_code == 404)
+rv = c.post(f"/api/projects/{hq['id']}/history/{lg['revisions'][0]['rev']}/revert", headers=h(JUANA, "Juana")).json()
+check("  and reverting the assistant's change takes its picture out",
+      not rv["conflicts"] and c.get(f"/api/projects/{hq['id']}", headers=h(JUANA, "Juana")).json()["images"] == [], rv)
+tg = c.post(f"/api/projects/{hq['id']}/history/{lg['revisions'][1]['rev']}/tag", json={"name": "para Mora"},
+            headers=h(JUANA, "Juana")).json()
+check("  a tag is put on a revision and listed",
+      [t["name"] for t in c.get(f"/api/projects/{hq['id']}/history", headers=h(JUANA, "Juana")).json()["tags"]] == ["para Mora"])
+check("  and taken off", c.delete(f"/api/projects/{hq['id']}/tags/{tg['ref']}", headers=h(JUANA, "Juana")).status_code == 200
+      and c.get(f"/api/projects/{hq['id']}/history", headers=h(JUANA, "Juana")).json()["tags"] == [])
 
 print("\nthe default project, for what the assistant is asked")
 d1 = c.get("/api/default-project", headers=h(JUANA, "Juana")).json()

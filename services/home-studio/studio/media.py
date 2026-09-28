@@ -194,6 +194,23 @@ def srt(segments: list[dict]) -> str:
     return "\n".join(blocks)
 
 
+def mix_audio(srcs: list[Path], out: Path) -> Path:
+    """Several stems of one song summed back into one track, as MP3 -- the
+    song without a part (a minus-one to play along with), or the part alone.
+    Summed, not averaged: the stems are pieces of one mix and add back to it."""
+    if not srcs:
+        raise MediaError("nothing to mix")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    args = [a for s in srcs for a in ("-i", str(s))]
+    graph = ("".join(f"[{i}:a]" for i in range(len(srcs))) + f"amix=inputs={len(srcs)}:normalize=0[m]") \
+        if len(srcs) > 1 else "[0:a]anull[m]"
+    _run([*args, "-filter_complex", graph, "-map", "[m]", "-c:a", "libmp3lame", "-q:a", "2", str(out)], timeout=600)
+    if probe(out)["seconds"] <= 0:
+        out.unlink(missing_ok=True)
+        raise MediaError(f"{out.name} did not mix")
+    return out
+
+
 def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
     """*src* as a PCM WAV at *rate* and *channels*."""
     out.parent.mkdir(parents=True, exist_ok=True)

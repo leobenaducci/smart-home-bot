@@ -117,8 +117,8 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "favorite_set", "favorite_clear", "rs_button", "rs_title", "rs_mode_part", "rs_mode_all",
             "rs_pick", "rs_range", "rs_no_lines", "rs_similar", "rs_keep_voice", "rs_go",
             "preview_download", "preview_rendering",
-            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "mv_steps", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
-            "tab_cast", "ch_none", "ch_new", "ch_edit", "ch_name", "ch_look", "ch_look_ph", "ch_personality", "ch_personality_ph", "ch_voice", "ch_voice_text", "ch_record", "ch_stop", "ch_pictures", "ch_save", "ch_portrait", "ch_speak", "ch_speak_what", "ch_speak_ph", "ch_widen_person", "ch_widen_family", "ch_scope_project", "ch_scope_person", "ch_scope_family", "ch_widen_confirm", "ch_delete_confirm", "ch_in_shot",
+            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "hist_button", "hist_title", "hist_help", "hist_empty", "hist_show", "hist_nothing", "hist_reordered", "hist_revert", "hist_revert_help", "hist_revert_confirm", "hist_restore", "hist_restore_help", "hist_restore_confirm", "hist_tag_now", "hist_tag_prompt", "hist_untag_confirm", "hist_done", "hist_conflicts", "score_make", "score_open", "score_running", "score_retry", "score_confirm", "score_queued", "sb_use", "sb_starts_from", "sb_video_older", "sb_to_video", "sb_to_video_off", "sb_video_stale", "sb_continues", "sb_use_frame", "board_from", "board_from_none", "ref_add", "ref_add_short", "ref_is", "ref_added", "tab_board", "sb_help", "sb_empty", "sb_redraw_changed", "sb_animatic", "sb_changed", "sb_changed_short", "sb_drawing", "sb_music_only", "mv_steps", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
+            "tab_cast", "ch_none", "ch_new", "ch_edit", "ch_name", "ch_look", "ch_look_ph", "ch_personality", "ch_personality_ph", "ch_voice", "ch_voice_text", "ch_record", "ch_stop", "ch_pictures", "ch_save", "ch_pick_studio", "ch_pick_files", "ch_pick_none", "ch_portrait", "ch_speak", "ch_speak_what", "ch_speak_ph", "ch_widen_person", "ch_widen_family", "ch_scope_project", "ch_scope_person", "ch_scope_family", "ch_widen_confirm", "ch_delete_confirm", "ch_in_shot",
             "rec_title", "rec_screen", "rec_cam", "rec_mic", "rec_start", "rec_pause", "rec_resume", "rec_stop", "rec_uploading", "rec_saved", "rec_processing", "rec_failed", "rec_no_screen", "rec_need_source", "rec_default_title", "rec_denied", "delete_render_confirm",
             "rec_subs", "rec_subs_running", "rec_subs_failed", "rec_transcript", "rec_trim", "rec_trim_running", "rec_trim_done", "rec_trim_failed", "render_subs",
             "rec_describe", "rec_describing", "rec_desc_title", "rec_desc_description", "rec_desc_chapters", "rec_desc_copy", "rec_desc_copied", "rec_desc_failed", "card_paused_update", "card_paused_after", "rec_retry"):
@@ -239,6 +239,61 @@ r.get_data()
 check("without it, the file plays inline as before", "Content-Disposition" not in r.headers, r.headers)
 check("a name cannot smuggle a path or a quote",
       '/' not in A._studio_attachment('../../etc/"passwd', "takes/a.png").split("filename*")[0].split('filename="')[1])
+
+print("\nthe practice page: a version's parts, played with the song")
+for key in A.PRACTICE_UI_KEYS:
+    check(key, all(f"studio.{key}" in c for c in CATALOGUES.values()))
+SCORE = {"state": "done", "file": "takes/s1/t1-score/score.musicxml", "midi": "takes/s1/t1-score/notes.mid",
+         "minus": "takes/s1/t1-score/minus.mp3", "part": "takes/s1/t1-score/part.mp3", "tempo": 121.998,
+         "score_tempo": 122, "start": 0.1156, "beat": 0.49, "fifths": 0,
+         "tracks": [{"id": "acoustic_guitar", "name": "Acoustic guitar", "kind": "guitar", "notes": 10}]}
+DOC = {"id": "abc123def456", "name": "Faro Zorro", "audio": [{"id": "s1", "title": "Canción </script> de Mora",
+       "takes": [{"id": "t1", "file": "takes/s1/t1.mp3", "score": SCORE}, {"id": "t2", "file": "takes/s1/t2.mp3"}]}]}
+got = []
+
+
+class _Doc:
+    def __init__(self, code, body):
+        self.status_code, self._body = code, body
+
+    def json(self):
+        return self._body
+
+
+def _get(url, headers=None, timeout=None):
+    got.append((url, dict(headers or {})))
+    return _Doc(200, DOC) if url.endswith("/api/projects/abc123def456") else _Doc(404, {"detail": "no"})
+
+
+A.requests.get = _get
+r = client.get("/studio/practice?project=abc123def456&item=s1&take=t1", headers=HOME)
+page = r.get_data(as_text=True)
+check("the page renders, asked of the Studio as the person",
+      r.status_code == 200 and got and got[-1][1].get("X-Studio-User") == USER1, (r.status_code, got[-1:]))
+cfg = json.loads(page.split('id="practice-cfg">', 1)[1].split("</script>", 1)[0])
+check("with the score, the song and both play-along tracks, through the proxy",
+      cfg["score"] == "/studio/api/projects/abc123def456/file/takes/s1/t1-score/score.musicxml"
+      and cfg["audio"] == {"song": "/studio/api/projects/abc123def456/file/takes/s1/t1.mp3",
+                           "minus": "/studio/api/projects/abc123def456/file/takes/s1/t1-score/minus.mp3",
+                           "part": "/studio/api/projects/abc123def456/file/takes/s1/t1-score/part.mp3"}, cfg)
+check("and the tempo and start it needs to follow the song",
+      cfg["meta"]["tempo"] == 121.998 and cfg["meta"]["score_tempo"] == 122 and cfg["meta"]["start"] == 0.1156)
+check("a title cannot close the script it is in", "Canción </script>" not in page and page.count("</script>") == 2)
+check("downloads come as attachments under the song's name", "?download=Canci%C3%B3n" in cfg["downloads"]["xml"], cfg["downloads"])
+check("the renderer is the staged module build, not a CDN",
+      '/static/studio/practice.js' in page and "cdn" not in page.lower())
+r = client.get("/studio/practice?project=abc123def456&item=s1&take=t2", headers=HOME)
+check("a version with no sheet music says how to ask for it",
+      r.status_code == 200 and "practice-cfg" not in r.get_data(as_text=True))
+r = client.get("/studio/practice?project=../../x&item=s1&take=t1", headers=HOME)
+check("a project that is not the person's shows nothing of it",
+      r.status_code == 200 and "practice-cfg" not in r.get_data(as_text=True) and got[-1][0].endswith("/api/projects/x"), got[-1:])
+for f in ("alphaTab.mjs", "alphaTab.core.mjs", "alphaTab.worker.mjs", "alphaTab.worklet.mjs",
+          "font/Bravura.woff2", "soundfont/sonivox.sf3", "LICENSE"):
+    check(f"staged: {f}", os.path.isfile(os.path.join(SRC, "static", "vendor", "alphatab", f)))
+entry = open(os.path.join(SRC, "static", "vendor", "alphatab", "alphaTab.mjs"), encoding="utf-8").read()
+check("the entry starts its worker beside itself, which 'self' allows",
+      '"./alphaTab.worker.mjs"' in entry and '"./alphaTab.core.mjs"' in entry)
 
 shutil.rmtree(tmp, ignore_errors=True)
 print()

@@ -68,3 +68,25 @@ def test_markup_nothing_resolves_is_not_published():
     text = ("Buenos días.\n" + WEATHER.replace('"weather"', '"nonexistent_thing"'))
     out = _parse(text, [{"role": "user", "content": "hola"}])
     assert "DSML" not in (out.content or "") and "<function" not in (out.content or "")
+
+
+DOUBLED = (
+    "<｜｜DSML｜｜ calls>\n"
+    '<｜｜DSML｜｜ invoke name="exec">\n'
+    '<｜｜DSML｜｜ parameter name="command" string="true">date</｜｜DSML｜｜ parameter>\n'
+    "</｜｜DSML｜｜ invoke>\n"
+    "</｜｜DSML｜｜ calls>"
+)
+
+
+def test_doubled_bars_and_a_bare_calls_wrapper_run_too():
+    # deepseek-v4.1-flash, 2026-09-28: the reply was this markup, nothing run.
+    out = _parse(DOUBLED, [{"role": "user", "content": "el storyboard tiene que calzar con la canción"}])
+    assert [tc.name for tc in out.tool_calls] == ["exec"]
+    assert out.tool_calls[0].arguments == {"command": "date"}
+    assert "DSML" not in (out.content or "")
+
+
+def test_stray_markup_never_reaches_the_person():
+    from nanobot.agent.runner import _dsml_as_qwen35
+    assert "DSML" not in _dsml_as_qwen35("Listo.<｜｜DSML｜｜ end_of_calls>")

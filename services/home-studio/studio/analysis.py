@@ -24,6 +24,7 @@ reported its word positions in seconds computed at the wrong rate.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import math
 import re
@@ -38,6 +39,11 @@ from . import media
 log = logging.getLogger("studio.analysis")
 
 SEP_MODEL = "mel_band_roformer_q8_0"
+# For the scores (studio/score.py): HTDemucs splits a song into vocals, drums,
+# bass and "other" -- guitars and keys land in the last -- and MuScriptor
+# hears the notes, constrained to the instruments asked for.
+STEMS_MODEL = "htdemucs_q8_0"
+NOTES_MODEL = "muscriptor_small_f32"
 MUSIC_MODEL = "ace_step_turbo_q8_0"
 ALIGN_MODEL = "qwen3_forced_aligner_0_6b_q8_0"
 TAG_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
@@ -159,6 +165,34 @@ class AudioServer:
         out = work / "vocals.wav"
         out.write_bytes(base64.b64decode(stems["vocals"]))
         return out
+
+    def separate_stems(self, song: Path, work: Path) -> dict[str, Path]:
+        """The song as HTDemucs's four stems: vocals, drums, bass, other."""
+        wav = media.to_wav(song, work / "song.wav", rate=44100, channels=2)
+        r = requests.post(f"{self.url}/v1/tasks/run", timeout=900,
+                          json={"model": STEMS_MODEL, "task": "sep", "audio": str(wav)})
+        r.raise_for_status()
+        out = {}
+        for o in r.json().get("named_audio_outputs") or []:
+            if o.get("id") and o.get("audio"):
+                out[o["id"]] = work / f"stem-{o['id']}.wav"
+                out[o["id"]].write_bytes(base64.b64decode(o["audio"]))
+        if "other" not in out:
+            raise RuntimeError("the separator returned no accompaniment stem")
+        return out
+
+    def notes(self, song: Path, work: Path, instruments: list[str]) -> tuple[list[dict], bytes]:
+        """The notes MuScriptor hears in the song -- the whole mix, which
+        tells a strummed acoustic from a picked electric better than the
+        separated stem does -- as note events and as MIDI. 16 kHz mono in."""
+        mono = media.to_wav(song, work / "song16.wav", rate=16000, channels=1)
+        r = requests.post(f"{self.url}/v1/tasks/run", timeout=1800, json={
+            "model": NOTES_MODEL, "task": "midi", "audio": str(mono),
+            "options": {"instruments": ",".join(instruments)}})
+        r.raise_for_status()
+        data = r.json()
+        midi = next((a.get("payload") for a in data.get("artifacts") or [] if a.get("kind") == "midi"), "")
+        return json.loads(data.get("text") or "[]"), base64.b64decode(midi) if midi else b""
 
     def align(self, vocals: Path, text: str, language: str, work: Path) -> list[dict]:
         mono = media.to_wav(vocals, work / "vocals16.wav", rate=16000, channels=1)

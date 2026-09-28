@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from . import analysis, media, recipes
 from .manager import Manager
 from .characters import Characters
+from .history import LABELS, History
 from .projects import ProjectError, Projects
 from .store import Store
 
@@ -51,6 +52,15 @@ store = Store(DATA / "queue" / "jobs.db")
 projects = Projects(DATA / "projects")
 characters = Characters(DATA / "projects")
 renders = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-render")
+# Each project's words under version control (studio/history.py). A save's
+# revision is written beside the request, one at a time, so typing is never
+# held up by git.
+history = History(projects, characters)
+histories = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-history")
+# Taking a snapshot and queueing it happen as one step: two saves at once
+# (the page and the person's assistant) are then written in the order they
+# were taken, and the newest revision is the project as it is.
+_remember_order = threading.Lock()
 # Transcripts wait on the house's speech recogniser -- up to half an hour for
 # a long recording -- so they have a pool of their own: sharing the renders'
 # one worker held every person's films and encodes behind one transcript.
@@ -91,6 +101,12 @@ def _start() -> None:
 
 def _housekeeping() -> None:
     try:
+        n = history.begin_all()
+        if n:
+            log.info("began the history of %d project(s)", n)
+    except Exception:                                          # noqa: BLE001
+        log.exception("beginning project histories failed")
+    try:
         n = projects.compress_audio_takes(media.compress_audio)
         if n:
             log.info("compressed %d audio take(s) to mp3", n)
@@ -105,17 +121,44 @@ def _housekeeping() -> None:
 
 
 class Who:
-    def __init__(self, login: str, name: str, admin: bool):
-        self.login, self.name, self.admin = login, name, admin
+    def __init__(self, login: str, name: str, admin: bool, via: str = ""):
+        self.login, self.name, self.admin, self.via = login, name, admin, via
 
 
 def who(x_studio_secret: str = Header(""), x_studio_user: str = Header(""),
-        x_studio_name: str = Header(""), x_studio_admin: str = Header("")) -> Who:
+        x_studio_name: str = Header(""), x_studio_admin: str = Header(""),
+        x_studio_via: str = Header("")) -> Who:
+    """The person asking. `X-Studio-Via` names their assistant when it is
+    the one asking on their behalf -- the history says so."""
     if not SECRET or not hmac.compare_digest(x_studio_secret, SECRET):
         raise HTTPException(401, "not authorised")
     if not x_studio_user:
         raise HTTPException(401, "no user")
-    return Who(x_studio_user, x_studio_name or x_studio_user, x_studio_admin == "1")
+    return Who(x_studio_user, x_studio_name or x_studio_user, x_studio_admin == "1",
+               " ".join(x_studio_via.split())[:40])
+
+
+def _remember(me: Who, pid: str, message: str = "", kind: str = "edit") -> None:
+    """A revision of the project's words: taken now, written in the
+    background."""
+    def work(captured):
+        try:
+            history.record(me.login, pid, me.login, me.name, me.via, kind=kind, message=message, captured=captured)
+        except Exception:                                      # noqa: BLE001 -- history never fails a save
+            log.exception("history of %s/%s", me.login, pid)
+    with _remember_order:
+        histories.submit(work, history.capture(me.login, pid))
+
+
+def _history_settled(needed: bool) -> None:
+    """Wait for the saves before this request to be in the history. For a
+    list, a history a moment behind is still an answer; for undoing or going
+    back, it is not -- they must start from the latest revision."""
+    try:
+        histories.submit(lambda: None).result(timeout=30)
+    except TimeoutError:
+        if needed:
+            raise HTTPException(503, "the history is still writing the latest saves; try again in a moment")
 
 
 def _bad(exc: Exception, code: int = 400):
@@ -246,7 +289,9 @@ def list_projects(me: Who = Depends(who)):
 
 @app.post("/api/projects")
 def new_project(body: dict, me: Who = Depends(who)):
-    return projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
+    doc = projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
+    _remember(me, doc["id"])
+    return doc
 
 
 # -- characters ----------------------------------------------------------------
@@ -272,7 +317,9 @@ def list_characters(pid: str, me: Who = Depends(who)):
 def new_character(pid: str, body: dict, me: Who = Depends(who)):
     _project(me, pid)
     try:
-        return _char_public(characters.create(me.login, pid, body), me)
+        made = _char_public(characters.create(me.login, pid, body), me)
+        _remember(me, pid)
+        return made
     except ProjectError as exc:
         _bad(exc)
 
@@ -281,7 +328,9 @@ def new_character(pid: str, body: dict, me: Who = Depends(who)):
 def edit_character(pid: str, cid: str, body: dict, me: Who = Depends(who)):
     _project(me, pid)
     try:
-        return _char_public(characters.update(cid, me.login, pid, body, me.admin), me)
+        changed = _char_public(characters.update(cid, me.login, pid, body, me.admin), me)
+        _remember(me, pid)
+        return changed
     except ProjectError as exc:
         _bad(exc, 403)
 
@@ -291,7 +340,9 @@ def widen_character(pid: str, cid: str, me: Who = Depends(who)):
     """One scope wider: this project -> all of mine -> the family's."""
     _project(me, pid)
     try:
-        return _char_public(characters.widen(cid, me.login, pid, me.admin), me)
+        wider = _char_public(characters.widen(cid, me.login, pid, me.admin), me)
+        _remember(me, pid)
+        return wider
     except ProjectError as exc:
         _bad(exc, 403)
 
@@ -301,6 +352,7 @@ def delete_character(pid: str, cid: str, me: Who = Depends(who)):
     _project(me, pid)
     try:
         characters.delete(cid, me.login, pid, me.admin)
+        _remember(me, pid)
     except ProjectError as exc:
         _bad(exc, 403)
     return {"ok": True}
@@ -578,7 +630,11 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
             continue
         cast = characters.describe(shot.get("cast") or [], me.login, pid)
         prompt = (f"{look}. " if look else "") + f"Film still: {what}" + (f" Characters: {cast}." if cast else "")
-        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size}, pid, shot["id"],
+        # `shot_prompt`: the description as it was when the frame was asked
+        # for, kept on the frame so the page can tell a frame whose shot has
+        # been described differently since -- one to draw again.
+        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200]},
+                               pid, shot["id"],
                                shot.get("title") or f"{doc['name']} {idx + 1}")["id"])
     if not queued:
         _bad(ValueError("every shot already has a frame"))
@@ -599,7 +655,9 @@ def get_project(pid: str, me: Who = Depends(who)):
 @app.put("/api/projects/{pid}")
 def save_project(pid: str, body: dict, me: Who = Depends(who)):
     try:
-        return projects.save(me.login, pid, body)
+        saved = projects.save(me.login, pid, body)
+        _remember(me, pid)
+        return saved
     except ProjectError as exc:
         _bad(exc, 404)
 
@@ -616,10 +674,64 @@ def delete_project(pid: str, me: Who = Depends(who)):
     return {"ok": True}
 
 
+# -- a project's history -----------------------------------------------------------
+def _history_call(fn):
+    try:
+        return fn()
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.get("/api/projects/{pid}/history")
+def project_history(pid: str, me: Who = Depends(who)):
+    """Every revision of the project's words, newest first, and its tags."""
+    _project(me, pid)
+    _history_settled(needed=False)
+    return _history_call(lambda: history.log(me.login, pid))
+
+
+@app.get("/api/projects/{pid}/history/{rev}")
+def project_revision(pid: str, rev: str, me: Who = Depends(who)):
+    _project(me, pid)
+    return _history_call(lambda: history.show(me.login, pid, rev))
+
+
+@app.post("/api/projects/{pid}/history/{rev}/revert")
+def revert_revision(pid: str, rev: str, me: Who = Depends(who)):
+    """Undo what one revision changed, where nothing changed it since."""
+    _project(me, pid)
+    _history_settled(needed=True)
+    return _history_call(lambda: history.revert(me.login, pid, rev, me.login, me.name, me.via))
+
+
+@app.post("/api/projects/{pid}/history/{rev}/restore")
+def restore_revision(pid: str, rev: str, me: Who = Depends(who)):
+    """The project as it read at that revision."""
+    _project(me, pid)
+    _history_settled(needed=True)
+    return _history_call(lambda: history.restore(me.login, pid, rev, me.login, me.name, me.via))
+
+
+@app.post("/api/projects/{pid}/history/{rev}/tag")
+def tag_revision(pid: str, rev: str, body: dict, me: Who = Depends(who)):
+    _project(me, pid)
+    return _history_call(lambda: history.tag(me.login, pid, rev, str(body.get("name") or ""), me.login, me.name))
+
+
+@app.delete("/api/projects/{pid}/tags/{ref}")
+def untag(pid: str, ref: str, me: Who = Depends(who)):
+    _project(me, pid)
+    _history_call(lambda: history.untag(me.login, pid, ref))
+    return {"ok": True}
+
+
 @app.post("/api/projects/{pid}/duplicate")
 def duplicate_project(pid: str, body: dict | None = None, me: Who = Depends(who)):
     try:
-        return projects.duplicate(me.login, pid, str((body or {}).get("name") or ""))
+        copy = projects.duplicate(me.login, pid, str((body or {}).get("name") or ""))
+        lang = "en" if str(copy["settings"].get("language") or "es").startswith("en") else "es"
+        _remember(me, copy["id"], message=LABELS[lang]["copy"].format(s=projects.load(me.login, pid)["name"]))
+        return copy
     except ProjectError as exc:
         _bad(exc, 404)
 
@@ -683,6 +795,29 @@ def analyze_song(pid: str, item_id: str, body: dict | None = None, me: Who = Dep
                 return {"take": take["id"], "failed": job["error"] or "failed"}
     job = _enqueue(me, "analyze", {"take": take["id"]}, pid, item_id,
                    title=item.get("title") or "")
+    return {"take": take["id"], "job": _public(store.get(job["id"]) or job, me)}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/score")
+def song_score(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """A song version's parts -- guitar as notes and tab, piano -- and the
+    stems to practise with: served once written, otherwise queued, once, and
+    the job returned for the page to wait on. `retry` asks again after a
+    failure."""
+    body = body or {}
+    _doc, item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    sc = take.get("score") or {}
+    if sc.get("state") == "done":
+        return {"take": take["id"], "score": sc}
+    for job in store.active():
+        if job["owner"] == me.login and job["kind"] == "score" and job["target"] == item_id \
+                and job["params"].get("take") == take["id"]:
+            return {"take": take["id"], "job": _public(job, me)}
+    if sc.get("state") == "failed" and not body.get("retry"):
+        return {"take": take["id"], "failed": sc.get("error") or "failed"}
+    if not body.get("start"):
+        return {"take": take["id"], "none": True}
+    job = _enqueue(me, "score", {"take": take["id"]}, pid, item_id, title=item.get("title") or "")
     return {"take": take["id"], "job": _public(store.get(job["id"]) or job, me)}
 
 
@@ -767,6 +902,15 @@ def choose_board(pid: str, item_id: str, body: dict | None = None, me: Who = Dep
         _bad(exc, 404)
 
 
+@app.post("/api/projects/{pid}/items/{item_id}/board_from")
+def board_from(pid: str, item_id: str, body: dict, me: Who = Depends(who)):
+    """A picture already in the project as this shot's frame."""
+    try:
+        return projects.board_from(me.login, pid, item_id, str(body.get("file") or ""))
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/favorite")
 def favorite(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """Mark one version the favourite (or none, with no `take`): it is the one
@@ -783,6 +927,15 @@ def delete_take(pid: str, item_id: str, take_id: str, me: Who = Depends(who)):
         return projects.delete_take(me.login, pid, item_id, take_id)
     except ProjectError as exc:
         _bad(exc, 404)
+
+
+@app.post("/api/projects/{pid}/references")
+def add_reference(pid: str, body: dict, me: Who = Depends(who)):
+    """A picture made in this project, kept as a reference picture."""
+    try:
+        return projects.reference_from(me.login, pid, str(body.get("file") or ""), str(body.get("name") or ""))
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
 
 
 @app.delete("/api/projects/{pid}/uploads/{name}")
@@ -849,7 +1002,8 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
         # The approved storyboard frame is where a shot that does not carry
         # on from the one before begins: what was looked at is what is made.
         board = Projects.chosen_board(shot)
-        if board and starts_fresh and body.get("use_boards", True):
+        use_boards = body.get("use_boards", True) and doc["settings"].get("use_storyboard", True) is not False
+        if board and starts_fresh and use_boards:
             params["start_board"] = board["file"]
             params.pop("start_upload", None)
         try:
@@ -893,6 +1047,7 @@ def add_items(pid: str, body: dict, me: Who = Depends(who)):
     section = str(body.get("section") or "")
     try:
         added = projects.append(me.login, pid, section, list(body.get("items") or []))
+        _remember(me, pid)
     except ProjectError as exc:
         _bad(exc, 404)
     out = {"items": [a["id"] for a in added]}

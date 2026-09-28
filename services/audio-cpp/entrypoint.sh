@@ -53,6 +53,8 @@ SEP_PKGS="${AUDIOCPP_SEP_PACKAGES:-}"
 ALIGN_PKGS="${AUDIOCPP_ALIGN_PACKAGES:-}"
 # Music generation (ACE-Step), for the Studio's repaint of a stretch of a song.
 GEN_PKGS="${AUDIOCPP_GEN_PACKAGES:-}"
+# Notes heard in a song, as MIDI (MuScriptor), for the Studio's scores.
+MIDI_PKGS="${AUDIOCPP_MIDI_PACKAGES:-}"
 
 # The family used to be an environment variable next to the package, and that
 # was a second place to get it wrong: `qwen3_tts_0_6b_base_q8_0` with
@@ -140,6 +142,7 @@ add_entries asr "$ASR_PKGS" || exit 1
 add_entries sep "$SEP_PKGS" || exit 1
 add_entries align "$ALIGN_PKGS" || exit 1
 add_entries gen "$GEN_PKGS" || exit 1
+add_entries midi "$MIDI_PKGS" || exit 1
 
 cat > /app/server.json <<JSON
 {

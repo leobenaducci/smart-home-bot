@@ -33,11 +33,16 @@ services:
       - AUDIOCPP_PORT=8080
       - AUDIOCPP_TTS_PACKAGES=none
       - AUDIOCPP_ASR_PACKAGES=none
-      - AUDIOCPP_SEP_PACKAGES=mel_band_roformer_q8_0
+      # Mel-Band RoFormer for a song's vocals (the lyrics' timing); HTDemucs
+      # for its four stems (a score's play-along tracks).
+      - AUDIOCPP_SEP_PACKAGES=mel_band_roformer_q8_0,htdemucs_q8_0
       - AUDIOCPP_ALIGN_PACKAGES=qwen3_forced_aligner_0_6b_q8_0
       # ACE-Step 1.5 turbo (~6 GB), for repainting a stretch of a song -- a
       # changed line sung in place. WanGP's ACE-Step has no repaint route.
       - AUDIOCPP_GEN_PACKAGES=ace_step_turbo_q8_0
+      # MuScriptor (412 MB): the notes in a song, for its guitar and piano
+      # parts written out.
+      - AUDIOCPP_MIDI_PACKAGES=muscriptor_small_f32
       - AUDIOCPP_SERVER_ARGS=--host 0.0.0.0 --no-ui --idle-unload-ms 5000 --max-loaded-models 1
     volumes:
       # The same package cache as the house's voice instance: one copy of

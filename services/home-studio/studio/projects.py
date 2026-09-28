@@ -46,6 +46,10 @@ EDITABLE = {
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
+# Where an item taken out of the timeline keeps its full record -- versions
+# and all -- for a revision of the project's history that brings it back
+# (studio/history.py).
+REMOVED_DIR = ".history-removed"
 # What a project is for. It decides the page's starting shape and the
 # planning flow Alfred runs; every tool stays available in every kind.
 PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
@@ -167,6 +171,10 @@ class Projects:
                 # asked to share, so the pictures read as one film.
                 if "look" in s:
                     doc["settings"]["look"] = str(s.get("look") or "")[:600]
+                # Whether a shot's video starts from its storyboard frame (the
+                # default) or from what the Video tab picks for it.
+                if "use_storyboard" in s:
+                    doc["settings"]["use_storyboard"] = bool(s["use_storyboard"])
                 if "soundtrack" in s:
                     st = str(s.get("soundtrack") or "")
                     doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""
@@ -174,6 +182,10 @@ class Projects:
                 if not isinstance(incoming.get(section), list):
                     continue
                 known = {item["id"]: item for item in doc.get(section) or []}
+                kept = {str(item.get("id")) for item in incoming[section][:200] if isinstance(item, dict)}
+                for iid, gone in known.items():
+                    if iid not in kept:
+                        self.stash_removed(owner, pid, gone)
                 merged = []
                 for item in incoming[section][:200]:
                     if not isinstance(item, dict):
@@ -340,8 +352,10 @@ class Projects:
         doc = self.load(owner, pid)
         new = self.create(owner, name or f"{doc['name']} (copia)")
         src, dst = self.dir(owner, pid), self.dir(owner, new["id"])
-        for sub in ("takes", "uploads", "renders"):
-            shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
+        # Its history comes too: a copy remembers what it was copied from.
+        for sub in ("takes", "uploads", "renders", ".history", REMOVED_DIR):
+            if (src / sub).is_dir():
+                shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
         # The project's own characters come too, with the same ids, so the
         # copied shots' cast still finds them (the wider ones need no copy).
         if (src / "characters").is_dir():
@@ -414,6 +428,23 @@ class Projects:
         if base.resolve() in path.parents and path.is_file():
             path.unlink()
 
+    def stash_removed(self, owner: str, pid: str, item: dict) -> None:
+        """An item's full record, kept when it leaves the timeline."""
+        if not ID_RE.fullmatch(str(item.get("id") or "")):
+            return
+        d = self.dir(owner, pid) / REMOVED_DIR
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{item['id']}.json").write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
+
+    def _rmtree_inside(self, base: Path, rel: str) -> None:
+        """Remove a folder of this project's -- a version's scores and stems --
+        and only one inside its takes."""
+        if not rel:
+            return
+        path = (base / rel).resolve()
+        if (base / "takes").resolve() in path.parents and path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
     def delete_take(self, owner: str, pid: str, item_id: str, take_id: str) -> dict:
         """One version of an item, gone from the project *and* the disk -- the
         clip or picture and the frames taken from it. The one way a take's
@@ -440,6 +471,7 @@ class Projects:
             self._unlink_inside(base, str((take.get("analysis") or {}).get("file") or ""))
             for key in ("file", "srt"):
                 self._unlink_inside(base, str((take.get("transcript") or {}).get(key) or ""))
+            self._rmtree_inside(base, str((take.get("score") or {}).get("dir") or ""))
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
             return item
@@ -505,6 +537,28 @@ class Projects:
             self._write(owner, pid, doc)
             return board
 
+    def board_from(self, owner: str, pid: str, item_id: str, rel: str) -> dict:
+        """A picture already in the project -- a reference, a generated image,
+        another shot's frame -- made this shot's chosen frame. A copy in the
+        shot's folder, so deleting the picture leaves the frame; the shot's
+        description goes with it, so it does not read as changed since."""
+        if not re.fullmatch(r"(?:uploads|takes)/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp)", rel or "") or ".." in rel:
+            raise ProjectError("only a picture in this project can be a frame")
+        src = self.file(owner, pid, rel)
+        doc = self.load(owner, pid)
+        found = self.find(doc, item_id)
+        if not found or found[0] != "shots":
+            raise ProjectError("no such shot")
+        dest = f"takes/{item_id}/frame-{_new_id()}{src.suffix.lower()}"
+        (self.dir(owner, pid) / dest).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, self.dir(owner, pid) / dest)
+        try:
+            return self.add_board(owner, pid, item_id, {"file": dest, "prompt": str(found[2].get("prompt") or "").strip(),
+                                                        "source": rel})
+        except ProjectError:
+            (self.dir(owner, pid) / dest).unlink(missing_ok=True)
+            raise
+
     def set_take_field(self, owner: str, pid: str, item_id: str, take_id: str, key: str, value) -> None:
         """One server-side field of one version -- its analysis, its favourite
         mark. Never from the page's save, which cannot set a take's fields."""
@@ -547,6 +601,28 @@ class Projects:
             doc = self.load(owner, pid)
             (self.dir(owner, pid) / rel).write_bytes(data)
             entry = {"file": rel, "name": name[:80], "kind": kind, "created": time.time()}
+            doc.setdefault("uploads", []).append(entry)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return entry
+
+    def reference_from(self, owner: str, pid: str, rel: str, name: str = "") -> dict:
+        """A picture the Studio made in this project, filed as a reference
+        too -- what a shot can start from and a character's look can be drawn
+        after. A copy, so deleting either leaves the other; asked twice for
+        the same picture, the reference already filed is the answer."""
+        if not re.fullmatch(r"(?:takes|boards)/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp)", rel or "") or ".." in rel:
+            raise ProjectError("only a picture made here can become a reference")
+        src = self.file(owner, pid, rel)
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            for u in doc.get("uploads") or []:
+                if u.get("source") == rel and u.get("kind") == "reference":
+                    return u
+            dest = f"uploads/{_new_id()}-{src.name}"
+            shutil.copyfile(src, self.dir(owner, pid) / dest)
+            entry = {"file": dest, "name": (str(name or "").strip() or src.name)[:80], "kind": "reference",
+                     "source": rel, "created": time.time()}
             doc.setdefault("uploads", []).append(entry)
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
