@@ -3002,6 +3002,22 @@ def models_test():
     # so a model can be tried before it is chosen. Absent (an older page, a
     # script), the saved one is tested as before.
     asked = [v.strip() for v in request.form.getlist("model") if v.strip()]
+    # The picker names a house setup `__local__:<id>` and the generic local
+    # choice `__local__`; a save turns those into an address and so must the
+    # test. Sent as they were, both went to OpenCode Zen as a model called
+    # "__local__:text", which answered "Model is unavailable" (2026-09-27).
+    saved = [str(v) for v in (raw if isinstance(raw, list) else [raw]) if v]
+    for i, v in enumerate(asked):
+        if v.startswith("__local__:"):
+            asked[i] = _setup_value(cfg, v.split(":", 1)[1], role)
+            if not asked[i]:
+                return jsonify({"ok": False, "error": _t_or(
+                    "admin.models.test_setup_cannot", "That setup's model cannot do this role.")}), 400
+        elif v == "__local__":
+            asked[i] = next((x for x in saved if local_model(x)[0].startswith("ollama:")), "") \
+                or _default_local(cfg, role)
+            if not asked[i]:
+                return jsonify({"ok": False, "error": t("admin.models.test_no_model")}), 400
     if asked:
         raw = asked if len(asked) > 1 or isinstance(raw, list) else asked[0]
     if isinstance(raw, list):

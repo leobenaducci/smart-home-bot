@@ -1345,5 +1345,6 @@
   "nav.this_device_help": "Ponele nombre a este teléfono o tablet, y dejá que un padre lo controle desde Alfred",
   "admin.models.library_stale": "Ollama no respondió en la última actualización ({at}), así que sus modelos se muestran como estaban antes. Aplicá de nuevo, o corré ./home-stack ollama --library, para leerlos de nuevo.",
   "admin.models.ollama_how_pending": "después de Aplicar (estimado)",
-  "admin.models.ollama_gpu_until_apply": "corriendo hasta Aplicar"
+  "admin.models.ollama_gpu_until_apply": "corriendo hasta Aplicar",
+  "admin.models.test_setup_cannot": "El modelo de ese setup no puede hacer este trabajo."
 }
