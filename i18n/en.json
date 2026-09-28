@@ -1481,5 +1481,6 @@
   "nav.app_studio_help": "Video, pictures and songs, made on the house's own card",
   "nav.app_lights": "Lights",
   "nav.app_lights_help": "Every light and wall button in the house",
-  "nav.lan_only_note": "only on the house network"
+  "nav.lan_only_note": "only on the house network",
+  "entry.studio": "Studio"
 }

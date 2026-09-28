@@ -13,4 +13,6 @@ elseif ($path === '/publico'
      || $path === '/publico/login')         { require SRC . '/pages/login.php'; }
 elseif ($path === '/publico/contactos')     { require SRC . '/pages/contactos.php'; }
 elseif (str_starts_with($path, '/privado'))   { require SRC . '/pages/privado.php'; }
+// The Studio: the same way in as the private site, landing on its page.
+elseif ($path === '/estudio')               { $portalPath = '/studio'; require SRC . '/pages/privado.php'; }
 else                                        { http_response_code(404); echo '404 Not Found'; }

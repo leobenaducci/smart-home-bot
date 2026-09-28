@@ -96,6 +96,9 @@ $portalUrl = getenv('HOME_STACK_PORTAL_URL')
     <div class="btn-group">
       <a class="btn btn-primary" href="/publico/login"><?= te('entry.public_site', [], $lang) ?></a>
       <a class="btn btn-secondary" id="btn-privado" href="/privado"><?= te('entry.private_site', [], $lang) ?></a>
+      <?php // The Studio lives on the private side too (house wifi or VPN), so it
+            // shares the private site's reachability line below. ?>
+      <a class="btn btn-secondary" id="btn-estudio" href="/estudio">🎬 <?= te('entry.studio', [], $lang) ?></a>
       <div class="btn-status" id="privado-status"><?= te('entry.checking', [], $lang) ?></div>
     </div>
 
