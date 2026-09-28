@@ -758,6 +758,11 @@ check("  tags keep a name, accents and all, on a revision", [t["name"] for t in 
 hist.untag(JUANA, hpid, tags[0]["ref"])
 check("  and can be taken off", hist.log(JUANA, hpid)["tags"] == [])
 try:
+    hist.revert(JUANA, hpid, hist.log(JUANA, hpid)["revisions"][-1]["rev"], JUANA, "Juana")
+    check("  the first revision cannot be undone (it would take everything out)", False)
+except ProjectError:
+    check("  the first revision cannot be undone (it would take everything out)", True)
+try:
     hist.show(JUANA, hpid, "HEAD; rm -rf /")
     check("  a revision is a hash, nothing else", False)
 except ProjectError:

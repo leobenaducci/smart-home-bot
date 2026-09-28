@@ -71,8 +71,12 @@ _HOSTNAME = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?", re.I)
 
 
 def git(*args: str) -> str:
+    # `--text` puts a binary file's bytes in the diff on purpose -- a key can
+    # hide in one -- and they are rarely UTF-8: a staged font or soundfont
+    # crashed the gate on decoding. Replaced, not skipped, so the text around
+    # them is still read.
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True,
-                          check=True).stdout
+                          errors="replace", check=True).stdout
 
 
 def live_config() -> tuple[dict, Path | None]:

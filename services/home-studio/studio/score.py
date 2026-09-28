@@ -229,22 +229,28 @@ def fret_chords(events: list[dict]) -> list[dict]:
             pitches = [p for p in pitches if p != drop]
             combos = _placements(pitches)
         layers.append((pitches, combos or [()]))
-    # Viterbi over hand positions.
-    prev = {None: (0.0, [])}
+    # Viterbi over hand positions. A path is a linked (step, rest) pair, not
+    # a list: copying a list per candidate made a whole song's part quadratic.
+    prev = {None: (0.0, None)}
     for pitches, combos in layers:
         cur = {}
         for combo in combos:
             best = None
-            for hand, (total, path) in prev.items():
+            for hand, (total, link) in prev.items():
                 c, pos = _cost(combo, 0.0 if hand is None else hand)
                 if best is None or total + c < best[0]:
-                    best = (total + c, path + [(pitches, combo)], pos)
+                    best = (total + c, link, pos)
             key = best[2]
             if key not in cur or best[0] < cur[key][0]:
-                cur[key] = (best[0], best[1])
+                cur[key] = (best[0], ((pitches, combo), best[1]))
         # Keep the few cheapest hands: the path cost is what decides.
         prev = dict(sorted(cur.items(), key=lambda kv: kv[1][0])[:24])
-    path = min(prev.values(), key=lambda v: v[0])[1] if prev else []
+    link = min(prev.values(), key=lambda v: v[0])[1] if prev else None
+    path = []
+    while link is not None:
+        path.append(link[0])
+        link = link[1]
+    path.reverse()
     out = []
     for ev, (pitches, combo) in zip(events, path):
         frets = {p: sf for p, sf in zip(pitches, combo)}

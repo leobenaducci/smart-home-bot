@@ -446,8 +446,14 @@ class History:
         not changed again since. The rest is reported."""
         d = self._dir(owner, pid)
         full = self._resolve(d, rev)
+        # The first revision has no before: "undoing" it would read as every
+        # item having been added by it, and take the whole project out. The
+        # page hides the button; the API refuses it too.
+        parent = self._parent(d, full)
+        if not parent:
+            raise HistoryError("the first revision cannot be undone")
         self.record(owner, pid, login, name, via)
-        a_files, b_files = self._files_at(d, self._parent(d, full)), self._files_at(d, full)
+        a_files, b_files = self._files_at(d, parent), self._files_at(d, full)
         a, b = model(a_files), model(b_files)
         todo = changes(a, b)
         subject = self._git(d, "log", "-1", "--format=%s", full).stdout.decode("utf-8", "replace").strip()

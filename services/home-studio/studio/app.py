@@ -57,6 +57,10 @@ renders = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-render")
 # held up by git.
 history = History(projects, characters)
 histories = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-history")
+# Taking a snapshot and queueing it happen as one step: two saves at once
+# (the page and the person's assistant) are then written in the order they
+# were taken, and the newest revision is the project as it is.
+_remember_order = threading.Lock()
 # Transcripts wait on the house's speech recogniser -- up to half an hour for
 # a long recording -- so they have a pool of their own: sharing the renders'
 # one worker held every person's films and encodes behind one transcript.
@@ -137,14 +141,24 @@ def who(x_studio_secret: str = Header(""), x_studio_user: str = Header(""),
 def _remember(me: Who, pid: str, message: str = "", kind: str = "edit") -> None:
     """A revision of the project's words: taken now, written in the
     background."""
-    captured = history.capture(me.login, pid)
-
-    def work():
+    def work(captured):
         try:
             history.record(me.login, pid, me.login, me.name, me.via, kind=kind, message=message, captured=captured)
         except Exception:                                      # noqa: BLE001 -- history never fails a save
             log.exception("history of %s/%s", me.login, pid)
-    histories.submit(work)
+    with _remember_order:
+        histories.submit(work, history.capture(me.login, pid))
+
+
+def _history_settled(needed: bool) -> None:
+    """Wait for the saves before this request to be in the history. For a
+    list, a history a moment behind is still an answer; for undoing or going
+    back, it is not -- they must start from the latest revision."""
+    try:
+        histories.submit(lambda: None).result(timeout=30)
+    except TimeoutError:
+        if needed:
+            raise HTTPException(503, "the history is still writing the latest saves; try again in a moment")
 
 
 def _bad(exc: Exception, code: int = 400):
@@ -672,7 +686,7 @@ def _history_call(fn):
 def project_history(pid: str, me: Who = Depends(who)):
     """Every revision of the project's words, newest first, and its tags."""
     _project(me, pid)
-    histories.submit(lambda: None).result(timeout=30)          # the saves before this one are in
+    _history_settled(needed=False)
     return _history_call(lambda: history.log(me.login, pid))
 
 
@@ -686,7 +700,7 @@ def project_revision(pid: str, rev: str, me: Who = Depends(who)):
 def revert_revision(pid: str, rev: str, me: Who = Depends(who)):
     """Undo what one revision changed, where nothing changed it since."""
     _project(me, pid)
-    histories.submit(lambda: None).result(timeout=30)
+    _history_settled(needed=True)
     return _history_call(lambda: history.revert(me.login, pid, rev, me.login, me.name, me.via))
 
 
@@ -694,7 +708,7 @@ def revert_revision(pid: str, rev: str, me: Who = Depends(who)):
 def restore_revision(pid: str, rev: str, me: Who = Depends(who)):
     """The project as it read at that revision."""
     _project(me, pid)
-    histories.submit(lambda: None).result(timeout=30)
+    _history_settled(needed=True)
     return _history_call(lambda: history.restore(me.login, pid, rev, me.login, me.name, me.via))
 
 
