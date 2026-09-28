@@ -68,7 +68,10 @@ if [ -z "${ANDROID_KEYSTORE:-}" ] && [ -d /signing ]; then
     fi
     export ANDROID_KEYSTORE=/signing/debug.keystore
 fi
-: "${ANDROID_KEYSTORE:?no keystore: mount the config directory's alfred-app/ at /signing or set ANDROID_KEYSTORE}"
+# No apostrophe in this message: inside ${...:?...} bash reads one as the start
+# of a quoted word, which ran on into later lines and failed every build here
+# as "APK_NAME: unbound variable" -- with the key present all along.
+: "${ANDROID_KEYSTORE:?no keystore: mount the alfred-app/ folder of the config directory at /signing, or set ANDROID_KEYSTORE}"
 echo "==> signing with ${ANDROID_KEYSTORE}"
 
 # Where the app will talk to the house. The source ships the sanitised name --
