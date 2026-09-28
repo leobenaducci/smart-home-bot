@@ -38,12 +38,23 @@ PHASE_SPAN = {"loading": (0.0, 0.05), "loading_model": (0.05, 0.15), "encoding_t
               "inference": (0.2, 0.95), "denoising": (0.2, 0.95), "decoding": (0.95, 1.0)}
 
 
-def overall_progress(msg: dict) -> float:
+def overall_progress(msg: dict, time_share: float | None = None) -> float:
+    """One bar from WanGP's phases. Steps decide where they are known; where
+    they are not, `time_share` -- how much of this kind of job's usual time
+    has gone -- does, and WanGP's own figure only when neither exists.
+
+    Its own figure is not a measure of anything in a stage with no steps:
+    ACE-Step reports 100% as its lyrics-to-music stage *starts*, and a song
+    then sat at 95% for five minutes and read as stuck (2026-09-28)."""
     phase = str(msg.get("phase") or "").lower()
     lo, hi = next((span for key, span in PHASE_SPAN.items() if key in phase), (0.2, 0.95))
     steps, step = msg.get("steps") or 0, msg.get("step") or 0
     if steps:
         within = step / steps
+    elif time_share is not None:
+        # Never quite the end of the stage: a job running long should look
+        # slow, not finished.
+        within = min(0.9, max(0.0, time_share))
     else:
         raw = float(msg.get("progress") or 0)
         within = raw / 100 if raw > 1 else raw
@@ -188,7 +199,7 @@ class Manager:
         out_dir = self.scratch / job["id"]
         worker.send(run=job["id"], settings=settings, output_dir=str(out_dir))
         worker.model = settings["model_type"]
-        result = None
+        result, began, expected = None, time.time(), max(30.0, self.store.seconds_for_job(job))
         while True:
             msg = worker.read()
             if msg is None:
@@ -196,7 +207,8 @@ class Manager:
             if msg.get("id") != job["id"]:
                 continue
             if msg["kind"] == "progress":
-                self.store.update(job["id"], progress=overall_progress(msg), phase=msg.get("phase", "")[:60])
+                share = (time.time() - began) / expected
+                self.store.update(job["id"], progress=overall_progress(msg, share), phase=msg.get("phase", "")[:60])
             elif msg["kind"] == "preview" and msg.get("file"):
                 self.previews[job["id"]] = Path(msg["file"])
             elif msg["kind"] == "done":

@@ -106,6 +106,16 @@ except ProjectError:
 check("  a project list is only the person's own", [x["id"] for x in projects.list(JUANA)] == [p["id"]]
       and projects.list(TOMI) == [])
 
+print("\nthe bar, where WanGP gives no steps")
+from studio.manager import overall_progress  # noqa: E402
+check("  a stage with no steps follows the clock, not WanGP's own 100%",
+      overall_progress({"phase": "Inference", "progress": 100}, 0.3) < 0.5,
+      overall_progress({"phase": "Inference", "progress": 100}, 0.3))
+check("  and a job running long looks slow, never finished",
+      overall_progress({"phase": "Inference", "progress": 100}, 5.0) < 0.95)
+check("  steps still win where they exist",
+      overall_progress({"phase": "Denoising", "step": 5, "steps": 10}, 0.9) == round(0.2 + 0.75 * 0.5, 3))
+
 print("\nthe manager, end to end with a stand-in generator")
 
 
