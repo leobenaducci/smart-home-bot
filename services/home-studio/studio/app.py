@@ -216,7 +216,41 @@ def list_projects(me: Who = Depends(who)):
 
 @app.post("/api/projects")
 def new_project(body: dict, me: Who = Depends(who)):
-    return projects.create(me.login, str(body.get("name") or ""))
+    return projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
+
+
+@app.post("/api/projects/{pid}/storyboard")
+def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """A still for each shot, before any video: a minute a frame where a shot
+    is half an hour, so the whole film can be looked at -- and redrawn frame
+    by frame -- before the card is spent on it. `items` names the shots (a
+    redraw); none, every shot that has no frame yet. Each is drawn with the
+    project's look ahead of its description, so the frames read as one film."""
+    body = body or {}
+    try:
+        doc = projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    want = [str(i) for i in body.get("items") or []]
+    look = str(doc["settings"].get("look") or "").strip()
+    size = recipes.BOARD_SIZE.get(doc["settings"].get("resolution", "832x480"), "1344x768")
+    busy = {j["target"] for j in store.active() if j["owner"] == me.login and j["kind"] == "board"}
+    queued = []
+    for idx, shot in enumerate(doc.get("shots") or []):
+        if want and shot["id"] not in want:
+            continue
+        if not want and (shot.get("boards") or shot["id"] in busy):
+            continue
+        what = str(shot.get("prompt") or "").strip()
+        if not what:
+            continue
+        prompt = (f"{look}. " if look else "") + f"Film still: {what}"
+        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size}, pid, shot["id"],
+                               shot.get("title") or f"{doc['name']} {idx + 1}")["id"])
+    if not queued:
+        _bad(ValueError("every shot already has a frame"))
+    sched = {j["id"]: j for j in store.schedule()}
+    return {"queued": [_public(sched.get(i) or store.get(i), me) for i in queued]}
 
 
 @app.get("/api/projects/{pid}")
@@ -455,8 +489,15 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
         nxt = shots[idx + 1] if idx + 1 < len(shots) else None
         if nxt and nxt["id"] not in want and nxt.get("continuity", True) and Projects.chosen_take(nxt):
             params["end_at"] = nxt["id"]
+        starts_fresh = idx == 0 or not shot.get("continuity", True)
         if shot.get("refs"):
-            params["start_upload"] = shot["refs"][0] if idx == 0 or not shot.get("continuity", True) else None
+            params["start_upload"] = shot["refs"][0] if starts_fresh else None
+        # The approved storyboard frame is where a shot that does not carry
+        # on from the one before begins: what was looked at is what is made.
+        board = Projects.chosen_board(shot)
+        if board and starts_fresh and body.get("use_boards", True):
+            params["start_board"] = board["file"]
+            params.pop("start_upload", None)
         try:
             recipes.h3_prompt(params)
         except recipes.RecipeError as exc:
@@ -648,11 +689,17 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                     if t:
                         use_clips.append(base / t["file"])
                         use_lengths.append(length if s.get("exact") else None)
+                    elif Projects.chosen_board(s):
+                        # Not made yet but drawn: the storyboard frame, held for
+                        # the shot's length -- an animatic of what is coming.
+                        card = media.still(base / Projects.chosen_board(s)["file"], length, size,
+                                           base / "renders" / f"{stamp}-card{n}.mp4")
                     else:
                         card = media.placeholder(f"{str(labels.get('shot') or 'Shot')[:40]} {n} · "
                                                  f"{str(labels.get('missing') or 'not made yet')[:60]}",
                                                  str(s.get("prompt") or "")[:600], length, size,
                                                  base / "renders" / f"{stamp}-card{n}.mp4")
+                    if not t:
                         followed.append(card)
                         use_clips.append(card)
                         use_lengths.append(None)

@@ -463,6 +463,32 @@ else:
           px[0] > 150 and 90 < px[1] < 180 and px[2] < 110, px)
     check("  and the film is the shot then the card", 2.3 < media.probe(marked)["seconds"] < 2.7, media.probe(marked))
 
+    print("\na storyboard: a frame per shot before any video")
+    sb = projects.create(JUANA, "Corto", "music_video")
+    check("  a project has a kind", sb["kind"] == "music_video"
+          and projects.create(JUANA, "x", "nonsense")["kind"] == "free")
+    projects.save(JUANA, sb["id"], {"shots": [{"prompt": "un pelícano en una moto", "seconds": 5},
+                                              {"prompt": "la moto salta", "seconds": 5, "continuity": False}],
+                                    "settings": {"look": "película de los 80, neón"}})
+    sdoc = projects.load(JUANA, sb["id"])
+    jb = store2.add(owner=JUANA, owner_name="Juana", kind="board", model=recipes.IMAGE_MODEL,
+                    params={"prompt": "película de los 80. Film still: un pelícano", "size": "1344x768"},
+                    project=sb["id"], target=sdoc["shots"][1]["id"])
+    # The repaint above let the generator go; a new one says it is ready.
+    with fake._lock:
+        fake._out.append({"kind": "ready"})
+        fake._lock.notify_all()
+    mgr.wake()
+    deadline = time.time() + 60
+    while time.time() < deadline and store2.get(jb["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    shot2 = projects.load(JUANA, sb["id"])["shots"][1]
+    check("  a frame lands on its shot as a storyboard frame, not as a take",
+          len(shot2.get("boards") or []) == 1 and not shot2.get("takes")
+          and (projects.dir(JUANA, sb["id"]) / Projects.chosen_board(shot2)["file"]).is_file(), (store2.get(jb["id"]), shot2))
+    check("  the image recipe draws it at the shot's shape",
+          recipes.settings_for("board", {"prompt": "x", "size": recipes.BOARD_SIZE["480x832"]})["resolution"] == "768x1344")
+
     print("\nhow long the queue says a shot takes grows with the shot")
     five = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 5}})
     twenty = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 20}})
@@ -580,6 +606,47 @@ check("  encoded as a draft: H.264, fast, playable everywhere",
 check("  and leaves nothing of its own behind but the film",
       sorted(x.name for x in (A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()) == [rend["file"].split("/")[-1]],
       list((A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()))
+print("\n  the storyboard, through the API")
+sbp = c.post("/api/projects", json={"name": "Clip", "kind": "music_video"}, headers=h(JUANA, "Juana")).json()
+check("  a project is made with its kind, and listed with it",
+      sbp["kind"] == "music_video" and any(x["id"] == sbp["id"] and x["kind"] == "music_video"
+                                           for x in c.get("/api/projects", headers=h(JUANA, "Juana")).json()["projects"]))
+c.put(f"/api/projects/{sbp['id']}", json={"settings": {"look": "neón, noche"},
+                                          "shots": [{"prompt": "uno", "seconds": 5}, {"prompt": "dos", "seconds": 5, "continuity": False},
+                                                    {"prompt": "", "seconds": 5}]}, headers=h(JUANA, "Juana"))
+r = c.post(f"/api/projects/{sbp['id']}/storyboard", json={}, headers=h(JUANA, "Juana")).json()
+check("  asking for the storyboard queues a frame per shot with a description",
+      len(r.get("queued") or []) == 2 and all(q["kind"] == "board" for q in r["queued"]), r)
+job = A.store.get(r["queued"][0]["id"])
+check("  drawn with the project's look first, at the video's shape",
+      job["params"]["prompt"].startswith("neón, noche. Film still: uno") and job["params"]["size"] == "1344x768", job["params"])
+check("  asked again while they are being drawn, nothing is queued twice",
+      c.post(f"/api/projects/{sbp['id']}/storyboard", json={}, headers=h(JUANA, "Juana")).status_code == 400)
+sdoc = c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()
+frame = A.projects.dir(JUANA, sbp["id"]) / "takes" / "f.png"
+frame.parent.mkdir(parents=True, exist_ok=True)
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=160x96", "-frames:v", "1", str(frame)], check=True)
+A.projects.add_board(JUANA, sbp["id"], sdoc["shots"][1]["id"], {"file": "takes/f.png"})
+for jid in (q["id"] for q in r["queued"]):
+    A.manager.cancel(jid)
+g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
+gp = A.store.get(g["queued"][0]["id"])["params"]
+check("  a shot that starts fresh starts from its approved frame", gp.get("start_board") == "takes/f.png", gp)
+clip2 = A.projects.dir(JUANA, sbp["id"]) / "takes" / "one.mp4"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
+                "-i", "sine=frequency=440", "-t", "2", "-shortest", "-pix_fmt", "yuv420p", str(clip2)], check=True)
+A.projects.add_take(JUANA, sbp["id"], sdoc["shots"][0]["id"], {"file": "takes/one.mp4", "seconds": 2.0})
+A.manager.cancel(g["queued"][0]["id"])
+c.post(f"/api/projects/{sbp['id']}/render", json={"preview": True}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 180
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.5)
+rend = (st.get("renders") or [{}])[-1]
+check("  and the preview download holds the frame where the shot is not made yet",
+      st["render"]["state"] == "done" and abs(rend.get("seconds", 0) - (2.0 + 124 / 24 + 124 / 24)) < 0.4, (st["render"], rend))
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 

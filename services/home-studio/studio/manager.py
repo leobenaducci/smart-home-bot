@@ -355,6 +355,9 @@ class Manager:
             p["start_image"] = str(self.projects.file(owner, pid, p["start_upload"]))
         if p.get("voice_upload"):
             p["voice_file"] = str(self.projects.file(owner, pid, p["voice_upload"]))
+        if p.get("start_board"):
+            # The approved storyboard frame: what the shot starts from.
+            p["start_image"] = str(self.projects.file(owner, pid, p["start_board"]))
         if p.get("from_take"):
             # The version a retouch starts from, read when it runs: deleted in
             # the meantime is a clear failure, not a retouch of another one.
@@ -421,7 +424,10 @@ class Manager:
                     take["seconds"] = round(media.probe(dst)["seconds"], 2)
         shutil.rmtree(self.scratch / job["id"], ignore_errors=True)
         if job["project"] and job["target"]:
-            self.projects.add_take(owner, pid, job["target"], take)
+            if job["kind"] == "board":
+                self.projects.add_board(owner, pid, job["target"], {"file": take["file"], "job": job["id"]})
+            else:
+                self.projects.add_take(owner, pid, job["target"], take)
         return rel_files
 
     def _notify(self, job: dict, ok: bool) -> None:

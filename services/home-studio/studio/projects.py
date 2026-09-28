@@ -35,12 +35,16 @@ EDITABLE = {
     # `exact`: a shot cut to the music -- generated a little long and trimmed
     # to `seconds` when the film is made. `start` is where the cut falls in
     # the song, for the page to show.
+    # `board`: which storyboard frame of the shot is the chosen one.
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start"),
+              "exact", "start", "board"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
+# What a project is for. It decides the page's starting shape and the
+# planning flow Alfred runs; every tool stays available in every kind.
+PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
 
 
 class ProjectError(ValueError):
@@ -87,6 +91,7 @@ class Projects:
             except (OSError, ValueError):
                 continue
             out.append({"id": doc["id"], "name": doc.get("name", ""), "updated": doc.get("updated", 0),
+                        "kind": doc.get("kind") or "free",
                         "shots": len(doc.get("shots") or []), "audio": len(doc.get("audio") or []),
                         "images": len(doc.get("images") or []),
                         "default": bool(doc.get("default")),
@@ -104,15 +109,16 @@ class Projects:
                     return take[key]
         return ""
 
-    def create(self, owner: str, name: str) -> dict:
+    def create(self, owner: str, name: str, kind: str = "free") -> dict:
         if not LOGIN_RE.fullmatch(owner or ""):
             raise ProjectError("unknown person")
+        kind = kind if kind in PROJECT_KINDS else "free"
         pid = _new_id()
         d = self.root / owner / pid
         for sub in ("takes", "uploads", "renders"):
             (d / sub).mkdir(parents=True, exist_ok=True)
         now = time.time()
-        doc = {"id": pid, "owner": owner, "name": (name or "Sin título").strip()[:80],
+        doc = {"id": pid, "owner": owner, "name": (name or "Sin título").strip()[:80], "kind": kind,
                "created": now, "updated": now,
                "settings": {"resolution": "832x480", "fps": 24, "language": "es"},
                "shots": [], "audio": [], "images": [], "renders": [], "uploads": []}
@@ -143,6 +149,8 @@ class Projects:
             doc = self.load(owner, pid)
             if "name" in incoming:
                 doc["name"] = str(incoming["name"] or doc["name"]).strip()[:80]
+            if incoming.get("kind") in PROJECT_KINDS:
+                doc["kind"] = incoming["kind"]
             if isinstance(incoming.get("settings"), dict):
                 s = incoming["settings"]
                 if re.fullmatch(r"\d{3,4}x\d{3,4}", str(s.get("resolution", ""))):
@@ -151,6 +159,10 @@ class Projects:
                     doc["settings"]["language"] = str(s["language"])
                 # The song a music video was made for: the preview plays it
                 # and the film is laid over it. An item id or nothing.
+                # The project's look: what every storyboard frame and shot is
+                # asked to share, so the pictures read as one film.
+                if "look" in s:
+                    doc["settings"]["look"] = str(s.get("look") or "")[:600]
                 if "soundtrack" in s:
                     st = str(s.get("soundtrack") or "")
                     doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""
@@ -377,6 +389,32 @@ class Projects:
             self._write(owner, pid, doc)
             return item
 
+    @staticmethod
+    def chosen_board(item: dict) -> dict | None:
+        boards = item.get("boards") or []
+        i = item.get("board", -1)
+        if isinstance(i, int) and 0 <= i < len(boards):
+            return boards[i]
+        return boards[-1] if boards else None
+
+    def add_board(self, owner: str, pid: str, item_id: str, board: dict) -> dict:
+        """A storyboard frame for a shot: a still, cheap (a picture, not a
+        video), to look at before the card spends half an hour on the shot --
+        and, approved, the frame the shot's video starts from. The newest is
+        chosen; the earlier ones are kept to go back to."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found or found[0] != "shots":
+                raise ProjectError("the shot this frame was for is gone")
+            item = found[2]
+            board = {"id": _new_id(), "created": time.time(), **board}
+            item.setdefault("boards", []).append(board)
+            item["board"] = len(item["boards"]) - 1
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return board
+
     def set_take_field(self, owner: str, pid: str, item_id: str, take_id: str, key: str, value) -> None:
         """One server-side field of one version -- its analysis, its favourite
         mark. Never from the page's save, which cannot set a take's fields."""
@@ -442,6 +480,9 @@ def _clean(key: str, value: Any, item: dict) -> Any:
     if key == "chosen":
         n = len(item.get("takes") or [])
         return value if isinstance(value, int) and -1 <= value < n else item.get("chosen", -1)
+    if key == "board":
+        n = len(item.get("boards") or [])
+        return value if isinstance(value, int) and -1 <= value < n else item.get("board", -1)
     if key in ("continuity", "exact"):
         return bool(value)
     if key == "start":

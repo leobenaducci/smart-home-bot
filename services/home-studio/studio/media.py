@@ -244,6 +244,17 @@ def placeholder(title: str, text: str, seconds: float, size: tuple[int, int], ou
     return out
 
 
+def still(image: Path, seconds: float, size: tuple[int, int], out: Path) -> Path:
+    """A picture held for *seconds* as a silent clip at *size* -- a storyboard
+    frame standing in for its shot until the shot is made."""
+    w, h = size
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-loop", "1", "-framerate", "24", "-i", str(image), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+          "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,format=yuv420p",
+          "-t", f"{seconds:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest", str(out)])
+    return out
+
+
 def watermark(badge: str, info: str, size: tuple[int, int], out: Path) -> Path:
     """A transparent overlay marking a frame as a preview: `badge` in a corner,
     `info` (the shot, its time in the song, its version) along the bottom.

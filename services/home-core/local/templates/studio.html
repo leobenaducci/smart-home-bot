@@ -118,6 +118,7 @@
     dialog h2 { color: var(--ink); }
     dialog p.muted { font-size: .86rem; line-height: 1.45; }
     dialog::backdrop { background: rgba(0,0,0,.4); }
+    img.board { width: 100%; border-radius: var(--r-sm); display: block; }
     img.live { width: 100%; border-radius: var(--r-sm); display: block; background: #000; }
     dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }
   </style>
@@ -277,25 +278,46 @@
     });
 
     // ── Projects ────────────────────────────────────────────────────────────
+    // What a project is for: its starting shape and the flow Alfred plans it
+    // with. The ones not built yet are shown, and said to be coming.
+    var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️' },
+                 { id: 'explainer', icon: '🎓' }, { id: 'podcast', icon: '🎙️' }, { id: 'recording', icon: '🔴' },
+                 { id: 'free', icon: '✨', ready: true }];
+    function kindIcon(k) { var f = KINDS.find(function (x) { return x.id === k; }); return f ? f.icon : '✨'; }
+    function newProjectDialog() {
+      var dlg = $('#dlg');
+      dlg.innerHTML = '<h2>' + S.new_project + '</h2><label class="f">' + S.new_project_name + '</label>' +
+        '<input id="np-name" value="' + esc(S.untitled) + '"><label class="f">' + S.new_project_kind + '</label>' +
+        KINDS.map(function (k) {
+          return '<label class="choice"' + (k.ready ? '' : ' style="opacity:.55"') + '><input type="radio" name="np-kind" value="' + k.id + '"' +
+            (k.id === 'music_video' ? ' checked' : '') + (k.ready ? '' : ' disabled') + '> ' + k.icon + ' <span><b>' + S['pkind_' + k.id] + '</b>' +
+            (k.ready ? '' : ' <span class="pill">' + S.kind_soon + '</span>') + '<br><span class="muted">' + S['pkind_' + k.id + '_about'] + '</span></span></label>';
+        }).join('') +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="np-no">' + S.cancel + '</button><button class="primary" id="np-go">' + S.new_project + '</button></div>';
+      dlg.showModal();
+      $('#np-no').onclick = function () { dlg.close(); };
+      $('#np-go').onclick = async function () {
+        var kind = dlg.querySelector('input[name="np-kind"]:checked').value;
+        var p = await api('projects', { method: 'POST', body: { name: $('#np-name').value.trim() || S.untitled, kind: kind } });
+        dlg.close(); openProject(p.id);
+      };
+    }
     async function loadList() {
       var d = await api('projects');
       var html = '<div class="pcard new" data-new="1"><div class="cover">＋</div><div class="body"><div class="name">' + S.new_project + '</div></div></div>';
       d.projects.forEach(function (p) {
         var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
-        html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : '🎬') + '</div>' +
+        html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + '</div>' +
           '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
-          '</div><div class="muted">🎬 ' + p.shots + ' · 🎵 ' + p.audio + ' · 🖼️ ' + p.images + '</div></div></div>';
+          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + ' · 🎬 ' + p.shots + ' · 🎵 ' + p.audio + ' · 🖼️ ' + p.images + '</div></div></div>';
       });
       $('#plist').innerHTML = html;
       if (!d.projects.length) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + S.empty_projects + '</p>');
     }
     $('#plist').addEventListener('click', async function (ev) {
       var c = ev.target.closest('.pcard'); if (!c) return;
-      if (c.dataset.new) {
-        var name = prompt(S.new_project_name, S.untitled); if (name === null) return;
-        var p = await api('projects', { method: 'POST', body: { name: name } });
-        openProject(p.id);
-      } else openProject(c.dataset.id);
+      if (c.dataset.new) newProjectDialog();
+      else openProject(c.dataset.id);
     });
 
     // ── The editor ─────────────────────────────────────────────────────────
@@ -309,6 +331,7 @@
     var themes = {};
     async function openProject(pid) {
       current = await api('projects/' + pid);
+      if (current.kind === 'music_video' && !(current.shots || []).length) tab = 'audio';
       history.replaceState(null, '', '/studio?project=' + pid);
       $('#v-list').hidden = true; $('#v-edit').hidden = false;
       drawEditor();
@@ -338,6 +361,17 @@
       var src = '/studio/api/jobs/' + j.id + '/preview';
       return '<img class="live" data-src="' + src + '" src="' + src + '?t=' + Date.now() + '" alt="">' +
         '<div class="muted" style="font-size:.76rem">' + S.live_preview + '</div>';
+    }
+    function chosenBoard(item) {
+      var b = item.boards || [], i = item.board;
+      return (i >= 0 && i < b.length) ? b[i] : b[b.length - 1];
+    }
+    // The shot's storyboard frames: which one is chosen, and draw another.
+    function boardRow(s) {
+      var b = s.boards || [], cur = b.indexOf(chosenBoard(s));
+      return '<div class="takes"><span class="muted">🖼️ ' + S.storyboard + ':</span>' + b.map(function (_, i) {
+        return '<button data-board-choose="' + s.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + '</button>';
+      }).join('') + '<button data-board="' + s.id + '">' + (b.length ? S.board_redraw : S.board_draw) + '</button></div>';
     }
     function chosen(item) {
       var t = item.takes || [], i = item.chosen;
@@ -370,6 +404,7 @@
         '<div class="tabs">' + ['video', 'audio', 'images', 'files'].map(function (t) {
           return '<button data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
         }).join('') + '<span class="grow"></span><button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div>' +
+        (p.kind === 'music_video' ? '<p class="note">🎵 ' + S.mv_steps + '</p>' : '') +
         '<div id="tabbody"></div>';
       $('#v-edit').innerHTML = html;
       drawTab();
@@ -401,8 +436,10 @@
       shots.forEach(function (s, i) {
         var t = chosen(s);
         if (i > 0) html += '<div class="link">' + (s.continuity !== false ? '⛓ ' + S.continuity : '✂') + '</div>';
-        var live = livePreview(s);
-        var media = live ? live : t && t.file
+        var live = livePreview(s), board = chosenBoard(s);
+        var media = live ? live : !(t && t.file) && board
+          ? '<img class="board" src="' + fileUrl(p.id, board.file) + '" alt=""><div class="muted" style="font-size:.76rem">🖼️ ' + S.storyboard + '</div>'
+          : t && t.file
           ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '"></video>'
           : '<span>' + S.no_take + '</span>';
         var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
@@ -412,7 +449,8 @@
           '<span class="grow"></span><button data-up="' + s.id + '" title="' + S.move_up + '">↑</button><button data-down="' + s.id + '" title="' + S.move_down + '">↓</button>' +
           '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + S.remove + '">✕</button></div>' +
           '<div class="shot"><div><div class="media">' + media + '</div>' + takesRow(s) +
-          (t && t.file ? '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + S.shot + ' ' + (i + 1)) + '</div>' : '') + '</div><div>' +
+          (t && t.file ? '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + S.shot + ' ' + (i + 1)) + '</div>' : '') +
+          boardRow(s) + '</div><div>' +
           '<label class="f">' + S.shot_what + '</label><textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           '<label class="f">' + S.shot_says + '</label><textarea data-f="dialogue" data-id="' + s.id + '" rows="2" placeholder="' + esc(S.shot_says_ph) + '">' + esc(s.dialogue) + '</textarea>' +
           '<div class="row"><div class="grow"><label class="f">' + S.shot_sound + '</label><input data-f="soundscape" data-id="' + s.id + '" placeholder="' + esc(S.shot_sound_ph) + '" value="' + esc(s.soundscape) + '"></div>' +
@@ -429,6 +467,8 @@
       });
       html += '<div class="row"><button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
         '<span class="grow"></span>' +
+        (shots.some(function (s) { return !(s.boards || []).length && s.prompt; })
+          ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: shots.filter(function (s) { return !(s.boards || []).length && s.prompt; }).length }) + '</button>' : '') +
         ((p.jobs || []).length ? '<button class="danger" id="cancel-all">✕ ' + fmt('cancel_all', { n: p.jobs.length }) + '</button>' : '') +
         '<button class="primary" id="gen-pending">' + S.generate_pending + '</button>' +
         (shots.length ? '<button id="preview">▶ ' + S.preview + '</button>' : '') +
@@ -644,6 +684,13 @@
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
         if (b.id === 'preview') return previewPlayer();
+        if (d.board || b.id === 'board-all') {
+          await saveNow();
+          var rb = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: d.board ? { items: [d.board] } : {} });
+          toast(fmt('board_queued', { n: rb.queued.length }));
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (d.boardChoose) { itemById(d.boardChoose).board = Number(d.i); await saveNow(); drawTab(); return; }
         if (d.retouch) return retouch(d.retouch);
         if (b.id === 'long-scene') return longScene();
         if (b.id === 'render') return renderDialog();
@@ -763,7 +810,9 @@
           return '<option value="' + v + '"' + (v === 8 ? ' selected' : '') + '>' + v + ' ' + S.sec + '</option>'; }).join('') + '</select>' +
         (refs.length ? '<label class="f">' + S.mv_ref + '</label><select id="mv-ref"><option value="">' + S.none + '</option>' +
           refs.map(function (u) { return '<option value="' + esc(u.file) + '">' + esc(u.name) + '</option>'; }).join('') + '</select>' : '') +
-        '<label class="row" style="font-size:.86rem;margin-top:10px"><input type="checkbox" id="mv-now" style="width:auto" checked> ' + S.mv_generate_now + '</label>' +
+        '<label class="f">' + S.mv_then + '</label><select id="mv-then">' +
+          '<option value="board" selected>🖼️ ' + S.mv_then_board + '</option><option value="video">🎥 ' + S.mv_then_video + '</option>' +
+          '<option value="none">' + S.mv_then_none + '</option></select>' +
         '<p class="muted" id="mv-est"></p>' +
         (existing ? '<p class="note">' + fmt('mv_existing', { n: existing }) + '</p>' : '') +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="mv-no">' + S.cancel + '</button><button class="primary" id="mv-go" disabled>' + S.mv_go + '</button></div>';
@@ -776,7 +825,8 @@
       function estimate() {
         var plan = cuts || evenPlan(), rate = (queueState && queueState.video_rate) || 360;
         var video = plan.reduce(function (x, c) { return x + c.seconds; }, 0);
-        $('#mv-est').textContent = fmt('mv_estimate', { n: plan.length, s: Math.round(video), t: dur(rate * video) });
+        $('#mv-est').textContent = fmt('mv_estimate', { n: plan.length, s: Math.round(video), t: dur(rate * video) }) +
+          ' · ' + fmt('mv_board_estimate', { t: dur(plan.length * 60) });
       }
       async function loadCuts() {
         if (!heard) { cuts = null; return estimate(); }
@@ -811,13 +861,14 @@
       $('#mv-len').onchange = loadCuts;
       $('#mv-no').onclick = function () { dlg.close(); };
       $('#mv-go').onclick = async function () {
-        var go = this, plan = cuts || evenPlan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', now = $('#mv-now').checked;
+        var go = this, plan = cuts || evenPlan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', then = $('#mv-then').value;
+        var idea = $('#mv-idea').value.trim();
         go.disabled = true; go.textContent = S.mv_planning; busy++;
         try {
           await flushSave();
           var r = await api('music-video', { method: 'POST', body: { shots: plan.length, seconds: total, kind: a.kind || 'song',
             lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '',
-            idea: $('#mv-idea').value.trim(), plan: cuts || [] } });
+            idea: idea, plan: cuts || [] } });
           var fresh = await api('projects/' + p.id);
           var before = (fresh.shots || []).length;
           r.shots.forEach(function (sh, i) {
@@ -826,12 +877,16 @@
                                                      refs: !cont && ref ? [ref] : [] },
                                                    cuts ? { exact: true, start: c.start } : {})));
           });
-          fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id });
+          // The look is the project's, so every frame and shot is asked for it.
+          fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id }, idea ? { look: idea } : {});
           current = fresh; await saveNow();
           var ids = current.shots.slice(before).map(function (sh) { return sh.id; });
           dlg.close(); tab = 'video'; drawEditor();
           toast(fmt('mv_added', { n: ids.length }));
-          if (now && ids.length) await generate(ids);
+          if (then === 'board' && ids.length) {
+            var rq = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: ids } });
+            toast(fmt('board_queued', { n: rq.queued.length })); current = await api('projects/' + p.id); loadQueue(); drawTab();
+          } else if (then === 'video' && ids.length) await generate(ids);
         } catch (e) {
           toast(e.message, true); go.disabled = false; go.textContent = S.mv_go;
         } finally { busy--; }
@@ -936,7 +991,9 @@
       var segs = [], at = 0;
       (p.shots || []).forEach(function (s, i) {
         var t = chosen(s), len = s.exact ? +s.seconds : ((t && t.seconds) || s.seconds || 5);
-        segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', prompt: s.prompt || '', start: at, len: len });
+        var bd = chosenBoard(s);
+        segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', board: bd ? fileUrl(p.id, bd.file) : '',
+                    prompt: s.prompt || '', start: at, len: len });
         at += len;
       });
       dlg.classList.add('wide');
@@ -976,7 +1033,10 @@
           v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
         } else {
           v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex';
-          card.innerHTML = '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
+          card.innerHTML = seg.board
+            ? '<img src="' + seg.board + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">' +
+              '<span class="pill" style="position:absolute;left:8px;top:8px">🖼️ ' + S.storyboard + ' · ' + S.shot + ' ' + seg.n + '</span>'
+            : '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
           timer = setTimeout(function () { if (playing) show(idx + 1); }, seg.len * 1000);
         }
       }
@@ -1052,7 +1112,7 @@
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
       var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),
-        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length; }); })]);
+        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length + ':' + (i.boards || []).length; }); })]);
       if (sig !== lastSig) {
         lastSig = sig;
         // Never redraw under somebody's cursor: the new takes wait for the

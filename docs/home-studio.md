@@ -87,6 +87,29 @@ own process, so one process decides what is on the card at any moment.
 - **The GGUF Q2_K text encoder** (`config: gguf_q2_k`): 8.5 GB of RAM instead
   of ~65 GB for BF16.
 
+## Kinds of project
+
+A project says what it is for (`kind`: music video, short film, explainer,
+podcast, recording, free). The kind decides the page's starting shape and the
+flow Alfred plans it with; every tool stays available in every kind. Only the
+music video and free have a flow today -- the others are listed as coming.
+
+## Storyboard
+
+A frame per shot before any video: a picture on the image model, about a
+minute, where the shot is ~25 minutes. `POST /api/projects/<p>/storyboard`
+queues one for every shot without one (or the shots named, to redraw), drawn
+with the project's look (`settings.look`, what the person said it should look
+like) ahead of the shot's description, at the image size nearest the video's
+shape (`recipes.BOARD_SIZE`). Frames are kept per shot (`boards`, the chosen
+one `board`), apart from its takes. A shot that starts fresh -- the first, or
+one that does not carry on from the one before -- starts from its chosen frame
+(`start_board`), so what was approved is where the video begins; a shot that
+carries on starts from the last frame of the one before, and its frame is only
+for looking at. Until a shot is made, the page and the preview download show
+its frame in its place: an animatic, timed to the song. The music video's
+planner draws the storyboard first unless asked to go straight to video.
+
 ## A music video from a song
 
 The 🎬 button on a song, voice or instrumental that has a take. The Studio
