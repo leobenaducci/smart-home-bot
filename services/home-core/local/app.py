@@ -21612,6 +21612,8 @@ STUDIO_UI_KEYS = (
     'preview', 'preview_missing', 'preview_close', 'mute_shots', 'soundtrack', 'live_preview',
     'cancel_all', 'cancel_all_confirm',
     'delete_take', 'delete_take_confirm', 'delete_upload_confirm', 'remove_confirm',
+    'mv_listening', 'mv_heard', 'mv_heard_nowords', 'mv_listen_failed', 'shot_cut',
+    'favorite_set', 'favorite_clear',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
@@ -21783,12 +21785,32 @@ def studio_music_video():
     title = str(d.get('title') or '').strip()[:120]
     idea = str(d.get('idea') or '').strip()[:1000]
     each = max(1, round(seconds / n))
+    # The cuts, when the Studio has listened to the song: each shot's time,
+    # the part of the song it falls in and the words actually sung during it
+    # (studio/analysis.py). Without them the words are spread evenly, which a
+    # song does not do -- an intro, a break and a repeated chorus later, shot 3
+    # was showing the chorus while the verse was still being sung.
+    plan = [c for c in (d.get('plan') or []) if isinstance(c, dict)][:80]
+    if plan:
+        n = len(plan)
+
+        def _clock(t):
+            t = float(t or 0)
+            return f"{int(t // 60)}:{t % 60:04.1f}"
+        timeline = "\n".join(
+            f"Shot {i + 1} ({_clock(c.get('start'))}-{_clock(c.get('end'))}"
+            + (f", {str(c.get('section'))[:30]}" if c.get('section') else '') + "): "
+            + (f'sung: "{str(c.get("words"))[:300]}"' if c.get('sung') else 'no singing -- music only')
+            for i, c in enumerate(plan))
     prompt = (
         f"Plan a music video for {'a song' if kind == 'song' else 'a narration' if kind == 'voice' else 'an instrumental piece'}"
-        + (f' called "{title}"' if title else '') + f", {seconds} seconds long, as exactly {n} shots of about {each} seconds each, in order.\n"
+        + (f' called "{title}"' if title else '') + f", {seconds} seconds long, as exactly {n} shots"
+        + (", timed to the song as listed below" if plan else f" of about {each} seconds each") + ", in order.\n"
         + (f"Musical style: {style}.\n" if style else "")
         + (f"What the person wants it to look like: {idea}\n" if idea else "")
-        + (f"The words, which the shots should follow in order (each shot covers about "
+        + (f"The shots, with what is heard during each (show what those words are about, "
+           f"and let the music-only ones carry the mood or the build):\n{timeline}\n" if plan else
+           f"The words, which the shots should follow in order (each shot covers about "
            f"1/{n} of them):\n{words}\n" if words else "There are no words; follow the music's mood and build.\n")
         + "For each shot write one description for a text-to-video model, in English: who and "
           "what is on screen, the setting, the action, the camera (framing and movement), the "

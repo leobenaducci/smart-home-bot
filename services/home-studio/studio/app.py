@@ -17,6 +17,7 @@ result.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import threading
@@ -28,7 +29,7 @@ import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import media, recipes
+from . import analysis, media, recipes
 from .manager import Manager
 from .projects import ProjectError, Projects
 from .store import Store
@@ -63,7 +64,8 @@ def _notify(job: dict) -> None:
         log.warning("notify failed: %s", exc)
 
 
-manager = Manager(store, projects, DATA / "scratch", DATA / "logs", idle_s=IDLE_S, notify=_notify)
+manager = Manager(store, projects, DATA / "scratch", DATA / "logs", idle_s=IDLE_S, notify=_notify,
+                  audio=analysis.AudioServer(os.environ.get("STUDIO_AUDIO_URL", "")))
 app = FastAPI(title="home-studio", docs_url=None, redoc_url=None)
 
 
@@ -268,6 +270,79 @@ async def upload(pid: str, file: UploadFile = File(...), kind: str = Form("refer
         _bad(exc, 404)
 
 
+def _item_take(me: Who, pid: str, item_id: str, take_id: str = "") -> tuple[dict, dict, dict]:
+    """The project, one item of it, and one of its versions (the one asked
+    for, else the chosen one)."""
+    try:
+        doc = projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    found = Projects.find(doc, item_id)
+    if not found:
+        _bad(ProjectError("no such item"), 404)
+    item = found[2]
+    take = next((t for t in item.get("takes") or [] if t.get("id") == take_id), None) if take_id \
+        else Projects.chosen_take(item)
+    if not take:
+        _bad(ProjectError("no such version"), 404)
+    return doc, item, take
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/analyze")
+def analyze_song(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """A song's timing, for a music video: served from the version once it has
+    been listened to, otherwise queued -- once -- and the job returned, for
+    the page to wait on. Listening takes about a minute on the card."""
+    _doc, item, take = _item_take(me, pid, item_id, str((body or {}).get("take") or ""))
+    if (take.get("analysis") or {}).get("file"):
+        return {"take": take["id"], "analysis": take["analysis"]}
+    for job in store.active():
+        if job["owner"] == me.login and job["kind"] == "analyze" and job["target"] == item_id \
+                and job["params"].get("take") == take["id"]:
+            return {"take": take["id"], "job": _public(job, me)}
+    # A listen that just failed is reported, not queued again: the page asks
+    # every few seconds, and each ask would otherwise start another one.
+    if not (body or {}).get("retry"):
+        for job in store.recent(owner=me.login, limit=40):
+            if job["kind"] == "analyze" and job["target"] == item_id and job["state"] == "failed" \
+                    and job["params"].get("take") == take["id"] and time.time() - (job["finished"] or 0) < 600:
+                return {"take": take["id"], "failed": job["error"] or "failed"}
+    job = _enqueue(me, "analyze", {"take": take["id"]}, pid, item_id,
+                   title=item.get("title") or "")
+    return {"take": take["id"], "job": _public(store.get(job["id"]) or job, me)}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/cuts")
+def music_video_cuts(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """Where a music video's cuts fall on this song, for shots of about
+    `shot_seconds` -- each with its time, its section and the words sung in
+    it. Arithmetic on the analysis; nothing is queued."""
+    body = body or {}
+    _doc, _item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    meta = take.get("analysis") or {}
+    if not meta.get("file"):
+        _bad(ProjectError("this version has not been listened to yet"), 409)
+    try:
+        an = json.loads(projects.file(me.login, pid, meta["file"]).read_text())
+        shot = float(body.get("shot_seconds") or 8)
+    except (ProjectError, OSError, ValueError, TypeError) as exc:
+        _bad(exc, 400)
+    return {"take": take["id"], "duration": an["duration"], "tempo": an["tempo"],
+            "aligned": an["aligned"], "error": an.get("error", ""),
+            "sections": [{k: s[k] for k in ("name", "start", "end", "sung")} for s in an["sections"]],
+            "cuts": analysis.plan_cuts(an, shot)}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/favorite")
+def favorite(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """Mark one version the favourite (or none, with no `take`): it is the one
+    used, and a new version no longer takes its place."""
+    try:
+        return projects.set_favorite(me.login, pid, item_id, str((body or {}).get("take") or ""))
+    except ProjectError as exc:
+        _bad(exc, 404)
+
+
 @app.delete("/api/projects/{pid}/items/{item_id}/takes/{take_id}")
 def delete_take(pid: str, item_id: str, take_id: str, me: Who = Depends(who)):
     try:
@@ -320,7 +395,7 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
         if shot["id"] not in want:
             chain_prev_job = ""
             continue
-        params = {k: shot.get(k) for k in ("prompt", "soundscape", "music", "dialogue", "seconds")}
+        params = {k: shot.get(k) for k in ("prompt", "soundscape", "music", "dialogue", "seconds", "exact")}
         params.update(language_name=lang, size=size, index=idx + 1)
         after = ""
         if idx > 0 and shot.get("continuity", True):
@@ -462,7 +537,10 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     except ProjectError as exc:
         _bad(exc, 404)
     base = projects.dir(me.login, pid)
-    clips = [base / t["file"] for t in (Projects.chosen_take(s) for s in doc.get("shots") or []) if t]
+    made = [(s, Projects.chosen_take(s)) for s in doc.get("shots") or []]
+    clips = [base / t["file"] for s, t in made if t]
+    # A shot cut to the music is read only up to its cut.
+    lengths = [float(s["seconds"]) if s.get("exact") and s.get("seconds") else None for s, t in made if t]
     if not clips:
         _bad(ValueError("no shot has a take yet"))
     tracks = []
@@ -479,7 +557,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         out = base / "renders" / f"{stamp}.mp4"
         try:
             film = media.stitch(clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
-                                crossfade=float(body.get("crossfade") or 0))
+                                crossfade=float(body.get("crossfade") or 0), lengths=lengths)
             if tracks:
                 media.mix(film, tracks, out, keep_own=body.get("own_sound", True) is not False)
                 film.unlink(missing_ok=True)

@@ -32,7 +32,11 @@ SECTIONS = ("shots", "audio", "images")
 AUDIO_KINDS = ("song", "instrumental", "voice")
 # What the page may set on an item. Everything else on it is the server's.
 EDITABLE = {
-    "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title"),
+    # `exact`: a shot cut to the music -- generated a little long and trimmed
+    # to `seconds` when the film is made. `start` is where the cut falls in
+    # the song, for the page to show.
+    "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
+              "exact", "start"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -305,7 +309,12 @@ class Projects:
             _section, _i, item = found
             take = {"id": _new_id(), "created": time.time(), **take}
             item.setdefault("takes", []).append(take)
-            if choose:
+            # A favourite keeps its place: a new version is only chosen when
+            # the person has not said which one they want.
+            favourite = next((i for i, t in enumerate(item["takes"]) if t.get("favorite")), None)
+            if favourite is not None:
+                item["chosen"] = favourite
+            elif choose:
                 item["chosen"] = len(item["takes"]) - 1
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
@@ -342,9 +351,44 @@ class Projects:
             base = self.dir(owner, pid)
             for key in ("file", "first", "last"):
                 self._unlink_inside(base, str(take.get(key) or ""))
+            self._unlink_inside(base, str((take.get("analysis") or {}).get("file") or ""))
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
             return item
+
+    def set_favorite(self, owner: str, pid: str, item_id: str, take_id: str) -> dict:
+        """One version marked the favourite, the others unmarked, and it made
+        the chosen one. An empty `take_id` unmarks them all."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found:
+                raise ProjectError("no such item")
+            item = found[2]
+            takes = item.get("takes") or []
+            if take_id and not any(t.get("id") == take_id for t in takes):
+                raise ProjectError("no such version")
+            for i, t in enumerate(takes):
+                t.pop("favorite", None)
+                if take_id and t.get("id") == take_id:
+                    t["favorite"] = True
+                    item["chosen"] = i
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return item
+
+    def set_take_field(self, owner: str, pid: str, item_id: str, take_id: str, key: str, value) -> None:
+        """One server-side field of one version -- its analysis, its favourite
+        mark. Never from the page's save, which cannot set a take's fields."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            take = next((t for t in (found[2].get("takes") or []) if t.get("id") == take_id), None) if found else None
+            if take is None:
+                raise ProjectError("no such version")
+            take[key] = value
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
 
     def delete_upload(self, owner: str, pid: str, rel: str) -> None:
         """A file the person brought, gone from the disk, and from whatever
@@ -392,14 +436,19 @@ def _clean(key: str, value: Any, item: dict) -> Any:
     """One editable field, shaped: text trimmed, numbers bounded."""
     if key == "seconds":
         try:
-            return max(1.0, min(600.0, float(value)))
+            return max(1.0, min(600.0, round(float(value), 4)))
         except (TypeError, ValueError):
             return item.get("seconds", 5.0)
     if key == "chosen":
         n = len(item.get("takes") or [])
         return value if isinstance(value, int) and -1 <= value < n else item.get("chosen", -1)
-    if key == "continuity":
+    if key in ("continuity", "exact"):
         return bool(value)
+    if key == "start":
+        try:
+            return max(0.0, min(3600.0, round(float(value), 4)))
+        except (TypeError, ValueError):
+            return None
     if key == "bpm":
         try:
             return max(30, min(300, int(value)))

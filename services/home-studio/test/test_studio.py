@@ -308,6 +308,98 @@ else:
         except ProjectError:
             check(f"  {bad!r} is not an upload", (base / "project.json").is_file())
 
+    print("\na favourite version stays the one used")
+    fav_doc = projects.load(JUANA, p["id"])
+    sid = fav_doc["audio"][-1]["id"]
+    first_take = fav_doc["audio"][-1]["takes"][0]["id"]
+    item = projects.set_favorite(JUANA, p["id"], sid, first_take)
+    check("  marking one makes it the chosen one", item["chosen"] == 0 and item["takes"][0].get("favorite"), item["chosen"])
+    projects.add_take(JUANA, p["id"], sid, {"file": "takes/x.mp3", "kind": "song"})
+    item = Projects.find(projects.load(JUANA, p["id"]), sid)[2]
+    check("  a new version does not take its place", item["chosen"] == 0 and len(item["takes"]) >= 2, item["chosen"])
+    item = projects.set_favorite(JUANA, p["id"], sid, "")
+    projects.add_take(JUANA, p["id"], sid, {"file": "takes/y.mp3", "kind": "song"})
+    item = Projects.find(projects.load(JUANA, p["id"]), sid)[2]
+    check("  with none marked, the newest is chosen again", item["chosen"] == len(item["takes"]) - 1, item["chosen"])
+
+    print("\na song listened to, for a music video")
+    from studio import analysis
+    song_file = tmp / "tune.wav"
+    # Twenty seconds of clicks at 120 bpm, so there are beats to find.
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "aevalsrc='if(lt(mod(t,0.5),0.03),sin(2*PI*880*t),0)':s=22050:d=20", str(song_file)], check=True)
+    lyr = ("[Verso]\nNació con alas para volar al mar\npero soñaba con la tierra\n\n"
+           "[Coro]\nDale pelícano sin descansar\ncontra el barro y la grava")
+    lines = analysis.lyric_lines(lyr)
+    check("  the lyrics' tags name the sections", [l["section"] for l in lines] == ["Verso", "Verso", "Coro", "Coro"], lines)
+
+    class FakeAudio(analysis.AudioServer):
+        def __init__(self):
+            super().__init__("http://audio.invalid")
+
+        def separate_vocals(self, song, work):
+            return song
+
+        def align(self, vocals, text, language, work):
+            # Two words a second from 3 s, a three-second break after the verse
+            # (12 words), so the song has an intro, a break and an outro.
+            out, t = [], 3.0
+            for i, w in enumerate(text.split()):
+                if i == 12:
+                    t += 3.0
+                out.append({"word": w.rstrip(","), "start": t, "end": t + 0.4})
+                t += 0.5
+            return out
+
+        def wait_idle(self, timeout=60.0):
+            pass
+    an = analysis.analyze(song_file, lyr, "es", FakeAudio(), tmp / "an")
+    check("  each line gets its time from the aligned words",
+          an["aligned"] and an["lines"][0]["start"] == 3.0 and an["lines"][2]["start"] > an["lines"][1]["end"] + 2.9,
+          an["lines"])
+    names = [(s["name"], s["sung"]) for s in an["sections"]]
+    check("  sections come out in time, with the unsung stretches marked",
+          names[0] == ("Instrumental", False) and ("Verso", True) in names and ("Coro", True) in names
+          and names[-1] == ("Instrumental", False), names)
+    check("  the beats are found (120 bpm clicks)", 100 < an["tempo"] < 140 and len(an["beats"]) >= 12, (an["tempo"], len(an["beats"])))
+    cuts = analysis.plan_cuts(an, 4)
+    check("  the cuts cover the song exactly, end to end",
+          cuts[0]["start"] == 0 and cuts[-1]["end"] == an["duration"]
+          and all(abs(a["end"] - b["start"]) < 1e-6 for a, b in zip(cuts, cuts[1:])), cuts)
+    check("  every cut sits on a frame", all(abs(c["end"] * 24 - round(c["end"] * 24)) < 0.01 or c["end"] == an["duration"]
+                                            for c in cuts), [c["end"] for c in cuts])
+    coro = next(s["start"] for s in an["sections"] if s["name"] == "Coro")
+    check("  and one falls where the chorus starts", any(abs(c["start"] - coro) < 1.0 / 24 + 1e-6 for c in cuts),
+          (coro, [c["start"] for c in cuts]))
+    check("  each shot knows the words sung in it, and the outro that nobody sings",
+          any(c["words"].startswith("Dale") for c in cuts) and not cuts[-1]["sung"], [(c["start"], c["words"]) for c in cuts])
+    offline = analysis.analyze(song_file, lyr, "es", None, tmp / "an2")
+    check("  without the audio server a song still gets its beats, not its words",
+          not offline["aligned"] and offline["beats"] and analysis.plan_cuts(offline, 4)[-1]["end"] == offline["duration"])
+    mgr.audio = FakeAudio()
+    song_item = Projects.find(projects.load(JUANA, p["id"]), sid)[2]
+    real_take = next(t for t in song_item["takes"] if t["file"].endswith(".mp3") and (projects.dir(JUANA, p["id"]) / t["file"]).is_file())
+    ja = store2.add(owner=JUANA, owner_name="Juana", kind="analyze", model="audio.cpp",
+                    params={"take": real_take["id"]}, project=p["id"], target=sid)
+    mgr.wake()
+    deadline = time.time() + 120
+    while time.time() < deadline and store2.get(ja["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    got = next(t for t in Projects.find(projects.load(JUANA, p["id"]), sid)[2]["takes"] if t["id"] == real_take["id"])
+    check("  a listening job runs in the queue and leaves its result on the version",
+          store2.get(ja["id"])["state"] == "done" and (projects.dir(JUANA, p["id"]) / got["analysis"]["file"]).is_file(),
+          (store2.get(ja["id"]), got.get("analysis")))
+    check("  without starting the generator for it", fake.seen[-1].get("model_type") != "audio.cpp")
+    check("  a shot cut to the music is made at least as long as its cut",
+          recipes.h3_frames_at_least(7.9) / 24 >= 7.9 and recipes.h3_frames_at_least(7.9) - 17 < 7.9 * 24
+          and recipes.settings_for("video_shot", {"prompt": "x", "seconds": 7.9, "exact": True})["video_length"]
+          == recipes.h3_frames_at_least(7.9))
+    trimmed = media.stitch([projects.dir(JUANA, p["id"]) / Projects.chosen_take(s)["file"] for s in doc["shots"]],
+                           tmp / "trimmed.mp4", lengths=[0.5, None])
+    frames = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                            "stream=nb_read_frames", "-of", "csv=p=0", str(trimmed)], capture_output=True, text=True).stdout.strip()
+    check("  and the film reads it only up to its cut, to the frame (12 + 24)", frames == "36", frames)
+
     print("\nhow long the queue says a shot takes grows with the shot")
     five = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 5}})
     twenty = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 20}})
@@ -374,6 +466,21 @@ check("  nobody else can -- not even a parent",
 theirs = [j for j in c.get("/api/queue", headers=h(TOMI, "Tomi")).json()["queued"] if j["id"] == live][0]
 check("  nor learns that one exists", "preview" not in theirs, theirs)
 A.manager.previews.clear()
+
+sng = c.put(f"/api/projects/{pj['id']}", json={"audio": [{"kind": "song", "lyrics": "[Coro]\nla la"}]},
+            headers=h(JUANA, "Juana")).json()["audio"][0]
+check("  a song with no version cannot be listened to",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(JUANA, "Juana")).status_code == 404)
+A.projects.add_take(JUANA, pj["id"], sng["id"], {"file": "takes/s.mp3", "kind": "song"})
+r1 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(JUANA, "Juana")).json()
+r2 = c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(JUANA, "Juana")).json()
+check("  asking to listen queues one job, however often it is asked",
+      r1.get("job") and r2.get("job") and r1["job"]["id"] == r2["job"]["id"], (r1, r2))
+check("  and the plan waits for it",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/cuts", json={"shot_seconds": 8},
+             headers=h(JUANA, "Juana")).status_code == 409)
+check("  nobody else can ask for someone's song",
+      c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 
 print("\nthe default project, for what the assistant is asked")
 d1 = c.get("/api/default-project", headers=h(JUANA, "Juana")).json()

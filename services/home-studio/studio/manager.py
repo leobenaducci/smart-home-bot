@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import media, recipes
+from . import analysis, media, recipes
 from .projects import ProjectError, Projects
 from .store import Store
 
@@ -100,8 +100,10 @@ class Worker:
 class Manager:
     def __init__(self, store: Store, projects: Projects, scratch: Path, logs: Path,
                  idle_s: float = 600, notify: Callable[[dict], None] | None = None,
-                 worker_factory: Callable[[], Worker] | None = None):
+                 worker_factory: Callable[[], Worker] | None = None,
+                 audio: "analysis.AudioServer | None" = None):
         self.store, self.projects = store, projects
+        self.audio = audio
         self.scratch, self.logs = Path(scratch), Path(logs)
         self.scratch.mkdir(parents=True, exist_ok=True)
         self.logs.mkdir(parents=True, exist_ok=True)
@@ -188,6 +190,8 @@ class Manager:
         return self.worker
 
     def _run(self, job: dict) -> None:
+        if job["kind"] == "analyze":
+            return self._analyze(job)
         try:
             params = self._resolve(job)
             settings = recipes.settings_for(job["kind"], params)
@@ -250,6 +254,47 @@ class Manager:
             return
         self.store.update(job["id"], state="done", finished=time.time(), progress=1.0, phase="", files=files)
         self._notify(job, ok=True)
+
+    def _analyze(self, job: dict) -> None:
+        """A song listened to (studio/analysis.py), for a music video.
+
+        In the queue like everything else on the card, and the card given back
+        before the next job starts: the audio server unloads its model a few
+        seconds after using it, and this waits for that. The result is a file
+        beside the take and a summary on it; nobody is notified -- the page
+        that asked is waiting for it."""
+        self.store.update(job["id"], state="running", started=time.time(), progress=0.05, phase="listening")
+        work = self.scratch / job["id"]
+        try:
+            owner, pid = job["owner"], job["project"]
+            doc = self.projects.load(owner, pid)
+            found = Projects.find(doc, job["target"])
+            if not found:
+                raise ProjectError("the song is gone")
+            item = found[2]
+            take = next((t for t in item.get("takes") or [] if t.get("id") == job["params"].get("take")), None)
+            if not take:
+                raise ProjectError("that version of the song is gone")
+            base = self.projects.dir(owner, pid)
+            words = item.get("lyrics") if (item.get("kind") or "song") == "song" else item.get("text")
+            language = str(item.get("language") or (doc.get("settings") or {}).get("language") or "es")[:5]
+            result = analysis.analyze(
+                base / take["file"], str(words or ""), language, self.audio, work,
+                progress=lambda phase, share: self.store.update(job["id"], progress=share, phase=phase))
+            rel = f"takes/{item['id']}/{take['id']}-analysis.json"
+            (base / rel).write_text(json.dumps(result, ensure_ascii=False))
+            self.projects.set_take_field(owner, pid, item["id"], take["id"], "analysis", {
+                "file": rel, "tempo": result["tempo"], "aligned": result["aligned"],
+                "sections": len(result["sections"]), "duration": result["duration"],
+                "error": result["error"]})
+            self.store.update(job["id"], state="done", finished=time.time(), progress=1.0, phase="", files=[rel])
+        except Exception as exc:                               # noqa: BLE001 -- reported on the job
+            log.exception("analysis %s failed", job["id"])
+            self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc)[:500])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            if self.audio and self.audio.url:
+                self.audio.wait_idle()
 
     # -- before and after ---------------------------------------------------
     def _resolve(self, job: dict) -> dict:

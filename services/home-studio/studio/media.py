@@ -122,7 +122,15 @@ def for_generator(src: Path, out: Path) -> Path:
     return out
 
 
-def stitch(videos: list[Path], out: Path, crossfade: float = 0.0) -> Path:
+def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
+    """*src* as a PCM WAV at *rate* and *channels*."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-i", str(src), "-vn", "-ac", str(channels), "-ar", str(rate), "-c:a", "pcm_s16le", str(out)], timeout=300)
+    return out
+
+
+def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
+           lengths: list[float | None] | None = None) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
@@ -134,10 +142,20 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0) -> Path:
         raise MediaError("nothing to stitch")
     out.parent.mkdir(parents=True, exist_ok=True)
     infos = [probe(v) for v in videos]
-    w, h = infos[0]["width"] or 832, infos[0]["height"] or 480
+    # A shot planned to a cut on the music was generated a little long: it is
+    # read only up to its cut, so the film lands on the song's beats and ends
+    # with it. `-t` before the input limits what is read of it.
+    lengths = list(lengths or [None] * len(videos))
     args: list[str] = []
-    for v in videos:
+    for v, info, keep in zip(videos, infos, lengths):
+        if keep and keep < info["seconds"] - 0.5 / 24:
+            # A quarter frame short of the cut: `-t` keeps every frame that
+            # starts before it, and the frame that starts *on* the cut is the
+            # next shot's.
+            args += ["-t", f"{keep - 0.25 / 24:.4f}"]
+            info["seconds"] = keep
         args += ["-i", str(v)]
+    w, h = infos[0]["width"] or 832, infos[0]["height"] or 480
     parts, n = [], len(videos)
     for i, info in enumerate(infos):
         parts.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"

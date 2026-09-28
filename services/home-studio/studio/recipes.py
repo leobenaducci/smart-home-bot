@@ -19,9 +19,13 @@ SONG_MODEL = "ace_step_v1_5_turbo_lm_1_7b"
 INSTRUMENTAL_MODEL = "stable_audio3_medium"
 VOICE_MODEL = "qwen3_tts_base"
 
-KINDS = ("image", "song", "instrumental", "voice", "video_shot", "edit")
+# `analyze` is a song listened to (studio/analysis.py): not WanGP's, run by the
+# manager itself on the Studio's audio.cpp -- in the same queue, so it never
+# shares the card with a render.
+KINDS = ("image", "song", "instrumental", "voice", "video_shot", "edit", "analyze")
 MODEL_OF = {"image": IMAGE_MODEL, "song": SONG_MODEL, "instrumental": INSTRUMENTAL_MODEL,
-            "voice": VOICE_MODEL, "video_shot": VIDEO_MODEL, "edit": VIDEO_MODEL}
+            "voice": VOICE_MODEL, "video_shot": VIDEO_MODEL, "edit": VIDEO_MODEL,
+            "analyze": "audio.cpp"}
 
 FPS = 24
 # H3 takes 17n + 5 frames: 124 is ~5 s, 481 (its largest window) ~20 s.
@@ -41,6 +45,14 @@ def h3_frames(seconds: float) -> int:
     """The H3 frame count nearest to *seconds*, within what one shot takes."""
     want = max(H3_MIN_FRAMES, min(H3_MAX_FRAMES, round(seconds * FPS)))
     n = round((want - H3_OFFSET) / H3_STEP)
+    return max(H3_MIN_FRAMES, min(H3_MAX_FRAMES, n * H3_STEP + H3_OFFSET))
+
+
+def h3_frames_at_least(seconds: float) -> int:
+    """The smallest H3 frame count that lasts at least *seconds*: for a shot cut
+    to the music, which is made a little long and trimmed to its cut."""
+    want = max(H3_MIN_FRAMES, min(H3_MAX_FRAMES, math.ceil(seconds * FPS - 1e-6)))
+    n = math.ceil((want - H3_OFFSET) / H3_STEP)
     return max(H3_MIN_FRAMES, min(H3_MAX_FRAMES, n * H3_STEP + H3_OFFSET))
 
 
@@ -103,7 +115,7 @@ def settings_for(kind: str, p: dict) -> dict:
     # Video: a shot, or an edit of one.
     size = p.get("size") if p.get("size") in VIDEO_SIZES else VIDEO_SIZES[0]
     out = {"model_type": VIDEO_MODEL, "config": H3_CONFIG, "resolution": size,
-           "video_length": h3_frames(float(p.get("seconds") or 5)),
+           "video_length": (h3_frames_at_least if p.get("exact") else h3_frames)(float(p.get("seconds") or 5)),
            "num_inference_steps": int(p.get("steps") or 20), "seed": seed,
            "prompt": h3_prompt(p, p.get("language_name") or "Spanish", int(p.get("index") or 1))}
     flags = ""
@@ -138,6 +150,8 @@ def estimate_note(kind: str, p: dict) -> str:
         return f"música de {int(p.get('seconds') or 30)} s"
     if kind == "voice":
         return "voz"
+    if kind == "analyze":
+        return "escuchar una canción"
     return "imagen"
 
 

@@ -89,14 +89,41 @@ own process, so one process decides what is on the card at any moment.
 
 ## A music video from a song
 
-The 🎬 button on a song, voice or instrumental that has a take. The page cuts
-the take's length into shots of the chosen length (5-15 s, default 8) -- that
-is arithmetic, so the video always covers the song -- and the portal asks the
-person's own assistant only what each shot shows, following the words in order
-(`/studio/api/music-video`: exactly N descriptions as JSON, asked once more if
-the count is off). The shots land in the Video tab as ordinary shots, queued if
-asked, with the song remembered as the project's `settings.soundtrack`: the
-film dialog then preselects it and mutes the shots' own sound.
+The 🎬 button on a song, voice or instrumental that has a take. The Studio
+first **listens** to it (`studio/analysis.py`, a job in the card's queue like
+any other): its own audio.cpp -- the `audio` unit, on the Studio's card --
+separates the vocals (Mel-Band RoFormer) and places each word of the known
+lyrics on them (Qwen3 forced aligner); librosa finds the beats; the lyrics' own
+tags name the parts. Measured on a 90-second song: separation 23 s with the
+model load, alignment 4 s. Forced alignment rather than transcription, because
+the words are known -- the house's speech recogniser, tuned for short spoken
+commands, heard one wrong line for the whole song. On the separated vocals,
+every line boundary the aligner gave fell inside a measured pause in the
+singing.
+
+The cuts then fall on the music (`plan_cuts`): a part of the song starting
+within reach wins, then the nearest bar, then the nearest beat. Every cut is a
+frame, the last is the song's end, and each shot is generated at least as long
+as its cut (`h3_frames_at_least`) and read only up to it when the film is made
+-- so the shots add up to the song to the frame, where rounding to H3's lengths
+alone left a 90-second song half a second short. Alfred is given each shot's
+time, its part and the words sung during it, and the music-only stretches as
+such (`/studio/api/music-video`), and the shots land as ordinary shots marked
+`exact`: the page shows their cut instead of a length slider, and the preview
+stops each at its cut. The song becomes `settings.soundtrack`, so the film
+dialog preselects it and mutes the shots' own sound.
+
+The audio.cpp instance unloads its model five seconds after using it and holds
+one at a time (`--idle-unload-ms 5000 --max-loaded-models 1`), and the manager
+waits for `/v1/models` to say nothing is loaded before the next job: the card
+is the video generator's. Two measured quirks: the aligner must be given 16 kHz
+mono (given 44.1 kHz it reports seconds at the wrong rate), and a separation
+request names a file the server opens, so the Studio's data is mounted in it at
+the same path. Without the audio unit -- or for a song with no words -- the
+cuts still follow the beat; only the words are lost.
+
+A version can be marked the favourite (⭐): it is the one used, and a new
+version no longer takes its place.
 
 It is slow: H3 measured ~5 card-minutes per second
 of video here, so a three-minute song is hours. The dialog says how many from

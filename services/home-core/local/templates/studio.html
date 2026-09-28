@@ -317,12 +317,18 @@
       if (!(item.takes || []).length) return '';
       var cur = item.takes.indexOf(chosen(item));
       var shown = item.takes[cur];
-      return '<div class="takes"><span class="muted">' + S.takes + ':</span>' + item.takes.map(function (_, i) {
-        return '<button data-choose="' + item.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + '</button>';
-      }).join('') + (shown && shown.id ? delTake(item.id, shown.id) : '') + '</div>';
+      return '<div class="takes"><span class="muted">' + S.takes + ':</span>' + item.takes.map(function (tk, i) {
+        return '<button data-choose="' + item.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + (tk.favorite ? ' ⭐' : '') + '</button>';
+      }).join('') + (shown && shown.id ? favButton(item.id, shown) + delTake(item.id, shown.id) : '') + '</div>';
     }
     // Deletes the version for good -- its file and its frames -- which is why
     // it asks, and why it is the only thing on this page that deletes a file.
+    // The favourite version is the one used, and a new version no longer
+    // takes its place. On the version shown: mark it, or unmark it.
+    function favButton(itemId, take) {
+      return '<button data-fav="' + itemId + '" data-take="' + (take.favorite ? '' : take.id) + '" title="' +
+        esc(take.favorite ? S.favorite_clear : S.favorite_set) + '">' + (take.favorite ? '⭐' : '☆') + '</button>';
+    }
     function delTake(itemId, takeId) {
       return '<button class="danger" data-del-take="' + itemId + '" data-take="' + takeId + '" title="' + esc(S.delete_take) + '">🗑</button>';
     }
@@ -381,7 +387,10 @@
           '<label class="f">' + S.shot_says + '</label><textarea data-f="dialogue" data-id="' + s.id + '" rows="2" placeholder="' + esc(S.shot_says_ph) + '">' + esc(s.dialogue) + '</textarea>' +
           '<div class="row"><div class="grow"><label class="f">' + S.shot_sound + '</label><input data-f="soundscape" data-id="' + s.id + '" placeholder="' + esc(S.shot_sound_ph) + '" value="' + esc(s.soundscape) + '"></div>' +
           '<div class="grow"><label class="f">' + S.shot_music + '</label><input data-f="music" data-id="' + s.id + '" placeholder="' + esc(S.shot_music_ph) + '" value="' + esc(s.music) + '"></div></div>' +
-          '<label class="f">' + S.shot_seconds + ': <span>' + (s.seconds || 5) + '</span> ' + S.sec + '</label><input type="range" min="5" max="20" step="1" data-f="seconds" data-id="' + s.id + '" value="' + (s.seconds || 5) + '">' +
+          // A shot cut to the music keeps its cut: a slider would move it off
+          // the beat and push every shot after it off the song.
+          (s.exact ? '<p class="muted" style="margin-top:6px">🎵 ' + fmt('shot_cut', { s: (+s.seconds).toFixed(1), at: clock(s.start) }) + '</p>' :
+          '<label class="f">' + S.shot_seconds + ': <span>' + (s.seconds || 5) + '</span> ' + S.sec + '</label><input type="range" min="5" max="20" step="1" data-f="seconds" data-id="' + s.id + '" value="' + (s.seconds || 5) + '">') +
           (i > 0 ? '<label class="row" style="margin-top:8px;font-size:.84rem"><input type="checkbox" style="width:auto" data-f="continuity" data-id="' + s.id + '"' + (s.continuity !== false ? ' checked' : '') + '> ' + S.continuity + '</label>' : '') +
           startSel +
           '<div class="row" style="margin-top:10px"><button class="primary" data-gen="' + s.id + '">' + ((s.takes || []).length ? S.regenerate : S.generate) + '</button>' +
@@ -459,7 +468,7 @@
           ((im.takes || []).length ? '<div class="gallery">' + im.takes.map(function (t, k) {
             return '<div><a href="' + fileUrl(p.id, t.file) + '" target="_blank"><img loading="lazy" src="' + fileUrl(p.id, t.file) + '" alt=""></a>' +
               '<div class="row" style="margin-top:4px">' + dlLink(p.id, t.file, p.name + ' - ' + (n + 1) + '.' + (k + 1)) +
-              (t.id ? delTake(im.id, t.id) : '') + '</div></div>';
+              (t.id ? favButton(im.id, t) + delTake(im.id, t.id) : '') + '</div></div>';
           }).join('') + '</div>' : '') + '</div>';
       });
       return html + '<button id="add-image">＋ 🖼️ ' + S.add_image + '</button>';
@@ -553,6 +562,11 @@
         if (d.remove) {
           if (!confirm(S.remove_confirm)) return;
           p[d.remove] = p[d.remove].filter(function (x) { return x.id !== d.id; }); await saveNow(); drawTab(); return;
+        }
+        if (d.fav) {
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + d.fav + '/favorite', { method: 'POST', body: { take: d.take || '' } });
+          current = await api('projects/' + p.id); drawTab(); return;
         }
         if (d.delTake) {
           if (!confirm(S.delete_take_confirm)) return;
@@ -700,12 +714,18 @@
       for (var i = 0; i < n; i++) out.push(Math.max(5, base + (i < extra ? 1 : 0)));
       return out;
     }
+    function clock(t) { t = Math.max(0, t || 0); var m = Math.floor(t / 60); return m + ':' + ('0' + (t - m * 60).toFixed(1)).slice(-4); }
+    // The Studio listens to the song first (about a minute, in the card's
+    // queue): when each line is sung, the beats, the parts. The cuts then fall
+    // on the music and Alfred is told the words sung during each shot. If it
+    // cannot listen, the song is split evenly, as before.
     function musicVideo(id) {
       var p = current, a = itemById(id), t = chosen(a), dlg = $('#dlg');
       var total = Math.max(5, Math.round((t && t.seconds) || a.seconds || 60));
       var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
-      var existing = (p.shots || []).length;
+      var existing = (p.shots || []).length, heard = null, cuts = null, closed = false;
       dlg.innerHTML = '<h2>🎬 ' + S.music_video + '</h2><p class="muted">' + S.mv_help + '</p>' +
+        '<p class="note" id="mv-an">' + S.mv_listening + '</p>' +
         '<label class="f">' + S.mv_idea + '</label><textarea id="mv-idea" rows="3" placeholder="' + esc(S.mv_idea_ph) + '"></textarea>' +
         '<label class="f">' + S.mv_shot_len + '</label><select id="mv-len">' + [5, 8, 10, 15].map(function (v) {
           return '<option value="' + v + '"' + (v === 8 ? ' selected' : '') + '>' + v + ' ' + S.sec + '</option>'; }).join('') + '</select>' +
@@ -714,30 +734,65 @@
         '<label class="row" style="font-size:.86rem;margin-top:10px"><input type="checkbox" id="mv-now" style="width:auto" checked> ' + S.mv_generate_now + '</label>' +
         '<p class="muted" id="mv-est"></p>' +
         (existing ? '<p class="note">' + fmt('mv_existing', { n: existing }) + '</p>' : '') +
-        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="mv-no">' + S.cancel + '</button><button class="primary" id="mv-go">' + S.mv_go + '</button></div>';
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="mv-no">' + S.cancel + '</button><button class="primary" id="mv-go" disabled>' + S.mv_go + '</button></div>';
       dlg.showModal();
-      function plan() { var n = Math.min(80, Math.max(1, Math.round(total / Number($('#mv-len').value)))); return { n: n, secs: splitSeconds(total, n) }; }
-      function estimate() {
-        var pl = plan(), rate = (queueState && queueState.video_rate) || 360;
-        var video = pl.secs.reduce(function (x, y) { return x + y; }, 0);
-        $('#mv-est').textContent = fmt('mv_estimate', { n: pl.n, s: video, t: dur(rate * video) });
+      dlg.addEventListener('close', function () { closed = true; }, { once: true });
+      function evenPlan() {
+        var n = Math.min(80, Math.max(1, Math.round(total / Number($('#mv-len').value))));
+        return splitSeconds(total, n).map(function (s) { return { seconds: s }; });
       }
-      estimate();
-      $('#mv-len').onchange = estimate;
+      function estimate() {
+        var plan = cuts || evenPlan(), rate = (queueState && queueState.video_rate) || 360;
+        var video = plan.reduce(function (x, c) { return x + c.seconds; }, 0);
+        $('#mv-est').textContent = fmt('mv_estimate', { n: plan.length, s: Math.round(video), t: dur(rate * video) });
+      }
+      async function loadCuts() {
+        if (!heard) { cuts = null; return estimate(); }
+        try {
+          var r = await api('projects/' + p.id + '/items/' + a.id + '/cuts', { method: 'POST', body: { take: t.id, shot_seconds: Number($('#mv-len').value) } });
+          cuts = r.cuts; total = Math.round(r.duration);
+        } catch (e) { cuts = null; }
+        estimate();
+      }
+      async function listen() {
+        while (!closed) {
+          var r;
+          try { r = await api('projects/' + p.id + '/items/' + a.id + '/analyze', { method: 'POST', body: { take: t.id } }); }
+          catch (e) { r = { failed: e.message }; }
+          if (r.analysis) {
+            heard = r.analysis;
+            $('#mv-an').textContent = heard.aligned
+              ? fmt('mv_heard', { bpm: Math.round(heard.tempo), n: heard.sections })
+              : fmt('mv_heard_nowords', { bpm: Math.round(heard.tempo) });
+            break;
+          }
+          if (r.failed) { $('#mv-an').textContent = fmt('mv_listen_failed', { e: r.failed }); break; }
+          var j = r.job || {};
+          $('#mv-an').textContent = S.mv_listening + (j.state === 'queued' && j.starts_in ? ' · ' + fmt('starts_in', { t: dur(j.starts_in) }) : '');
+          await new Promise(function (ok) { setTimeout(ok, 3000); });
+        }
+        if (closed) return;
+        await loadCuts();
+        $('#mv-go').disabled = false;
+      }
+      estimate(); listen();
+      $('#mv-len').onchange = loadCuts;
       $('#mv-no').onclick = function () { dlg.close(); };
       $('#mv-go').onclick = async function () {
-        var go = this, pl = plan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', now = $('#mv-now').checked;
+        var go = this, plan = cuts || evenPlan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', now = $('#mv-now').checked;
         go.disabled = true; go.textContent = S.mv_planning; busy++;
         try {
           await flushSave();
-          var r = await api('music-video', { method: 'POST', body: { shots: pl.n, seconds: total, kind: a.kind || 'song',
-            lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '', idea: $('#mv-idea').value.trim() } });
+          var r = await api('music-video', { method: 'POST', body: { shots: plan.length, seconds: total, kind: a.kind || 'song',
+            lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '',
+            idea: $('#mv-idea').value.trim(), plan: cuts || [] } });
           var fresh = await api('projects/' + p.id);
           var before = (fresh.shots || []).length;
           r.shots.forEach(function (sh, i) {
-            var cont = i > 0 && sh.continues;
-            fresh.shots.push(newItem({ prompt: sh.prompt, seconds: pl.secs[i], continuity: cont,
-                                       refs: !cont && ref ? [ref] : [] }));
+            var cont = i > 0 && sh.continues, c = plan[i] || {};
+            fresh.shots.push(newItem(Object.assign({ prompt: sh.prompt, seconds: c.seconds || 8, continuity: cont,
+                                                     refs: !cont && ref ? [ref] : [] },
+                                                   cuts ? { exact: true, start: c.start } : {})));
           });
           fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id });
           current = fresh; await saveNow();
@@ -760,7 +815,7 @@
       var st = (p.settings || {}).soundtrack || (tracks[0] && tracks[0].id) || '';
       var segs = [], at = 0;
       (p.shots || []).forEach(function (s, i) {
-        var t = chosen(s), len = (t && t.seconds) || s.seconds || 5;
+        var t = chosen(s), len = s.exact ? +s.seconds : ((t && t.seconds) || s.seconds || 5);
         segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', prompt: s.prompt || '', start: at, len: len });
         at += len;
       });
@@ -792,6 +847,8 @@
           card.hidden = true; v.hidden = false; v.muted = $('#pv-m').checked;
           v.src = seg.file; v.play().catch(function () {});
           v.onended = function () { if (playing) show(idx + 1); };
+          // A shot made long for its cut is shown only up to the cut.
+          v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
         } else {
           v.pause(); v.hidden = true; card.hidden = false;
           card.innerHTML = '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';

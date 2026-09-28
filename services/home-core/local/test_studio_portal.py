@@ -112,7 +112,9 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "mv_shot_len", "mv_ref", "mv_generate_now", "mv_estimate", "mv_existing", "mv_go",
             "mv_planning", "mv_failed", "mv_added", "preview", "preview_missing", "preview_close",
             "mute_shots", "soundtrack", "live_preview", "cancel_all", "cancel_all_confirm",
-            "delete_take", "delete_take_confirm", "delete_upload_confirm", "remove_confirm"):
+            "delete_take", "delete_take_confirm", "delete_upload_confirm", "remove_confirm",
+            "mv_listening", "mv_heard", "mv_heard_nowords", "mv_listen_failed", "shot_cut",
+            "favorite_set", "favorite_clear"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
 
 print("\na music video is planned by Alfred, shot by shot")
@@ -139,6 +141,20 @@ check("a bare string is a shot too", len(shots) > 2 and shots[2]["prompt"] == "N
 prompt = asked[0] if asked else ""
 check("Alfred is given the words, the length, the count and the look",
       MINE in prompt and "24 seconds" in prompt and "exactly 3" in prompt and "80s film look" in prompt, prompt[:300])
+
+asked.clear()
+plans[:] = ['[{"prompt": "Intro wide shot"}, {"prompt": "Pelican close-up"}]']
+r = client.post("/studio/api/music-video", headers=HOME, json={
+    "shots": 9, "seconds": 16, "kind": "song", "lyrics": MINE,
+    "plan": [{"start": 0, "end": 5.5, "sung": False, "words": "", "section": "Instrumental"},
+             {"start": 5.5, "end": 16, "sung": True, "words": "Mora canta en la cocina", "section": "Verso"}]})
+prompt = asked[0] if asked else ""
+check("with the Studio's cuts, the count is the plan's, not the page's",
+      r.status_code == 200 and len(r.get_json()["shots"]) == 2 and "exactly 2 shots" in prompt, (r.status_code, prompt[:200]))
+check("each shot is given its time and the words sung in it",
+      "Shot 2 (0:05.5-0:16.0, Verso): sung: \"Mora canta en la cocina\"" in prompt, prompt[-400:])
+check("and a shot with nobody singing is said to be music only",
+      "Shot 1 (0:00.0-0:05.5, Instrumental): no singing" in prompt, prompt[-400:])
 
 asked.clear()
 plans[:] = ['[{"prompt": "one"}]', '[{"prompt": "one"}, {"prompt": "two"}]']
