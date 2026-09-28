@@ -443,7 +443,13 @@ class Projects:
                 raise ProjectError("a review needs a score") from None
             clean.update(ok=words(review.get("ok")), problems=words(review.get("problems")),
                          prompt=str(review.get("prompt") or "").strip()[:1200],
-                         round=max(0, min(9, int(review.get("round") or 0))))
+                         round=max(0, min(9, int(review.get("round") or 0))),
+                         # The checklist the score was counted from: each thing
+                         # the shot asks for, and whether the frame shows it.
+                         checks=[{"item": str(c.get("item") or "").strip()[:200],
+                                  "shown": c.get("shown") if c.get("shown") in ("yes", "partly", "no") else "no",
+                                  "why": str(c.get("why") or "").strip()[:300]}
+                                 for c in (review.get("checks") or []) if isinstance(c, dict)][:12])
         elif clean["state"] == "failed":
             clean["error"] = str(review.get("error") or "")[:300]
         with self._lock(f"{owner}/{pid}"):

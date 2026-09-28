@@ -738,8 +738,15 @@
       var good = r.score >= 7;
       return '<div class="review" style="margin-top:6px"><div class="row"><span class="pill ' + (good ? 'ok' : 'bad') + '">👁 ' + r.score + '/10</span>' +
         (r.round ? '<span class="muted">' + fmt('sb_review_round', { n: r.round }) + '</span>' : '') + '</div>' +
-        (r.problems || []).map(function (x) { return '<div class="rv-line">✗ ' + esc(x) + '</div>'; }).join('') +
-        (r.ok || []).slice(0, 3).map(function (x) { return '<div class="rv-line muted">✓ ' + esc(x) + '</div>'; }).join('') +
+        ((r.checks || []).length
+          ? r.checks.map(function (c) {
+              var mark = c.shown === 'yes' ? '✓' : c.shown === 'partly' ? '◐' : '✗';
+              return '<div class="rv-line' + (c.shown === 'yes' ? ' muted' : '') + '" title="' + esc(c.why) + '">' + mark + ' ' + esc(c.item) +
+                (c.shown !== 'yes' && c.why ? ' <span class="muted">— ' + esc(c.why) + '</span>' : '') + '</div>';
+            }).join('') + (r.problems || []).slice(r.checks.filter(function (c) { return c.shown !== 'yes'; }).length)
+              .map(function (x) { return '<div class="rv-line">⚠ ' + esc(x) + '</div>'; }).join('')
+          : (r.problems || []).map(function (x) { return '<div class="rv-line">✗ ' + esc(x) + '</div>'; }).join('') +
+            (r.ok || []).slice(0, 3).map(function (x) { return '<div class="rv-line muted">✓ ' + esc(x) + '</div>'; }).join('')) +
         (r.prompt && !good ? '<div class="rv-line"><span class="muted">' + S.sb_review_suggests + '</span> ' + esc(r.prompt) + '</div>' +
           '<div class="row" style="margin-top:4px"><button data-review-redraw="' + s.id + '">🔄 ' + S.sb_review_redraw + '</button>' +
           '<button data-review-use="' + s.id + '">✍️ ' + S.sb_review_use + '</button></div>' : '') + '</div>';
@@ -1319,17 +1326,12 @@
           return;
         }
         if (b.id === 'sb-review-all') {
-          var todo = current.shots.filter(function (s) { return (s.boards || []).length && !boardJob(s) && !s.recorded; });
-          if (!todo.length) return;
-          b.disabled = true; busy++;
-          try {
-            await flushSave();
-            for (var q = 0; q < todo.length; q++) {
-              b.textContent = '👁 ' + fmt('sb_reviewing_n', { i: q + 1, n: todo.length });
-              try { await api('board-review', { method: 'POST', body: { project: p.id, shot: todo[q].id } }); }
-              catch (e) { toast(fmt('err', { e: e.message }), true); }
-            }
-          } finally { busy--; current = await api('projects/' + p.id); drawTab(); }
+          // On the server, like refining with no redraws: leaving the page
+          // does not stop it, and each frame shows its review as it lands.
+          await flushSave();
+          b.disabled = true;
+          var ra = await api('board-refine', { method: 'POST', body: { project: p.id, rounds: 0, threshold: 7 } });
+          toast(fmt('sb_review_started', { n: ra.started }));
           return;
         }
         if (b.id === 'sb-refine') {

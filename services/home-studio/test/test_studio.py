@@ -697,6 +697,7 @@ else:
     mgr.stop()
 
 print("\na project's words under version control")
+import json  # noqa: E402
 from studio.history import History
 hp = Projects(tmp / "hist")
 hc = Characters(tmp / "hist")
@@ -723,8 +724,10 @@ hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis y algo"}]})
 hist.record(JUANA, hpid, JUANA, "Juana")
 hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
 hist.record(JUANA, hpid, JUANA, "Juana")
+now_revs = hist.log(JUANA, hpid)["revisions"]
 check("  typed and undone within a revision leaves it as it was",
-      [r["rev"] for r in hist.log(JUANA, hpid)["revisions"]] == [r["rev"] for r in revs], hist.log(JUANA, hpid)["revisions"])
+      [(r["subject"], r["kind"]) for r in now_revs] == [(r["subject"], r["kind"]) for r in revs]
+      and json.loads((hdir / "items" / f"{s1}.json").read_text())["prompt"] == "uno bis", now_revs)
 hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno"}]})
 hist.record(JUANA, hpid, JUANA, "Juana")
 hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})

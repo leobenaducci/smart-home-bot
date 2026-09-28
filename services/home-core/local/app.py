@@ -21651,7 +21651,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_reviewing_n', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_review_redraw', 'sb_review_use', 'sb_review_used', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_review_redraw', 'sb_review_use', 'sb_review_used', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_steps',
     'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
@@ -21999,20 +21999,22 @@ STUDIO_VISION_MODEL = os.environ.get('STUDIO_VISION_MODEL', '')
 STUDIO_VISION_KEY = os.environ.get('STUDIO_VISION_KEY', '')
 
 
-def _studio_vision(prompt, images):
-    """One question about some pictures, to the vision model. Text or None.
-    No thinking: it is asked to look and answer, and a reasoning model
-    spends its budget before the answer otherwise (see the titler)."""
+def _studio_vision(prompt, images, max_tokens=900):
+    """One question to the house's vision model -- about some pictures, or
+    none -- answered as a JSON object (the server's JSON mode: a free-form
+    answer came back unreadable one time in eleven). Text or None. No
+    thinking: it is asked to look and answer, and a reasoning model spends its
+    budget before the answer otherwise (see the titler)."""
     if not (STUDIO_VISION_URL and STUDIO_VISION_MODEL):
         app.logger.warning('studio: no vision model to review frames with (assistant.models.vision)')
         return None
     headers = {'Authorization': f'Bearer {STUDIO_VISION_KEY}'} if STUDIO_VISION_KEY else {}
     if 'opencode.ai' in STUDIO_VISION_URL.lower():
         headers['x-opencode-session'] = secrets.token_hex(16)
-    body = {'model': STUDIO_VISION_MODEL, 'stream': False, 'temperature': 0.2, 'max_tokens': 800,
-            'reasoning_effort': 'none',
+    body = {'model': STUDIO_VISION_MODEL, 'stream': False, 'temperature': 0.1, 'max_tokens': max_tokens,
+            'reasoning_effort': 'none', 'response_format': {'type': 'json_object'},
             'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]
-                          + [{'type': 'image_url', 'image_url': {'url': u}} for u in images]}]}
+                          + [{'type': 'image_url', 'image_url': {'url': u}} for u in images or []]}]}
     try:
         r = requests.post(STUDIO_VISION_URL, json=body, headers=headers, timeout=STUDIO_REVIEW_TIMEOUT_S)
         if not r.ok:
@@ -22047,22 +22049,52 @@ def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
     return text.split('\n\n')[0].strip()[:1200]
 
 
-def _studio_parse_review(text):
-    """{score, ok, problems, prompt} from whatever the assistant answered."""
-    if not text:
-        return None
-    start, end = text.find('{'), text.rfind('}')
-    if start < 0 or end <= start:
-        return None
+def _studio_requirements(shot, look, cast, language):
+    """What a still must show to match the shot, as 4-8 things a viewer can
+    check -- asked of the house's model, text only. Camera movement, sound
+    and anything that happens over time are left out: one frame cannot show
+    them, and asked anyway the model marks them half-there on every frame."""
+    prompt = (
+        "List the concrete things a single still picture must show to match this storyboard shot: the subject "
+        "and what it looks like, its pose or action, where it is looking, the setting, the framing and camera "
+        "angle, the light, the mood. Leave out camera movement, sound and anything that happens over time -- a "
+        f"still cannot show them. 4 to 8 short items, each one thing a viewer could check, in {language}. "
+        'Answer with only a JSON object: {"items": ["...", ...]}\n\n'
+        f"The shot: {shot.get('prompt') or ''}\n"
+        + (f"The film's look: {look}\n" if look else "")
+        + ("".join(f"Character {c['name']} looks like: {c.get('look') or ''}\n" for c in cast))
+    )
     try:
-        raw = json.loads(text[start:end + 1])
-        score = max(0, min(10, round(float(raw.get('score')))))
-    except (ValueError, TypeError, AttributeError):
+        raw = json.loads(_studio_vision(prompt, [], max_tokens=600) or '')
+        return [str(x).strip()[:200] for x in raw.get('items') or [] if str(x).strip()][:8]
+    except (ValueError, AttributeError):
+        return []
+
+
+def _studio_score_checks(text, items):
+    """A review from the frame's checklist: 10 for every item shown, half for
+    partly, less a point a defect (at most three); what works, and what does
+    not -- the items missing, then the defects."""
+    try:
+        raw = json.loads(text or '')
+        checks = [c for c in raw.get('checks') or [] if isinstance(c, dict)][:12]
+        defects = [str(x).strip()[:300] for x in raw.get('defects') or [] if str(x).strip()][:5]
+    except (ValueError, AttributeError):
         return None
-    def words(xs):
-        return [str(x).strip()[:300] for x in xs if str(x).strip()][:8] if isinstance(xs, list) else []
-    return {'score': score, 'ok': words(raw.get('ok')), 'problems': words(raw.get('problems')),
-            'prompt': str(raw.get('prompt') or '').strip()[:1200]}
+    if not checks:
+        return None
+    marks = {'yes': 1.0, 'partly': 0.5}
+    got = sum(marks.get(str(c.get('shown') or '').strip().lower(), 0.0) for c in checks)
+    score = max(0, min(10, round(10 * got / len(checks)) - min(3, len(defects))))
+    def line(c):
+        why = str(c.get('why') or '').strip()
+        return (str(c.get('item') or '').strip() + (f': {why}' if why else ''))[:300]
+    shown = [str(c.get('shown') or '').strip().lower() for c in checks]
+    return {'score': score,
+            'ok': [str(c.get('item') or '').strip()[:300] for c, m in zip(checks, shown) if m == 'yes'][:8],
+            'problems': ([line(c) for c, m in zip(checks, shown) if m != 'yes'] + defects)[:8],
+            'checks': [{'item': str(c.get('item') or '').strip()[:200], 'shown': m if m in ('yes', 'partly', 'no') else 'no',
+                        'why': str(c.get('why') or '').strip()[:300]} for c, m in zip(checks, shown)]}
 
 
 def _studio_review_board(username, pid, sid, job_id=None, round_=0, threshold=7):
@@ -22123,23 +22155,27 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
                           if float(l.get('start') or 0) < z and float(l.get('end') or 0) > a)
     look = str((doc.get('settings') or {}).get('look') or '').strip()
     language = {'es': 'Spanish', 'en': 'English'}.get(str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    # The model notices the right things and then scores leniently -- on the
+    # first storyboard it listed a frame's real problems and gave it 9/10.
+    # So it does not choose the number: the shot is first made into a
+    # checklist of what a still must show, each item is marked shown, partly
+    # or not, and the score is counted from the marks.
+    items = _studio_requirements(shot, look, cast, language)
+    if not items:
+        _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the shot could not be read'}})
+        return None
     prompt = (
-        "You review one storyboard frame of a film before it is made into video. The first picture is the frame"
+        "Check this storyboard frame against each requirement below. The first picture is the frame"
         + (f"; the next are reference portraits of {', '.join(refs)}, in that order, which the characters in the "
-           "frame must look like" if refs else "") + ".\n"
-        f"The frame should show: {shot.get('prompt') or ''}\n"
-        + (f"The film's look: {look}\n" if look else "")
-        + ("The characters, as they must look every time:\n"
-           + "\n".join(f"- {c['name']}: {c.get('look') or ''}" for c in cast) + "\n" if cast else "")
-        + (f"Sung during this shot: \"{sung}\"\n" if sung else "")
-        + "Look closely at what is actually there: who and what, the setting, the framing and camera angle, the "
-          "light, the style, and any defect (extra or missing limbs, broken hands or faces, garbled text, a "
-          "character who does not match their description or portrait). Judge how well it serves the shot, from 0 "
-          "(wrong) to 10 (exactly right, nothing to fix). Write the findings in "
-          f"{language}, short and concrete; `problems` is an empty list when there are none. Answer with only a JSON "
-          'object: {"score": 0-10, "ok": ["what works", ...], "problems": ["what is wrong", ...]}'
+           "frame must look like" if refs else "") + ". For each requirement say whether the frame shows it: "
+        '"yes", "partly" or "no", with a few words on what is actually there. Be strict: "yes" only when it is '
+        "clearly there as asked. Then list the rendering defects only -- malformed anatomy, extra or missing limbs, "
+        "broken hands or faces, garbled text, artifacts; not a requirement that is missing, that is already "
+        f"marked. Write in {language}. Answer with only a JSON object: "
+        '{"checks": [{"item": "...", "shown": "yes|partly|no", "why": "..."}], "defects": ["..."]}\n\nRequirements:\n'
+        + "\n".join(f"- {x}" for x in items)
     )
-    review = _studio_parse_review(_studio_vision(prompt, images))
+    review = _studio_score_checks(_studio_vision(prompt, images, max_tokens=1400), items)
     if review is None:
         _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the review could not be read'}})
         return None
@@ -22198,7 +22234,8 @@ def studio_board_review():
 def studio_board_refine():
     """🔁: every frame named (or every frame) reviewed, and those under the
     bar redrawn from the review, up to `rounds` times -- in the background,
-    one project at a time."""
+    one project at a time. With `rounds` 0 it is "review all": the reviews
+    only, still on the server, so closing the page does not stop them."""
     if not _studio_configured() or not _studio_reachable():
         abort(404)
     username = session['user']
