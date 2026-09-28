@@ -684,9 +684,12 @@
     // from the shot before; and a video made from another frame, or before
     // this one was drawn, is one to make again.
     function startsFresh(s) { return current.shots.indexOf(s) === 0 || s.continuity === false; }
+    // The Video tab uses the storyboard -- each shot's video starts from its
+    // chosen frame -- unless the person switched that off for the project.
+    function useBoards() { return (current.settings || {}).use_storyboard !== false; }
     function videoStale(s) {
       var t = chosen(s), b = chosenBoard(s);
-      if (!t || !b || !t.file || !startsFresh(s)) return false;
+      if (!useBoards() || !t || !b || !t.file || !startsFresh(s)) return false;
       return t.board ? t.board !== b.file : (b.created || 0) > (t.created || 0);
     }
     // Any picture in the project as a shot's frame: a reference, a generated
@@ -721,13 +724,11 @@
       if (!shots.length) return '<div class="card"><p class="muted">' + S.sb_empty + '</p></div>';
       var missing = shots.filter(function (s) { return !(s.boards || []).length && s.prompt && !boardJob(s); });
       var changed = shots.filter(function (s) { return boardChanged(s) && !boardJob(s); });
-      var todo = shots.filter(function (s) { return (!(s.takes || []).length || videoStale(s)) && !jobFor(s.id); });
       var html = '<div class="card"><p class="muted" style="margin-top:0">' + S.sb_help + '</p><div class="row" style="flex-wrap:wrap">' +
         (missing.length ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: missing.length }) + '</button>' : '') +
         (changed.length ? '<button id="sb-redraw-changed">🔄 ' + fmt('sb_redraw_changed', { n: changed.length }) + '</button>' : '') +
-        '<button id="preview">▶ ' + S.sb_animatic + '</button><span class="grow"></span>' +
-        (todo.length ? '<button class="primary" id="sb-videos">🎥 ' + fmt('sb_make_videos', { n: todo.length }) + '</button>' : '') +
-        '</div></div><div class="sb-grid">';
+        '<button id="preview">▶ ' + S.sb_animatic + '</button></div>' +
+        '<p class="muted" style="margin-bottom:0">🎥 ' + (useBoards() ? S.sb_to_video : S.sb_to_video_off) + '</p></div><div class="sb-grid">';
       (p.shots || []).forEach(function (s, i) {
         if (s.recorded) return;
         var b = chosenBoard(s), j = boardJob(s), t = chosen(s), words = shotSung(s);
@@ -745,9 +746,7 @@
           '<textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           (b && !startsFresh(s) ? '<p class="muted" style="margin:6px 0 0;font-size:.82rem">⛓ ' + S.sb_continues +
             ' <button data-sb-cut="' + s.id + '">' + S.sb_use_frame + '</button></p>' : '') +
-          boardRow(s) + castRow(s) +
-          (b && startsFresh(s) && !jobFor(s.id) ? '<div class="row" style="margin-top:6px"><button data-gen="' + s.id + '">🎥 ' +
-            ((s.takes || []).length ? S.sb_redo_video : S.generate) + '</button></div>' : '') + '</div>';
+          boardRow(s) + castRow(s) + '</div>';
       });
       return html + '</div>';
     }
@@ -762,6 +761,8 @@
         '<label class="f" style="margin:0">' + S.language + '</label><select id="lang" style="width:auto">' +
         '<option value="es"' + (p.settings.language === 'es' ? ' selected' : '') + '>Español</option>' +
         '<option value="en"' + (p.settings.language === 'en' ? ' selected' : '') + '>English</option></select>' +
+        '<label class="row" style="margin:0;font-size:.86rem"><input type="checkbox" id="use-sb" style="width:auto"' + (useBoards() ? ' checked' : '') +
+          '> 🖼️ ' + S.sb_use + '</label>' +
         '<span class="grow"></span><span class="muted">' + fmt('shots_total', { n: shots.length, s: Math.round(total) }) + '</span></div>' +
         '<div class="timeline">' + shots.map(function (s, i) {
           var t = chosen(s), j = jobFor(s.id);
@@ -797,7 +798,11 @@
           ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '"></video>'
           : '<span>' + S.no_take + '</span>';
         var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
-        var startSel = (i === 0 || s.continuity === false) && refs.length ? '<label class="f">' + S.start_image + '</label><select data-f="refs" data-id="' + s.id + '"><option value="">' + S.none + '</option>' +
+        var fromBoard = useBoards() && board && (i === 0 || s.continuity === false);
+        var startSel = fromBoard ? '<label class="f">' + S.start_image + '</label><div class="row"><img src="' + fileUrl(p.id, board.file) +
+            '" alt="" style="height:64px;border-radius:6px"><span class="muted">🖼️ ' + S.sb_starts_from + '</span></div>' +
+            (videoStale(s) ? '<p class="note" style="margin-top:6px">⚠️ ' + S.sb_video_older + '</p>' : '')
+          : (i === 0 || s.continuity === false) && refs.length ? '<label class="f">' + S.start_image + '</label><select data-f="refs" data-id="' + s.id + '"><option value="">' + S.none + '</option>' +
           refs.map(function (u) { return '<option value="' + esc(u.file) + '"' + ((s.refs || [])[0] === u.file ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' : '';
         html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>' + S.shot + ' ' + (i + 1) + '</b>' + statusPill(s) +
           '<span class="grow"></span><button data-up="' + s.id + '" title="' + S.move_up + '">↑</button><button data-down="' + s.id + '" title="' + S.move_down + '">↓</button>' +
@@ -970,6 +975,7 @@
     document.addEventListener('change', async function (ev) {
       var el = ev.target;
       if (!current) return;
+      if (el.id === 'use-sb') { current.settings.use_storyboard = el.checked; markDirty(); drawTab(); return; }
       if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
       if (el.dataset.f === 'continuity') { drawTab(); return; }
       if (el.dataset.upload && el.files.length) {
@@ -1120,19 +1126,6 @@
           var rr = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: ch } });
           toast(fmt('board_queued', { n: rr.queued.length }));
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
-        }
-        if (b.id === 'sb-videos') {
-          await saveNow();
-          var vids = current.shots.filter(function (s) { return !s.recorded && (!(s.takes || []).length || videoStale(s)) && !jobFor(s.id); });
-          if (!vids.length) return;
-          var secs = vids.reduce(function (x, s) { return x + (+s.seconds || 5); }, 0), rate = (queueState && queueState.video_rate) || 360;
-          var bare = vids.filter(function (s) { return !(s.boards || []).length; }).length;
-          var stale = vids.filter(boardChanged).length, redo = vids.filter(videoStale).length;
-          if (!confirm(fmt('sb_videos_confirm', { n: vids.length, s: Math.round(secs), t: dur(rate * secs) }) +
-                       (redo ? '\n\n' + fmt('sb_videos_redo', { n: redo }) : '') +
-                       (bare ? '\n\n' + fmt('sb_no_frame_warn', { n: bare }) : '') +
-                       (stale ? '\n\n' + fmt('sb_stale_warn', { n: stale }) : ''))) return;
-          return generate(vids.map(function (s) { return s.id; }));
         }
         if (d.boardChoose) {
           await flushSave();

@@ -871,7 +871,8 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
         # The approved storyboard frame is where a shot that does not carry
         # on from the one before begins: what was looked at is what is made.
         board = Projects.chosen_board(shot)
-        if board and starts_fresh and body.get("use_boards", True):
+        use_boards = body.get("use_boards", True) and doc["settings"].get("use_storyboard", True) is not False
+        if board and starts_fresh and use_boards:
             params["start_board"] = board["file"]
             params.pop("start_upload", None)
         try:

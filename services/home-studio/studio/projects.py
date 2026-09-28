@@ -167,6 +167,10 @@ class Projects:
                 # asked to share, so the pictures read as one film.
                 if "look" in s:
                     doc["settings"]["look"] = str(s.get("look") or "")[:600]
+                # Whether a shot's video starts from its storyboard frame (the
+                # default) or from what the Video tab picks for it.
+                if "use_storyboard" in s:
+                    doc["settings"]["use_storyboard"] = bool(s["use_storyboard"])
                 if "soundtrack" in s:
                     st = str(s.get("soundtrack") or "")
                     doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""

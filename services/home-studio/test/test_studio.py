@@ -716,6 +716,14 @@ for jid in (q["id"] for q in r["queued"]):
 g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
 gp = A.store.get(g["queued"][0]["id"])["params"]
 check("  a shot that starts fresh starts from its approved frame", gp.get("start_board") == "takes/f.png", gp)
+A.manager.cancel(g["queued"][0]["id"])
+c.put(f"/api/projects/{sbp['id']}", json={"settings": {"use_storyboard": False}}, headers=h(JUANA, "Juana"))
+g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
+check("  with the storyboard switched off for the project, it does not",
+      "start_board" not in A.store.get(g["queued"][0]["id"])["params"], A.store.get(g["queued"][0]["id"])["params"])
+A.manager.cancel(g["queued"][0]["id"])
+c.put(f"/api/projects/{sbp['id']}", json={"settings": {"use_storyboard": True}}, headers=h(JUANA, "Juana"))
+g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
 A.projects.add_board(JUANA, sbp["id"], sdoc["shots"][1]["id"], {"file": "takes/f.png"})
 c.put(f"/api/projects/{sbp['id']}", json={"shots": [dict(x, board=0) for x in sdoc["shots"]]}, headers=h(JUANA, "Juana"))
 s1 = c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]
