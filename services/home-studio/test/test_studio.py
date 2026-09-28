@@ -489,6 +489,39 @@ else:
     check("  the image recipe draws it at the shot's shape",
           recipes.settings_for("board", {"prompt": "x", "size": recipes.BOARD_SIZE["480x832"]})["resolution"] == "768x1344")
 
+    print("\ncharacters: a portrait and a voice, filed on the character")
+    from studio.characters import Characters
+    chars = Characters(tmp / "projects")
+    mgr.characters = chars
+    pel = chars.create(JUANA, sb["id"], {"name": "Pelícano", "look": "a brown pelican in a red helmet"})
+    with fake._lock:
+        fake._out.append({"kind": "ready"})
+        fake._lock.notify_all()
+    jp = store2.add(owner=JUANA, owner_name="Juana", kind="portrait", model=recipes.IMAGE_MODEL,
+                    params={"prompt": "portrait", "size": "832x1216"}, project=sb["id"], target=pel["id"])
+    mgr.wake()
+    deadline = time.time() + 60
+    while time.time() < deadline and store2.get(jp["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    pel = chars.get(pel["id"], JUANA, sb["id"])
+    check("  a portrait lands on the character, and becomes its picture",
+          store2.get(jp["id"])["state"] == "done" and len(pel["pictures"]) == 1 and pel["portrait"] == 0, (store2.get(jp["id"]), pel))
+    webm = tmp / "voz.webm"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(tmp / "tune.wav"), "-c:a", "libopus", str(webm)], check=True)
+    pel = chars.add_file(pel["id"], JUANA, sb["id"], "voz.webm", webm.read_bytes(), "voice")
+    check("  a voice recorded in the page (WebM) is kept as WAV", pel["voice"].endswith(".wav")
+          and media.probe(chars.file(pel["id"], JUANA, sb["id"], pel["voice"]))["seconds"] > 5, pel["voice"])
+    jv = store2.add(owner=JUANA, owner_name="Juana", kind="voice", model=recipes.VOICE_MODEL,
+                    params={"text": "hola", "voice_char": pel["id"], "seconds": 5}, project=sb["id"], target=pel["id"])
+    mgr.wake()
+    while time.time() < deadline and store2.get(jv["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    pel = chars.get(pel["id"], JUANA, sb["id"])
+    check("  a voice test speaks with its own sample, and the character knows where it is",
+          store2.get(jv["id"])["state"] == "done" and pel.get("voice_test", "").endswith(".mp3")
+          and fake.seen[-1].get("audio_guide", "").endswith("voz.wav"), (store2.get(jv["id"]), pel.get("voice_test"),
+                                                                         fake.seen[-1].get("audio_guide")))
+
     print("\nhow long the queue says a shot takes grows with the shot")
     five = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 5}})
     twenty = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 20}})
@@ -647,6 +680,40 @@ while time.time() < deadline:
 rend = (st.get("renders") or [{}])[-1]
 check("  and the preview download holds the frame where the shot is not made yet",
       st["render"]["state"] == "done" and abs(rend.get("seconds", 0) - (2.0 + 124 / 24 + 124 / 24)) < 0.4, (st["render"], rend))
+print("\n  characters, their scopes and who may do what")
+cp = c.post("/api/projects", json={"name": "Serie", "kind": "short_film"}, headers=h(JUANA, "Juana")).json()
+cp2 = c.post("/api/projects", json={"name": "Otra"}, headers=h(JUANA, "Juana")).json()
+ch = c.post(f"/api/projects/{cp['id']}/characters", json={"name": "Pelícano", "look": "a brown pelican, red helmet",
+                                                         "personality": "brave, a bit clumsy"}, headers=h(JUANA, "Juana")).json()
+def names(pid, who):
+    return [x["name"] for x in c.get(f"/api/projects/{pid}/characters", headers=who).json()["characters"]]
+check("  a character starts in its project, and only there",
+      ch["scope"] == "project" and names(cp["id"], h(JUANA, "Juana")) == ["Pelícano"] and names(cp2["id"], h(JUANA, "Juana")) == [])
+check("  a character needs a name", c.post(f"/api/projects/{cp['id']}/characters", json={"look": "x"},
+                                           headers=h(JUANA, "Juana")).status_code == 400)
+ch = c.post(f"/api/projects/{cp['id']}/characters/{ch['id']}/widen", headers=h(JUANA, "Juana")).json()
+check("  widened, it is all of Juana's projects', same id",
+      ch["scope"] == "person" and names(cp2["id"], h(JUANA, "Juana")) == ["Pelícano"])
+tp = c.post("/api/projects", json={"name": "De Tomi"}, headers=h(TOMI, "Tomi")).json()
+check("  and still nobody else's", names(tp["id"], h(TOMI, "Tomi")) == [])
+ch = c.post(f"/api/projects/{cp2['id']}/characters/{ch['id']}/widen", headers=h(JUANA, "Juana")).json()
+check("  widened again, the family's: Tomi can cast it", ch["scope"] == "family" and names(tp["id"], h(TOMI, "Tomi")) == ["Pelícano"])
+check("  but not change it",
+      c.put(f"/api/projects/{tp['id']}/characters/{ch['id']}", json={"look": "a gull"}, headers=h(TOMI, "Tomi")).status_code == 403)
+mp = c.post("/api/projects", json={"name": "De Mora"}, headers=h(MORA, "Mora", admin=True)).json()
+check("  a parent can", c.put(f"/api/projects/{mp['id']}/characters/{ch['id']}", json={"look": "a brown pelican, red helmet, goggles"},
+                             headers=h(MORA, "Mora", admin=True)).status_code == 200)
+check("  and nothing narrows it again",
+      c.post(f"/api/projects/{cp['id']}/characters/{ch['id']}/widen", headers=h(JUANA, "Juana")).status_code == 403)
+c.put(f"/api/projects/{cp['id']}", json={"shots": [{"prompt": "el pelícano salta", "seconds": 5, "cast": [ch["id"]]}]},
+      headers=h(JUANA, "Juana"))
+r = c.post(f"/api/projects/{cp['id']}/storyboard", json={}, headers=h(JUANA, "Juana")).json()
+bp = A.store.get(r["queued"][0]["id"])["params"]["prompt"]
+check("  a shot's cast puts their look in its frame, as edited",
+      "Characters: Pelícano: a brown pelican, red helmet, goggles" in bp, bp)
+A.manager.cancel(r["queued"][0]["id"])
+check("  a portrait needs a look, a voice test a voice sample",
+      c.post(f"/api/projects/{cp['id']}/characters/{ch['id']}/speak", json={"text": "hola"}, headers=h(JUANA, "Juana")).status_code == 400)
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 

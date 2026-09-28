@@ -101,9 +101,9 @@ class Manager:
     def __init__(self, store: Store, projects: Projects, scratch: Path, logs: Path,
                  idle_s: float = 600, notify: Callable[[dict], None] | None = None,
                  worker_factory: Callable[[], Worker] | None = None,
-                 audio: "analysis.AudioServer | None" = None):
+                 audio: "analysis.AudioServer | None" = None, characters=None):
         self.store, self.projects = store, projects
-        self.audio = audio
+        self.audio, self.characters = audio, characters
         self.scratch, self.logs = Path(scratch), Path(logs)
         self.scratch.mkdir(parents=True, exist_ok=True)
         self.logs.mkdir(parents=True, exist_ok=True)
@@ -355,6 +355,12 @@ class Manager:
             p["start_image"] = str(self.projects.file(owner, pid, p["start_upload"]))
         if p.get("voice_upload"):
             p["voice_file"] = str(self.projects.file(owner, pid, p["voice_upload"]))
+        if p.get("voice_char") and self.characters:
+            # A character speaking: its own voice sample is what is cloned.
+            ch = self.characters.get(p["voice_char"], owner, pid)
+            if not ch.get("voice"):
+                raise ProjectError("this character has no voice sample yet")
+            p["voice_file"] = str(self.characters.file(ch["id"], owner, pid, ch["voice"]))
         if p.get("start_board"):
             # The approved storyboard frame: what the shot starts from.
             p["start_image"] = str(self.projects.file(owner, pid, p["start_board"]))
@@ -383,6 +389,11 @@ class Manager:
         produced = [f for f in produced if f.is_file()]
         if not produced:
             raise media.MediaError("the generator reported success but wrote nothing")
+        if job["kind"] == "portrait" and self.characters:
+            # A picture of a character goes to the character, not a project item.
+            self.characters.add_picture_file(job["target"], job["owner"], job["project"], produced[0])
+            shutil.rmtree(self.scratch / job["id"], ignore_errors=True)
+            return []
         owner, pid = job["owner"], job["project"] or "loose"
         if not job["project"]:
             dest_root = self.projects.root / owner / ".loose"
@@ -423,7 +434,11 @@ class Manager:
                 elif dst.suffix in (".wav", ".mp3", ".flac", ".ogg"):
                     take["seconds"] = round(media.probe(dst)["seconds"], 2)
         shutil.rmtree(self.scratch / job["id"], ignore_errors=True)
-        if job["project"] and job["target"]:
+        if job["params"].get("voice_char") and self.characters:
+            # A voice test: kept with the project's files, and the character
+            # told where, for the page to play.
+            self.characters.set_field(job["params"]["voice_char"], owner, pid, "voice_test", rel_files[0])
+        elif job["project"] and job["target"]:
             if job["kind"] == "board":
                 self.projects.add_board(owner, pid, job["target"], {"file": take["file"], "job": job["id"]})
             else:

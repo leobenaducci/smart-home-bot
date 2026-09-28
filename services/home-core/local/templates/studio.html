@@ -329,8 +329,87 @@
     // What a song is about is only an input for Alfred, not part of the
     // project; kept here so a redraw does not empty the box.
     var themes = {};
+    // The characters this project can cast (its own, the person's, the
+    // family's), loaded with it and again after any change to one.
+    var cast = [];
+    async function loadCast() {
+      try { cast = (await api('projects/' + current.id + '/characters')).characters; } catch (e) { cast = []; }
+    }
+    function charUrl(c, rel) {
+      return '/studio/api/projects/' + current.id + '/characters/' + c.id + '/file/' + rel.split('/').map(encodeURIComponent).join('/');
+    }
+    function castTab() {
+      var html = cast.length ? '' : '<p class="muted">' + S.ch_none + '</p>';
+      cast.forEach(function (c) {
+        var pic = (c.pictures || [])[c.portrait >= 0 ? c.portrait : 0];
+        html += '<div class="card"><div class="row" style="align-items:flex-start">' +
+          (pic ? '<img src="' + charUrl(c, pic) + '" style="width:96px;border-radius:8px" alt="">' : '<div style="font-size:2.4rem">👤</div>') +
+          '<div class="grow"><b>' + esc(c.name) + '</b> <span class="pill">' + S['ch_scope_' + c.scope] + '</span>' +
+          '<p class="muted" style="margin-top:4px">' + esc(c.look || '') + '</p>' +
+          (c.personality ? '<p class="muted">💬 ' + esc(c.personality) + '</p>' : '') +
+          (c.voice_test ? '<audio controls preload="none" src="' + fileUrl(current.id, c.voice_test) + '"></audio>' : '') +
+          '<div class="row" style="margin-top:8px">' +
+          (c.editable ? '<button data-ch-edit="' + c.id + '">✏️ ' + S.ch_edit + '</button>' : '') +
+          (c.editable && c.look ? '<button data-ch-portrait="' + c.id + '">' + S.ch_portrait + '</button>' : '') +
+          (c.voice ? '<button data-ch-speak="' + c.id + '">' + S.ch_speak + '</button>' : '') +
+          (c.editable && c.scope !== 'family' ? '<button data-ch-widen="' + c.id + '">' + S[c.scope === 'project' ? 'ch_widen_person' : 'ch_widen_family'] + '</button>' : '') +
+          (c.editable ? '<button class="danger" data-ch-del="' + c.id + '">🗑</button>' : '') +
+          '</div></div></div></div>';
+      });
+      return html + '<button id="ch-new">＋ 👤 ' + S.ch_new + '</button>';
+    }
+    // A character, new or edited: who they are, how they look and talk, and
+    // the sample their voice is cloned from -- uploaded or recorded here.
+    function characterDialog(c) {
+      var dlg = $('#dlg'), rec = null, chunks = [], voiceBlob = null;
+      c = c || { name: '', look: '', personality: '', voice_text: '' };
+      dlg.innerHTML = '<h2>👤 ' + (c.id ? esc(c.name) : S.ch_new) + '</h2>' +
+        '<label class="f">' + S.ch_name + '</label><input id="ch-name" value="' + esc(c.name) + '">' +
+        '<label class="f">' + S.ch_look + '</label><textarea id="ch-look" rows="3" placeholder="' + esc(S.ch_look_ph) + '">' + esc(c.look) + '</textarea>' +
+        '<label class="f">' + S.ch_personality + '</label><textarea id="ch-pers" rows="3" placeholder="' + esc(S.ch_personality_ph) + '">' + esc(c.personality) + '</textarea>' +
+        '<label class="f">' + S.ch_voice + '</label><div class="row"><input type="file" id="ch-vfile" accept="audio/*" style="width:auto">' +
+        '<button id="ch-rec">' + S.ch_record + '</button><span class="muted" id="ch-vstate">' + (c.voice ? '✓' : '') + '</span></div>' +
+        '<label class="f">' + S.ch_voice_text + '</label><input id="ch-vtext" value="' + esc(c.voice_text || '') + '">' +
+        '<label class="f">' + S.ch_pictures + '</label><input type="file" id="ch-pics" accept="image/*" multiple style="width:auto">' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ch-no">' + S.cancel + '</button><button class="primary" id="ch-go">' + S.ch_save + '</button></div>';
+      dlg.showModal();
+      $('#ch-no').onclick = function () { if (rec) rec.stop(); dlg.close(); };
+      $('#ch-rec').onclick = async function () {
+        var b = this;
+        if (rec) { rec.stop(); return; }
+        try {
+          var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          rec = new MediaRecorder(stream); chunks = [];
+          rec.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
+          rec.onstop = function () {
+            stream.getTracks().forEach(function (t) { t.stop(); });
+            voiceBlob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' }); rec = null;
+            b.textContent = S.ch_record; $('#ch-vstate').textContent = '✓ ' + Math.round(voiceBlob.size / 1024) + ' KB';
+          };
+          rec.start(); b.textContent = S.ch_stop; $('#ch-vstate').textContent = '●';
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
+      $('#ch-go').onclick = async function () {
+        var go = this; go.disabled = true;
+        try {
+          var body = { name: $('#ch-name').value, look: $('#ch-look').value, personality: $('#ch-pers').value,
+                       voice_text: $('#ch-vtext').value };
+          var saved = c.id ? await api('projects/' + current.id + '/characters/' + c.id, { method: 'PUT', body: body })
+                           : await api('projects/' + current.id + '/characters', { method: 'POST', body: body });
+          async function send(file, kind, name) {
+            var fd = new FormData(); fd.append('file', file, name || file.name); fd.append('kind', kind);
+            await api('projects/' + current.id + '/characters/' + saved.id + '/upload', { method: 'POST', body: fd });
+          }
+          if ($('#ch-vfile').files[0]) await send($('#ch-vfile').files[0], 'voice');
+          else if (voiceBlob) await send(voiceBlob, 'voice', 'grabacion.' + ((voiceBlob.type.split('/')[1] || 'webm').split(';')[0]));
+          for (var i = 0; i < $('#ch-pics').files.length; i++) await send($('#ch-pics').files[i], 'picture');
+          dlg.close(); await loadCast(); drawTab();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); go.disabled = false; }
+      };
+    }
     async function openProject(pid) {
       current = await api('projects/' + pid);
+      await loadCast();
       if (current.kind === 'music_video' && !(current.shots || []).length) tab = 'audio';
       history.replaceState(null, '', '/studio?project=' + pid);
       $('#v-list').hidden = true; $('#v-edit').hidden = false;
@@ -373,6 +452,14 @@
         return '<button data-board-choose="' + s.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + '</button>';
       }).join('') + '<button data-board="' + s.id + '">' + (b.length ? S.board_redraw : S.board_draw) + '</button></div>';
     }
+    // Who is in the shot: their looks go into its frame and its video.
+    function castRow(s) {
+      if (!cast.length) return '';
+      return '<div class="takes"><span class="muted">👤 ' + S.ch_in_shot + ':</span>' + cast.map(function (c) {
+        var on = (s.cast || []).indexOf(c.id) >= 0;
+        return '<button data-cast-toggle="' + s.id + '" data-ch="' + c.id + '" class="' + (on ? 'on' : '') + '">' + esc(c.name) + '</button>';
+      }).join('') + '</div>';
+    }
     function chosen(item) {
       var t = item.takes || [], i = item.chosen;
       return (i >= 0 && i < t.length) ? t[i] : t[t.length - 1];
@@ -401,7 +488,7 @@
       var html = '<div class="row"><button id="back">← ' + S.back + '</button>' +
         '<input id="pname" class="grow" style="font-weight:800;font-size:1.05rem" value="' + esc(p.name) + '">' +
         '<span class="muted" id="saved">' + S.saved + '</span></div>' +
-        '<div class="tabs">' + ['video', 'audio', 'images', 'files'].map(function (t) {
+        '<div class="tabs">' + ['video', 'audio', 'images', 'cast', 'files'].map(function (t) {
           return '<button data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
         }).join('') + '<span class="grow"></span><button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div>' +
         (p.kind === 'music_video' ? '<p class="note">🎵 ' + S.mv_steps + '</p>' : '') +
@@ -411,6 +498,7 @@
     }
     function drawTab() {
       var body = $('#tabbody');
+      if (tab === 'cast') { body.innerHTML = castTab(); return; }
       if (tab === 'video') body.innerHTML = videoTab();
       else if (tab === 'audio') body.innerHTML = audioTab();
       else if (tab === 'images') body.innerHTML = imagesTab();
@@ -450,7 +538,7 @@
           '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + S.remove + '">✕</button></div>' +
           '<div class="shot"><div><div class="media">' + media + '</div>' + takesRow(s) +
           (t && t.file ? '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + S.shot + ' ' + (i + 1)) + '</div>' : '') +
-          boardRow(s) + '</div><div>' +
+          boardRow(s) + castRow(s) + '</div><div>' +
           '<label class="f">' + S.shot_what + '</label><textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           '<label class="f">' + S.shot_says + '</label><textarea data-f="dialogue" data-id="' + s.id + '" rows="2" placeholder="' + esc(S.shot_says_ph) + '">' + esc(s.dialogue) + '</textarea>' +
           '<div class="row"><div class="grow"><label class="f">' + S.shot_sound + '</label><input data-f="soundscape" data-id="' + s.id + '" placeholder="' + esc(S.shot_sound_ph) + '" value="' + esc(s.soundscape) + '"></div>' +
@@ -684,6 +772,35 @@
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
         if (b.id === 'preview') return previewPlayer();
+        if (b.id === 'ch-new') return characterDialog(null);
+        if (d.chEdit) return characterDialog(cast.find(function (c) { return c.id === d.chEdit; }));
+        if (d.chPortrait) {
+          var rp = await api('projects/' + p.id + '/characters/' + d.chPortrait + '/portrait', { method: 'POST' });
+          toast(fmt('queued_note', { n: Math.max(0, (rp.queued[0].position || 1) - 1), t: dur(rp.queued[0].starts_in || 0) }));
+          loadQueue(); return;
+        }
+        if (d.chSpeak) {
+          var who = cast.find(function (c) { return c.id === d.chSpeak; });
+          var line = prompt(S.ch_speak_what, fmt('ch_speak_ph', { name: who.name })); if (!line) return;
+          var rs = await api('projects/' + p.id + '/characters/' + d.chSpeak + '/speak', { method: 'POST', body: { text: line } });
+          toast(fmt('queued_note', { n: Math.max(0, (rs.queued[0].position || 1) - 1), t: dur(rs.queued[0].starts_in || 0) }));
+          loadQueue(); return;
+        }
+        if (d.chWiden) {
+          if (!confirm(S.ch_widen_confirm)) return;
+          await api('projects/' + p.id + '/characters/' + d.chWiden + '/widen', { method: 'POST' });
+          await loadCast(); drawTab(); return;
+        }
+        if (d.chDel) {
+          if (!confirm(S.ch_delete_confirm)) return;
+          await api('projects/' + p.id + '/characters/' + d.chDel, { method: 'DELETE' });
+          await loadCast(); drawTab(); return;
+        }
+        if (d.castToggle) {
+          var sh = itemById(d.castToggle), list = (sh.cast || []).slice(), at = list.indexOf(d.ch);
+          if (at >= 0) list.splice(at, 1); else list.push(d.ch);
+          sh.cast = list; await saveNow(); drawTab(); return;
+        }
         if (d.board || b.id === 'board-all') {
           await saveNow();
           var rb = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: d.board ? { items: [d.board] } : {} });
@@ -868,13 +985,18 @@
           await flushSave();
           var r = await api('music-video', { method: 'POST', body: { shots: plan.length, seconds: total, kind: a.kind || 'song',
             lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '',
-            idea: idea, plan: cuts || [] } });
+            idea: idea, plan: cuts || [],
+            characters: cast.map(function (c) { return { name: c.name, look: c.look, personality: c.personality }; }) } });
           var fresh = await api('projects/' + p.id);
           var before = (fresh.shots || []).length;
           r.shots.forEach(function (sh, i) {
             var cont = i > 0 && sh.continues, c = plan[i] || {};
+            var who = (sh.cast || []).map(function (n) {
+              var m = cast.find(function (x) { return x.name.toLowerCase() === String(n).toLowerCase(); });
+              return m && m.id;
+            }).filter(Boolean);
             fresh.shots.push(newItem(Object.assign({ prompt: sh.prompt, seconds: c.seconds || 8, continuity: cont,
-                                                     refs: !cont && ref ? [ref] : [] },
+                                                     refs: !cont && ref ? [ref] : [], cast: who },
                                                    cuts ? { exact: true, start: c.start } : {})));
           });
           // The look is the project's, so every frame and shot is asked for it.

@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import analysis, media, recipes
 from .manager import Manager
+from .characters import Characters
 from .projects import ProjectError, Projects
 from .store import Store
 
@@ -45,6 +46,7 @@ MAX_UPLOAD = 200 * 1024 * 1024
 
 store = Store(DATA / "queue" / "jobs.db")
 projects = Projects(DATA / "projects")
+characters = Characters(DATA / "projects")
 renders = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-render")
 render_state: dict[str, dict] = {}
 
@@ -65,7 +67,7 @@ def _notify(job: dict) -> None:
 
 
 manager = Manager(store, projects, DATA / "scratch", DATA / "logs", idle_s=IDLE_S, notify=_notify,
-                  audio=analysis.AudioServer(os.environ.get("STUDIO_AUDIO_URL", "")))
+                  audio=analysis.AudioServer(os.environ.get("STUDIO_AUDIO_URL", "")), characters=characters)
 app = FastAPI(title="home-studio", docs_url=None, redoc_url=None)
 
 
@@ -219,6 +221,121 @@ def new_project(body: dict, me: Who = Depends(who)):
     return projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
 
 
+# -- characters ----------------------------------------------------------------
+def _project(me: Who, pid: str) -> dict:
+    try:
+        return projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+
+
+def _char_public(doc: dict, me: Who) -> dict:
+    return {**doc, "editable": Characters.may_edit(doc, me.login, me.admin)}
+
+
+@app.get("/api/projects/{pid}/characters")
+def list_characters(pid: str, me: Who = Depends(who)):
+    """Everyone who can be cast here: the project's, the person's, the family's."""
+    _project(me, pid)
+    return {"characters": [_char_public(c, me) for c in characters.list(me.login, pid)]}
+
+
+@app.post("/api/projects/{pid}/characters")
+def new_character(pid: str, body: dict, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        return _char_public(characters.create(me.login, pid, body), me)
+    except ProjectError as exc:
+        _bad(exc)
+
+
+@app.put("/api/projects/{pid}/characters/{cid}")
+def edit_character(pid: str, cid: str, body: dict, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        return _char_public(characters.update(cid, me.login, pid, body, me.admin), me)
+    except ProjectError as exc:
+        _bad(exc, 403)
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/widen")
+def widen_character(pid: str, cid: str, me: Who = Depends(who)):
+    """One scope wider: this project -> all of mine -> the family's."""
+    _project(me, pid)
+    try:
+        return _char_public(characters.widen(cid, me.login, pid, me.admin), me)
+    except ProjectError as exc:
+        _bad(exc, 403)
+
+
+@app.delete("/api/projects/{pid}/characters/{cid}")
+def delete_character(pid: str, cid: str, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        characters.delete(cid, me.login, pid, me.admin)
+    except ProjectError as exc:
+        _bad(exc, 403)
+    return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/upload")
+async def character_upload(pid: str, cid: str, file: UploadFile = File(...), kind: str = Form("picture"),
+                           me: Who = Depends(who)):
+    _project(me, pid)
+    data = await file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "too large")
+    try:
+        return _char_public(characters.add_file(cid, me.login, pid, file.filename or "file", data,
+                                                "voice" if kind == "voice" else "picture", me.admin), me)
+    except ProjectError as exc:
+        _bad(exc, 403)
+
+
+@app.get("/api/projects/{pid}/characters/{cid}/file/{rel:path}")
+def character_file(pid: str, cid: str, rel: str, me: Who = Depends(who)):
+    _project(me, pid)
+    try:
+        return FileResponse(characters.file(cid, me.login, pid, rel))
+    except ProjectError as exc:
+        _bad(exc, 404)
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/portrait")
+def character_portrait(pid: str, cid: str, me: Who = Depends(who)):
+    """A picture of the character drawn from its look, filed on it."""
+    doc = _project(me, pid)
+    try:
+        ch = characters.get(cid, me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    if not ch.get("look"):
+        _bad(ValueError("describe how the character looks first"))
+    look = str(doc["settings"].get("look") or "").strip()
+    prompt = (f"{look}. " if look else "") + f"Character portrait of {ch['name']}: {ch['look']}. " \
+             "Full figure, facing the camera, plain background, clear light."
+    job = _enqueue(me, "portrait", {"prompt": prompt[:1500], "size": "832x1216"}, pid, cid, title=ch["name"])
+    return {"queued": [_public(store.get(job["id"]) or job, me)]}
+
+
+@app.post("/api/projects/{pid}/characters/{cid}/speak")
+def character_speak(pid: str, cid: str, body: dict | None = None, me: Who = Depends(who)):
+    """A line in the character's cloned voice, to hear it before casting it."""
+    _project(me, pid)
+    try:
+        ch = characters.get(cid, me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    if not ch.get("voice"):
+        _bad(ValueError("give the character a voice sample first"))
+    text = str((body or {}).get("text") or "").strip()[:600]
+    if not text:
+        _bad(ValueError("nothing to say"))
+    job = _enqueue(me, "voice", {"text": text, "voice_char": cid, "voice_text": ch.get("voice_text") or "",
+                                 "seconds": 30, "language": "es"}, pid, cid, title=ch["name"])
+    return {"queued": [_public(store.get(job["id"]) or job, me)]}
+
+
 @app.post("/api/projects/{pid}/storyboard")
 def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
     """A still for each shot, before any video: a minute a frame where a shot
@@ -244,7 +361,8 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
         what = str(shot.get("prompt") or "").strip()
         if not what:
             continue
-        prompt = (f"{look}. " if look else "") + f"Film still: {what}"
+        cast = characters.describe(shot.get("cast") or [], me.login, pid)
+        prompt = (f"{look}. " if look else "") + f"Film still: {what}" + (f" Characters: {cast}." if cast else "")
         queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size}, pid, shot["id"],
                                shot.get("title") or f"{doc['name']} {idx + 1}")["id"])
     if not queued:
@@ -477,6 +595,7 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
             chain_prev_job = ""
             continue
         params = {k: shot.get(k) for k in ("prompt", "soundscape", "music", "dialogue", "seconds", "exact")}
+        params["characters"] = characters.describe(shot.get("cast") or [], me.login, pid)
         params.update(language_name=lang, size=size, index=idx + 1)
         after = ""
         if idx > 0 and shot.get("continuity", True):

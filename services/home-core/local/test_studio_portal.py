@@ -117,7 +117,8 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "favorite_set", "favorite_clear", "rs_button", "rs_title", "rs_mode_part", "rs_mode_all",
             "rs_pick", "rs_range", "rs_no_lines", "rs_similar", "rs_keep_voice", "rs_go",
             "preview_download", "preview_rendering",
-            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "mv_steps", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate"):
+            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "mv_steps", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
+            "tab_cast", "ch_none", "ch_new", "ch_edit", "ch_name", "ch_look", "ch_look_ph", "ch_personality", "ch_personality_ph", "ch_voice", "ch_voice_text", "ch_record", "ch_stop", "ch_pictures", "ch_save", "ch_portrait", "ch_speak", "ch_speak_what", "ch_speak_ph", "ch_widen_person", "ch_widen_family", "ch_scope_project", "ch_scope_person", "ch_scope_family", "ch_widen_confirm", "ch_delete_confirm", "ch_in_shot"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
 
 print("\na music video is planned by Alfred, shot by shot")
@@ -158,6 +159,16 @@ check("each shot is given its time and the words sung in it",
       "Shot 2 (0:05.5-0:16.0, Verso): sung: \"Mora canta en la cocina\"" in prompt, prompt[-400:])
 check("and a shot with nobody singing is said to be music only",
       "Shot 1 (0:00.0-0:05.5, Instrumental): no singing" in prompt, prompt[-400:])
+
+asked.clear()
+plans[:] = ['[{"prompt": "The pelican jumps", "continues": false, "cast": ["Pelícano"]}]']
+r = client.post("/studio/api/music-video", headers=HOME, json={
+    "shots": 1, "seconds": 8, "characters": [{"name": "Pelícano", "look": "a brown pelican, red helmet",
+                                               "personality": "brave"}]})
+check("the characters are given to Alfred by name, look and personality",
+      "Pelícano: a brown pelican, red helmet Personality: brave" in (asked[0] if asked else ""), (asked or [""])[0][-400:])
+check("and each planned shot comes back with who is in it",
+      r.status_code == 200 and r.get_json()["shots"][0]["cast"] == ["Pelícano"], r.data[:200])
 
 asked.clear()
 plans[:] = ['[{"prompt": "one"}]', '[{"prompt": "one"}, {"prompt": "two"}]']

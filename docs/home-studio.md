@@ -110,6 +110,30 @@ for looking at. Until a shot is made, the page and the preview download show
 its frame in its place: an animatic, timed to the song. The music video's
 planner draws the storyboard first unless asked to go straight to video.
 
+## Characters
+
+Who appears (`studio/characters.py`): a name, how they look (said the same
+way in every storyboard frame and shot they are cast in -- the words are what
+keep them recognisable), a personality (for the lines the assistant writes
+them), pictures (uploaded, or a 🎨 portrait drawn from their look) and a
+voice sample, recorded in the page or uploaded and kept as WAV, that their
+lines are cloned from (▶ try it). A shot lists its cast; the music video's
+planner is given the characters and names them on each shot.
+
+A character starts in its project and its scope only widens, when the
+person says so: this project -> all of mine -> the family's
+(`<data>/projects/<login>/<project>/characters/`, `<login>/.characters/`,
+`@family/characters/` -- `@` is never in a login). Widening moves the folder
+and keeps the id, so projects that cast it keep finding it. Nothing narrows:
+somebody else's film may be using a family character. Its creator and a parent
+may edit or delete one; anyone may cast it. All of it is under the Studio's
+data directory, in the same backups as the projects.
+
+Not measured yet, and the reason a face can still drift between frames: an
+image model that takes the character's picture as a reference (WanGP has
+editing models that do), and replacing H3's own voice in a shot's dialogue
+with the character's.
+
 ## A music video from a song
 
 The 🎬 button on a song, voice or instrumental that has a take. The Studio

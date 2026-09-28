@@ -36,8 +36,9 @@ EDITABLE = {
     # to `seconds` when the film is made. `start` is where the cut falls in
     # the song, for the page to show.
     # `board`: which storyboard frame of the shot is the chosen one.
+    # `cast`: the characters in the shot, by id (studio/characters.py).
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "board"),
+              "exact", "start", "board", "cast"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -497,6 +498,8 @@ def _clean(key: str, value: Any, item: dict) -> Any:
             return None
     if key == "kind":
         return value if value in AUDIO_KINDS else item.get("kind", "song")
+    if key == "cast":
+        return [str(v) for v in (value or [])[:8] if ID_RE.fullmatch(str(v))]
     if key == "refs":
         # Uploads by their relative path only; anything else is dropped.
         return [str(v) for v in (value or [])[:9] if re.fullmatch(r"uploads/[A-Za-z0-9._-]+", str(v))]

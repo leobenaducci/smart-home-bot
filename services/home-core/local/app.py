@@ -21622,6 +21622,12 @@ STUDIO_UI_KEYS = (
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
     'board_make', 'board_draw', 'board_redraw', 'board_queued', 'mv_steps',
     'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
+    'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
+    'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
+    'ch_voice_text', 'ch_record', 'ch_stop', 'ch_pictures', 'ch_save',
+    'ch_portrait', 'ch_speak', 'ch_speak_what', 'ch_speak_ph', 'ch_widen_person',
+    'ch_widen_family', 'ch_scope_project', 'ch_scope_person', 'ch_scope_family', 'ch_widen_confirm',
+    'ch_delete_confirm', 'ch_in_shot',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
@@ -21764,7 +21770,8 @@ def _studio_parse_plan(text, n):
         if not isinstance(entry, dict) or not str(entry.get('prompt') or '').strip():
             continue
         shots.append({'prompt': str(entry['prompt']).strip()[:1200],
-                      'continues': bool(entry.get('continues')) and bool(shots)})
+                      'continues': bool(entry.get('continues')) and bool(shots),
+                      'cast': [str(x)[:60] for x in (entry.get('cast') or []) if isinstance(x, str)][:8]})
     return shots if len(shots) == n else None
 
 
@@ -21792,6 +21799,13 @@ def studio_music_video():
     style = str(d.get('style') or '').strip()[:300]
     title = str(d.get('title') or '').strip()[:120]
     idea = str(d.get('idea') or '').strip()[:1000]
+    # The project's characters: who may appear, how they look and are. The
+    # page maps the names Alfred puts on each shot back to the characters.
+    people = [c for c in (d.get('characters') or []) if isinstance(c, dict) and c.get('name')][:12]
+    cast_text = "\n".join(
+        f"- {str(c['name'])[:60]}: {str(c.get('look') or '')[:300]}"
+        + (f" Personality: {str(c.get('personality'))[:200]}" if c.get('personality') else '')
+        for c in people)
     each = max(1, round(seconds / n))
     # The cuts, when the Studio has listened to the song: each shot's time,
     # the part of the song it falls in and the words actually sung during it
@@ -21816,6 +21830,8 @@ def studio_music_video():
         + (", timed to the song as listed below" if plan else f" of about {each} seconds each") + ", in order.\n"
         + (f"Musical style: {style}.\n" if style else "")
         + (f"What the person wants it to look like: {idea}\n" if idea else "")
+        + (f"The characters (use them by these names, and keep each one as described):\n{cast_text}\n"
+           if cast_text else "")
         + (f"The shots, with what is heard during each (show what those words are about, "
            f"and let the music-only ones carry the mood or the build):\n{timeline}\n" if plan else
            f"The words, which the shots should follow in order (each shot covers about "
@@ -21827,8 +21843,10 @@ def studio_music_video():
           "them the same way each time. Mark `continues: true` when a shot is the same moment "
           "carrying on from the one before (same place, same action, no cut); otherwise false. "
           "The first shot is always false.\n"
-          f'Answer with only a JSON array of exactly {n} objects, with no code fence and no other '
-          f'text: [{{"prompt": "...", "continues": false}}, ...]'
+          + ('For each shot also list the characters on screen by name in "cast" (an empty list if none). '
+             if cast_text else '')
+          + f'Answer with only a JSON array of exactly {n} objects, with no code fence and no other '
+          f'text: [{{"prompt": "...", "continues": false' + (', "cast": ["..."]' if cast_text else '') + '}}, ...]'
     )
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-video'
     shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S), n)
