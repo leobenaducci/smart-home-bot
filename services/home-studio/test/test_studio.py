@@ -183,8 +183,12 @@ else:
                   notify=notified.append, worker_factory=lambda: fake)
     doc = projects.load(JUANA, p["id"])
     first, second = doc["shots"]
+    fr = projects.dir(JUANA, p["id"]) / "takes" / "fr.png"
+    fr.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=160x96", "-frames:v", "1",
+                    str(fr)], check=True)
     j1 = store2.add(owner=JUANA, owner_name="Juana", kind="video_shot", model=recipes.VIDEO_MODEL,
-                    params={"prompt": "dos", "seconds": 5}, project=p["id"], target=first["id"])
+                    params={"prompt": "dos", "seconds": 5, "start_board": "takes/fr.png"}, project=p["id"], target=first["id"])
     j2 = store2.add(owner=JUANA, owner_name="Juana", kind="video_shot", model=recipes.VIDEO_MODEL,
                     params={"prompt": "uno", "seconds": 5, "continue_from": first["id"]},
                     project=p["id"], target=second["id"], after=j1["id"])
@@ -197,6 +201,8 @@ else:
     check("  both shots made, filed as takes with their first and last frames",
           t1 and t2 and all((projects.dir(JUANA, p["id"]) / t[k]).is_file() for t in (t1, t2) for k in ("file", "first", "last")),
           (store2.get(j2["id"]), t1, t2))
+    check("  a video remembers the frame it started from, and one that continued has none",
+          t1.get("board") == "takes/fr.png" and "board" not in t2, (t1, t2))
     check("  the second started from the first's last frame, read when it ran",
           fake.seen[1].get("image_start", "").endswith(t1["last"]), fake.seen[1])
     check("  each person is told when their job is done", len(notified) == 2 and all(n["ok"] for n in notified))
@@ -717,6 +723,18 @@ check("  a page's save cannot move the chosen frame back (a newer one stays chos
 c.post(f"/api/projects/{sbp['id']}/items/{s1['id']}/board", json={"index": 0}, headers=h(JUANA, "Juana"))
 check("  choosing one is its own call",
       c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]["board"] == 0)
+s0 = sdoc["shots"][0]["id"]
+bf = c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/f.png"}, headers=h(JUANA, "Juana")).json()
+s0doc = next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s0)
+check("  a picture in the project becomes a shot's chosen frame, as a copy, with the shot's description",
+      Projects.chosen_board(s0doc)["file"] == bf["file"] and bf["file"].startswith(f"takes/{s0}/frame-")
+      and bf["source"] == "takes/f.png" and bf["prompt"] == s0doc["prompt"].strip()
+      and (A.projects.dir(JUANA, sbp["id"]) / bf["file"]).is_file(), bf)
+check("  only a picture of this project, and only on a shot",
+      c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "project.json"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/../../x.png"}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/nope/board_from", json={"file": "takes/f.png"}, headers=h(JUANA, "Juana")).status_code == 404
+      and c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/f.png"}, headers=h(TOMI, "Tomi")).status_code == 404)
 clip2 = A.projects.dir(JUANA, sbp["id"]) / "takes" / "one.mp4"
 subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
                 "-i", "sine=frequency=440", "-t", "2", "-shortest", "-pix_fmt", "yuv420p", str(clip2)], check=True)

@@ -771,6 +771,15 @@ def choose_board(pid: str, item_id: str, body: dict | None = None, me: Who = Dep
         _bad(exc, 404)
 
 
+@app.post("/api/projects/{pid}/items/{item_id}/board_from")
+def board_from(pid: str, item_id: str, body: dict, me: Who = Depends(who)):
+    """A picture already in the project as this shot's frame."""
+    try:
+        return projects.board_from(me.login, pid, item_id, str(body.get("file") or ""))
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/favorite")
 def favorite(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """Mark one version the favourite (or none, with no `take`): it is the one

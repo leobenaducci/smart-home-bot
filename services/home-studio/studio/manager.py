@@ -447,6 +447,10 @@ class Manager:
                 self.projects.add_board(owner, pid, job["target"], {"file": take["file"], "job": job["id"],
                                                                      "prompt": job["params"].get("shot_prompt", "")})
             else:
+                # The frame a video started from, so the storyboard can tell
+                # a video made before its frame was drawn -- one to make again.
+                if job["params"].get("start_board"):
+                    take["board"] = job["params"]["start_board"]
                 self.projects.add_take(owner, pid, job["target"], take)
         return rel_files
 

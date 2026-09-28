@@ -505,6 +505,28 @@ class Projects:
             self._write(owner, pid, doc)
             return board
 
+    def board_from(self, owner: str, pid: str, item_id: str, rel: str) -> dict:
+        """A picture already in the project -- a reference, a generated image,
+        another shot's frame -- made this shot's chosen frame. A copy in the
+        shot's folder, so deleting the picture leaves the frame; the shot's
+        description goes with it, so it does not read as changed since."""
+        if not re.fullmatch(r"(?:uploads|takes)/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp)", rel or "") or ".." in rel:
+            raise ProjectError("only a picture in this project can be a frame")
+        src = self.file(owner, pid, rel)
+        doc = self.load(owner, pid)
+        found = self.find(doc, item_id)
+        if not found or found[0] != "shots":
+            raise ProjectError("no such shot")
+        dest = f"takes/{item_id}/frame-{_new_id()}{src.suffix.lower()}"
+        (self.dir(owner, pid) / dest).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, self.dir(owner, pid) / dest)
+        try:
+            return self.add_board(owner, pid, item_id, {"file": dest, "prompt": str(found[2].get("prompt") or "").strip(),
+                                                        "source": rel})
+        except ProjectError:
+            (self.dir(owner, pid) / dest).unlink(missing_ok=True)
+            raise
+
     def set_take_field(self, owner: str, pid: str, item_id: str, take_id: str, key: str, value) -> None:
         """One server-side field of one version -- its analysis, its favourite
         mark. Never from the page's save, which cannot set a take's fields."""

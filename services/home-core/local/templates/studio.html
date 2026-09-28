@@ -531,7 +531,8 @@
       var b = s.boards || [], cur = b.indexOf(chosenBoard(s));
       return '<div class="takes"><span class="muted">🖼️ ' + S.storyboard + ':</span>' + b.map(function (_, i) {
         return '<button data-board-choose="' + s.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + '</button>';
-      }).join('') + '<button data-board="' + s.id + '">' + (b.length ? S.board_redraw : S.board_draw) + '</button></div>';
+      }).join('') + '<button data-board="' + s.id + '">' + (b.length ? S.board_redraw : S.board_draw) + '</button>' +
+        '<button data-board-from="' + s.id + '" title="' + esc(S.board_from) + '">📌</button></div>';
     }
     // Who is in the shot: their looks go into its frame and its video.
     function castRow(s) {
@@ -679,12 +680,48 @@
       return !!(b && b.prompt && b.prompt !== (s.prompt || '').trim());
     }
     function boardJob(s) { var j = jobFor(s.id); return j && j.kind === 'board' ? j : null; }
+    // A shot's video only starts from its frame when it does not carry on
+    // from the shot before; and a video made from another frame, or before
+    // this one was drawn, is one to make again.
+    function startsFresh(s) { return current.shots.indexOf(s) === 0 || s.continuity === false; }
+    function videoStale(s) {
+      var t = chosen(s), b = chosenBoard(s);
+      if (!t || !b || !t.file || !startsFresh(s)) return false;
+      return t.board ? t.board !== b.file : (b.created || 0) > (t.created || 0);
+    }
+    // Any picture in the project as a shot's frame: a reference, a generated
+    // image, another shot's frame. The video starts from it like from a
+    // drawn one.
+    function boardFromDialog(sid) {
+      var p = current, dlg = $('#dlg'), seen = {}, out = [];
+      function add(rel, name) { if (rel && /\.(png|jpe?g|webp)$/i.test(rel) && !seen[rel]) { seen[rel] = 1; out.push({ rel: rel, name: name }); } }
+      (p.uploads || []).forEach(function (u) { if (u.kind === 'reference') add(u.file, u.name); });
+      (p.images || []).forEach(function (it) { (it.takes || []).forEach(function (t) { add(t.file, it.title || ''); }); });
+      (p.shots || []).forEach(function (sh, i) { if (sh.id !== sid) (sh.boards || []).forEach(function (bd) { add(bd.file, S.shot + ' ' + (i + 1)); }); });
+      dlg.innerHTML = '<h2>📌 ' + S.board_from + '</h2>' + (out.length
+        ? '<div class="row" style="flex-wrap:wrap;gap:6px;max-height:60vh;overflow:auto">' + out.map(function (o, i) {
+            return '<button class="icon" data-pick="' + i + '" title="' + esc(o.name) + '"><img src="' + esc(fileUrl(p.id, o.rel)) +
+              '" alt="" loading="lazy" style="height:96px;border-radius:6px"></button>'; }).join('') + '</div>'
+        : '<p class="muted">' + S.board_from_none + '</p>') +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="bf-no">' + S.cancel + '</button></div>';
+      dlg.showModal();
+      $('#bf-no').onclick = function () { dlg.close(); };
+      dlg.querySelectorAll('[data-pick]').forEach(function (b) {
+        b.onclick = async function () {
+          try {
+            await flushSave();
+            await api('projects/' + p.id + '/items/' + sid + '/board_from', { method: 'POST', body: { file: out[Number(b.dataset.pick)].rel } });
+            dlg.close(); current = await api('projects/' + p.id); drawTab();
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+        };
+      });
+    }
     function boardTab() {
       var p = current, shots = (p.shots || []).filter(function (s) { return !s.recorded; });
       if (!shots.length) return '<div class="card"><p class="muted">' + S.sb_empty + '</p></div>';
       var missing = shots.filter(function (s) { return !(s.boards || []).length && s.prompt && !boardJob(s); });
       var changed = shots.filter(function (s) { return boardChanged(s) && !boardJob(s); });
-      var todo = shots.filter(function (s) { return !(s.takes || []).length && !jobFor(s.id); });
+      var todo = shots.filter(function (s) { return (!(s.takes || []).length || videoStale(s)) && !jobFor(s.id); });
       var html = '<div class="card"><p class="muted" style="margin-top:0">' + S.sb_help + '</p><div class="row" style="flex-wrap:wrap">' +
         (missing.length ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: missing.length }) + '</button>' : '') +
         (changed.length ? '<button id="sb-redraw-changed">🔄 ' + fmt('sb_redraw_changed', { n: changed.length }) + '</button>' : '') +
@@ -701,11 +738,16 @@
           '<div class="row" style="margin:6px 0"><b>' + S.shot + ' ' + (i + 1) + '</b><span class="muted">' +
           (s.exact ? clock(s.start) + ' · ' : '') + (+(s.seconds || 5)).toFixed(s.exact ? 1 : 0) + ' ' + S.sec + '</span>' +
           (j ? '<span class="pill run">' + (j.state === 'running' ? S.sb_drawing : S.state_queued) + '</span>' : '') +
-          (t ? '<span class="pill ok">🎥</span>' : '') + '<span class="grow"></span>' +
+          (t ? (videoStale(s) ? '<span class="pill" title="' + esc(S.sb_video_stale) + '">🎥 ≠ 🖼️</span>' : '<span class="pill ok">🎥</span>') : '') +
+          '<span class="grow"></span>' +
           (boardChanged(s) ? '<span class="pill" title="' + esc(S.sb_changed) + '">✏️ ' + S.sb_changed_short + '</span>' : '') + '</div>' +
           (words !== null ? '<p class="muted" style="margin:0 0 6px;font-size:.82rem">🎤 ' + (words ? esc(words) : S.sb_music_only) + '</p>' : '') +
           '<textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
-          boardRow(s) + castRow(s) + '</div>';
+          (b && !startsFresh(s) ? '<p class="muted" style="margin:6px 0 0;font-size:.82rem">⛓ ' + S.sb_continues +
+            ' <button data-sb-cut="' + s.id + '">' + S.sb_use_frame + '</button></p>' : '') +
+          boardRow(s) + castRow(s) +
+          (b && startsFresh(s) && !jobFor(s.id) ? '<div class="row" style="margin-top:6px"><button data-gen="' + s.id + '">🎥 ' +
+            ((s.takes || []).length ? S.sb_redo_video : S.generate) + '</button></div>' : '') + '</div>';
       });
       return html + '</div>';
     }
@@ -1069,6 +1111,8 @@
           toast(S.ref_added);
           current = await api('projects/' + p.id); drawTab(); return;
         }
+        if (d.sbCut) { itemById(d.sbCut).continuity = false; await saveNow(); drawTab(); return; }
+        if (d.boardFrom) return boardFromDialog(d.boardFrom);
         if (b.id === 'sb-redraw-changed') {
           await saveNow();
           var ch = current.shots.filter(function (s) { return boardChanged(s) && !boardJob(s); }).map(function (s) { return s.id; });
@@ -1079,12 +1123,13 @@
         }
         if (b.id === 'sb-videos') {
           await saveNow();
-          var vids = current.shots.filter(function (s) { return !s.recorded && !(s.takes || []).length && !jobFor(s.id); });
+          var vids = current.shots.filter(function (s) { return !s.recorded && (!(s.takes || []).length || videoStale(s)) && !jobFor(s.id); });
           if (!vids.length) return;
           var secs = vids.reduce(function (x, s) { return x + (+s.seconds || 5); }, 0), rate = (queueState && queueState.video_rate) || 360;
           var bare = vids.filter(function (s) { return !(s.boards || []).length; }).length;
-          var stale = vids.filter(boardChanged).length;
+          var stale = vids.filter(boardChanged).length, redo = vids.filter(videoStale).length;
           if (!confirm(fmt('sb_videos_confirm', { n: vids.length, s: Math.round(secs), t: dur(rate * secs) }) +
+                       (redo ? '\n\n' + fmt('sb_videos_redo', { n: redo }) : '') +
                        (bare ? '\n\n' + fmt('sb_no_frame_warn', { n: bare }) : '') +
                        (stale ? '\n\n' + fmt('sb_stale_warn', { n: stale }) : ''))) return;
           return generate(vids.map(function (s) { return s.id; }));
