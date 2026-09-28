@@ -100,6 +100,13 @@ object FamilyDirectory {
         return d.people.firstOrNull { it.login == other }?.name ?: other
     }
 
+    /** Every name a group may arrive under in a family SMS, whichever language the sender reads. */
+    fun namesOf(ctx: Context, g: Group): Set<String> = setOf(threadName(ctx, g.thread), g.name) + when (g.id) {
+        "family" -> setOf("Familia", "Family")
+        "parents" -> setOf("Padres", "Parents")
+        else -> emptySet()
+    }
+
     /** Every conversation this phone can start: its groups, then each person. */
     fun threads(ctx: Context): List<Pair<String, String>> {
         val d = get(ctx)

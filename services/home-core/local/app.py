@@ -80,8 +80,7 @@ def _pick_locale():
     argue with a person who is looking at the screen."""
     if not _translator:
         return 'es'
-    available = set(_translator.available) & set(
-        _AVAILABLE_LOCALES or _translator.available)
+    available = _enabled_locales()
     chosen = request.args.get('lang')
     if chosen in available:
         session['lang'] = chosen
@@ -91,15 +90,21 @@ def _pick_locale():
     mine = _MEMBER_LOCALES.get(session.get('user'))
     if mine in available:
         return mine
-    default = os.environ.get('HOME_STACK_DEFAULT_LOCALE', 'es')
-    return default if default in available else (
-        sorted(available)[0] if available else 'es')
+    return _default_locale()
+
+
+def _enabled_locales():
+    """The catalogue's languages this household has switched on."""
+    if not _translator:
+        return set()
+    return set(_translator.available) & set(_AVAILABLE_LOCALES or _translator.available)
 
 
 def _default_locale():
-    available = set(_translator.available) if _translator else set()
+    available = _enabled_locales()
     default = os.environ.get('HOME_STACK_DEFAULT_LOCALE', 'es')
-    return default if default in available or not available else sorted(available)[0]
+    return default if default in available else (
+        sorted(available)[0] if available else 'es')
 
 
 def t(key, **params):
@@ -120,7 +125,7 @@ def t_for(login, key, **params):
     if not _translator:
         return key
     mine = _MEMBER_LOCALES.get(login)
-    locale = mine if mine in set(_translator.available) else _default_locale()
+    locale = mine if mine in _enabled_locales() else _default_locale()
     return _translator(key, locale=locale, **params)
 
 
@@ -20813,15 +20818,16 @@ def _fc_people():
     return out
 
 
-def _fc_groups(for_login=None):
+def _fc_groups(for_login=None, people=None):
     """{group id: {name, members: [logins], preset}} from family.json, the
-    preset names in *for_login*'s language (the requester's by default)."""
+    preset names in *for_login*'s language (the requester's by default).
+    *people* is `_fc_people()` when the caller already has it."""
     try:
         with open(FAMILY_FILE, encoding='utf-8') as fh:
             raw = json.load(fh).get('groups') or []
     except (OSError, ValueError):
         raw = []
-    login_of = {v['member']: k for k, v in _fc_people().items()}
+    login_of = {v['member']: k for k, v in (people if people is not None else _fc_people()).items()}
     out = {}
     for g in raw:
         logins = [login_of[m] for m in (g.get('members') or []) if m in login_of]
@@ -20853,13 +20859,14 @@ def _fc_dm(a, b):
     return 'dm:' + ':'.join(sorted((a, b)))
 
 
-def _fc_thread_name(thread, me, groups=None, people=None):
+def _fc_thread_name(thread, me, people=None):
+    people = people if people is not None else _fc_people()
     if thread.startswith('g:'):
         # In *me*'s language: this is the name on that person's screen.
-        g = _fc_groups(for_login=me).get(thread[2:])
+        g = _fc_groups(for_login=me, people=people).get(thread[2:])
         return g['name'] if g else thread
     other = next((p for p in thread[3:].split(':') if p != me), '')
-    return ((people if people is not None else _fc_people()).get(other) or {}).get('name') or other
+    return (people.get(other) or {}).get('name') or other
 
 
 # An app older than the family chat shows an unknown control message as a
@@ -20897,10 +20904,13 @@ def _fc_alert(recipient, msg, thread_name, sender_name):
     })
 
 
-def _fc_stop(recipient, thread):
-    """Seen or snoozed: every one of that person's phones stops alerting."""
+def _fc_stop(recipient, thread, reason='seen'):
+    """Seen or snoozed: every one of that person's phones stops alerting. The
+    reason rides along because a phone treats them differently: seen ends the
+    alert, a snooze keeps its own five-minute re-alert in case this server's
+    one never reaches it."""
     if _fc_capable(recipient):      # an older app has no alert to stop, and would show this raw
-        _geo_push_control(recipient, 'family_stop', {'thread': thread})
+        _geo_push_control(recipient, 'family_stop', {'thread': thread, 'reason': reason})
 
 
 def _fc_row(r):
@@ -20975,12 +20985,17 @@ def family_chat_messages():
         rows = conn.execute('SELECT id, thread, sender, text, urgent, ts FROM fc_messages '
                             'WHERE thread=? AND id>? ORDER BY id DESC LIMIT 200',
                             (thread, after)).fetchall()
+        ids = [r[0] for r in rows]
+        receipts = {}
+        if ids:
+            for x in conn.execute('SELECT msg_id, recipient, delivered_at, seen_at FROM fc_receipts '
+                                  f"WHERE msg_id IN ({','.join('?' * len(ids))})", ids):
+                receipts.setdefault(x[0], []).append(x[1:])
         msgs = []
         for r in reversed(rows):
             m = _fc_row(r)
             m['from_name'] = (people.get(m['sender']) or {}).get('name') or m['sender']
-            rec = conn.execute('SELECT recipient, delivered_at, seen_at FROM fc_receipts WHERE msg_id=?',
-                               (m['id'],)).fetchall()
+            rec = receipts.get(m['id'], [])
             # Who has it and who has seen it: the sender's question in an
             # emergency, and the only way to know an SMS is on its way.
             m['receipts'] = [{'login': x[0], 'name': (people.get(x[0]) or {}).get('name') or x[0],
@@ -21031,7 +21046,7 @@ def family_chat_send():
     sender_name = (people.get(me) or {}).get('name') or me
     for r in recipients:
         try:
-            _fc_alert(r, msg, _fc_thread_name(thread, r, groups, people), sender_name)
+            _fc_alert(r, msg, _fc_thread_name(thread, r, people), sender_name)
         except Exception:                                          # noqa: BLE001
             app.logger.exception('family chat: alert to %s failed', r)
     app.logger.info('family chat: %s sent %s to %s (%d recipient(s))%s',
@@ -21111,7 +21126,7 @@ def family_chat_snooze():
         return jsonify(error=t('family_chat.no_thread')), 404
     until = int(time.time()) + FC_SNOOZE_S
     _fc_mark(me, 'snoozed_until', thread=thread, value=until)
-    _fc_stop(me, thread)
+    _fc_stop(me, thread, reason='snooze')
     return jsonify(ok=True, until=until)
 
 
@@ -21132,7 +21147,7 @@ def _fc_tick(now=None):
         conn.close()
     if not rows:
         return did
-    people, groups = _fc_people(), _fc_groups()
+    people = _fc_people()
     sms_for = {}
     for (msg_id, rcpt, delivered, snoozed, last_alert, alerts, sms_at,
          thread, sender, text, urgent, ts, client_id) in rows:
@@ -21143,10 +21158,12 @@ def _fc_tick(now=None):
         if snoozed and now >= snoozed and (last_alert or 0) < snoozed:
             again = 'realert'
         elif not delivered and not snoozed and alerts < FC_REPUSH_MAX \
-                and now - (last_alert or ts) >= FC_REPUSH_S:
+                and now - (last_alert or ts) >= FC_REPUSH_S and _fc_capable(rcpt):
+            # Only to an app that reports delivery. An older one never does, so
+            # it would get the same plain notification every minute, ten times.
             again = 'repush'
         if again:
-            _fc_alert(rcpt, msg, _fc_thread_name(thread, rcpt, groups, people), sender_name)
+            _fc_alert(rcpt, msg, _fc_thread_name(thread, rcpt, people), sender_name)
             did[again] += 1
             c = _fc_conn()
             try:
@@ -21176,7 +21193,7 @@ def _fc_tick(now=None):
         # changed on the users page since the last build is still right.
         _geo_push_control(sender, 'family_sms', {
             'id': msg_id, 'thread': msg['thread'],
-            'thread_name': _fc_thread_name(msg['thread'], sender, groups, people),
+            'thread_name': _fc_thread_name(msg['thread'], sender, people),
             'from_name': sender_name, 'text': msg['text'][:500], 'urgent': bool(msg['urgent']),
             'to': [{'login': r, 'name': people[r]['name'], 'phone': people[r]['phone']}
                    for r in rcpts],

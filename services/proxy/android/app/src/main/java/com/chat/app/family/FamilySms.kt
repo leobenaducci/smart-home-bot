@@ -77,7 +77,9 @@ class FamilySmsReceiver : BroadcastReceiver() {
                 return@forEach
             }
             val d = FamilyDirectory.get(ctx)
-            val thread = d.groups.firstOrNull { FamilyDirectory.threadName(ctx, it.thread) == p.threadName }?.thread
+            // The name is in the *sender's* language, which may not be this
+            // phone's: any name the group goes by counts.
+            val thread = d.groups.firstOrNull { p.threadName in FamilyDirectory.namesOf(ctx, it) }?.thread
                 ?: d.me?.let { FamilyDirectory.dm(it, sender.login) } ?: ("p:" + sender.login)
             val fresh = FamilyStore.add(ctx, FamilyStore.Msg(p.key, thread, sender.name, p.text, p.urgent,
                 System.currentTimeMillis() / 1000, mine = false, via = "sms"))

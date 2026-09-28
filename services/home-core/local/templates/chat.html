@@ -5875,7 +5875,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     panel: document.getElementById('family-panel'), threads: document.getElementById('family-threads'),
     log: document.getElementById('family-log'), compose: document.getElementById('family-compose'),
     input: document.getElementById('family-input'), urgent: document.getElementById('family-urgent-box'),
-    title: document.getElementById('family-panel-title'), thread: null, lastId: 0, timer: null,
+    title: document.getElementById('family-panel-title'), thread: null, lastId: 0, seenId: 0, timer: null,
     S: {{ {'title': t('nav.family_chat'), 'delivered': t('family_chat.delivered'), 'seen': t('family_chat.seen'),
           'pending': t('family_chat.pending'), 'none': t('family_chat.no_messages'),
           'urgent_tag': t('family_chat.urgent_tag'), 'failed': t('family_chat.failed')}|tojson }}
@@ -5930,11 +5930,17 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     }).join('') : '<p class="fc-meta">' + fcEsc(FC.S.none) + '</p>';
     if (full || newest > FC.lastId) FC.log.scrollTop = FC.log.scrollHeight;
     // Looking at it is seeing it: the alert stops on every one of my phones.
-    if (newest > FC.lastId) fcApi('seen', {thread: FC.thread}).catch(function () {});
+    // Only while the page is actually on screen -- a tab left open on a
+    // laptop or a wall panel must not silence an emergency (seen also counts
+    // as delivered, which cancels the SMS hand-off).
+    if (newest > FC.seenId && !document.hidden) {
+      FC.seenId = newest;
+      fcApi('seen', {thread: FC.thread}).catch(function () {});
+    }
     FC.lastId = newest;
   }
   async function fcOpenThread(thread) {
-    FC.thread = thread; FC.lastId = 0;
+    FC.thread = thread; FC.lastId = 0; FC.seenId = 0;
     FC.threads.style.display = 'none'; FC.log.style.display = ''; FC.compose.classList.add('on');
     await fcLoadMessages(true);
     fcPoll(function () { fcLoadMessages(false); });

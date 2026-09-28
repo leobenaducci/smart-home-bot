@@ -95,16 +95,27 @@ object FamilyAlert {
     /** Quiet for five minutes, then the same alert again, unless it is seen by then. */
     @Synchronized
     fun snooze(ctx: Context, thread: String) {
-        val a = active.remove(thread) ?: return
+        if (!snoozeLocally(ctx, thread)) return
+        Thread {
+            FamilyApi.post("/family-chat/api/snooze", JSONObject().put("thread", thread))
+        }.start()
+    }
+
+    /**
+     * The local half of a snooze, also what a `family_stop` for a snooze does:
+     * the portal's echo of this phone's own snooze must not cancel the re-alert
+     * scheduled here. False when the thread was not alerting.
+     */
+    @Synchronized
+    fun snoozeLocally(ctx: Context, thread: String): Boolean {
+        val a = active.remove(thread) ?: return false
         runCatching { NotificationManagerCompat.from(ctx).cancel(notifId(thread)) }
         settle(ctx)
         val again = Runnable { start(ctx.applicationContext, a) }
         snoozed[thread] = again
         handler.postDelayed(again, SNOOZE_MS)
         AppLog.log(ctx, TAG, "snoozed $thread for 5 min")
-        Thread {
-            FamilyApi.post("/family-chat/api/snooze", JSONObject().put("thread", thread))
-        }.start()
+        return true
     }
 
     private fun settle(ctx: Context) {

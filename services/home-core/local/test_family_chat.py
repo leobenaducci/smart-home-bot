@@ -106,6 +106,9 @@ check("gets no control message it would show raw", not [1 for u, _t, _e in pushe
 check("but a readable notification that opens the conversation",
       sorted(u for u, _m, _k in shown) == sorted([JUANA, MORA])
       and all("Tomi: ¿Llegaron?" in m and "panel=family" in k.get("click", "") for _u, m, k in shown), shown)
+shown.clear()
+A._fc_tick(now=A._fc_conn().execute("SELECT ts FROM fc_messages WHERE id=?", (r["id"],)).fetchone()[0] + 65)
+check("and it is not shown again every minute (it cannot confirm delivery)", not shown, shown)
 pushes.clear()
 as_(MORA).post("/family-chat/api/seen", json={"thread": "g:family"})
 check("and no family_stop when it is seen", not pushes, pushes)
@@ -164,6 +167,8 @@ as_(JUANA).post("/family-chat/api/delivered", json={"ids": [msg_id]})
 pushes.clear()
 r = as_(JUANA).post("/family-chat/api/snooze", json={"thread": "g:family"}).get_json()
 check("snoozing stops it now", tags() == [(JUANA, "family_stop")], tags())
+check("and says it was a snooze, so her phone keeps its own re-alert",
+      pushes[-1][2].get("reason") == "snooze", pushes)
 until = r["until"]
 pushes.clear()
 A._fc_tick(now=until - 10)

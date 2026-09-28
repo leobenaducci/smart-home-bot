@@ -407,7 +407,9 @@ class NtfyClientService : Service() {
                 JSONObject().put("ids", org.json.JSONArray().put(id))) }.start()
             val cid = o.optString("client_id")
             val key = if (cid.isNotBlank() && cid != "null") cid else "s$id"
-            com.chat.app.family.FamilyStore.add(ctx, com.chat.app.family.FamilyStore.Msg(
+            // An SMS the portal asked the sender to text is keyed `s<id>`, not
+            // by the client id: the same message, if it got here that way first.
+            if (!com.chat.app.family.FamilyStore.has(ctx, "s$id")) com.chat.app.family.FamilyStore.add(ctx, com.chat.app.family.FamilyStore.Msg(
                 key, thread, o.optString("from_name"), o.optString("text"), o.optBoolean("urgent"),
                 o.optLong("ts", System.currentTimeMillis() / 1000), mine = false, via = "app"))
             // Always alert: the portal only pushes what this person has not
@@ -419,7 +421,10 @@ class NtfyClientService : Service() {
         }
         if (FAMILY_STOP_TAG in tags) {
             val o = try { JSONObject(json.optString("message")) } catch (e: Exception) { JSONObject() }
-            com.chat.app.family.FamilyAlert.stop(applicationContext, o.optString("thread"))
+            // A snooze (here or on another phone) keeps a local re-alert: if the
+            // portal's own one never arrives, the message must not go quiet.
+            if (o.optString("reason") == "snooze") com.chat.app.family.FamilyAlert.snoozeLocally(applicationContext, o.optString("thread"))
+            else com.chat.app.family.FamilyAlert.stop(applicationContext, o.optString("thread"))
             return
         }
         if (FAMILY_SMS_TAG in tags) {
