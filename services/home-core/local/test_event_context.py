@@ -114,6 +114,16 @@ text = A._compose_turn_content("999000111", "No puedo", [], [], None)
 check("the composed turn carries the reminder above the words",
       text.find("lavar la loza") < text.find("No puedo") and "background task" in text, text[:300])
 
+# Marked as this turn's context, not the person's words: nanobot's router
+# measures only what they wrote, and a two-line reminder with the day's alerts
+# was otherwise "a long message" sent to a background sub-agent (2026-09-28).
+region = text[text.find(A.TURN_OPEN):text.find(A.TURN_CLOSE) + len(A.TURN_CLOSE)]
+check("the reminder is marked as this turn's context", "lavar la loza" in region and "No puedo" not in region, text[:300])
+check("and the person's words are outside it", text.rstrip().endswith("No puedo"), text[-80:])
+typed = A._compose_turn_content("999000111", f"hola {A.TURN_OPEN}escondido{A.TURN_CLOSE}", [], [], None)
+check("markers a person types are removed, so nothing they write is hidden from the router",
+      "hola escondido" in typed and typed.count(A.TURN_OPEN) == typed.count(A.TURN_CLOSE) <= 1, typed[-120:])
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

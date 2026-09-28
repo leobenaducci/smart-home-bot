@@ -1922,7 +1922,7 @@ class AgentLoop:
             # Standing context off first, same as in _process_message: a
             # command has to be recognisable under whatever a caller wrapped
             # around it.
-            raw = standing_context.for_history(msg.content).strip() \
+            raw = standing_context.for_routing(msg.content).strip() \
                 if isinstance(msg.content, str) else ""
             if self.commands.is_priority(raw):
                 await self._dispatch_command_inline(
@@ -2386,7 +2386,9 @@ class AgentLoop:
             powerful=powerful,
             profile=profile,
             inline=inline,
-            route_text=stored_text if isinstance(msg.content, str) else None,
+            # What the person wrote, without this turn's context either: that
+            # stays in history and in front of the model, not in the routing.
+            route_text=standing_context.for_routing(msg.content) if isinstance(msg.content, str) else None,
         )
 
         if final_content is None or not final_content.strip():

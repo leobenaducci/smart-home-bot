@@ -1652,6 +1652,30 @@ def _standing(block):
     return f'{STANDING_OPEN}\n{block}\n{STANDING_CLOSE}'
 
 
+# This turn's context: what goes beside the person's words on this message
+# only -- where they are, what was sent to them in the background since they
+# last wrote, the message they reply to. nanobot shows it to the model and
+# keeps it in history like any text; its router leaves it out, because it is
+# not what the person asked. Counted in, a two-line reminder with the day's
+# location alerts read as "a long message" and went to a background sub-agent
+# (2026-09-28). Same literals as `TURN_OPEN`/`TURN_CLOSE` in nanobot.
+TURN_OPEN = '[[[turn-context]]]'
+TURN_CLOSE = '[[[/turn-context]]]'
+_TURN_MARKER_LINE_RE = re.compile(
+    r'^[ \t]*(?:%s|%s)[ \t]*\n?' % (re.escape(TURN_OPEN), re.escape(TURN_CLOSE)), re.MULTILINE)
+_TURN_MARKER_RE = re.compile(r'(?:%s|%s)' % (re.escape(TURN_OPEN), re.escape(TURN_CLOSE)))
+
+
+def _turn_context(block):
+    return f'{TURN_OPEN}\n{block}\n{TURN_CLOSE}'
+
+
+def _strip_turn_markers(text):
+    """The person's own text without our turn markers: typed in, they would
+    take part of what they wrote out of what decides how it is handled."""
+    return _TURN_MARKER_RE.sub('', _TURN_MARKER_LINE_RE.sub('', text or ''))
+
+
 def _strip_standing_markers(text):
     """Remove every marker from *text*, keeping what surrounds it.
 
@@ -6146,20 +6170,21 @@ def _compose_turn_content(username, content, images, docs, space, seed=None,
     is what was said before this thread existed": the branch's second turn
     would have forgotten it.
     """
+    content = _strip_turn_markers(content)
     loc_line = _location_context_line(username)
-    text = f"{loc_line}\n{content}" if loc_line else content
+    text = f"{_turn_context(loc_line)}\n{content}" if loc_line else content
     # Directly above the question, because that is what it is about. Somebody
     # who swipes a message and writes "and the other one?" has said something
     # with no referent otherwise -- Alfred gets the words and not the thing they
     # point at, and answers the wrong message or asks which one they meant.
     reply_block = _reply_block(reply_to)
     if reply_block:
-        text = f'{reply_block}\n\n{text}' if text else reply_block
+        text = f'{_turn_context(reply_block)}\n\n{text}' if text else _turn_context(reply_block)
     # Above that, what Alfred sent from the background since they last wrote:
     # a reminder is what "No puedo" is about.
     events_block = '' if seed else _event_context_block(username, content, space)
     if events_block:
-        text = f'{events_block}\n\n{text}' if text else events_block
+        text = f'{_turn_context(events_block)}\n\n{text}' if text else _turn_context(events_block)
     # Attachments first, the person's question last: what they actually asked
     # should sit next to the answer, not sixty thousand characters above it.
     doc_block = _documents_block(docs)

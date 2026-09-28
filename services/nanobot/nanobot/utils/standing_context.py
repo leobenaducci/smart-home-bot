@@ -43,10 +43,22 @@ _REGION = re.compile(
 # sentence takes only itself. Both cases have to be handled, and separately:
 # a single rule that also ate the padding turned "antes MARK despues" into
 # "antesdespues" — two words silently welded, in a message the person typed.
-_MARKER_LINE = re.compile(
-    rf"^[ \t]*(?:{re.escape(OPEN)}|{re.escape(CLOSE)})[ \t]*\n?", re.MULTILINE
+# The same idea for one turn: what the portal puts beside the person's words
+# on this message only -- where they are, what was sent to them in the
+# background since they last wrote, the message they are replying to. The
+# model reads it and history keeps it, like any text; only the router leaves
+# it out (`for_routing`), because it is not what the person asked. Counted in,
+# a two-line reminder plus the day's location alerts was "a long message",
+# read as work handed over, and sent to a background sub-agent (2026-09-28).
+TURN_OPEN = "[[[turn-context]]]"
+TURN_CLOSE = "[[[/turn-context]]]"
+_TURN_REGION = re.compile(
+    rf"[ \t]*{re.escape(TURN_OPEN)}[ \t]*\n?(.*?)\n?[ \t]*{re.escape(TURN_CLOSE)}[ \t]*\n?",
+    re.DOTALL,
 )
-_MARKER_INLINE = re.compile(rf"(?:{re.escape(OPEN)}|{re.escape(CLOSE)})")
+_ALL = "|".join(re.escape(m) for m in (OPEN, CLOSE, TURN_OPEN, TURN_CLOSE))
+_MARKER_LINE = re.compile(rf"^[ \t]*(?:{_ALL})[ \t]*\n?", re.MULTILINE)
+_MARKER_INLINE = re.compile(rf"(?:{_ALL})")
 
 
 def wrap(block: str) -> str:
@@ -91,6 +103,16 @@ def for_prompt(text: str | None) -> str:
     the message. Losing a marker must never lose the question next to it.
     """
     return strip_markers(text)
+
+
+def for_routing(text: str | None) -> str:
+    """What the person wrote this turn, for deciding what kind of turn it is:
+    the standing context and this turn's context both taken out. Attachments
+    are not marked and stay in -- a pasted document is work handed over."""
+    stored = for_history(text)
+    if TURN_OPEN not in (text or ""):
+        return stored
+    return strip_markers(_TURN_REGION.sub("", _REGION.sub("", text or ""))).strip()
 
 
 def for_history(text: str | None) -> str:
