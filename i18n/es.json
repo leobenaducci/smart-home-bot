@@ -1330,5 +1330,17 @@
   "family_chat.pending": "todavía no entregado",
   "family_chat.no_messages": "Todavía no hay mensajes.",
   "family_chat.urgent_tag": "‼ Urgente",
-  "family_chat.failed": "No se pudo enviar:"
+  "family_chat.failed": "No se pudo enviar:",
+  "devices.bad_request": "Eso no es un dispositivo que esta app pueda registrar.",
+  "devices.not_found": "Ningún dispositivo coincide con “{name}”.",
+  "devices.ambiguous": "Hay más de un dispositivo que coincide con “{name}”.",
+  "devices.forbidden": "Solo un padre o madre puede controlar el dispositivo de otra persona.",
+  "devices.remote_off": "El control remoto está apagado en {name}. Activalo en la app de ese dispositivo: menú → Este dispositivo.",
+  "devices.unknown_action": "Eso no es algo que se le pueda pedir a un dispositivo.",
+  "devices.bad_volume": "El volumen es un nivel de 0 a 100, o subir, bajar, silenciar o quitar el silencio.",
+  "devices.no_app": "{name} no tiene ninguna app llamada “{app}”.",
+  "devices.ambiguous_app": "Hay más de una app en {name} que coincide con “{app}”.",
+  "devices.no_channel": "No se puede llegar a {name}: su dueño no tiene las notificaciones configuradas.",
+  "nav.this_device": "Este dispositivo",
+  "nav.this_device_help": "Ponele nombre a este teléfono o tablet, y dejá que un padre lo controle desde Alfred"
 }

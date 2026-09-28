@@ -1328,5 +1328,17 @@
   "family_chat.pending": "not delivered yet",
   "family_chat.no_messages": "No messages yet.",
   "family_chat.urgent_tag": "‼ Urgent",
-  "family_chat.failed": "Could not send:"
+  "family_chat.failed": "Could not send:",
+  "devices.bad_request": "That is not a device this app can register.",
+  "devices.not_found": "No device matches “{name}”.",
+  "devices.ambiguous": "More than one device matches “{name}”.",
+  "devices.forbidden": "Only a parent can control somebody else's device.",
+  "devices.remote_off": "Remote control is off on {name}. Turn it on in the app on that device: menu → This device.",
+  "devices.unknown_action": "That is not something a device can be asked to do.",
+  "devices.bad_volume": "The volume is a level from 0 to 100, or up, down, mute or unmute.",
+  "devices.no_app": "{name} has no app called “{app}”.",
+  "devices.ambiguous_app": "More than one app on {name} matches “{app}”.",
+  "devices.no_channel": "{name} cannot be reached: its owner has no notifications set up.",
+  "nav.this_device": "This device",
+  "nav.this_device_help": "Name this phone or tablet, and let a parent control it from Alfred"
 }

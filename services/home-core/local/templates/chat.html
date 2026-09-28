@@ -1462,6 +1462,11 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
             </label>
             <button class="app-item tts-opt" id="tts-probe" role="menuitem" title="Hear a test phrase with this engine and this voice" hidden>▶️ Probar</button>
           </div>
+          {# Inside the Alfred app only: the name this phone or tablet goes by
+             when somebody asks Alfred to turn it down or open an app on it,
+             and whether it may be controlled at all. A native dialog -- the
+             choice lives on the device (see the AndroidApp check below). #}
+          <button class="app-item" id="device-btn" role="menuitem" title="{{ t('nav.this_device_help') }}" hidden>📱 {{ t('nav.this_device') }}</button>
           <div class="app-sep"></div>
           <button class="app-item group-btn" data-group="debug-group" role="menuitem"
                   aria-expanded="false" title="{{ t('nav.debug_help') }}">🐞 {{ t('nav.debug') }} <span class="group-caret">▸</span></button>
@@ -6490,6 +6495,16 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
       if (window.AndroidApp && window.AndroidApp.setBetaChannel) window.AndroidApp.setBetaChannel(on);
     } catch (e) {}
   });
+
+  /* "This device": an app older than the setting has no method for it. */
+  (function() {
+    var bridge = window.AndroidApp, btn = document.getElementById('device-btn');
+    if (!btn || !bridge || !bridge.openDeviceSettings) return;
+    btn.hidden = false;
+    btn.addEventListener('click', function(){
+      try { bridge.openDeviceSettings(); } catch (e) {}
+    });
+  })();
 
   /* Speech-to-text path selector. Only shown inside the Android app — in a
      browser there is no on-device recognizer and the choice means nothing. */

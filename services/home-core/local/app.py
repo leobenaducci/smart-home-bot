@@ -13293,6 +13293,9 @@ LOGIN_KEYED_TABLES = (
     ('projects.db', 'projects', 'created_by'),
     ('projects.db', 'project_credentials', 'created_by'),
     ('projects.db', 'project_access', 'username'),
+    # Which phone or tablet is whose (the devices section): a device belongs to
+    # whoever is signed in on it.
+    ('devices.db', 'app_devices', 'login'),
 )
 
 
@@ -21257,6 +21260,271 @@ def _geo_sync_worker():
 
 
 # ---------------------------------------------------------------------------
+# The household's devices: every phone and tablet the Alfred app runs on, by
+# the name somebody gave it in the app ("the kids' tablet"), so Alfred can be
+# asked to turn one down, open an app on it, or make that one ring.
+#
+# The app registers itself (id, name, kind, the apps it can open) whenever it
+# connects. A command goes out on the owner's control channel with the device
+# id in it -- every device signed in as that person hears it, only the named
+# one acts -- and the device confirms, so Alfred can say "done" rather than
+# "sent". Remote control is switched on *on the device*, never from here: a
+# parent may drive a child's tablet, but only one somebody set up for it.
+# ---------------------------------------------------------------------------
+REMOTE_ACK_WAIT_S = 8
+REMOTE_ACTIONS = ('volume', 'open_app', 'ring', 'ring_stop')
+_REMOTE_STOP = {'de', 'del', 'la', 'el', 'los', 'las', 'mi', 'my', 'the', 'of', 's', 'su', 'a', 'on', 'en'}
+# What a person calls a kind of device, in the languages the house speaks.
+_REMOTE_KIND_WORDS = {'tablet': {'tablet', 'tableta', 'ipad'},
+                      'phone': {'phone', 'telefono', 'celular', 'cel', 'movil', 'mobile'}}
+_remote_acks = {}
+_remote_acks_lock = threading.Lock()
+
+
+def init_app_devices_db():
+    os.makedirs(os.path.dirname(DEVICE_DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DEVICE_DB_PATH)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS app_devices (
+            device_id TEXT PRIMARY KEY,
+            login TEXT NOT NULL,
+            name TEXT NOT NULL,
+            model TEXT,
+            kind TEXT,
+            remote INTEGER NOT NULL DEFAULT 0,
+            can_open INTEGER NOT NULL DEFAULT 0,
+            apps TEXT,
+            version TEXT,
+            registered_at INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+def _remote_norm(s):
+    """Lower case, no accents, "+" spelled out: "Disney+" and "disney plus" are one app."""
+    s = unicodedata.normalize('NFKD', str(s or '')).encode('ascii', 'ignore').decode().lower()
+    return re.sub(r'[^a-z0-9]+', ' ', s.replace('+', ' plus ')).strip()
+
+
+def _remote_tokens(s):
+    return {w for w in _remote_norm(s).split() if w not in _REMOTE_STOP}
+
+
+def _remote_devices(me):
+    """The devices *me* may see: their own, and everyone's for a parent."""
+    conn = sqlite3.connect(DEVICE_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        if _tasks_is_admin(me):
+            rows = conn.execute('SELECT * FROM app_devices ORDER BY login, name').fetchall()
+        else:
+            rows = conn.execute('SELECT * FROM app_devices WHERE login=? ORDER BY name', (me,)).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d['apps'] = json.loads(d.get('apps') or '[]')
+        except ValueError:
+            d['apps'] = []
+        d['owner_name'] = _tasks_display_name(d['login'])
+        out.append(d)
+    return out
+
+
+def _remote_public(d):
+    now = int(time.time())
+    return {'id': d['device_id'], 'name': d['name'], 'owner': d['login'],
+            'owner_name': d['owner_name'], 'kind': d['kind'], 'model': d['model'],
+            'remote_control': bool(d['remote']), 'can_open_apps': bool(d['can_open']),
+            'apps': len(d['apps']), 'last_seen_s_ago': max(0, now - (d['last_seen'] or 0))}
+
+
+def _remote_find(me, query):
+    """(device, candidates). A device's id, its name, or words from its name,
+    its owner and its kind: "la tablet de Juana" is Juana's tablet whatever it
+    was named. Ambiguous or unknown gives no device and what could be meant."""
+    devices = _remote_devices(me)
+    q = str(query or '').strip()
+    for d in devices:
+        if q and q == d['device_id']:
+            return d, []
+    exact = [d for d in devices if _remote_norm(d['name']) == _remote_norm(q)]
+    if len(exact) == 1:
+        return exact[0], []
+    words = _remote_tokens(q)
+    if not words:
+        return None, devices
+    hits = []
+    for d in devices:
+        hay = _remote_tokens(d['name']) | _remote_tokens(d['owner_name']) | \
+            _REMOTE_KIND_WORDS.get(d['kind'] or '', set()) | {d['kind'] or ''}
+        if words <= hay:
+            hits.append(d)
+    if len(hits) == 1:
+        return hits[0], []
+    return None, hits or devices
+
+
+def _remote_find_app(apps, query):
+    """(app, candidates) from the apps the device reported."""
+    q = _remote_norm(query)
+    if not q:
+        return None, []
+    for a in apps:
+        if _remote_norm(a['label']) == q or a['package'] == str(query).strip():
+            return a, []
+    words = set(q.split())
+    hits = [a for a in apps if words <= set(_remote_norm(a['label']).split())
+            or q.replace(' ', '') in _remote_norm(a['label']).replace(' ', '')]
+    if len(hits) == 1:
+        return hits[0], []
+    return None, hits
+
+
+@app.route('/devices/api/register', methods=['POST'])
+@_geo_native_auth
+def remote_register():
+    """The app says which device it is. Its own session: a device belongs to
+    whoever is signed in on it, and moves with a new sign-in."""
+    me = session['user']
+    d = request.get_json(silent=True) or {}
+    did = str(d.get('device_id') or '')
+    if not re.fullmatch(r'[A-Za-z0-9-]{8,64}', did):
+        return jsonify(error=t('devices.bad_request')), 400
+    model = str(d.get('model') or '').strip()[:80]
+    name = str(d.get('name') or '').strip()[:60] or model or did[:8]
+    kind = 'tablet' if d.get('kind') == 'tablet' else 'phone'
+    apps = []
+    for a in (d.get('apps') or [])[:500]:
+        if isinstance(a, dict) and a.get('package'):
+            apps.append({'label': str(a.get('label') or a['package'])[:80],
+                         'package': str(a['package'])[:200]})
+    now = int(time.time())
+    conn = sqlite3.connect(DEVICE_DB_PATH)
+    try:
+        conn.execute('''
+            INSERT INTO app_devices (device_id, login, name, model, kind, remote, can_open, apps,
+                                     version, registered_at, last_seen)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(device_id) DO UPDATE SET login=excluded.login, name=excluded.name,
+                model=excluded.model, kind=excluded.kind, remote=excluded.remote,
+                can_open=excluded.can_open, apps=excluded.apps, version=excluded.version,
+                last_seen=excluded.last_seen
+        ''', (did, me, name, model, kind, 1 if d.get('remote') else 0,
+              1 if d.get('can_open_apps') else 0, json.dumps(apps, ensure_ascii=False),
+              str(d.get('version') or '')[:40], now, now))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify(ok=True)
+
+
+@app.route('/devices/api/list')
+@api_login_required
+def remote_list():
+    return jsonify(devices=[_remote_public(d) for d in _remote_devices(session['user'])])
+
+
+@app.route('/devices/api/apps')
+@api_login_required
+def remote_apps():
+    dev, candidates = _remote_find(session['user'], request.args.get('device'))
+    if not dev:
+        return jsonify(error=t('devices.not_found', name=request.args.get('device') or ''),
+                       candidates=[c['name'] for c in candidates]), 404
+    return jsonify(device=dev['name'], apps=sorted(a['label'] for a in dev['apps']))
+
+
+@app.route('/devices/api/command', methods=['POST'])
+@api_login_required
+def remote_command():
+    """One command to one device, and what it answered. Parents may command
+    anyone's device; everybody else only their own -- the same rule as ringing
+    a phone (geo_ring)."""
+    me = session['user']
+    data = request.get_json(silent=True) or {}
+    action = data.get('action')
+    if action not in REMOTE_ACTIONS:
+        return jsonify(error=t('devices.unknown_action'), actions=list(REMOTE_ACTIONS)), 400
+    dev, candidates = _remote_find(me, data.get('device'))
+    if not dev:
+        key = 'devices.ambiguous' if candidates and len(candidates) < len(_remote_devices(me)) \
+            else 'devices.not_found'
+        return jsonify(error=t(key, name=data.get('device') or ''),
+                       candidates=[{'name': c['name'], 'owner': c['owner_name']} for c in candidates]), 404
+    if dev['login'] != me and not _tasks_is_admin(me):
+        return jsonify(error=t('devices.forbidden')), 403
+    if not dev['remote']:
+        return jsonify(error=t('devices.remote_off', name=dev['name'])), 409
+    cmd = secrets.token_hex(8)
+    payload = {'device_id': dev['device_id'], 'cmd': cmd, 'action': action,
+               'by': _tasks_display_name(me) if dev['login'] != me else ''}
+    if action == 'volume':
+        step = data.get('step')
+        if step in ('up', 'down', 'mute', 'unmute'):
+            payload['step'] = step
+        else:
+            try:
+                payload['level'] = max(0, min(100, int(data.get('level'))))
+            except (TypeError, ValueError):
+                return jsonify(error=t('devices.bad_volume')), 400
+    elif action == 'open_app':
+        found, apps = _remote_find_app(dev['apps'], data.get('app'))
+        if not found:
+            key = 'devices.ambiguous_app' if apps else 'devices.no_app'
+            return jsonify(error=t(key, app=data.get('app') or '', name=dev['name']),
+                           candidates=[a['label'] for a in apps][:10]), 404
+        payload.update(package=found['package'], label=found['label'])
+    elif action == 'ring':
+        try:
+            seconds = int(data.get('seconds') or GEO_RING_DEFAULT_S)
+        except (TypeError, ValueError):
+            seconds = GEO_RING_DEFAULT_S
+        payload['seconds'] = max(5, min(seconds, GEO_RING_MAX_S))
+    if not _ntfy_topic(dev['login']):
+        return jsonify(error=t('devices.no_channel', name=dev['name'])), 503
+    waiter = {'event': threading.Event(), 'login': dev['login'], 'result': None}
+    with _remote_acks_lock:
+        _remote_acks[cmd] = waiter
+    try:
+        _geo_push_control(dev['login'], 'device_cmd', payload)
+        waiter['event'].wait(timeout=REMOTE_ACK_WAIT_S)
+    finally:
+        with _remote_acks_lock:
+            _remote_acks.pop(cmd, None)
+    app.logger.info('devices: %s sent %s to %s (%s)', me, action, dev['device_id'][:8],
+                    'confirmed' if waiter['result'] else 'no answer')
+    out = {'ok': True, 'device': dev['name'], 'owner': dev['owner_name'], 'action': action,
+           'confirmed': waiter['result'] is not None}
+    if waiter['result'] is not None:
+        out['result'] = waiter['result']
+    if action == 'open_app':
+        out['app'] = payload['label']
+    return jsonify(out)
+
+
+@app.route('/devices/api/ack', methods=['POST'])
+@_geo_native_auth
+def remote_ack():
+    """A device's answer to a command. Accepted only from a session of the
+    person the command went to, so nobody else can confirm it."""
+    d = request.get_json(silent=True) or {}
+    with _remote_acks_lock:
+        waiter = _remote_acks.get(str(d.get('cmd') or ''))
+    if not waiter or waiter['login'] != session['user']:
+        return jsonify(ok=False), 404
+    waiter['result'] = {'ok': bool(d.get('ok')), 'detail': str(d.get('detail') or '')[:60],
+                        **({'level': int(d['level'])} if isinstance(d.get('level'), int) else {})}
+    waiter['event'].set()
+    return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
     # No init_backup_db(). It was called here and defined nowhere: the backup
     # history it set up belongs to `home-backups`, a service upstream ships and
@@ -21298,6 +21566,7 @@ if __name__ == '__main__':
     init_projects_db()
     init_profiles_db()
     init_family_chat_db()
+    init_app_devices_db()
     # Once, and then never again: the pre-per-day archive is filed under the
     # days it happened on and renamed aside. See migrate_legacy_history.
     migrate_legacy_history()

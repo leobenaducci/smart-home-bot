@@ -651,6 +651,10 @@ _ACTION_TO_SKILL: dict[str, str] = {
     "upload_file": "file-share", "save_text": "file-share",
     "copy_file": "file-share", "move_file": "file-share",
     "make_folder": "file-share", "delete_file": "file-share",
+    # devices (the household's phones and tablets). Not `set_volume`: a model
+    # calling that as a function may mean a TV, which is Home Assistant.
+    "open_app": "devices", "ring_device": "devices", "stop_ring_device": "devices",
+    "list_devices": "devices", "list_apps": "devices",
     # family-message (Alfred → another member's Alfred)
     "send_family_message": "family-message", "send_message_to": "family-message",
     "ask_family": "family-message",

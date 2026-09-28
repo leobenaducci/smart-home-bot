@@ -808,6 +808,9 @@ class MainActivity : FragmentActivity() {
         AppLog.flush(this)
         com.chat.app.assist.SttSupport.probeSupport(this)
         Presence.report(this, true)
+        // The name, the apps and whether it can open them, kept current: the
+        // overlay permission is granted in Settings and comes back through here.
+        Thread { com.chat.app.device.DeviceIdentity.register(applicationContext) }.start()
     }
 
     private fun promptAuth() {
@@ -1212,11 +1215,75 @@ class MainActivity : FragmentActivity() {
         /** Forgets every remembered speech-recognition failure (language packs
          *  installed since, a recognizer that's been fixed, …) and re-asks the
          *  recognizer what it supports. */
+        /** "This device" in the menu: its name, and whether a parent may control it. */
+        @JavascriptInterface
+        fun openDeviceSettings() = runOnUiThread { showDeviceSettings() }
+
         @JavascriptInterface
         fun clearSttState() {
             com.chat.app.assist.SttSupport.clearState(this@MainActivity)
             com.chat.app.assist.SttSupport.probeSupport(this@MainActivity, force = true)
         }
+    }
+
+    /**
+     * Name this phone or tablet ("the kids' tablet") and switch remote control
+     * on or off. On, it also asks for "Display over other apps", the only way
+     * Android lets one app open another from the background; without it an
+     * app Alfred is asked to open arrives as a notification to tap.
+     */
+    private fun showDeviceSettings() {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val name = android.widget.EditText(this).apply {
+            hint = com.chat.app.device.DeviceIdentity.defaultName(this@MainActivity)
+            if (com.chat.app.device.DeviceIdentity.hasName(this@MainActivity))
+                setText(com.chat.app.device.DeviceIdentity.name(this@MainActivity))
+            isSingleLine = true
+        }
+        val remote = android.widget.Switch(this).apply {
+            text = "Control remoto"
+            isChecked = com.chat.app.device.DeviceIdentity.remote(this@MainActivity)
+        }
+        box.addView(TextView(this).apply { text = "Nombre (por ejemplo, \"Tablet de los chicos\")" })
+        box.addView(name)
+        box.addView(remote)
+        box.addView(TextView(this).apply {
+            text = "Con el control remoto, un padre o madre puede pedirle a " +
+                getString(R.string.assistant_name) + " que cambie el volumen, abra una app o haga sonar este dispositivo."
+            textSize = 13f
+        })
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Este dispositivo")
+            .setView(box)
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Guardar") { _, _ ->
+                val on = remote.isChecked
+                com.chat.app.device.DeviceIdentity.save(this, name.text.toString(), on)
+                Thread { com.chat.app.device.DeviceIdentity.register(applicationContext) }.start()
+                if (on && !com.chat.app.device.DeviceIdentity.canOpenApps(this)) askForOverlay()
+                else Toast.makeText(this, "Guardado", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun askForOverlay() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Abrir apps a distancia")
+            .setMessage("Para que " + getString(R.string.assistant_name) + " pueda abrir apps en este " +
+                "dispositivo, Android pide el permiso \"Mostrar sobre otras apps\". Sin él, la app " +
+                "aparece como una notificación para tocar.")
+            .setNegativeButton("Ahora no", null)
+            .setPositiveButton("Dar permiso") { _, _ ->
+                runCatching {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")))
+                }
+            }
+            .show()
     }
 
     @Suppress("DEPRECATION")

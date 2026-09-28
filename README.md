@@ -230,6 +230,7 @@ docs/       the conventions that span more than one service
 | [docs/optional-cloud.md](docs/optional-cloud.md) | The hosted model, Zen vs Go, the optional VPS proxy |
 | [docs/provider-routing.md](docs/provider-routing.md) | Putting a routing proxy in front of the model callers |
 | [docs/family-chat.md](docs/family-chat.md) | The family chat: alerts through Do Not Disturb, groups, and SMS when there is no data |
+| [docs/devices.md](docs/devices.md) | Naming a phone or tablet, and letting a parent turn it down or open an app on it from Alfred |
 | [docs/nanogpt.md](docs/nanogpt.md) | NanoGPT: the key, what its subscription covers, and the models measured best on it |
 | [docs/token-spend.md](docs/token-spend.md) | Three weeks of measured token use, and where it goes |
 | [docs/backups.md](docs/backups.md) | Every path holding state, and how backups verify |

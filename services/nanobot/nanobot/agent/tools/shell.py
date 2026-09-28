@@ -65,6 +65,7 @@ _SKILL_OWNED_SIGNALS: tuple[tuple[str, str], ...] = (
     ("NANOBOT_N8N", "n8n"),
     # Built on the tasks URL — these must come first.
     ("/geo/api", "geo"),
+    ("/devices/api", "devices"),
     ("/chat/notifications", "notifications"),
     ("/chat/whatsapp", "whatsapp"),
     ("/chat/dm", "family-message"),
