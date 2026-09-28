@@ -38,8 +38,9 @@ EDITABLE = {
     # `cast`: the characters in the shot, by id (studio/characters.py). The
     # chosen storyboard frame is not here: it has its own call (choose_board),
     # so a page holding an older copy cannot undo a frame just drawn.
+    # `description`, `chapters`: a recording's, written with the assistant.
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "cast"),
+              "exact", "start", "cast", "description", "chapters"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -564,6 +565,16 @@ def _clean(key: str, value: Any, item: dict) -> Any:
             return None
     if key == "kind":
         return value if value in AUDIO_KINDS else item.get("kind", "song")
+    if key == "chapters":
+        out = []
+        for c in (value or [])[:30]:
+            try:
+                out.append({"start": max(0.0, round(float(c.get("start")), 2)), "title": str(c.get("title") or "")[:80]})
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return sorted((c for c in out if c["title"]), key=lambda c: c["start"])
+    if key == "description":
+        return str(value or "")[:2000]
     if key == "cast":
         return [str(v) for v in (value or [])[:8] if ID_RE.fullmatch(str(v))]
     if key == "refs":

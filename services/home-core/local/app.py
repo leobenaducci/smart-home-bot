@@ -21635,6 +21635,8 @@ STUDIO_UI_KEYS = (
     'delete_render_confirm',
     'rec_subs', 'rec_subs_running', 'rec_subs_failed', 'rec_transcript', 'rec_trim',
     'rec_trim_running', 'rec_trim_done', 'rec_trim_failed', 'render_subs',
+    'rec_describe', 'rec_describing', 'rec_desc_title', 'rec_desc_description', 'rec_desc_chapters',
+    'rec_desc_copy', 'rec_desc_copied', 'rec_desc_failed',
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
@@ -21865,6 +21867,70 @@ def studio_music_video():
     if shots is None:
         return jsonify(error=t('studio.mv_failed')), 502
     return jsonify(shots=shots)
+
+
+def _studio_parse_description(text):
+    """{title, description, chapters} from whatever Alfred answered: the first
+    JSON object in it, chapters sorted and starting at 0:00."""
+    if not text:
+        return None
+    start, end = text.find('{'), text.rfind('}')
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    if not isinstance(raw, dict) or not str(raw.get('title') or '').strip():
+        return None
+    chapters = []
+    for c in raw.get('chapters') or []:
+        try:
+            chapters.append({'start': max(0.0, float(c.get('start'))), 'title': str(c.get('title') or '').strip()[:80]})
+        except (TypeError, ValueError, AttributeError):
+            continue
+    chapters = sorted((c for c in chapters if c['title']), key=lambda c: c['start'])[:30]
+    if chapters:
+        chapters[0]['start'] = 0.0
+    return {'title': str(raw['title']).strip()[:100], 'description': str(raw.get('description') or '').strip()[:2000],
+            'chapters': chapters}
+
+
+@app.route('/studio/api/describe', methods=['POST'])
+@api_login_required
+def studio_describe():
+    """A recording's title, description and chapters, written by the person's
+    own assistant from its timed transcript: chapters start where the talk
+    changes subject, at the times the transcript gives."""
+    if not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    lines = []
+    for s in (d.get('segments') or [])[:2000]:
+        try:
+            at = float(s.get('start'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        lines.append(f"[{int(at // 60)}:{int(at % 60):02d}] {str(s.get('text') or '').strip()[:400]}")
+    if not lines:
+        return jsonify(error=t('studio.rec_desc_failed')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(str(d.get('language') or 'es'), 'Spanish')
+    transcript = "\n".join(lines)[:60000]
+    prompt = (
+        f"Here is the transcript of a recording, with the time each part is said at:\n{transcript}\n\n"
+        f"Write, in {language}: a title (under 70 characters, saying what it is about), a description "
+        "(2 to 4 sentences, for someone deciding whether to watch it) and chapters -- 3 to 10 points "
+        "where the subject changes, each at the time from the transcript where it starts, the first at 0:00, "
+        "each with a short title. Answer with only a JSON object, no code fence and no other text: "
+        '{"title": "...", "description": "...", "chapters": [{"start": 0, "title": "..."}, ...]} '
+        "with each start in seconds."
+    )
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-describe'
+    out = _studio_parse_description(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S))
+    if out is None:
+        return jsonify(error=t('studio.rec_desc_failed')), 502
+    return jsonify(out)
 
 
 @app.route('/studio/v1/images/generations', methods=['POST'])

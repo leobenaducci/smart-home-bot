@@ -859,6 +859,15 @@ while time.time() < deadline:
     time.sleep(0.3)
 check("  trimming a clip with no long silence says so, and keeps the clip",
       tr_state.get("state") == "failed" and "no silence" in tr_state.get("error", ""), tr_state)
+rdoc = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()
+c.put(f"/api/projects/{rp['id']}", json={"shots": [dict(x, description="Paso a paso.",
+                                                        chapters=[{"start": 95, "title": "Aflojar"}, {"start": "x", "title": "?"},
+                                                                  {"start": 0, "title": "Intro"}, {"start": 30, "title": ""}])
+                                                   for x in rdoc["shots"]]}, headers=h(JUANA, "Juana"))
+kept_ch = c.get(f"/api/projects/{rp['id']}", headers=h(JUANA, "Juana")).json()["shots"][0]
+check("  a recording keeps its description and chapters, in order, the unreadable ones dropped",
+      kept_ch["description"] == "Paso a paso." and kept_ch["chapters"] == [{"start": 0.0, "title": "Intro"}, {"start": 95.0, "title": "Aflojar"}],
+      kept_ch.get("chapters"))
 empty = c.post(f"/api/projects/{rp['id']}/recordings", json={}, headers=h(JUANA, "Juana")).json()
 check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)

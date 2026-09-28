@@ -160,6 +160,12 @@ either side so no word is clipped, as a new version with the original kept.
 A trimmed version needs its own subtitles; the transcript belongs to the
 version it was made from.
 
+With a transcript, ✨ asks the person's assistant for a title, a short
+description and chapters -- where the talk changes subject, at the times the
+transcript gives, the first at 0:00 (`/studio/api/describe`). They are edited
+before they are kept on the clip, and copied as one text in the "0:00 Title"
+form video sites read chapters from.
+
 ## A music video from a song
 
 The 🎬 button on a song, voice or instrumental that has a take. The Studio
