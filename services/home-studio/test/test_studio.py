@@ -517,10 +517,21 @@ else:
     while time.time() < deadline and store2.get(jv["id"])["state"] not in ("done", "failed"):
         time.sleep(0.2)
     pel = chars.get(pel["id"], JUANA, sb["id"])
-    check("  a voice test speaks with its own sample, and the character knows where it is",
-          store2.get(jv["id"])["state"] == "done" and pel.get("voice_test", "").endswith(".mp3")
-          and fake.seen[-1].get("audio_guide", "").endswith("voz.wav"), (store2.get(jv["id"]), pel.get("voice_test"),
-                                                                         fake.seen[-1].get("audio_guide")))
+    vt = (pel.get("voice_tests") or {}).get(JUANA, "")
+    check("  a voice test speaks with its own sample, kept in the character's folder, per person",
+          store2.get(jv["id"])["state"] == "done" and vt.endswith(".mp3")
+          and chars.file(pel["id"], JUANA, sb["id"], vt).is_file()
+          and fake.seen[-1].get("audio_guide", "").endswith(pel["voice"]), (store2.get(jv["id"]), vt,
+                                                                             fake.seen[-1].get("audio_guide")))
+    try:
+        chars.add_file(pel["id"], JUANA, sb["id"], "x.html", b"<script>alert(1)</script>", "picture")
+        check("  a 'picture' that is not one is refused", False)
+    except ProjectError:
+        check("  a 'picture' that is not one is refused", True)
+    png = tmp / "p.jpg"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32", "-frames:v", "1", str(png)], check=True)
+    pel = chars.add_file(pel["id"], JUANA, sb["id"], "p.jpg", png.read_bytes(), "picture")
+    check("  and a real one is kept as PNG, whatever it came as", pel["pictures"][-1].endswith(".png"), pel["pictures"])
 
     print("\nhow long the queue says a shot takes grows with the shot")
     five = store2.seconds_for_job({"kind": "video_shot", "params": {"seconds": 5}})
@@ -636,9 +647,14 @@ check("  a preview render is the whole video: the made shot and a card for the m
       and abs(rend.get("seconds", 0) - (2.0 + 124 / 24)) < 0.3, (st.get("render"), rend))
 check("  encoded as a draft: H.264, fast, playable everywhere",
       media.probe(A.projects.dir(JUANA, vp["id"]) / rend["file"])["codec"] == "h264")
-check("  and leaves nothing of its own behind but the film",
+check("  and it leaves nothing of its own behind but the film",
       sorted(x.name for x in (A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()) == [rend["file"].split("/")[-1]],
       list((A.projects.dir(JUANA, vp["id"]) / "renders").iterdir()))
+check("  a film or preview can be deleted, from the list and the disk",
+      c.delete(f"/api/projects/{vp['id']}/{rend['file']}", headers=h(JUANA, "Juana")).status_code == 200
+      and not (A.projects.dir(JUANA, vp["id"]) / rend["file"]).exists()
+      and not c.get(f"/api/projects/{vp['id']}", headers=h(JUANA, "Juana")).json().get("renders"))
+check("  but only a film", c.delete(f"/api/projects/{vp['id']}/renders/..%2Fproject.json", headers=h(JUANA, "Juana")).status_code == 404)
 print("\n  the storyboard, through the API")
 sbp = c.post("/api/projects", json={"name": "Clip", "kind": "music_video"}, headers=h(JUANA, "Juana")).json()
 check("  a project is made with its kind, and listed with it",
@@ -665,11 +681,30 @@ for jid in (q["id"] for q in r["queued"]):
 g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
 gp = A.store.get(g["queued"][0]["id"])["params"]
 check("  a shot that starts fresh starts from its approved frame", gp.get("start_board") == "takes/f.png", gp)
+A.projects.add_board(JUANA, sbp["id"], sdoc["shots"][1]["id"], {"file": "takes/f.png"})
+c.put(f"/api/projects/{sbp['id']}", json={"shots": [dict(x, board=0) for x in sdoc["shots"]]}, headers=h(JUANA, "Juana"))
+s1 = c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]
+check("  a page's save cannot move the chosen frame back (a newer one stays chosen)", s1["board"] == 1, s1.get("board"))
+c.post(f"/api/projects/{sbp['id']}/items/{s1['id']}/board", json={"index": 0}, headers=h(JUANA, "Juana"))
+check("  choosing one is its own call",
+      c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]["board"] == 0)
 clip2 = A.projects.dir(JUANA, sbp["id"]) / "takes" / "one.mp4"
 subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
                 "-i", "sine=frequency=440", "-t", "2", "-shortest", "-pix_fmt", "yuv420p", str(clip2)], check=True)
 A.projects.add_take(JUANA, sbp["id"], sdoc["shots"][0]["id"], {"file": "takes/one.mp4", "seconds": 2.0})
 A.manager.cancel(g["queued"][0]["id"])
+bo = c.post("/api/projects", json={"name": "Solo cuadros"}, headers=h(JUANA, "Juana")).json()
+c.put(f"/api/projects/{bo['id']}", json={"shots": [{"prompt": "uno", "seconds": 5}]}, headers=h(JUANA, "Juana"))
+bo_shot = c.get(f"/api/projects/{bo['id']}", headers=h(JUANA, "Juana")).json()["shots"][0]
+(A.projects.dir(JUANA, bo["id"]) / "takes").mkdir(parents=True, exist_ok=True)
+shutil.copy(frame, A.projects.dir(JUANA, bo["id"]) / "takes" / "f.png")
+A.projects.add_board(JUANA, bo["id"], bo_shot["id"], {"file": "takes/f.png"})
+check("  a preview of frames alone (no video yet) can be made -- an animatic",
+      c.post(f"/api/projects/{bo['id']}/render", json={"preview": True}, headers=h(JUANA, "Juana")).status_code == 200)
+A.render_state[f"{JUANA}/{sbp['id']}"] = {"state": "running"}
+check("  one film of a project at a time",
+      c.post(f"/api/projects/{sbp['id']}/render", json={"preview": True}, headers=h(JUANA, "Juana")).status_code == 409)
+A.render_state.pop(f"{JUANA}/{sbp['id']}")
 c.post(f"/api/projects/{sbp['id']}/render", json={"preview": True}, headers=h(JUANA, "Juana"))
 deadline = time.time() + 180
 while time.time() < deadline:
@@ -712,6 +747,22 @@ bp = A.store.get(r["queued"][0]["id"])["params"]["prompt"]
 check("  a shot's cast puts their look in its frame, as edited",
       "Characters: Pelícano: a brown pelican, red helmet, goggles" in bp, bp)
 A.manager.cancel(r["queued"][0]["id"])
+check("  only whoever may edit a character can have its portrait drawn",
+      c.post(f"/api/projects/{tp['id']}/characters/{ch['id']}/portrait", headers=h(TOMI, "Tomi")).status_code == 403)
+check("  and the generic job door takes none of the kinds with their own routes",
+      c.post("/api/jobs", json={"kind": "portrait", "target": ch["id"], "params": {"prompt": "x"}},
+             headers=h(TOMI, "Tomi")).status_code == 400)
+jj = c.post("/api/jobs", json={"kind": "image", "params": {"prompt": "x", "source_file": "/data/projects/999000333/a.mp3",
+                                                        "start_image": "/etc/passwd", "voice_char": ch["id"]}},
+            headers=h(TOMI, "Tomi")).json()
+jp = A.store.get(jj["id"])["params"]
+check("  nor a path or a reference into somebody's files", not ({"source_file", "start_image", "voice_char"} & set(jp)), jp)
+A.manager.cancel(jj["id"])
+dup = c.post(f"/api/projects/{cp['id']}/duplicate", json={}, headers=h(JUANA, "Juana")).json()
+own = c.post(f"/api/projects/{cp['id']}/characters", json={"name": "Gaviota", "look": "a grey gull"}, headers=h(JUANA, "Juana")).json()
+dup2 = c.post(f"/api/projects/{cp['id']}/duplicate", json={}, headers=h(JUANA, "Juana")).json()
+check("  a copy of a project keeps its own characters, same ids",
+      own["id"] in [x["id"] for x in c.get(f"/api/projects/{dup2['id']}/characters", headers=h(JUANA, "Juana")).json()["characters"]])
 check("  a portrait needs a look, a voice test a voice sample",
       c.post(f"/api/projects/{cp['id']}/characters/{ch['id']}/speak", json={"text": "hola"}, headers=h(JUANA, "Juana")).status_code == 400)
 print("\n  a recording made in the page, arriving in pieces")

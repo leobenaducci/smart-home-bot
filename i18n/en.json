@@ -1547,6 +1547,7 @@
   "studio.rec_need_source": "Pick the screen, the camera, or both.",
   "studio.rec_default_title": "Recording {n}",
   "studio.rec_denied": "Could not get access: {e}",
+  "studio.delete_render_confirm": "Delete this film or preview for good?",
   "studio.style": "Style",
   "studio.style_ph": "Latin pop, acoustic guitar, warm female voice",
   "studio.inst_ph": "Calm piano with soft rain, for a slow scene",

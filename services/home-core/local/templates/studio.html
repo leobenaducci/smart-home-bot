@@ -160,6 +160,7 @@
     if (!document.getElementById('gpu')) return;
     var S = {{ strings | tojson }};
     var IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+    var ME = {{ user|tojson }};
     var CSRF = document.querySelector('meta[name=csrf-token]').content;
     var $ = function (sel, root) { return (root || document).querySelector(sel); };
     function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
@@ -347,7 +348,7 @@
           '<div class="grow"><b>' + esc(c.name) + '</b> <span class="pill">' + S['ch_scope_' + c.scope] + '</span>' +
           '<p class="muted" style="margin-top:4px">' + esc(c.look || '') + '</p>' +
           (c.personality ? '<p class="muted">💬 ' + esc(c.personality) + '</p>' : '') +
-          (c.voice_test ? '<audio controls preload="none" src="' + fileUrl(current.id, c.voice_test) + '"></audio>' : '') +
+          ((c.voice_tests || {})[ME] ? '<audio controls preload="none" src="' + charUrl(c, c.voice_tests[ME]) + '"></audio>' : '') +
           '<div class="row" style="margin-top:8px">' +
           (c.editable ? '<button data-ch-edit="' + c.id + '">✏️ ' + S.ch_edit + '</button>' : '') +
           (c.editable && c.look ? '<button data-ch-portrait="' + c.id + '">' + S.ch_portrait + '</button>' : '') +
@@ -582,8 +583,9 @@
       if (renders.length) {
         html += '<h2 style="margin-top:20px">' + S.renders + '</h2>' + renders.map(function (r) {
           return '<div class="card"><video controls preload="metadata" style="width:100%;border-radius:8px" src="' + fileUrl(p.id, r.file) + '"></video>' +
-            '<div class="row"><span class="muted">' + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
-            dlLink(p.id, r.file, p.name) + '</div></div>';
+            '<div class="row"><span class="muted">' + (r.preview ? '▶ ' + S.preview + ' · ' : '') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
+            dlLink(p.id, r.file, p.name) +
+            '<button class="danger" data-del-render="' + esc(r.file.replace(/^renders\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div></div>';
         }).join('');
       }
       return html;
@@ -748,6 +750,11 @@
           await api('projects/' + p.id + '/items/' + d.delTake + '/takes/' + d.take, { method: 'DELETE' });
           current = await api('projects/' + p.id); drawTab(); return;
         }
+        if (d.delRender) {
+          if (!confirm(S.delete_render_confirm)) return;
+          await api('projects/' + p.id + '/renders/' + encodeURIComponent(d.delRender), { method: 'DELETE' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
         if (d.delUpload) {
           if (!confirm(S.delete_upload_confirm)) return;
           await flushSave();
@@ -823,7 +830,11 @@
           toast(fmt('board_queued', { n: rb.queued.length }));
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
-        if (d.boardChoose) { itemById(d.boardChoose).board = Number(d.i); await saveNow(); drawTab(); return; }
+        if (d.boardChoose) {
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + d.boardChoose + '/board', { method: 'POST', body: { index: Number(d.i) } });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
         if (d.retouch) return retouch(d.retouch);
         if (b.id === 'long-scene') return longScene();
         if (b.id === 'render') return renderDialog();

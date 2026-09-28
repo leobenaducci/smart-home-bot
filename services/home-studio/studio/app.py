@@ -163,10 +163,25 @@ def _enqueue(me: Who, kind: str, params: dict, project: str = "", target: str = 
     return job
 
 
+# What the generic job door takes. The other kinds -- a storyboard frame, a
+# character's portrait, a song's analysis or repaint -- have routes of their
+# own that check who may ask; through here they skipped those checks.
+OPEN_KINDS = ("image", "song", "instrumental", "voice", "video_shot")
+# Params the manager fills in from what a project holds, as paths on disk or
+# references into somebody's files. Sent from outside they would name any
+# file the studio can read -- another person's -- so they never come in here.
+RESOLVED_PARAMS = ("start_image", "end_image", "voice_file", "source_video", "source_file",
+                   "start_board", "voice_char", "from_take")
+
+
 @app.post("/api/jobs")
 def add_job(body: dict, me: Who = Depends(who)):
+    kind = str(body.get("kind"))
+    if kind not in OPEN_KINDS:
+        _bad(ValueError(f"{kind} jobs are asked for through their own route"))
+    params = {k: v for k, v in dict(body.get("params") or {}).items() if k not in RESOLVED_PARAMS}
     try:
-        job = _enqueue(me, str(body.get("kind")), dict(body.get("params") or {}),
+        job = _enqueue(me, kind, params,
                        str(body.get("project") or ""), str(body.get("target") or ""),
                        str(body.get("title") or ""))
     except ProjectError as exc:
@@ -281,10 +296,12 @@ def delete_character(pid: str, cid: str, me: Who = Depends(who)):
 
 
 @app.post("/api/projects/{pid}/characters/{cid}/upload")
-async def character_upload(pid: str, cid: str, file: UploadFile = File(...), kind: str = Form("picture"),
-                           me: Who = Depends(who)):
+def character_upload(pid: str, cid: str, file: UploadFile = File(...), kind: str = Form("picture"),
+                     me: Who = Depends(who)):
+    # A plain def: a voice sample is converted with ffmpeg, which must not
+    # hold up every other request on the event loop while it runs.
     _project(me, pid)
-    data = await file.read(MAX_UPLOAD + 1)
+    data = file.file.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "too large")
     try:
@@ -298,9 +315,17 @@ async def character_upload(pid: str, cid: str, file: UploadFile = File(...), kin
 def character_file(pid: str, cid: str, rel: str, me: Who = Depends(who)):
     _project(me, pid)
     try:
-        return FileResponse(characters.file(cid, me.login, pid, rel))
+        path = characters.file(cid, me.login, pid, rel)
     except ProjectError as exc:
         _bad(exc, 404)
+    # A character is seen by the whole family once shared, so its files are
+    # served as what they are allowed to be -- a picture or a sound -- never
+    # as whatever the name suggests (an .html or .svg would run as the viewer).
+    kinds = {".png": "image/png", ".jpg": "image/jpeg", ".wav": "audio/wav", ".mp3": "audio/mpeg"}
+    media_type = kinds.get(path.suffix.lower())
+    if not media_type:
+        _bad(ProjectError("no such file"), 404)
+    return FileResponse(path, media_type=media_type)
 
 
 @app.post("/api/projects/{pid}/characters/{cid}/portrait")
@@ -311,12 +336,15 @@ def character_portrait(pid: str, cid: str, me: Who = Depends(who)):
         ch = characters.get(cid, me.login, pid)
     except ProjectError as exc:
         _bad(exc, 404)
+    if not Characters.may_edit(ch, me.login, me.admin):
+        _bad(ProjectError("only whoever made this character can change its pictures"), 403)
     if not ch.get("look"):
         _bad(ValueError("describe how the character looks first"))
     look = str(doc["settings"].get("look") or "").strip()
     prompt = (f"{look}. " if look else "") + f"Character portrait of {ch['name']}: {ch['look']}. " \
              "Full figure, facing the camera, plain background, clear light."
-    job = _enqueue(me, "portrait", {"prompt": prompt[:1500], "size": "832x1216"}, pid, cid, title=ch["name"])
+    job = _enqueue(me, "portrait", {"prompt": prompt[:1500], "size": "832x1216", "admin": me.admin},
+                   pid, cid, title=ch["name"])
     return {"queued": [_public(store.get(job["id"]) or job, me)]}
 
 
@@ -608,6 +636,26 @@ def rework_song(pid: str, item_id: str, body: dict | None = None, me: Who = Depe
     return {"queued": [_public(store.get(job["id"]) or job, me)]}
 
 
+@app.delete("/api/projects/{pid}/renders/{name}")
+def delete_render(pid: str, name: str, me: Who = Depends(who)):
+    try:
+        projects.delete_render(me.login, pid, f"renders/{name}")
+    except ProjectError as exc:
+        _bad(exc, 404)
+    return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/board")
+def choose_board(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """Which storyboard frame of a shot is the chosen one. Its own call, not a
+    field of the page's save: a page holding an older copy would otherwise
+    choose the old frame again over one just drawn."""
+    try:
+        return projects.choose_board(me.login, pid, item_id, int((body or {}).get("index", -1)))
+    except (ProjectError, TypeError, ValueError) as exc:
+        _bad(exc, 404)
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/favorite")
 def favorite(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """Mark one version the favourite (or none, with no `take`): it is the one
@@ -847,8 +895,13 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         if t or preview:
             segments.append((pos, length))
         pos += length
-    if not clips:
+    # A preview of frames alone is an animatic, and fine; a film needs shots.
+    if not clips and not (preview and any(Projects.chosen_board(s) or s.get("prompt") for s, _t in made)):
         _bad(ValueError("no shot has a take yet"))
+    # One render of a project at a time: the page follows the project's one
+    # render state, and a second would hand it the first one's file.
+    if (render_state.get(f"{me.login}/{pid}") or {}).get("state") == "running":
+        _bad(ValueError("a film of this project is already being put together"), 409)
     tracks = []
     for m in body.get("tracks") or []:
         found = Projects.find(doc, str(m.get("item")))
@@ -865,8 +918,12 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         try:
             use_clips, use_lengths, use_marks = clips, lengths, None
             if preview:
-                first = media.probe(clips[0])
-                size = (first["width"] or 832, first["height"] or 480)
+                if clips:
+                    first = media.probe(clips[0])
+                    size = (first["width"] or 832, first["height"] or 480)
+                else:
+                    w, h = (doc["settings"].get("resolution") or "832x480").split("x")
+                    size = (int(w), int(h))
                 use_clips, use_lengths, use_marks = [], [], []
                 badge = str(labels.get("preview") or "PREVIEW")[:30].upper()
 

@@ -391,7 +391,8 @@ class Manager:
             raise media.MediaError("the generator reported success but wrote nothing")
         if job["kind"] == "portrait" and self.characters:
             # A picture of a character goes to the character, not a project item.
-            self.characters.add_picture_file(job["target"], job["owner"], job["project"], produced[0])
+            self.characters.add_picture_file(job["target"], job["owner"], job["project"], produced[0],
+                                             admin=bool(job["params"].get("admin")))
             shutil.rmtree(self.scratch / job["id"], ignore_errors=True)
             return []
         owner, pid = job["owner"], job["project"] or "loose"
@@ -435,9 +436,9 @@ class Manager:
                     take["seconds"] = round(media.probe(dst)["seconds"], 2)
         shutil.rmtree(self.scratch / job["id"], ignore_errors=True)
         if job["params"].get("voice_char") and self.characters:
-            # A voice test: kept with the project's files, and the character
-            # told where, for the page to play.
-            self.characters.set_field(job["params"]["voice_char"], owner, pid, "voice_test", rel_files[0])
+            # A voice test lives with the character, one per person who tried it.
+            self.characters.store_voice_test(job["params"]["voice_char"], owner, pid, dest_root / rel_files[0])
+            return []
         elif job["project"] and job["target"]:
             if job["kind"] == "board":
                 self.projects.add_board(owner, pid, job["target"], {"file": take["file"], "job": job["id"]})

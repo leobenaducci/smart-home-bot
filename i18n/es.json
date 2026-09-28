@@ -1549,6 +1549,7 @@
   "studio.rec_need_source": "Elegí la pantalla, la cámara o las dos.",
   "studio.rec_default_title": "Grabación {n}",
   "studio.rec_denied": "No se pudo acceder: {e}",
+  "studio.delete_render_confirm": "¿Borrar esta película o vista previa para siempre?",
   "studio.style": "Estilo",
   "studio.style_ph": "Pop latino, guitarra acústica, voz femenina cálida",
   "studio.inst_ph": "Piano tranquilo con lluvia suave, para una escena lenta",

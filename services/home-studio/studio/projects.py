@@ -35,10 +35,11 @@ EDITABLE = {
     # `exact`: a shot cut to the music -- generated a little long and trimmed
     # to `seconds` when the film is made. `start` is where the cut falls in
     # the song, for the page to show.
-    # `board`: which storyboard frame of the shot is the chosen one.
-    # `cast`: the characters in the shot, by id (studio/characters.py).
+    # `cast`: the characters in the shot, by id (studio/characters.py). The
+    # chosen storyboard frame is not here: it has its own call (choose_board),
+    # so a page holding an older copy cannot undo a frame just drawn.
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "board", "cast"),
+              "exact", "start", "cast"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -306,6 +307,17 @@ class Projects:
         src, dst = self.dir(owner, pid), self.dir(owner, new["id"])
         for sub in ("takes", "uploads", "renders"):
             shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
+        # The project's own characters come too, with the same ids, so the
+        # copied shots' cast still finds them (the wider ones need no copy).
+        if (src / "characters").is_dir():
+            shutil.copytree(src / "characters", dst / "characters", dirs_exist_ok=True)
+            for f in (dst / "characters").glob("*/character.json"):
+                try:
+                    ch = json.loads(f.read_text())
+                except ValueError:
+                    continue
+                ch["project"] = new["id"]
+                f.write_text(json.dumps(ch, ensure_ascii=False, indent=1))
         doc.update(id=new["id"], name=new["name"], created=new["created"], updated=time.time())
         doc.pop("default", None)                        # a copy is an ordinary project
         self._write(owner, new["id"], doc)
@@ -424,6 +436,20 @@ class Projects:
             return boards[i]
         return boards[-1] if boards else None
 
+    def choose_board(self, owner: str, pid: str, item_id: str, index: int) -> dict:
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found:
+                raise ProjectError("no such shot")
+            item = found[2]
+            if not -1 <= index < len(item.get("boards") or []):
+                raise ProjectError("no such frame")
+            item["board"] = index
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return item
+
     def add_board(self, owner: str, pid: str, item_id: str, board: dict) -> dict:
         """A storyboard frame for a shot: a still, cheap (a picture, not a
         video), to look at before the card spends half an hour on the shot --
@@ -488,6 +514,20 @@ class Projects:
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
             return entry
+
+    def delete_render(self, owner: str, pid: str, rel: str) -> None:
+        """A film or preview gone from the project and the disk."""
+        if not re.fullmatch(r"renders/[A-Za-z0-9._-]+", rel or ""):
+            raise ProjectError("no such film")
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            before = len(doc.get("renders") or [])
+            doc["renders"] = [r for r in doc.get("renders") or [] if r.get("file") != rel]
+            if len(doc["renders"]) == before:
+                raise ProjectError("no such film")
+            self._unlink_inside(self.dir(owner, pid), rel)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
 
     def add_render(self, owner: str, pid: str, render: dict) -> None:
         with self._lock(f"{owner}/{pid}"):

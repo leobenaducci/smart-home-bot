@@ -180,30 +180,48 @@ class Characters:
     def add_file(self, cid: str, owner: str, pid: str, name: str, data: bytes, kind: str,
                  admin: bool = False) -> dict:
         """A picture of the character, or the sample its voice is cloned from
-        (one voice: a new sample replaces the old)."""
+        (one voice: a new sample replaces the old).
+
+        Pictures are opened and saved again as PNG: a family character is
+        seen by everybody, so a "picture" that is really a page or a script
+        must never be stored as one. Samples are kept as WAV -- one recorded
+        in the page is WebM/Opus, which the voice cloner does not read -- and
+        converted before the lock is taken, so a long one holds nobody up."""
+        found = self._find(cid, owner, pid)
+        if not found:
+            raise CharacterError("no such character")
+        if not self.may_edit(found[1], owner, admin):
+            raise CharacterError("only whoever made this character can change it")
+        d, stem = found[0], _new_id()
+        if kind == "voice":
+            rel = f"voice/{stem}.wav"
+            raw = d / f"voice/{stem}.upload"
+            raw.parent.mkdir(parents=True, exist_ok=True)
+            raw.write_bytes(data)
+            try:
+                media.to_wav(raw, d / rel, rate=44100, channels=1)
+            except media.MediaError as exc:
+                raise CharacterError(f"that recording could not be read: {exc}") from None
+            finally:
+                raw.unlink(missing_ok=True)
+        else:
+            rel = f"pictures/{stem}.png"
+            try:
+                from PIL import Image  # noqa: PLC0415
+                import io  # noqa: PLC0415
+                img = Image.open(io.BytesIO(data))
+                img.load()
+                (d / rel).parent.mkdir(parents=True, exist_ok=True)
+                img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB").save(d / rel, "PNG")
+            except Exception:                                  # noqa: BLE001 -- not a picture is the answer
+                raise CharacterError("that is not a picture") from None
         with self._guard:
             found = self._find(cid, owner, pid)
             if not found:
+                (d / rel).unlink(missing_ok=True)
                 raise CharacterError("no such character")
             d, doc = found
-            if not self.may_edit(doc, owner, admin):
-                raise CharacterError("only whoever made this character can change it")
-            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[-60:] or "file"
-            rel = f"{'voice' if kind == 'voice' else 'pictures'}/{_new_id()}-{safe}"
-            (d / rel).parent.mkdir(parents=True, exist_ok=True)
-            (d / rel).write_bytes(data)
             if kind == "voice":
-                # Kept as WAV whatever it arrived as: a sample recorded in the
-                # page is WebM/Opus, which the voice cloner does not read.
-                raw = d / rel
-                rel = str(Path(rel).with_suffix(".wav"))
-                try:
-                    media.to_wav(raw, d / f"{rel}.tmp.wav", rate=44100, channels=1).replace(d / rel)
-                except media.MediaError as exc:
-                    raw.unlink(missing_ok=True)
-                    raise CharacterError(f"that recording could not be read: {exc}") from None
-                if raw != d / rel:
-                    raw.unlink(missing_ok=True)
                 old = doc.get("voice")
                 if old:
                     (d / old).unlink(missing_ok=True)
@@ -216,9 +234,26 @@ class Characters:
             self._write(d, doc)
             return doc
 
-    def add_picture_file(self, cid: str, owner: str, pid: str, src: Path) -> dict:
-        """A picture the card drew for it (a portrait), moved in."""
-        return self.add_file(cid, owner, pid, src.name, src.read_bytes(), "picture", admin=True)
+    def add_picture_file(self, cid: str, owner: str, pid: str, src: Path, admin: bool = False) -> dict:
+        """A picture the card drew for it (a portrait), filed as the person who
+        asked for it -- who must still be allowed to change the character."""
+        return self.add_file(cid, owner, pid, src.name, src.read_bytes(), "picture", admin)
+
+    def store_voice_test(self, cid: str, owner: str, pid: str, src: Path) -> str:
+        """A line spoken in the character's voice, kept in its folder -- one per
+        person who tried it, so it plays from any project and nobody's try
+        replaces anybody else's."""
+        with self._guard:
+            found = self._find(cid, owner, pid)
+            if not found:
+                raise CharacterError("no such character")
+            d, doc = found
+            rel = f"voice/test-{owner}{src.suffix.lower()}"
+            (d / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(d / rel))
+            doc.setdefault("voice_tests", {})[owner] = rel
+            self._write(d, doc)
+            return rel
 
     def set_field(self, cid: str, owner: str, pid: str, key: str, value) -> None:
         """A field the studio itself sets (the last voice test), no rights
