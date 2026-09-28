@@ -843,7 +843,11 @@ def fetch_ollama(base_url: str, api_key: str = "",
                if provider in ("ollama", "ollama_vision") else
                {"input": None, "output": None, "cache_read": None}),
             "context": None, "max_output": None,
-            "reasoning": False,
+            # From /api/show when it answered: a model that cannot complete is
+            # an embedding model (embeddinggemma was every local role's
+            # suggestion), and `thinking` is Ollama's word for reasoning.
+            "reasoning": "thinking" in caps if caps is not None else False,
+            **({"kind": "embedding"} if caps is not None and "completion" not in caps else {}),
             # Without an answer from /api/show, the old guess: `vl`, `vision`
             # or `llava` in the family or the name.
             "vision": ("vision" in caps if caps is not None else
@@ -1212,7 +1216,14 @@ def _together_drop_dedicated(rows: list[dict], api_key: str,
         # Everything together.ai lists. A model that needs a dedicated endpoint
         # is still shown: the household asked to see the whole roster, and a
         # short list with no explanation is harder to act on than a long one.
-        return rows
+        # What an earlier probe found is said, though ("kept and shown", as the
+        # note above PROBE_MODELS promises): the shortlists offered two such
+        # models as if they would answer.
+        known = verdicts or {}
+        return [r if known.get(r["id"]) is not False else
+                {**r, "dedicated": True,
+                 "note": r.get("note") or "needs a dedicated endpoint: 400 on a serverless key"}
+                for r in rows]
     # `verdicts` is the cache and it is why this is affordable: the first run
     # asks ~150 models and takes half a minute, and every run after it asks
     # only what is new. Without it the models page blocks for 33 seconds on a
@@ -1653,6 +1664,12 @@ def price_roles(catalogue: dict, state_dir: str) -> dict:
                 continue
             if not meets(m, spec.get("requires") or {}):
                 continue
+            # A local role picks a setup on the Ollama card, never a raw
+            # `ollama:` id -- the picker cannot offer one, and it would run on
+            # the general server's 2k window. Listed here they topped every
+            # role's cheapest five at $0, embedding model first.
+            if is_local_ollama(m.get("provider", "")) or m.get("dedicated"):
+                continue
             priced.append((monthly_cost(m, volume or ASSUMED_VOLUME), m))
         # Kind before price. Cheapest-that-fits was answering "which costs
         # least" while the page asked "which should I pick": `programmer` wants
@@ -1663,7 +1680,12 @@ def price_roles(catalogue: dict, state_dir: str) -> dict:
         # its silence.
         kind = spec.get("model_type", "")
         band = {True: 0, None: 1, False: 2}
-        priced.sort(key=lambda x: (band[matches_type(x[1], kind)],
+        # A model the household's subscription covers comes before one billed
+        # per token: its price is what the allowance is measured in, not a
+        # bill. Pay-per-token NanoGPT models answer 402 on an account with no
+        # balance (docs/nanogpt.md), and they were the top suggestion for the
+        # professions.
+        priced.sort(key=lambda x: (_router(x[1]), band[matches_type(x[1], kind)], not _included(x[1]),
                                    x[0] is None, x[0] or 0, x[1]["id"]))
         known = [c for c, _ in priced if c is not None]
         cheapest = min(known) if known else None
@@ -1678,8 +1700,10 @@ def price_roles(catalogue: dict, state_dir: str) -> dict:
                 # exactly what the old filter had hidden, minus the reason.
                 {"id": m["id"], "provider": m.get("provider", ""), "cost": cost,
                  **({"note": m["note"]} if m.get("note") else {}),
-                 # Which NanoGPT heading it goes under (app._picker_group).
+                 # Which NanoGPT heading it goes under (app._picker_group), and
+                 # whether the page says "included" rather than a price.
                  **({"subscription": True} if m.get("subscription") else {}),
+                 **({"included": True} if _included(m) else {}),
                  **advise(m, spec, volume or ASSUMED_VOLUME, cheapest)}
                 for cost, m in priced
             ],
@@ -1865,11 +1889,28 @@ def _cheapest(models: list[dict], prefer: str) -> list[dict]:
     two, so the order is total and stable.
     """
     def key(m):
+        hosted_zero = not m.get("input") and m.get("provider") not in LOCAL_SOURCES
+
         def num(v):
-            return v if v is not None else float("inf")
+            # A published 0 on a hosted provider is a placeholder, not a price
+            # (monthly_cost says why): NanoGPT's router `auto-model` was every
+            # hosted role's suggestion at "$0/M", and the save refuses it.
+            return v if v is not None and not hosted_zero else float("inf")
         primary = num(m.get(prefer))
-        return (primary, num(m.get("input")), num(m.get("output")), m["id"])
+        return (_router(m), not _included(m), primary, num(m.get("input")), num(m.get("output")), m["id"])
     return sorted(models, key=key)
+
+
+def _router(m: dict) -> bool:
+    """A provider's router (NanoGPT's `auto-model`, `auto-model-basic`, ...):
+    it picks a model per request, so nothing about it -- price, context,
+    whether it calls tools -- says what a turn will get. Never a suggestion."""
+    return "auto-model" in str(m.get("id", "")).rsplit("/", 1)[-1].split(":")[-1]
+
+
+def _included(m: dict) -> bool:
+    """Covered by a subscription the household pays anyway, at a real price."""
+    return bool(m.get("subscription")) and bool(m.get("input"))
 
 
 def _recommended(models: list[dict], spec: dict, prefer: str) -> dict | None:
@@ -1899,12 +1940,15 @@ def _recommended(models: list[dict], spec: dict, prefer: str) -> dict | None:
 
     def rank(m):
         return (
+            # Never a router; what the subscription covers first, as in `_cheapest`.
+            _router(m), not _included(m),
             # Negated: sorted() is ascending and these are all "more is better".
             -(1 if kind == "reasoner" and m.get("reasoning") else 0),
             -(m.get("max_output") or 0) if kind == "long_output" else 0,
             -_release_sort_key(m),
             # Same price as `_cheapest` ranks on, as the tie-break only.
-            m.get(prefer) if m.get(prefer) is not None else float("inf"),
+            m.get(prefer) if m.get(prefer) is not None and (
+                m.get("input") or m.get("provider") in LOCAL_SOURCES) else float("inf"),
         )
     return sorted(models, key=rank)[0]
 
@@ -1942,8 +1986,9 @@ def recommend(persona: str, catalogue: dict, limit: int = 3) -> dict:
     requires, prefer = spec.get("requires", {}), spec.get("prefer", "input")
 
     def usable(source):
+        # Never recommended: a model known not to answer on this key.
         return [m for m in (catalogue.get(source) or [])
-                if m.get("kind", "") in CHAT_KINDS and meets(m, requires)]
+                if m.get("kind", "") in CHAT_KINDS and meets(m, requires) and not m.get("dedicated")]
 
     hosted = [m for source in HOSTED_SOURCES for m in usable(source)]
     local = [m for source in LOCAL_SOURCES for m in usable(source)]
@@ -2102,6 +2147,11 @@ SCOPE_ROLES = {
     "ev-notif": "notifications",   # notification triage
     "ev-task": "events",           # chores -- EVENT_PROFILE since 2026-09-02
     "ev-geo": "events",            # location -- same role
+    # The heartbeat and four professions were priced at the assumed million
+    # tokens while heartbeat alone ran 4,053 turns a month (2026-09-27): their
+    # scopes, from HomeCore's profession table and heartbeat hook, were not here.
+    "ev-heartbeat": "heartbeat",
+    "edu": "teacher", "dsg": "designer", "sal": "doctor", "ley": "legal",
     "sub": "subagent",             # spawned background work
     "dev": "programmer",           # the programmer profession
     "fin": "powerful",             # a profession without its own roster entry

@@ -343,6 +343,12 @@ check("  a real file name still passes",
       and OI.HF_RE.fullmatch("hf:unsloth/Qwen3.8-27B-GGUF/UD/Qwen3.8-27B-UD-IQ3_XXS.gguf"))
 check("  a model a setup uses is not deleted",
       "used by a setup" in ML.delete("gemma4:e4b", {"gemma4:e4b"}))
+_users = ML.model_users({"assistant": {"models": {"vision": "ollama:qwen3-vl:4b",
+                                                  "fallback": ["x", "ollama:granite4.2:8b"]}},
+                         "services": {"home-paperless": {"embeddings": "ollama:embeddinggemma"}}})
+check("  in use means roles on the main server and Paperless too, untagged as :latest",
+      _users == {"qwen3-vl:4b": ["vision"], "granite4.2:8b": ["fallback"],
+                 "embeddinggemma:latest": ["paperless"]}, _users)
 
 # An Ollama still coming up after an apply is not an empty store (2026-09-26:
 # the library lost every Ollama model and its tests that way).

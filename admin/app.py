@@ -3333,6 +3333,15 @@ def models_page():
                 elif model_catalogue.is_go_model(value):
                     refused_go.append(f"{persona} ({value})")
                     continue
+                # The same two rules a single role is held to: the rescue chain
+                # answers the household's turns too, and its picker offered a
+                # zero-priced router and a model that is not served at all.
+                elif not model_catalogue.zero_cost_ok(persona, by_id.get(local_model(value)[0])):
+                    refused.append(f"{persona} ({value})")
+                    continue
+                elif _responses_only_for(persona, value):
+                    refused_responses.append(f"{persona} ({value})")
+                    continue
                 if value not in new_chain:
                     new_chain.append(value)
             if new_chain:
@@ -3754,6 +3763,16 @@ def models_page():
                           for g in groups if by_provider.get(g["provider"])
                           and g["provider"] != "ollama"]
         row["suggestions"] = models[:5]
+        # "Known" is whether the picker *offers* it, not whether the catalogue
+        # has heard of it: a current model the choices leave out (a Together
+        # model known to need a dedicated endpoint) would otherwise be selected
+        # nowhere, and a save would move the role to the first option.
+        offered = {m["id"] for g in row["choices"] for m in g["models"]}
+        if row["current"] and not row["is_local"] and row["current"] not in offered:
+            row["current_known"] = False
+        for sl in row.get("slots") or []:
+            if sl["current"] and not sl["is_local"] and sl["current"] not in offered:
+                sl["known"] = False
 
         # What the picker renders straight away, against what it can reveal.
         #
@@ -3819,9 +3838,6 @@ def models_page():
     # rows that must not both light up.
     in_use: dict[str, list[str]] = {}
     for role, value in chosen.items():
-        name = str(value or "").strip()
-        if not name:
-            continue
         # The roster's "in use by" column, and it names the same roles the
         # card above does -- so it reads from the same catalogue, or a Spanish
         # page listed Spanish personas above and English ones here.
@@ -3829,7 +3845,14 @@ def models_page():
             spec, key = model_catalogue.PERSONA_NEEDS[role], f"admin.models.role_{role}"
         else:
             spec, key = model_catalogue.IMAGE_SLOTS.get(role) or {}, f"admin.models.slot_{role}"
-        in_use.setdefault(name, []).append(_t_or(key, spec.get("label", role)))
+        # Each entry of a chain on its own, and a setup's address as the row it
+        # is (`ollama-text:qwen3.5:4b` is the `ollama:qwen3.5:4b` row): the
+        # whole fallback list stringified matched nothing, and neither did any
+        # role on a setup.
+        for v in (value if isinstance(value, list) else [value]):
+            name = local_model(str(v or "").strip())[0]
+            if name:
+                in_use.setdefault(name, []).append(_t_or(key, spec.get("label", role)))
     # The Code card. Its roster is the flat plan plus the Zen models this key is
     # actually offered, and it is the ONLY picker on this page that may show a
     # Go model -- see models.code_model_choices(). `cloud.opencode.model` is a
@@ -8281,9 +8304,11 @@ def _library_view(cfg: dict) -> dict:
         setups = OI.setups(cfg)
     except OI.InstanceError:
         setups = []
+    import model_library as ML
+    users = ML.model_users(cfg)
     rows = []
     for m in doc.get("models") or []:
-        used = [st["name"] or st["id"] for st in setups if st["model"] == m["id"]]
+        used = users.get(m["id"], [])
         results = tests.get(m["id"]) or {}
         rows.append({
             **m, "gib": round(int(m.get("bytes") or 0) / 2**30, 1), "short": OI.short_model(m["id"]),
@@ -8327,8 +8352,8 @@ def library_queue():
         flash(str(exc), "error")
         return redirect(url_for("models_page") + "#library")
     if job["op"] == "delete" and job["model"] in ML.used_models(load_config()):
-        flash(_t_or("admin.models.library_in_use", "{model} is used by a setup; pick another model "
-                    "for it first.", model=job["model"]), "error")
+        flash(_t_or("admin.models.library_in_use", "{model} is in use; move what uses it to "
+                    "another model first.", model=job["model"]), "error")
         return redirect(url_for("models_page") + "#library")
     path = CONFIG.parent / LIBRARY_QUEUE
     jobs = []

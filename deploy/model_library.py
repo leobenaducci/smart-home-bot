@@ -202,11 +202,34 @@ def check_job(job: dict) -> dict:
     return {"op": op, "model": model, "engines": engines}
 
 
-def used_models(cfg: dict) -> set[str]:
+def _tagged(name: str) -> str:
+    """Ollama's own spelling: an untagged name is `:latest` (`embeddinggemma`)."""
+    return name if ":" in name or name.startswith(("hf:", "/")) else f"{name}:latest"
+
+
+def model_users(cfg: dict) -> dict[str, list[str]]:
+    """{library model: [what uses it]}. Setups, and also what reaches Ollama's
+    main server directly -- a role written `ollama:<model>` and Paperless's
+    embeddings. Counting setups alone offered to delete the embedding model
+    Paperless searches with (2026-09-27)."""
+    out: dict[str, list[str]] = {}
     try:
-        return {s["model"] for s in OI.setups(cfg)}
+        for st in OI.setups(cfg):
+            out.setdefault(_tagged(st["model"]), []).append(st.get("name") or st["id"])
     except OI.InstanceError:
-        return set()
+        pass
+    for role, value in ((cfg.get("assistant") or {}).get("models") or {}).items():
+        for v in (value if isinstance(value, list) else [value]):
+            if str(v or "").startswith("ollama:"):
+                out.setdefault(_tagged(str(v).split(":", 1)[1]), []).append(role)
+    emb = str(((cfg.get("services") or {}).get("home-paperless") or {}).get("embeddings") or "")
+    if emb.startswith("ollama:"):
+        out.setdefault(_tagged(emb.split(":", 1)[1]), []).append("paperless")
+    return out
+
+
+def used_models(cfg: dict) -> set[str]:
+    return set(model_users(cfg))
 
 
 # ---------------------------------------------------------------------------

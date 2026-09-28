@@ -1243,7 +1243,7 @@
   "admin.models.library_download": "Bajar y probar",
   "admin.models.library_hf_none": "Ese repositorio no tiene archivos GGUF.",
   "admin.models.library_hf_failed": "No se pudo llegar a Hugging Face.",
-  "admin.models.library_in_use": "{model} lo usa una configuración; elegí otro modelo para ella primero.",
+  "admin.models.library_in_use": "{model} está en uso; pasá lo que lo usa a otro modelo primero.",
   "admin.models.library_trigger_missing": "En cola. El host todavía no puede correrlo desde acá: corré ./home-stack ollama --library-run en el host, o instalá el disparador una vez con sudo ./home-stack ollama --install-trigger.",
   "admin.models.library_sent": "Enviado al host. Cada modelo nuevo se prueba en cada motor que podría correrlo; el registro de abajo lo sigue.",
   "admin.models.library_bad_repo": "Un repositorio es dueño/nombre, como en huggingface.co.",
@@ -1346,5 +1346,6 @@
   "admin.models.library_stale": "Ollama no respondió en la última actualización ({at}), así que sus modelos se muestran como estaban antes. Aplicá de nuevo, o corré ./home-stack ollama --library, para leerlos de nuevo.",
   "admin.models.ollama_how_pending": "después de Aplicar (estimado)",
   "admin.models.ollama_gpu_until_apply": "corriendo hasta Aplicar",
-  "admin.models.test_setup_cannot": "El modelo de ese setup no puede hacer este trabajo."
+  "admin.models.test_setup_cannot": "El modelo de ese setup no puede hacer este trabajo.",
+  "admin.models.included": "en la suscripción"
 }

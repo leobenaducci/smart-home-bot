@@ -1241,7 +1241,7 @@
   "admin.models.library_download": "Download and test",
   "admin.models.library_hf_none": "That repository has no GGUF files.",
   "admin.models.library_hf_failed": "Could not reach Hugging Face.",
-  "admin.models.library_in_use": "{model} is used by a setup; pick another model for it first.",
+  "admin.models.library_in_use": "{model} is in use; move what uses it to another model first.",
   "admin.models.library_trigger_missing": "Queued. The host cannot run it from here yet: run ./home-stack ollama --library-run on the host, or install the trigger once with sudo ./home-stack ollama --install-trigger.",
   "admin.models.library_sent": "Sent to the host. Every new model is tested on each engine that could run it; the log below follows it.",
   "admin.models.library_bad_repo": "A repository is owner/name, as on huggingface.co.",
@@ -1344,5 +1344,6 @@
   "admin.models.library_stale": "Ollama did not answer at the last refresh ({at}), so its models are as they were before it. Apply again, or run ./home-stack ollama --library, to read them fresh.",
   "admin.models.ollama_how_pending": "after Apply (estimated)",
   "admin.models.ollama_gpu_until_apply": "running until Apply",
-  "admin.models.test_setup_cannot": "That setup's model cannot do this role."
+  "admin.models.test_setup_cannot": "That setup's model cannot do this role.",
+  "admin.models.included": "in the subscription"
 }

@@ -389,8 +389,11 @@ def place(gpus: list[dict], instances: list[dict], needs: dict[str, float]) -> d
     """
     free = {}
     for g in gpus:
+        # The house's own servers are placed here, not subtracted as tenants:
+        # a running llama.cpp setup was counted twice (gpu_view and
+        # model_fit already used both prefixes).
         others = sum(t["mib"] for t in g.get("tenants") or []
-                     if not str(t.get("owner", "")).startswith("unit ollama"))
+                     if not str(t.get("owner", "")).startswith(("unit ollama", "unit llamacpp-")))
         free[g["index"]] = g["total_mib"] * 1024 * 1024 - others * 1024 * 1024 - MARGIN
     out: dict[str, list[int]] = {}
     unplaced = []
