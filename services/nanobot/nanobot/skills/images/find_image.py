@@ -20,7 +20,7 @@ decoration: most of these licences require credit, and an image used in a
 document Alfred hands to the family without it is a licence breach committed on
 their behalf.
 """
-import base64, json, mimetypes, os, re, sys, urllib.error, urllib.parse, urllib.request
+import base64, json, mimetypes, os, re, ssl, sys, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 from nanobot.security.network import validate_url_target
@@ -410,16 +410,32 @@ def draw(data):
             "height": height,
             "response_format": "b64_json" if inline else "url"}
 
+    # The house's Studio (`studio:z_image`): reached through the portal as the
+    # person this assistant serves, the way the other household skills are --
+    # the picture lands in their default Studio project. The portal's own
+    # certificate is the house's, not a public one.
+    studio = "/studio/v1/" in url
+    if studio and not (os.environ.get("HOMECORE_USER_ID") and os.environ.get("HOMECORE_PROXY_TOKEN")):
+        return {"error": "the house's Studio draws for a person, and this assistant has none "
+                         "(the room assistant): search for an existing image instead"}
+
     def _post(fields):
         headers = {"User-Agent": DRAW_UA, "Content-Type": "application/json"}
-        if key:
+        # A hosted provider's key is that provider's: never sent to the portal,
+        # which vouches for the person with the member token below.
+        if key and not studio:
             headers["Authorization"] = f"Bearer {key}"
+        context = None
+        if studio:
+            headers["X-Proxy-Secret"] = os.environ["HOMECORE_PROXY_TOKEN"]
+            headers["X-Proxy-User"] = os.environ["HOMECORE_USER_ID"]
+            context = ssl._create_unverified_context()
         req = urllib.request.Request(
             url, data=json.dumps(fields).encode(), headers=headers)
         # Longer than the hosted default: the house's own model takes ~33 s a
         # picture on the card in this box, and its first call after an idle
         # unload reloads the weights first.
-        with urllib.request.urlopen(req, timeout=300) as r:
+        with urllib.request.urlopen(req, timeout=300, **({"context": context} if context else {})) as r:
             return json.loads(r.read().decode())
 
     # These models disagree about their own request shape and only say so by
@@ -491,6 +507,16 @@ def draw(data):
             return {"error": str(e)}
     if payload is None:
         return {"error": f"the image model kept refusing: {last}"}
+    # The Studio's card was busy (somebody's film): the picture is queued in
+    # the person's default Studio project and they will be notified. Not a
+    # picture yet, and it must not be reported as one.
+    if payload.get("queued"):
+        mins = max(1, round((payload.get("starts_in") or 0) / 60))
+        return {"queued": True, "local": True, "paid": False,
+                "position": payload.get("position"), "starts_in_minutes": mins,
+                "message": ("La placa de la casa está ocupada: la imagen quedó en la cola del Estudio "
+                            f"(posición {payload.get('position')}, empieza en ~{mins} min), en su proyecto "
+                            "de Alfred. Le llega una notificación cuando esté lista; todavía NO está hecha.")}
 
     # Whether a person was billed for this, from the credential rather than
     # from the address. `url != TOGETHER_URL` looks like the same question and

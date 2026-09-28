@@ -175,9 +175,12 @@
   .gpu-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; }
   .gpu-use { margin-top: 2px; }
   .more-sources { margin: 10px 0; }
-  .bench-live { list-style: none; margin: 4px 0 0; padding: 0; font-size: .8rem; }
-  .bench-live li.good { color: var(--live-ink); }
-  .bench-live li.bad { color: var(--attn-ink); }
+  /* The Test's step list, not the Benchmark tab's live panel (a <div> with
+     the same class, styled above): unscoped, this took that panel's padding
+     and border spacing away. */
+  ul.bench-live { list-style: none; margin: 4px 0 0; padding: 0; font-size: .8rem; }
+  ul.bench-live li.good { color: var(--live-ink); }
+  ul.bench-live li.bad { color: var(--attn-ink); }
   .more-sources > summary { cursor: pointer; color: var(--ink-soft); }
   .library { margin: 14px 0; border: 1px solid var(--edge); border-radius: var(--r); padding: 8px 12px; }
   .library > summary { cursor: pointer; }
@@ -672,7 +675,7 @@
                  left the household unable to find ones it had deliberately
                  enabled. Shown here so the choice is made with the knowledge
                  rather than against it. #}
-              <option value="{{ m.id }}" {% if m.id == cur %}selected{% endif %}>{{ m.id }}{% if m.cost is not none %} ({{ t('admin.models.per_month', cost='%.2f'|format(m.cost)) }}){% endif %}{% if m.note %} — {{ m.note }}{% endif %}</option>
+              <option value="{{ m.id }}" {% if m.id == cur %}selected{% endif %}>{{ m.id }}{% if m.included %} ({{ t('admin.models.included') }}){% elif m.cost is not none %} ({{ t('admin.models.per_month', cost='%.2f'|format(m.cost)) }}){% endif %}{% if m.note %} — {{ m.note }}{% endif %}</option>
             {% endfor %}
           </optgroup>
         {% endfor %}
@@ -760,7 +763,7 @@
               {% for s in row.suggestions %}
               <tr>
                 <td class="mono">{{ s.id }}{% if s.id == row.current %}<span class="here">{{ t('admin.models.in_use') }}</span>{% endif %}</td>
-                <td class="num mono">{% if s.cost is not none %}{{ t('admin.models.cost_bare', cost='%.2f'|format(s.cost)) }}{% else %}—{% endif %}</td>
+                <td class="num mono">{% if s.included %}{{ t('admin.models.included') }}{% elif s.cost is not none %}{{ t('admin.models.cost_bare', cost='%.2f'|format(s.cost)) }}{% else %}—{% endif %}</td>
                 <td class="why"><ul class="tally pro">{% for key, args in s.pros %}<li>{{ t('admin.models.' ~ key, **args) }}</li>{% endfor %}</ul></td>
                 <td class="why"><ul class="tally con">{% for key, args in s.cons %}<li>{{ t('admin.models.' ~ key, **args) }}</li>{% endfor %}</ul></td>
               </tr>
@@ -888,6 +891,7 @@
       <span class="muted small">{{ t('admin.models.library_summary', n=lib.models|length) }}{% if lib.disk_free_gib is not none %} · {{ t('admin.models.library_disk', gib=lib.disk_free_gib) }}{% endif %}</span></summary>
     <p class="help">{{ t('admin.models.library_help') }}</p>
     {% if lib.queued %}<p class="small warn">{{ t('admin.models.library_queued', n=lib.queued|length) }}</p>{% endif %}
+    {% if lib.ollama_unreachable %}<p class="small warn">{{ t('admin.models.library_stale', at=lib.at) }}</p>{% endif %}
     {% if lib.models %}
     <div class="scroll">
     <table class="lib-table small">
@@ -2029,9 +2033,12 @@
 })();
 </script>
 <script>
-/* A setup's model: the library's models, marked by how each tested on the
-   engine picked beside it; one that failed there cannot be picked (unless it
-   is what the setup runs now), and "Other" opens a box to type a name. */
+/* A setup's model: the library's models *for the engine picked beside it* --
+   one that engine cannot run is not listed at all (a GGUF file has no place
+   on an Ollama setup until it is imported), the rest ordered works, untested,
+   fails. One that failed there cannot be picked; the model the setup runs now
+   is always listed, whatever its state, so the form never quietly drops it.
+   "Other" opens a box to type a name. */
 (function () {
   document.querySelectorAll('select[data-other]').forEach(function (sel) {
     var grid = sel.closest('.oi-grid');
@@ -2041,14 +2048,23 @@
     function mark() {
       var e = engine ? engine.value : 'ollama';
       var key = 'state' + e.charAt(0).toUpperCase() + e.slice(1);
-      Array.prototype.forEach.call(sel.options, function (o) {
-        if (!o.hasAttribute('data-gib')) return;
+      var RANK = {ok: 0, untested: 1, fail: 2, none: 3};
+      var models = Array.prototype.filter.call(sel.options, function (o) { return o.hasAttribute('data-gib'); });
+      models.forEach(function (o) {
         var state = o.dataset[key] || 'none';
+        o.dataset.rank = RANK[state];
         o.textContent = o.getAttribute('data-short') + ' · ' + o.getAttribute('data-gib') + ' GiB — '
           + sel.getAttribute('data-l-' + state);
         o.disabled = (state === 'fail' || state === 'none') && o.value !== initial;
+        o.hidden = state === 'none' && o.value !== initial;
       });
-      if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) sel.value = '';
+      // Re-ordered in place, before whatever follows them ("Other", a model
+      // the library does not hold): a stable sort keeps the library's order
+      // within a state.
+      var anchor = models.length ? models[models.length - 1].nextSibling : null;
+      models.slice().sort(function (a, b) { return a.dataset.rank - b.dataset.rank; })
+        .forEach(function (o) { sel.insertBefore(o, anchor); });
+      if (sel.selectedOptions[0] && (sel.selectedOptions[0].disabled || sel.selectedOptions[0].hidden)) sel.value = '';
     }
     function toggle() {
       var on = sel.value === '__other__';

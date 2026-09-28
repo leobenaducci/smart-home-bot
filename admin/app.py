@@ -1171,7 +1171,8 @@ IMPACT = {
     # "saved, and the house behaves the old way" failure this table exists for.
     "dns": ["home-core", "local-proxy", "nanobot", "nanobot-house",
             "home-cameras", "home-voice", "mqtt", "nodered", "home-paperless",
-            "alfred-mcp"],
+            "alfred-mcp", "home-studio"],
+    # home-studio because it tells the portal (by name) when a job is done.
     # alfred-mcp because `members[].programmer` renders that person's
     # bridge, and home-core because it is told which members have one.
     # home-paperless because each member's locale is one of the languages its
@@ -1210,6 +1211,13 @@ IMPACT = {
     # which is the whole reason this table exists.
     "services.home-voice.tts_engine": ["home-voice"],
     "services.home-voice.tts_voice": ["home-voice"],
+    # The Studio reaches four other services: the portal's STUDIO_URL and its
+    # dashboard tile, the assistants' `studio` skill (`when_service`), and
+    # both proxies' HOUSE_ONLY_APPS
+    # (`house_only`). Switching it on redeployed only home-studio itself, and
+    # the portal kept answering "not configured".
+    "services.home-studio": ["home-core", "nanobot", "nanobot-house",
+                             "local-proxy", "cloud-proxy"],
     # Written into each member's agent front matter and read by opencode only
     # at startup, so the unit that rewrites those files has to run again.
     "cloud.opencode.model": ["alfred-mcp"],
@@ -3002,6 +3010,22 @@ def models_test():
     # so a model can be tried before it is chosen. Absent (an older page, a
     # script), the saved one is tested as before.
     asked = [v.strip() for v in request.form.getlist("model") if v.strip()]
+    # The picker names a house setup `__local__:<id>` and the generic local
+    # choice `__local__`; a save turns those into an address and so must the
+    # test. Sent as they were, both went to OpenCode Zen as a model called
+    # "__local__:text", which answered "Model is unavailable" (2026-09-27).
+    saved = [str(v) for v in (raw if isinstance(raw, list) else [raw]) if v]
+    for i, v in enumerate(asked):
+        if v.startswith("__local__:"):
+            asked[i] = _setup_value(cfg, v.split(":", 1)[1], role)
+            if not asked[i]:
+                return jsonify({"ok": False, "error": _t_or(
+                    "admin.models.test_setup_cannot", "That setup's model cannot do this role.")}), 400
+        elif v == "__local__":
+            asked[i] = next((x for x in saved if local_model(x)[0].startswith("ollama:")), "") \
+                or _default_local(cfg, role)
+            if not asked[i]:
+                return jsonify({"ok": False, "error": t("admin.models.test_no_model")}), 400
     if asked:
         raw = asked if len(asked) > 1 or isinstance(raw, list) else asked[0]
     if isinstance(raw, list):
@@ -3166,6 +3190,11 @@ def _t_or(key: str, fallback: str, **params) -> str:
     return text
 
 
+# An image slot pointed at the house's Studio instead of a hosted provider
+# (the deployer turns it into the Studio's door behind the portal).
+STUDIO_IMAGE_MODEL = "studio:z_image"
+
+
 def refresh_catalogue(cfg: dict, recheck: bool = False) -> dict:
     return model_catalogue.refresh(
         MODELS_CACHE, model_endpoints(cfg), recheck,
@@ -3316,6 +3345,15 @@ def models_page():
                         continue
                 elif model_catalogue.is_go_model(value):
                     refused_go.append(f"{persona} ({value})")
+                    continue
+                # The same two rules a single role is held to: the rescue chain
+                # answers the household's turns too, and its picker offered a
+                # zero-priced router and a model that is not served at all.
+                elif not model_catalogue.zero_cost_ok(persona, by_id.get(local_model(value)[0])):
+                    refused.append(f"{persona} ({value})")
+                    continue
+                elif _responses_only_for(persona, value):
+                    refused_responses.append(f"{persona} ({value})")
                     continue
                 if value not in new_chain:
                     new_chain.append(value)
@@ -3532,6 +3570,12 @@ def models_page():
     chosen = ((cfg.get("assistant") or {}).get("models") or {})
     every = {m["id"]: m for m in model_catalogue.all_models(catalogue)}
     image_choices = model_catalogue.image_models(catalogue)
+    # The house's own Studio draws too (docs/home-studio.md): offered while it
+    # is on, and kept while a slot names it even if it is not, so a save of
+    # this card can never quietly clear a slot that points there.
+    studio_on = bool(((cfg.get("services") or {}).get("home-studio") or {}).get("enabled"))
+    if studio_on or STUDIO_IMAGE_MODEL in (chosen.get("image_normal"), chosen.get("image_high")):
+        image_choices = [{"id": STUDIO_IMAGE_MODEL, "name": "Z-Image Turbo", "provider": "studio"}] + image_choices
     image_slots = [{"key": key,
                     "label": _t_or(f"admin.models.slot_{key}", spec["label"]),
                     "why": _t_or(f"admin.models.slot_{key}_why", spec["why"]),
@@ -3738,6 +3782,16 @@ def models_page():
                           for g in groups if by_provider.get(g["provider"])
                           and g["provider"] != "ollama"]
         row["suggestions"] = models[:5]
+        # "Known" is whether the picker *offers* it, not whether the catalogue
+        # has heard of it: a current model the choices leave out (a Together
+        # model known to need a dedicated endpoint) would otherwise be selected
+        # nowhere, and a save would move the role to the first option.
+        offered = {m["id"] for g in row["choices"] for m in g["models"]}
+        if row["current"] and not row["is_local"] and row["current"] not in offered:
+            row["current_known"] = False
+        for sl in row.get("slots") or []:
+            if sl["current"] and not sl["is_local"] and sl["current"] not in offered:
+                sl["known"] = False
 
         # What the picker renders straight away, against what it can reveal.
         #
@@ -3803,9 +3857,6 @@ def models_page():
     # rows that must not both light up.
     in_use: dict[str, list[str]] = {}
     for role, value in chosen.items():
-        name = str(value or "").strip()
-        if not name:
-            continue
         # The roster's "in use by" column, and it names the same roles the
         # card above does -- so it reads from the same catalogue, or a Spanish
         # page listed Spanish personas above and English ones here.
@@ -3813,7 +3864,14 @@ def models_page():
             spec, key = model_catalogue.PERSONA_NEEDS[role], f"admin.models.role_{role}"
         else:
             spec, key = model_catalogue.IMAGE_SLOTS.get(role) or {}, f"admin.models.slot_{role}"
-        in_use.setdefault(name, []).append(_t_or(key, spec.get("label", role)))
+        # Each entry of a chain on its own, and a setup's address as the row it
+        # is (`ollama-text:qwen3.5:4b` is the `ollama:qwen3.5:4b` row): the
+        # whole fallback list stringified matched nothing, and neither did any
+        # role on a setup.
+        for v in (value if isinstance(value, list) else [value]):
+            name = local_model(str(v or "").strip())[0]
+            if name:
+                in_use.setdefault(name, []).append(_t_or(key, spec.get("label", role)))
     # The Code card. Its roster is the flat plan plus the Zen models this key is
     # actually offered, and it is the ONLY picker on this page that may show a
     # Go model -- see models.code_model_choices(). `cloud.opencode.model` is a
@@ -3869,7 +3927,8 @@ def models_page():
         options=sorted(({**m, "group": _picker_group(m)} for m in every.values()),
                        key=lambda m: (m["provider"], m["id"])),
         model_groups=groups,
-        provider_labels={g["provider"]: g["label"] for g in groups},
+        provider_labels={**{g["provider"]: g["label"] for g in groups},
+                         "studio": _t_or("admin.models.source_studio", "the house's Studio (GPU)")},
         sources=_source_settings(cfg),
         roles=list((cfg.get("hosts") or {}).keys()),
         checked_at=(time.strftime("%Y-%m-%d %H:%M", time.localtime(checked))
@@ -7564,7 +7623,8 @@ def _ollama_card(cfg: dict) -> dict:
             "removable": inst["id"] != "main" and not used and inst["purpose"] != "bench",
         })
     enabled = [i for i in insts if i["enabled"]]
-    card["gpu_view"] = _gpu_view(card["gpus"], enabled, needs)
+    card["gpu_view"] = _gpu_view(card["gpus"], enabled, needs,
+                                 pending={c["id"] for c in card["instances"] if c["state"] == "pending"})
     # An "Auto" server with no card is one the save could not place (the
     # cards were not known then): as unpinned as one set that way.
     card["unpinned"] = [i["id"] for i in enabled if not i["gpus"] and not i.get("cpu")]
@@ -7655,7 +7715,8 @@ def _ollama_card(cfg: dict) -> dict:
     return card
 
 
-def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool = True) -> list[dict]:
+def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool = True,
+              pending: frozenset | set = frozenset()) -> list[dict]:
     """The cards as the page draws them: each one's tenants and servers, in GiB
     and as a share of the card. The card and the preview both use this."""
     import ollama_vram
@@ -7668,6 +7729,7 @@ def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool
                         _t_or("admin.models.ollama_general_server", "{name} (general server)",
                               name=i["label"] or i["id"]))
               for i in enabled}
+    units = {i.get("unit"): labels[i["id"]] for i in enabled if i.get("unit")}
     models = {i["id"]: " · ".join(x for x in (
         OI.short_model(i["model"]) if i.get("model") else "",
         OI.ENGINE_LABELS.get(i.get("engine", "ollama"), "") if i.get("engine", "ollama") != "ollama" else "")
@@ -7677,12 +7739,16 @@ def _gpu_view(gpus: list[dict], enabled: list[dict], needs: dict, measured: bool
          "free_gib": round(g["free"] / ollama_vram.GIB, 1),
          "used_gib": round((g["total"] - g["free"]) / ollama_vram.GIB, 1),
          "over_gib": round(max(0, -g["free"]) / ollama_vram.GIB, 1),
+         # A house server still running where the saved list no longer puts
+         # it is named as its setup, not as its systemd unit.
          "others": [{**o, "gib": round(o["bytes"] / ollama_vram.GIB, 2),
-                     "pct": round(o["bytes"] * 100 / g["total"], 1)} for o in g["others"]],
+                     "pct": round(o["bytes"] * 100 / g["total"], 1),
+                     "owner": units.get(o["owner"][len("unit "):], o["owner"])
+                     if o.get("until_apply") else o["owner"]} for o in g["others"]],
          "instances": [{**r, "gib": round(r["bytes"] / ollama_vram.GIB, 1), "name": names.get(r["id"], r["id"]),
                         "label": labels.get(r["id"], r["id"]), "model": models.get(r["id"], ""),
                         "pct": round(r["bytes"] * 100 / g["total"], 1)} for r in g["instances"]]}
-        for g in ollama_vram.gpu_view(gpus, enabled, needs, measured=measured)]
+        for g in ollama_vram.gpu_view(gpus, enabled, needs, measured=measured, pending=pending)]
 
 
 def _ollama_needs(cfg: dict, insts: list[dict], users: dict | None = None,
@@ -8258,9 +8324,11 @@ def _library_view(cfg: dict) -> dict:
         setups = OI.setups(cfg)
     except OI.InstanceError:
         setups = []
+    import model_library as ML
+    users = ML.model_users(cfg)
     rows = []
     for m in doc.get("models") or []:
-        used = [st["name"] or st["id"] for st in setups if st["model"] == m["id"]]
+        used = users.get(m["id"], [])
         results = tests.get(m["id"]) or {}
         rows.append({
             **m, "gib": round(int(m.get("bytes") or 0) / 2**30, 1), "short": OI.short_model(m["id"]),
@@ -8275,7 +8343,7 @@ def _library_view(cfg: dict) -> dict:
     queued = []
     with contextlib.suppress(OSError, ValueError):
         queued = json.loads((CONFIG.parent / LIBRARY_QUEUE).read_text()) or []
-    return {"models": rows, "queued": queued,
+    return {"models": rows, "queued": queued, "ollama_unreachable": bool(doc.get("ollama_unreachable")),
             "at": time.strftime("%Y-%m-%d %H:%M", time.localtime(doc["at"])) if doc.get("at") else "",
             "disk_free_gib": round(int(doc.get("disk_free") or 0) / 2**30) if doc.get("disk_free") else None}
 
@@ -8304,8 +8372,8 @@ def library_queue():
         flash(str(exc), "error")
         return redirect(url_for("models_page") + "#library")
     if job["op"] == "delete" and job["model"] in ML.used_models(load_config()):
-        flash(_t_or("admin.models.library_in_use", "{model} is used by a setup; pick another model "
-                    "for it first.", model=job["model"]), "error")
+        flash(_t_or("admin.models.library_in_use", "{model} is in use; move what uses it to "
+                    "another model first.", model=job["model"]), "error")
         return redirect(url_for("models_page") + "#library")
     path = CONFIG.parent / LIBRARY_QUEUE
     jobs = []

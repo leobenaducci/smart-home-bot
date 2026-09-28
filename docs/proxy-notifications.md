@@ -234,6 +234,13 @@ features — see `NtfyClientService.handleMessage`:
 - `family_sms` (body JSON `{id, thread_name, from_name, text, urgent, to}`) →
   a message this phone sent has not reached `to` in three minutes: text it to
   them from this SIM. See [family-chat.md](family-chat.md).
+- `device_cmd` (body JSON `{device_id, cmd, action, by, …}`) → one command
+  for **one** device: `volume` (`level` 0-100 or `step`), `open_app`
+  (`package`, `label`), `ring` / `ring_stop`. Every device signed in as the
+  owner hears it; only the one whose `device_id` it names acts
+  (`DeviceCommands`), and only if remote control was switched on there
+  (menu → **This device**). The device answers `POST /devices/api/ack`, so
+  Alfred says what happened. See [devices.md](devices.md).
 
 HomeCore sends these via `_geo_push_control` / `_geo_notify_sync`.
 

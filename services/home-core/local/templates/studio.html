@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="{{ lang or 'es' }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{{ strings.title }}</title>
+  <link rel="stylesheet" href="/static/vendor/fonts/house.css">
+  <style>
+    /* The house tokens (menu.html has the long explanation of each). */
+    :root {
+      --plaster:#EFE9DC; --paper:#FBF8F1; --paper-2:#fff;
+      --ink:#2B2721; --ink-soft:#6E665A;
+      --wall:#3C4630; --wall-fg:#DAD4C2;
+      --olive:#57633F; --olive-2:#7E8A61;
+      --honey:#C6892B; --honey-lt:#EBD49B; --clay:#AC4B36; --line:#E3DACA;
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+      --r-lg: 16px; --r: 10px; --r-sm: 8px; --r-pill: 999px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; background: var(--plaster); font-family: var(--sans); color: var(--ink);
+           -webkit-font-smoothing: antialiased; }
+    header { background: var(--wall); color: var(--wall-fg); padding: 14px 20px; display: flex; align-items: center; gap: 13px; }
+    header .plate { width: 40px; height: 40px; flex: none; display: grid; place-items: center;
+      background: linear-gradient(160deg, rgba(255,255,255,.15), rgba(0,0,0,.17));
+      border: 1px solid rgba(235,212,155,.25); border-radius: 12px; font-size: 1.3rem; }
+    header h1 { font-family: var(--display); font-size: 1.15rem; font-weight: 700; color: #F3EEDF; }
+    header .hlink { margin-left: auto; color: var(--wall-fg); text-decoration: none; font-size: .8rem; font-weight: 600;
+      padding: 7px 11px; border-radius: 10px; border: 1px solid rgba(218,212,194,.16); }
+    main { max-width: 980px; margin: 18px auto 120px; padding: 0 16px; }
+    h2 { font-family: var(--display); font-size: 1.2rem; margin: 6px 0 12px; }
+    .muted { color: var(--ink-soft); font-size: .8rem; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .grow { flex: 1; }
+    button, .btn { font: inherit; font-size: .82rem; font-weight: 700; border-radius: var(--r); cursor: pointer;
+      border: 1px solid var(--line); background: var(--paper-2); color: var(--olive); padding: 8px 12px;
+      text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+    button:hover, .btn:hover { border-color: var(--honey); color: var(--honey); }
+    button.primary { background: var(--olive); color: #fff; border-color: var(--olive); }
+    button.primary:hover { background: var(--honey); border-color: var(--honey); color: #fff; }
+    button.danger { color: var(--clay); }
+    button:disabled { opacity: .5; cursor: default; }
+    input, select, textarea { font: inherit; font-size: .88rem; color: var(--ink); background: var(--paper);
+      border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; width: 100%; }
+    textarea { resize: vertical; min-height: 64px; }
+    label.f { display: block; font-size: .72rem; font-weight: 700; color: var(--olive); text-transform: uppercase;
+      letter-spacing: .08em; margin: 10px 0 4px; }
+    .card { background: var(--paper-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; margin-bottom: 12px; }
+    .pill { font-size: .66rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; padding: 3px 8px;
+      border-radius: var(--r-pill); background: rgba(126,138,97,.14); color: var(--olive); white-space: nowrap; }
+    .pill.run { background: rgba(198,137,43,.18); color: #8A5E17; }
+    .pill.bad { background: rgba(172,75,54,.14); color: var(--clay); }
+    .pill.ok { background: rgba(87,99,63,.16); color: var(--olive); }
+
+    /* The card's state, always in view. */
+    #gpu { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--line);
+      padding: 8px 20px; display: flex; gap: 10px; align-items: center; font-size: .82rem; cursor: pointer; }
+    #gpu .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--olive-2); flex: none; }
+    #gpu.busy .dot { background: var(--honey); animation: pulse 1.4s ease-in-out infinite; }
+    #gpu.paused .dot { background: var(--clay); }
+    #gpu .bar { flex: 1; max-width: 220px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+    #gpu .bar i { display: block; height: 100%; background: var(--honey); width: 0; transition: width .6s; }
+    @keyframes pulse { 50% { opacity: .35 } }
+    @media (prefers-reduced-motion: reduce) { #gpu.busy .dot { animation: none; } }
+
+    /* Queue drawer */
+    #queue { display: none; background: var(--paper-2); border-bottom: 1px solid var(--line); padding: 12px 20px; }
+    #queue.open { display: block; }
+    .qrow { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); font-size: .84rem; }
+    .qrow:first-child { border-top: 0; }
+    .qrow .pos { font-family: var(--mono); color: var(--ink-soft); width: 32px; }
+    .qrow.mine { font-weight: 700; }
+
+    /* Projects */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .pcard { background: var(--paper-2); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; cursor: pointer; }
+    .pcard:hover { border-color: var(--honey); }
+    .pcard .cover { aspect-ratio: 16/9; background: var(--wall) center/cover no-repeat; display: grid; place-items: center; font-size: 2rem; }
+    .pcard .body { padding: 10px 12px; }
+    .pcard .name { font-weight: 800; }
+    .pcard.new .cover { background: var(--paper); color: var(--olive); }
+
+    /* Editor */
+    .tabs { display: flex; gap: 6px; overflow-x: auto; margin: 12px 0; }
+    .tabs button.on { background: var(--honey); color: #fff; border-color: var(--honey); }
+    .shot { display: grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 14px; }
+    @media (max-width: 720px) { .shot { grid-template-columns: 1fr; } }
+    .media { background: #1d1f18; border-radius: var(--r); overflow: hidden; aspect-ratio: 16/9; display: grid; place-items: center; color: #aaa; font-size: .8rem; }
+    .media video, .media img { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+    .takes { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+    .takes button { padding: 3px 8px; font-size: .72rem; }
+    .takes button.on { background: var(--olive); color: #fff; }
+    .link { text-align: center; color: var(--olive-2); font-size: .72rem; margin: -6px 0 6px; }
+    .timeline { display: flex; gap: 3px; overflow-x: auto; padding: 8px 0; }
+    .timeline div { flex: none; height: 38px; border-radius: 6px; background: var(--line) center/cover; border: 2px solid transparent;
+      font-size: .66rem; color: #fff; display: grid; place-items: center; text-shadow: 0 1px 2px #000; cursor: pointer; }
+    .timeline div.made { background-color: var(--olive-2); }
+    .timeline div.job { border-color: var(--honey); }
+    audio { width: 100%; margin-top: 6px; }
+    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 8px; }
+    .gallery img { width: 100%; border-radius: var(--r-sm); cursor: zoom-in; display: block; }
+    .note { background: rgba(198,137,43,.12); border-radius: var(--r); padding: 8px 12px; font-size: .82rem; margin: 8px 0; }
+    .err { background: rgba(172,75,54,.12); color: var(--clay); }
+    footer { text-align: center; font-size: .72rem; color: var(--ink-soft); margin: 30px 0; }
+    #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--wall); color: #fff;
+      padding: 10px 16px; border-radius: var(--r); font-size: .84rem; display: none; z-index: 20; max-width: 92vw; }
+    /* The theme's own card colours. A <dialog> takes the browser's white and
+       black otherwise, which on a dark household theme put the theme's pale
+       text on white: help lines and estimates that could not be read. */
+    dialog { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; max-width: 520px; width: 92vw;
+             background: var(--paper-2); color: var(--ink); }
+    dialog h2 { color: var(--ink); }
+    dialog p.muted { font-size: .86rem; line-height: 1.45; }
+    dialog::backdrop { background: rgba(0,0,0,.4); }
+    img.live { width: 100%; border-radius: var(--r-sm); display: block; background: #000; }
+    dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }
+  </style>
+  <link rel="stylesheet" href="/theme.css">
+</head>
+<body>
+  <header>
+    <span class="plate">🎬</span>
+    <h1>{{ strings.title }}</h1>
+    <a href="/chat" class="hlink">🤵 Alfred</a>
+  </header>
+
+  {% if not configured %}
+  <main><div class="card">{{ strings.not_configured }}</div></main>
+  {% else %}
+  <div id="gpu" role="button" aria-expanded="false" aria-controls="queue">
+    <span class="dot"></span><span id="gpu-text">…</span><span class="bar"><i></i></span>
+    <span class="grow"></span><span class="muted" id="gpu-count"></span>
+  </div>
+  <section id="queue" aria-live="polite"></section>
+
+  <main>
+    <section id="v-list">
+      <h2>{{ strings.projects }}</h2>
+      <div class="grid" id="plist"></div>
+    </section>
+    <section id="v-edit" hidden></section>
+    <footer>{{ strings.made_with }}</footer>
+  </main>
+  <div id="toast" role="status"></div>
+  <dialog id="dlg"></dialog>
+  {% endif %}
+
+  {# Always emitted, so test_templates_parse.py checks it; it does nothing on
+     a page without the studio's markup. #}
+  <script>
+  (function () {
+    'use strict';
+    if (!document.getElementById('gpu')) return;
+    var S = {{ strings | tojson }};
+    var IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+    var CSRF = document.querySelector('meta[name=csrf-token]').content;
+    var $ = function (sel, root) { return (root || document).querySelector(sel); };
+    function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function fmt(key, vars) { return (S[key] || key).replace(/\{(\w+)\}/g, function (_, k) { return vars[k]; }); }
+    function dur(s) {
+      s = Math.max(0, Math.round(s || 0));
+      if (s < 60) return s + ' ' + S.sec;
+      if (s < 3600) return Math.round(s / 60) + ' ' + S.min;
+      return (s / 3600).toFixed(1) + ' ' + S.hours;
+    }
+    function toast(text, bad) {
+      var t = $('#toast'); t.textContent = text; t.style.background = bad ? 'var(--clay)' : 'var(--wall)';
+      t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(function () { t.style.display = 'none'; }, 5000);
+    }
+    async function api(path, opts) {
+      opts = opts || {};
+      var init = { method: opts.method || 'GET', headers: {} };
+      if (opts.body !== undefined) {
+        if (opts.body instanceof FormData) init.body = opts.body;
+        else { init.body = JSON.stringify(opts.body); init.headers['Content-Type'] = 'application/json'; }
+      }
+      if (init.method !== 'GET') init.headers['X-CSRF-Token'] = CSRF;
+      var r = await fetch('/studio/api/' + path, init);
+      var d = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
+      return d;
+    }
+    function fileUrl(pid, rel) { return '/studio/api/projects/' + pid + '/file/' + rel.split('/').map(encodeURIComponent).join('/'); }
+    // A download, not a link: `?download=` has the portal send the file as an
+    // attachment under this name, which is what makes the Android app hand it
+    // to the phone's downloads (the `download` attribute alone does nothing
+    // in a WebView). The extension is the file's own; the portal adds it.
+    function dlLink(pid, rel, name) {
+      return '<a class="btn" download href="' + fileUrl(pid, rel) + '?download=' + encodeURIComponent(name) + '">⬇ ' + S.download + '</a>';
+    }
+
+    // ── The card and the queue ───────────────────────────────────────────
+    var queueState = null;
+    async function loadQueue() {
+      if (document.hidden) return;
+      try { queueState = await api('queue'); } catch (e) { $('#gpu-text').textContent = S.unreachable; return; }
+      var q = queueState, run = q.running, g = $('#gpu');
+      g.classList.toggle('busy', !!run); g.classList.toggle('paused', !!q.status.paused);
+      $('#gpu-text').textContent = q.status.paused ? S.card_paused : run
+        ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) })
+        : S.card_free;
+      $('#gpu .bar i').style.width = run ? Math.round(run.progress * 100) + '%' : '0';
+      $('#gpu-count').textContent = q.queued.length ? q.queued.length + ' ' + S.queue.toLowerCase() : '';
+      drawQueue();
+      if (current) syncJobs();
+    }
+    function drawQueue() {
+      var q = queueState, box = $('#queue');
+      if (!q || !box.classList.contains('open')) return;
+      var rows = [];
+      if (q.running) {
+        var r = q.running;
+        rows.push(qrow(r, '▶', '<span class="pill run">' + S.state_running + ' ' + Math.round(r.progress * 100) + '%</span>'));
+      }
+      q.queued.forEach(function (j) {
+        rows.push(qrow(j, fmt('position', { n: j.position }),
+          '<span class="muted">' + (j.starts_in ? fmt('starts_in', { t: dur(j.starts_in) }) : S.starts_now) +
+          ' · ' + fmt('takes_about', { t: dur(j.takes) }) + '</span>'));
+      });
+      var admin = IS_ADMIN ? '<div class="row" style="margin-top:8px"><button data-admin="' + (q.status.paused ? 'resume' : 'pause') + '">' +
+        (q.status.paused ? S.resume : S.pause) + '</button></div>' : '';
+      box.innerHTML = (rows.length ? rows.join('') : '<p class="muted">' + S.queue_empty + '</p>') + admin;
+    }
+    function qrow(j, pos, right) {
+      var who = j.mine ? S.yours : esc(j.owner_name);
+      var title = j.title ? ' — ' + esc(j.title) : '';
+      var can = j.mine || IS_ADMIN;
+      return '<div class="qrow' + (j.mine ? ' mine' : '') + '"><span class="pos">' + pos + '</span>' +
+        '<span class="grow">' + esc(j.what) + ' · ' + who + title + '</span>' + right +
+        (can ? ' <button class="danger" data-cancel="' + j.id + '">' + S.cancel + '</button>' : '') +
+        (IS_ADMIN && j.state === 'queued' && !j.mine ? ' <button data-raise="' + j.id + '">' + S.raise + '</button>' : '') + '</div>';
+    }
+    $('#gpu').addEventListener('click', function () {
+      var box = $('#queue'), open = !box.classList.contains('open');
+      box.classList.toggle('open', open); this.setAttribute('aria-expanded', open); drawQueue();
+    });
+    $('#queue').addEventListener('click', async function (ev) {
+      var b = ev.target.closest('button'); if (!b) return;
+      try {
+        if (b.dataset.cancel) { if (!confirm(S.cancel_confirm)) return; await api('jobs/' + b.dataset.cancel, { method: 'DELETE' }); }
+        else if (b.dataset.admin) await api('admin/' + b.dataset.admin, { method: 'POST', body: {} });
+        else if (b.dataset.raise) await api('admin/priority', { method: 'POST', body: { id: b.dataset.raise, priority: 10 } });
+        loadQueue();
+      } catch (e) { toast(fmt('err', { e: e.message }), true); }
+    });
+
+    // ── Projects ────────────────────────────────────────────────────────────
+    async function loadList() {
+      var d = await api('projects');
+      var html = '<div class="pcard new" data-new="1"><div class="cover">＋</div><div class="body"><div class="name">' + S.new_project + '</div></div></div>';
+      d.projects.forEach(function (p) {
+        var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
+        html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : '🎬') + '</div>' +
+          '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
+          '</div><div class="muted">🎬 ' + p.shots + ' · 🎵 ' + p.audio + ' · 🖼️ ' + p.images + '</div></div></div>';
+      });
+      $('#plist').innerHTML = html;
+      if (!d.projects.length) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + S.empty_projects + '</p>');
+    }
+    $('#plist').addEventListener('click', async function (ev) {
+      var c = ev.target.closest('.pcard'); if (!c) return;
+      if (c.dataset.new) {
+        var name = prompt(S.new_project_name, S.untitled); if (name === null) return;
+        var p = await api('projects', { method: 'POST', body: { name: name } });
+        openProject(p.id);
+      } else openProject(c.dataset.id);
+    });
+
+    // ── The editor ─────────────────────────────────────────────────────────
+    // `busy` counts requests in flight (lyrics, uploads) and `saving` a save:
+    // the periodic refresh waits for both, or it replaces the project under
+    // them and what they bring back is written into a copy nobody sees -- the
+    // lyrics Alfred wrote vanished exactly that way (2026-09-28).
+    var current = null, tab = 'video', saveTimer = null, dirty = false, saving = false, busy = 0;
+    // What a song is about is only an input for Alfred, not part of the
+    // project; kept here so a redraw does not empty the box.
+    var themes = {};
+    async function openProject(pid) {
+      current = await api('projects/' + pid);
+      history.replaceState(null, '', '/studio?project=' + pid);
+      $('#v-list').hidden = true; $('#v-edit').hidden = false;
+      drawEditor();
+    }
+    function closeProject() {
+      flushSave(); current = null; history.replaceState(null, '', '/studio');
+      $('#v-edit').hidden = true; $('#v-list').hidden = false; var e = $('#pempty'); if (e) e.remove(); loadList();
+    }
+    function jobFor(itemId) { return (current.jobs || []).find(function (j) { return j.target === itemId; }); }
+    function statusPill(item) {
+      var j = jobFor(item.id);
+      // Anything queued or on the card can be stopped from its own card.
+      var stop = j ? ' <button class="danger" data-cancel-job="' + j.id + '">✕ ' + S.cancel + '</button>' : '';
+      if (j && j.state === 'running') return '<span class="pill run">' + S.state_running + ' ' + Math.round(j.progress * 100) + '%</span>' + stop;
+      if (j && j.state === 'queued') {
+        var qj = queueState && queueState.queued.find(function (x) { return x.id === j.id; });
+        return '<span class="pill run">' + S.state_queued + (qj ? ' ' + fmt('position', { n: qj.position }) + ' · ' +
+          (qj.starts_in ? fmt('starts_in', { t: dur(qj.starts_in) }) : S.starts_now) : '') + '</span>' + stop;
+      }
+      return (item.takes || []).length ? '<span class="pill ok">' + S.state_done + '</span>' : '<span class="pill">' + S.no_take + '</span>';
+    }
+    // What the card has so far for a running job of this person's, refreshed
+    // by the timer at the bottom while it works. Null when there is none yet.
+    function livePreview(item) {
+      var j = jobFor(item.id);
+      if (!j || j.state !== 'running' || !j.preview) return null;
+      var src = '/studio/api/jobs/' + j.id + '/preview';
+      return '<img class="live" data-src="' + src + '" src="' + src + '?t=' + Date.now() + '" alt="">' +
+        '<div class="muted" style="font-size:.76rem">' + S.live_preview + '</div>';
+    }
+    function chosen(item) {
+      var t = item.takes || [], i = item.chosen;
+      return (i >= 0 && i < t.length) ? t[i] : t[t.length - 1];
+    }
+    function takesRow(item) {
+      if (!(item.takes || []).length) return '';
+      var cur = item.takes.indexOf(chosen(item));
+      var shown = item.takes[cur];
+      return '<div class="takes"><span class="muted">' + S.takes + ':</span>' + item.takes.map(function (tk, i) {
+        return '<button data-choose="' + item.id + '" data-i="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + (i + 1) + (tk.favorite ? ' ⭐' : '') + '</button>';
+      }).join('') + (shown && shown.id ? favButton(item.id, shown) + delTake(item.id, shown.id) : '') + '</div>';
+    }
+    // Deletes the version for good -- its file and its frames -- which is why
+    // it asks, and why it is the only thing on this page that deletes a file.
+    // The favourite version is the one used, and a new version no longer
+    // takes its place. On the version shown: mark it, or unmark it.
+    function favButton(itemId, take) {
+      return '<button data-fav="' + itemId + '" data-take="' + (take.favorite ? '' : take.id) + '" title="' +
+        esc(take.favorite ? S.favorite_clear : S.favorite_set) + '">' + (take.favorite ? '⭐' : '☆') + '</button>';
+    }
+    function delTake(itemId, takeId) {
+      return '<button class="danger" data-del-take="' + itemId + '" data-take="' + takeId + '" title="' + esc(S.delete_take) + '">🗑</button>';
+    }
+    function drawEditor() {
+      var p = current;
+      var html = '<div class="row"><button id="back">← ' + S.back + '</button>' +
+        '<input id="pname" class="grow" style="font-weight:800;font-size:1.05rem" value="' + esc(p.name) + '">' +
+        '<span class="muted" id="saved">' + S.saved + '</span></div>' +
+        '<div class="tabs">' + ['video', 'audio', 'images', 'files'].map(function (t) {
+          return '<button data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
+        }).join('') + '<span class="grow"></span><button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div>' +
+        '<div id="tabbody"></div>';
+      $('#v-edit').innerHTML = html;
+      drawTab();
+    }
+    function drawTab() {
+      var body = $('#tabbody');
+      if (tab === 'video') body.innerHTML = videoTab();
+      else if (tab === 'audio') body.innerHTML = audioTab();
+      else if (tab === 'images') body.innerHTML = imagesTab();
+      else body.innerHTML = filesTab();
+    }
+
+    // Video
+    function videoTab() {
+      var p = current, shots = p.shots || [];
+      var total = shots.reduce(function (a, s) { return a + (s.seconds || 5); }, 0);
+      var opt = function (v, k) { return '<option value="' + v + '"' + (p.settings.resolution === v ? ' selected' : '') + '>' + S[k] + '</option>'; };
+      var html = '<div class="card"><div class="row"><label class="f" style="margin:0">' + S.resolution + '</label>' +
+        '<select id="res" style="width:auto">' + opt('832x480', 'res_wide') + opt('480x832', 'res_tall') + opt('640x640', 'res_square') + '</select>' +
+        '<label class="f" style="margin:0">' + S.language + '</label><select id="lang" style="width:auto">' +
+        '<option value="es"' + (p.settings.language === 'es' ? ' selected' : '') + '>Español</option>' +
+        '<option value="en"' + (p.settings.language === 'en' ? ' selected' : '') + '>English</option></select>' +
+        '<span class="grow"></span><span class="muted">' + fmt('shots_total', { n: shots.length, s: Math.round(total) }) + '</span></div>' +
+        '<div class="timeline">' + shots.map(function (s, i) {
+          var t = chosen(s), j = jobFor(s.id);
+          var bg = t && t.first ? ' style="width:' + (18 + (s.seconds || 5) * 6) + 'px;background-image:url(\'' + fileUrl(p.id, t.first) + '\')"' : ' style="width:' + (18 + (s.seconds || 5) * 6) + 'px"';
+          return '<div data-jump="' + s.id + '" class="' + (t ? 'made' : '') + (j ? ' job' : '') + '"' + bg + '>' + (i + 1) + '</div>';
+        }).join('') + '</div></div>';
+      shots.forEach(function (s, i) {
+        var t = chosen(s);
+        if (i > 0) html += '<div class="link">' + (s.continuity !== false ? '⛓ ' + S.continuity : '✂') + '</div>';
+        var live = livePreview(s);
+        var media = live ? live : t && t.file
+          ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '"></video>'
+          : '<span>' + S.no_take + '</span>';
+        var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
+        var startSel = (i === 0 || s.continuity === false) && refs.length ? '<label class="f">' + S.start_image + '</label><select data-f="refs" data-id="' + s.id + '"><option value="">' + S.none + '</option>' +
+          refs.map(function (u) { return '<option value="' + esc(u.file) + '"' + ((s.refs || [])[0] === u.file ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' : '';
+        html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>' + S.shot + ' ' + (i + 1) + '</b>' + statusPill(s) +
+          '<span class="grow"></span><button data-up="' + s.id + '" title="' + S.move_up + '">↑</button><button data-down="' + s.id + '" title="' + S.move_down + '">↓</button>' +
+          '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + S.remove + '">✕</button></div>' +
+          '<div class="shot"><div><div class="media">' + media + '</div>' + takesRow(s) +
+          (t && t.file ? '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + S.shot + ' ' + (i + 1)) + '</div>' : '') + '</div><div>' +
+          '<label class="f">' + S.shot_what + '</label><textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
+          '<label class="f">' + S.shot_says + '</label><textarea data-f="dialogue" data-id="' + s.id + '" rows="2" placeholder="' + esc(S.shot_says_ph) + '">' + esc(s.dialogue) + '</textarea>' +
+          '<div class="row"><div class="grow"><label class="f">' + S.shot_sound + '</label><input data-f="soundscape" data-id="' + s.id + '" placeholder="' + esc(S.shot_sound_ph) + '" value="' + esc(s.soundscape) + '"></div>' +
+          '<div class="grow"><label class="f">' + S.shot_music + '</label><input data-f="music" data-id="' + s.id + '" placeholder="' + esc(S.shot_music_ph) + '" value="' + esc(s.music) + '"></div></div>' +
+          // A shot cut to the music keeps its cut: a slider would move it off
+          // the beat and push every shot after it off the song.
+          (s.exact ? '<p class="muted" style="margin-top:6px">🎵 ' + fmt('shot_cut', { s: (+s.seconds).toFixed(1), at: clock(s.start) }) + '</p>' :
+          '<label class="f">' + S.shot_seconds + ': <span>' + (s.seconds || 5) + '</span> ' + S.sec + '</label><input type="range" min="5" max="20" step="1" data-f="seconds" data-id="' + s.id + '" value="' + (s.seconds || 5) + '">') +
+          (i > 0 ? '<label class="row" style="margin-top:8px;font-size:.84rem"><input type="checkbox" style="width:auto" data-f="continuity" data-id="' + s.id + '"' + (s.continuity !== false ? ' checked' : '') + '> ' + S.continuity + '</label>' : '') +
+          startSel +
+          '<div class="row" style="margin-top:10px"><button class="primary" data-gen="' + s.id + '">' + ((s.takes || []).length ? S.regenerate : S.generate) + '</button>' +
+          ((s.takes || []).length ? '<button data-retouch="' + s.id + '">' + S.retouch + '</button>' : '') + '</div>' +
+          '</div></div></div>';
+      });
+      html += '<div class="row"><button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
+        '<span class="grow"></span>' +
+        ((p.jobs || []).length ? '<button class="danger" id="cancel-all">✕ ' + fmt('cancel_all', { n: p.jobs.length }) + '</button>' : '') +
+        '<button class="primary" id="gen-pending">' + S.generate_pending + '</button>' +
+        (shots.length ? '<button id="preview">▶ ' + S.preview + '</button>' : '') +
+        '<button id="render">🎞️ ' + S.render + '</button></div>';
+      var renders = (p.renders || []).slice().reverse();
+      if (p.render && p.render.state === 'running') html += '<div class="note">' + S.render_running + '</div>';
+      if (p.render && p.render.state === 'failed') html += '<div class="note err">' + S.render_failed + ': ' + esc(p.render.error) + '</div>';
+      if (renders.length) {
+        html += '<h2 style="margin-top:20px">' + S.renders + '</h2>' + renders.map(function (r) {
+          return '<div class="card"><video controls preload="metadata" style="width:100%;border-radius:8px" src="' + fileUrl(p.id, r.file) + '"></video>' +
+            '<div class="row"><span class="muted">' + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
+            dlLink(p.id, r.file, p.name) + '</div></div>';
+        }).join('');
+      }
+      return html;
+    }
+
+    // Music & voices
+    function audioTab() {
+      var p = current, items = p.audio || [];
+      var uploads = (p.uploads || []).filter(function (u) { return u.kind === 'voice'; });
+      var html = '';
+      items.forEach(function (a) {
+        var t = chosen(a), kind = a.kind || 'song';
+        html += '<div class="card" id="audio-' + a.id + '"><div class="row" style="margin-bottom:6px"><b>' + S['kind_' + kind] + '</b>' + statusPill(a) +
+          '<span class="grow"></span><button class="danger" data-remove="audio" data-id="' + a.id + '">✕</button></div>' +
+          '<input data-f="title" data-id="' + a.id + '" placeholder="' + S.untitled + '" value="' + esc(a.title) + '">';
+        if (kind === 'song') {
+          html += '<label class="f">' + S.song_theme + '</label><div class="row"><input class="grow" data-theme="' + a.id + '" placeholder="' + esc(S.song_theme_ph) + '" value="' + esc(themes[a.id] || '') + '" style="width:auto">' +
+            '<button data-lyrics="' + a.id + '">✨ ' + S.write_lyrics + '</button></div>' +
+            '<label class="f">' + S.lyrics + '</label><textarea rows="8" data-f="lyrics" data-id="' + a.id + '" placeholder="' + esc(S.lyrics_ph) + '">' + esc(a.lyrics) + '</textarea>' +
+            '<label class="f">' + S.style + '</label><input data-f="style" data-id="' + a.id + '" placeholder="' + esc(S.style_ph) + '" value="' + esc(a.style) + '">' +
+            '<div class="row"><div class="grow"><label class="f">' + S.seconds + '</label><input type="number" min="10" max="600" data-f="seconds" data-id="' + a.id + '" value="' + (a.seconds || 60) + '"></div>' +
+            '<div class="grow"><label class="f">' + S.bpm + '</label><input type="number" min="30" max="300" data-f="bpm" data-id="' + a.id + '" value="' + (a.bpm || '') + '"></div>' +
+            '<div class="grow"><label class="f">' + S.language + '</label><select data-f="language" data-id="' + a.id + '"><option value="es"' + (a.language !== 'en' ? ' selected' : '') + '>Español</option><option value="en"' + (a.language === 'en' ? ' selected' : '') + '>English</option></select></div></div>';
+        } else if (kind === 'instrumental') {
+          html += '<label class="f">' + S.style + '</label><textarea rows="2" data-f="style" data-id="' + a.id + '" placeholder="' + esc(S.inst_ph) + '">' + esc(a.style) + '</textarea>' +
+            '<label class="f">' + S.seconds + '</label><input type="number" min="5" max="380" data-f="seconds" data-id="' + a.id + '" value="' + (a.seconds || 30) + '">';
+        } else {
+          html += '<label class="f">' + S.voice_sample + '</label><select data-f="voice" data-id="' + a.id + '"><option value="">' + S.none + '</option>' +
+            uploads.map(function (u) { return '<option value="' + esc(u.file) + '"' + (a.voice === u.file ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' +
+            '<p class="muted" style="margin-top:4px">' + S.voice_sample_help + '</p>' +
+            '<label class="f">' + S.voice_text + '</label><textarea rows="4" data-f="text" data-id="' + a.id + '" placeholder="' + esc(S.voice_text_ph) + '">' + esc(a.text) + '</textarea>';
+        }
+        html += (t && t.file ? '<audio controls preload="none" src="' + fileUrl(p.id, t.file) + '"></audio>' : '') + takesRow(a) +
+          '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
+          (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) +
+            '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>' +
+            (kind === 'song' ? '<button data-rs="' + a.id + '">✏️ ' + S.rs_button + '</button>' : '') : '') + '</div></div>';
+      });
+      html += '<div class="row"><button data-add-audio="song">＋ 🎤 ' + S.add_song + '</button><button data-add-audio="instrumental">＋ 🎹 ' + S.add_instrumental + '</button>' +
+        '<button data-add-audio="voice">＋ 🗣️ ' + S.add_voice + '</button></div>';
+      return html;
+    }
+
+    // Pictures
+    function imagesTab() {
+      var p = current, html = '';
+      (p.images || []).forEach(function (im, n) {
+        var sizes = [['1024x1024', 'size_square'], ['1344x768', 'size_wide'], ['768x1344', 'size_tall']];
+        html += '<div class="card" id="image-' + im.id + '"><div class="row" style="margin-bottom:6px">' + statusPill(im) + '<span class="grow"></span>' +
+          '<button class="danger" data-remove="images" data-id="' + im.id + '">✕</button></div>' +
+          '<label class="f">' + S.image_prompt + '</label><textarea data-f="prompt" data-id="' + im.id + '" placeholder="' + esc(S.image_prompt_ph) + '">' + esc(im.prompt) + '</textarea>' +
+          '<div class="row"><label class="f" style="margin:0">' + S.size + '</label><select style="width:auto" data-f="size" data-id="' + im.id + '">' + sizes.map(function (s) {
+            return '<option value="' + s[0] + '"' + ((im.size || '1024x1024') === s[0] ? ' selected' : '') + '>' + S[s[1]] + '</option>';
+          }).join('') + '</select><span class="grow"></span><button class="primary" data-gen="' + im.id + '">' + ((im.takes || []).length ? S.regenerate : S.generate) + '</button></div>' +
+          (livePreview(im) ? '<div style="margin-top:8px;max-width:320px">' + livePreview(im) + '</div>' : '') +
+          ((im.takes || []).length ? '<div class="gallery">' + im.takes.map(function (t, k) {
+            return '<div><a href="' + fileUrl(p.id, t.file) + '" target="_blank"><img loading="lazy" src="' + fileUrl(p.id, t.file) + '" alt=""></a>' +
+              '<div class="row" style="margin-top:4px">' + dlLink(p.id, t.file, p.name + ' - ' + (n + 1) + '.' + (k + 1)) +
+              (t.id ? favButton(im.id, t) + delTake(im.id, t.id) : '') + '</div></div>';
+          }).join('') + '</div>' : '') + '</div>';
+      });
+      return html + '<button id="add-image">＋ 🖼️ ' + S.add_image + '</button>';
+    }
+
+    // Files
+    function filesTab() {
+      var p = current, up = p.uploads || [];
+      function list(kind) {
+        var l = up.filter(function (u) { return u.kind === kind; });
+        return l.length ? l.map(function (u) {
+          var prev = kind === 'voice' ? '<audio controls preload="none" src="' + fileUrl(p.id, u.file) + '"></audio>' :
+            '<img src="' + fileUrl(p.id, u.file) + '" style="max-width:120px;border-radius:6px">';
+          return '<div class="row" style="margin:6px 0">' + prev + '<span class="muted grow">' + esc(u.name) + '</span>' +
+            '<button class="danger" data-del-upload="' + esc(u.file.replace(/^uploads\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div>';
+        }).join('') : '<p class="muted">' + S.no_files + '</p>';
+      }
+      return '<div class="card"><b>' + S.upload_ref + '</b>' + list('reference') +
+        '<div class="row" style="margin-top:8px"><input type="file" accept="image/*" data-upload="reference" style="width:auto"></div></div>' +
+        '<div class="card"><b>' + S.upload_voice + '</b><p class="muted">' + S.voice_sample_help + '</p>' + list('voice') +
+        '<div class="row" style="margin-top:8px"><input type="file" accept="audio/*" data-upload="voice" style="width:auto"></div></div>';
+    }
+
+    // ── Editing and saving ────────────────────────────────────────────────
+    function itemById(id) {
+      var p = current;
+      return (p.shots || []).find(function (s) { return s.id === id; }) || (p.audio || []).find(function (s) { return s.id === id; }) ||
+             (p.images || []).find(function (s) { return s.id === id; });
+    }
+    function markDirty() {
+      dirty = true; $('#saved').textContent = S.saving;
+      clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 700);
+    }
+    async function flushSave() {
+      clearTimeout(saveTimer);
+      if (!dirty || !current) return;
+      dirty = false; saving = true;
+      var p = current;
+      try {
+        var saved = await api('projects/' + p.id, { method: 'PUT', body: { name: p.name, settings: p.settings, shots: p.shots, audio: p.audio, images: p.images } });
+        ['shots', 'audio', 'images'].forEach(function (k) {       // ids the server gave new items
+          saved[k].forEach(function (it, i) { if (p[k][i]) p[k][i].id = it.id; });
+        });
+        var el = $('#saved'); if (el) el.textContent = S.saved;
+      } catch (e) { var el2 = $('#saved'); if (el2) el2.textContent = S.save_failed; toast(fmt('err', { e: e.message }), true); }
+      finally { saving = false; }
+    }
+    async function saveNow() { dirty = true; await flushSave(); current = await api('projects/' + current.id); }
+
+    document.addEventListener('input', function (ev) {
+      var el = ev.target;
+      if (!current) return;
+      if (el.id === 'pname') { current.name = el.value; markDirty(); return; }
+      if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
+      if (!el.dataset.f) return;
+      var item = itemById(el.dataset.id); if (!item) return;
+      var v = el.type === 'checkbox' ? el.checked : el.type === 'range' || el.type === 'number' ? Number(el.value) : el.value;
+      if (el.dataset.f === 'refs') v = el.value ? [el.value] : [];
+      item[el.dataset.f] = v;
+      if (el.type === 'range') el.previousElementSibling.querySelector('span').textContent = el.value;
+      markDirty();
+    });
+    document.addEventListener('change', async function (ev) {
+      var el = ev.target;
+      if (!current) return;
+      if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
+      if (el.dataset.f === 'continuity') { drawTab(); return; }
+      if (el.dataset.upload && el.files.length) {
+        var fd = new FormData(); fd.append('file', el.files[0]); fd.append('kind', el.dataset.upload);
+        toast(S.uploading);
+        busy++;
+        try { await api('projects/' + current.id + '/upload', { method: 'POST', body: fd }); current = await api('projects/' + current.id); drawTab(); }
+        catch (e) { toast(fmt('err', { e: e.message }), true); }
+        finally { busy--; }
+      }
+    });
+    function newItem(fields) { return Object.assign({ id: 'new' + Math.random().toString(36).slice(2, 10), takes: [], chosen: -1 }, fields); }
+
+    $('#v-edit').addEventListener('click', async function (ev) {
+      var b = ev.target.closest('button, [data-jump]'); if (!b || !current) return;
+      var p = current, d = b.dataset;
+      try {
+        if (b.id === 'back') return closeProject();
+        if (d.tab) { await flushSave(); tab = d.tab; drawEditor(); return; }
+        if (b.id === 'dup') { await flushSave(); var np = await api('projects/' + p.id + '/duplicate', { method: 'POST', body: {} }); return openProject(np.id); }
+        if (b.id === 'del') { if (!confirm(S.delete_confirm)) return; await api('projects/' + p.id, { method: 'DELETE' }); current = null; return closeProject(); }
+        if (d.jump) { var el = document.getElementById('shot-' + d.jump); if (el) el.scrollIntoView({ behavior: 'smooth' }); return; }
+        if (b.id === 'add-shot') { p.shots.push(newItem({ prompt: '', seconds: 5, continuity: true })); await saveNow(); drawTab(); return; }
+        if (b.id === 'add-image') { p.images.push(newItem({ prompt: '', size: '1024x1024' })); await saveNow(); drawTab(); return; }
+        if (d.addAudio) { p.audio.push(newItem({ kind: d.addAudio, seconds: d.addAudio === 'song' ? 90 : 30, language: p.settings.language })); await saveNow(); drawTab(); return; }
+        if (d.remove) {
+          if (!confirm(S.remove_confirm)) return;
+          p[d.remove] = p[d.remove].filter(function (x) { return x.id !== d.id; }); await saveNow(); drawTab(); return;
+        }
+        if (d.fav) {
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + d.fav + '/favorite', { method: 'POST', body: { take: d.take || '' } });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.delTake) {
+          if (!confirm(S.delete_take_confirm)) return;
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + d.delTake + '/takes/' + d.take, { method: 'DELETE' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.delUpload) {
+          if (!confirm(S.delete_upload_confirm)) return;
+          await flushSave();
+          await api('projects/' + p.id + '/uploads/' + encodeURIComponent(d.delUpload), { method: 'DELETE' });
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.up || d.down) {
+          var id = d.up || d.down, i = p.shots.findIndex(function (s) { return s.id === id; }), jdx = i + (d.up ? -1 : 1);
+          if (jdx < 0 || jdx >= p.shots.length) return;
+          var tmp = p.shots[i]; p.shots[i] = p.shots[jdx]; p.shots[jdx] = tmp; await saveNow(); drawTab(); return;
+        }
+        if (d.choose) { itemById(d.choose).chosen = Number(d.i); await saveNow(); drawTab(); return; }
+        if (d.gen) { await saveNow(); return generate([d.gen]); }
+        if (b.id === 'gen-pending') {
+          await saveNow();
+          var ids = p.shots.filter(function (s) { return !(s.takes || []).length && !jobFor(s.id); }).map(function (s) { return s.id; });
+          if (ids.length) generate(ids);
+          return;
+        }
+        if (d.lyrics) return lyricsDialog(d.lyrics, b);
+        if (d.mv) return musicVideo(d.mv);
+        if (d.rs) return retouchSong(d.rs);
+        if (d.cancelJob) {
+          if (!confirm(S.cancel_confirm)) return;
+          await api('jobs/' + d.cancelJob, { method: 'DELETE' });
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (b.id === 'cancel-all') {
+          var pending = (p.jobs || []).slice();
+          if (!pending.length || !confirm(fmt('cancel_all_confirm', { n: pending.length }))) return;
+          // The queued ones first: stopping the running one first would let
+          // the next start on the card before its own cancel arrived.
+          pending.sort(function (x, y) { return (x.state === 'running') - (y.state === 'running'); });
+          for (var k = 0; k < pending.length; k++) {
+            try { await api('jobs/' + pending[k].id, { method: 'DELETE' }); } catch (e) { /* already finished */ }
+          }
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (b.id === 'preview') return previewPlayer();
+        if (d.retouch) return retouch(d.retouch);
+        if (b.id === 'long-scene') return longScene();
+        if (b.id === 'render') return renderDialog();
+      } catch (e) { toast(fmt('err', { e: e.message }), true); }
+    });
+
+    async function generate(ids) {
+      var r = await api('projects/' + current.id + '/generate', { method: 'POST', body: { items: ids } });
+      var first = r.queued[0];
+      if (first) toast(fmt('queued_note', { n: Math.max(0, (first.position || 1) - 1), t: dur(first.starts_in || 0) }));
+      current = await api('projects/' + current.id); await loadQueue(); drawTab();
+    }
+    // Asked first, always: what Alfred brings back replaces the box. With
+    // lyrics already there the default is to keep them and change only what
+    // the person says (or just polish them); a new song is the other choice
+    // and says that it replaces them.
+    function lyricsDialog(id, btn) {
+      var theme = document.querySelector('[data-theme="' + id + '"]').value.trim();
+      var box = document.querySelector('textarea[data-f="lyrics"][data-id="' + id + '"]');
+      var has = !!(box && box.value.trim());
+      themes[id] = theme;
+      if (!has && !theme) { toast(S.lyrics_need_theme, true); return; }
+      var dlg = $('#dlg');
+      dlg.innerHTML = '<h2>' + S.write_lyrics + '</h2>' +
+        (has ? '<label class="choice"><input type="radio" name="ly-mode" value="edit" checked> ' + S.lyrics_mode_edit + '</label>' +
+               '<label class="choice"><input type="radio" name="ly-mode" value="new"> ' + S.lyrics_mode_new + '</label>'
+             : '<p>' + fmt('lyrics_confirm_new', { theme: esc(theme) }) + '</p>') +
+        '<label class="f">' + S.lyrics_notes + '</label><textarea id="ly-notes" rows="3" placeholder="' + esc(S.lyrics_notes_ph) + '"></textarea>' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ly-no">' + S.cancel + '</button><button class="primary" id="ly-go">' + S.lyrics_go + '</button></div>';
+      dlg.showModal();
+      $('#ly-no').onclick = function () { dlg.close(); };
+      $('#ly-go').onclick = function () {
+        var picked = dlg.querySelector('input[name="ly-mode"]:checked');
+        var mode = picked ? picked.value : 'new';
+        if (mode === 'new' && !theme) { toast(S.lyrics_need_theme, true); return; }
+        var notes = $('#ly-notes').value.trim();
+        dlg.close();
+        writeLyrics(id, btn, mode, notes, mode === 'edit' ? box.value : '');
+      };
+    }
+    async function writeLyrics(id, btn, mode, notes, lyrics) {
+      var item = itemById(id), theme = themes[id] || '';
+      btn.disabled = true; btn.textContent = S.writing_lyrics;
+      busy++;
+      try {
+        await flushSave();
+        var r = await api('lyrics', { method: 'POST', body: { mode: mode, notes: notes, lyrics: lyrics, theme: theme, style: item.style, language: item.language || current.settings.language, seconds: item.seconds } });
+        // Looked up again: the project may have been reloaded while Alfred wrote.
+        var now = itemById(id);
+        if (now) { now.lyrics = r.lyrics; markDirty(); }
+        drawTab();
+      } catch (e) {
+        toast(e.message, true);
+        var b = document.querySelector('[data-lyrics="' + id + '"]');
+        if (b) { b.disabled = false; b.textContent = '✨ ' + S.write_lyrics; }
+      } finally { busy--; }
+    }
+    function retouch(id) {
+      var s = itemById(id), dlg = $('#dlg');
+      dlg.innerHTML = '<h2>' + S.retouch + '</h2><label class="f">' + S.retouch_what + '</label><textarea id="rt-what">' + esc(s.prompt) + '</textarea>' +
+        '<label class="f">' + S.retouch_strength + ': <span id="rt-v">60</span>%</label><input type="range" id="rt-s" min="20" max="100" value="60">' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="rt-no">' + S.cancel + '</button><button class="primary" id="rt-go">' + S.retouch_go + '</button></div>';
+      dlg.showModal();
+      $('#rt-s').oninput = function () { $('#rt-v').textContent = this.value; };
+      $('#rt-no').onclick = function () { dlg.close(); };
+      $('#rt-go').onclick = async function () {
+        try {
+          var j = await api('projects/' + current.id + '/edit', { method: 'POST', body: { item: id, prompt: $('#rt-what').value, strength: $('#rt-s').value / 100 } });
+          dlg.close(); toast(fmt('queued_note', { n: Math.max(0, (j.position || 1) - 1), t: dur(j.starts_in || 0) }));
+          current = await api('projects/' + current.id); loadQueue(); drawTab();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
+    }
+    function longScene() {
+      var dlg = $('#dlg');
+      dlg.innerHTML = '<h2>' + S.long_scene + '</h2><p class="muted">' + S.long_scene_help + '</p>' +
+        '<label class="f">' + S.shot_what + '</label><textarea id="ls-what" rows="4"></textarea>' +
+        '<label class="f">' + S.long_scene_seconds + '</label><input type="number" id="ls-s" min="10" max="300" value="45">' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ls-no">' + S.cancel + '</button><button class="primary" id="ls-go">' + S.long_scene_go + '</button></div>';
+      dlg.showModal();
+      $('#ls-no').onclick = function () { dlg.close(); };
+      $('#ls-go').onclick = async function () {
+        var what = $('#ls-what').value.trim(), secs = Math.max(10, Number($('#ls-s').value) || 45);
+        if (!what) return;
+        // Shots of up to 15 s, H3's comfortable length, each continuing the last.
+        var n = Math.ceil(secs / 15), each = Math.round(secs / n);
+        for (var i = 0; i < n; i++) {
+          current.shots.push(newItem({ prompt: what + (n > 1 ? ' (part ' + (i + 1) + ' of ' + n + ', continuing the same action)' : ''),
+                                       seconds: Math.max(5, Math.min(20, each)), continuity: true }));
+        }
+        dlg.close(); await saveNow(); drawTab();
+      };
+    }
+    // A music video from a song (or a voice, or an instrumental) already made:
+    // the song's length is cut into shots here, Alfred says what each shows,
+    // and they land in the Video tab as ordinary shots -- queued, if asked --
+    // with the song remembered as the project's soundtrack.
+    function splitSeconds(total, n) {
+      var base = Math.floor(total / n), extra = total - base * n, out = [];
+      for (var i = 0; i < n; i++) out.push(Math.max(5, base + (i < extra ? 1 : 0)));
+      return out;
+    }
+    function clock(t) { t = Math.max(0, t || 0); var m = Math.floor(t / 60); return m + ':' + ('0' + (t - m * 60).toFixed(1)).slice(-4); }
+    // The Studio listens to the song first (about a minute, in the card's
+    // queue): when each line is sung, the beats, the parts. The cuts then fall
+    // on the music and Alfred is told the words sung during each shot. If it
+    // cannot listen, the song is split evenly, as before.
+    function musicVideo(id) {
+      var p = current, a = itemById(id), t = chosen(a), dlg = $('#dlg');
+      var total = Math.max(5, Math.round((t && t.seconds) || a.seconds || 60));
+      var refs = (p.uploads || []).filter(function (u) { return u.kind === 'reference'; });
+      var existing = (p.shots || []).length, heard = null, cuts = null, closed = false;
+      dlg.innerHTML = '<h2>🎬 ' + S.music_video + '</h2><p class="muted">' + S.mv_help + '</p>' +
+        '<p class="note" id="mv-an">' + S.mv_listening + '</p>' +
+        '<label class="f">' + S.mv_idea + '</label><textarea id="mv-idea" rows="3" placeholder="' + esc(S.mv_idea_ph) + '"></textarea>' +
+        '<label class="f">' + S.mv_shot_len + '</label><select id="mv-len">' + [5, 8, 10, 15].map(function (v) {
+          return '<option value="' + v + '"' + (v === 8 ? ' selected' : '') + '>' + v + ' ' + S.sec + '</option>'; }).join('') + '</select>' +
+        (refs.length ? '<label class="f">' + S.mv_ref + '</label><select id="mv-ref"><option value="">' + S.none + '</option>' +
+          refs.map(function (u) { return '<option value="' + esc(u.file) + '">' + esc(u.name) + '</option>'; }).join('') + '</select>' : '') +
+        '<label class="row" style="font-size:.86rem;margin-top:10px"><input type="checkbox" id="mv-now" style="width:auto" checked> ' + S.mv_generate_now + '</label>' +
+        '<p class="muted" id="mv-est"></p>' +
+        (existing ? '<p class="note">' + fmt('mv_existing', { n: existing }) + '</p>' : '') +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="mv-no">' + S.cancel + '</button><button class="primary" id="mv-go" disabled>' + S.mv_go + '</button></div>';
+      dlg.showModal();
+      dlg.addEventListener('close', function () { closed = true; }, { once: true });
+      function evenPlan() {
+        var n = Math.min(80, Math.max(1, Math.round(total / Number($('#mv-len').value))));
+        return splitSeconds(total, n).map(function (s) { return { seconds: s }; });
+      }
+      function estimate() {
+        var plan = cuts || evenPlan(), rate = (queueState && queueState.video_rate) || 360;
+        var video = plan.reduce(function (x, c) { return x + c.seconds; }, 0);
+        $('#mv-est').textContent = fmt('mv_estimate', { n: plan.length, s: Math.round(video), t: dur(rate * video) });
+      }
+      async function loadCuts() {
+        if (!heard) { cuts = null; return estimate(); }
+        try {
+          var r = await api('projects/' + p.id + '/items/' + a.id + '/cuts', { method: 'POST', body: { take: t.id, shot_seconds: Number($('#mv-len').value) } });
+          cuts = r.cuts; total = Math.round(r.duration);
+        } catch (e) { cuts = null; }
+        estimate();
+      }
+      async function listen() {
+        while (!closed) {
+          var r;
+          try { r = await api('projects/' + p.id + '/items/' + a.id + '/analyze', { method: 'POST', body: { take: t.id } }); }
+          catch (e) { r = { failed: e.message }; }
+          if (r.analysis) {
+            heard = r.analysis;
+            $('#mv-an').textContent = heard.aligned
+              ? fmt('mv_heard', { bpm: Math.round(heard.tempo), n: heard.sections })
+              : fmt('mv_heard_nowords', { bpm: Math.round(heard.tempo) });
+            break;
+          }
+          if (r.failed) { $('#mv-an').textContent = fmt('mv_listen_failed', { e: r.failed }); break; }
+          var j = r.job || {};
+          $('#mv-an').textContent = S.mv_listening + (j.state === 'queued' && j.starts_in ? ' · ' + fmt('starts_in', { t: dur(j.starts_in) }) : '');
+          await new Promise(function (ok) { setTimeout(ok, 3000); });
+        }
+        if (closed) return;
+        await loadCuts();
+        $('#mv-go').disabled = false;
+      }
+      estimate(); listen();
+      $('#mv-len').onchange = loadCuts;
+      $('#mv-no').onclick = function () { dlg.close(); };
+      $('#mv-go').onclick = async function () {
+        var go = this, plan = cuts || evenPlan(), ref = $('#mv-ref') ? $('#mv-ref').value : '', now = $('#mv-now').checked;
+        go.disabled = true; go.textContent = S.mv_planning; busy++;
+        try {
+          await flushSave();
+          var r = await api('music-video', { method: 'POST', body: { shots: plan.length, seconds: total, kind: a.kind || 'song',
+            lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '',
+            idea: $('#mv-idea').value.trim(), plan: cuts || [] } });
+          var fresh = await api('projects/' + p.id);
+          var before = (fresh.shots || []).length;
+          r.shots.forEach(function (sh, i) {
+            var cont = i > 0 && sh.continues, c = plan[i] || {};
+            fresh.shots.push(newItem(Object.assign({ prompt: sh.prompt, seconds: c.seconds || 8, continuity: cont,
+                                                     refs: !cont && ref ? [ref] : [] },
+                                                   cuts ? { exact: true, start: c.start } : {})));
+          });
+          fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id });
+          current = fresh; await saveNow();
+          var ids = current.shots.slice(before).map(function (sh) { return sh.id; });
+          dlg.close(); tab = 'video'; drawEditor();
+          toast(fmt('mv_added', { n: ids.length }));
+          if (now && ids.length) await generate(ids);
+        } catch (e) {
+          toast(e.message, true); go.disabled = false; go.textContent = S.mv_go;
+        } finally { busy--; }
+      };
+    }
+
+    // A new version of a song from the one shown. "A part": its lines, each
+    // with the time it is sung (the Studio listens first if it has not), and
+    // only the lines changed or ticked are made again -- the rest is the
+    // original. "All of it": the whole song again, held to the original.
+    function retouchSong(id) {
+      var p = current, a = itemById(id), t = chosen(a), dlg = $('#dlg'), lines = null, closed = false;
+      var words = (t && t.lyrics) || a.lyrics || '';
+      dlg.innerHTML = '<h2>✏️ ' + S.rs_title + '</h2>' +
+        '<label class="choice"><input type="radio" name="rs-mode" value="part" checked> ' + S.rs_mode_part + '</label>' +
+        '<label class="choice"><input type="radio" name="rs-mode" value="all"> ' + S.rs_mode_all + '</label>' +
+        '<div id="rs-part"><p class="note" id="rs-status">' + S.mv_listening + '</p><div id="rs-lines"></div><p class="muted" id="rs-range"></p></div>' +
+        '<div id="rs-all" hidden><label class="f">' + S.lyrics + '</label><textarea id="rs-lyrics" rows="8">' + esc(words) + '</textarea>' +
+        '<label class="f">' + S.rs_similar + ': <span id="rs-sv">80</span>%</label><input type="range" id="rs-s" min="50" max="95" value="80">' +
+        '<label class="row" style="font-size:.86rem;margin-top:8px"><input type="checkbox" id="rs-v" style="width:auto" checked> ' + S.rs_keep_voice + '</label></div>' +
+        '<label class="f">' + S.style + '</label><input id="rs-style" value="' + esc(a.style || '') + '">' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="rs-no">' + S.cancel + '</button><button class="primary" id="rs-go">' + S.rs_go + '</button></div>';
+      dlg.showModal();
+      dlg.addEventListener('close', function () { closed = true; }, { once: true });
+      function mode() { return dlg.querySelector('input[name="rs-mode"]:checked').value; }
+      dlg.querySelectorAll('input[name="rs-mode"]').forEach(function (r) {
+        r.onchange = function () { $('#rs-part').hidden = mode() !== 'part'; $('#rs-all').hidden = mode() !== 'all'; };
+      });
+      $('#rs-s').oninput = function () { $('#rs-sv').textContent = this.value; };
+      // Which seconds the marked lines cover, with a little air either side so
+      // the new words do not start mid-breath.
+      function range() {
+        var marked = (lines || []).filter(function (l, i) {
+          var box = $('#rs-l' + i); return box && (box.checked || $('#rs-t' + i).value.trim() !== l.text);
+        });
+        if (!marked.length) return null;
+        var dur = (t && t.seconds) || a.seconds || 60;
+        return { start: Math.max(0, Math.min.apply(null, marked.map(function (l) { return l.start; })) - 0.3),
+                 end: Math.min(dur, Math.max.apply(null, marked.map(function (l) { return l.end; })) + 0.3) };
+      }
+      function showRange() {
+        var r = range();
+        $('#rs-range').textContent = r ? fmt('rs_range', { a: clock(r.start), b: clock(r.end) }) : S.rs_pick;
+      }
+      async function listen() {
+        while (!closed) {
+          var r;
+          try { r = await api('projects/' + p.id + '/items/' + a.id + '/analyze', { method: 'POST', body: { take: t.id } }); }
+          catch (e) { r = { failed: e.message }; }
+          if (r.analysis) {
+            lines = (r.lines || []).filter(function (l) { return l.start != null; });
+            if (!lines.length) { $('#rs-status').textContent = fmt('rs_no_lines', { e: r.analysis.error || '' }); return; }
+            $('#rs-status').textContent = S.rs_pick;
+            $('#rs-lines').innerHTML = lines.map(function (l, i) {
+              return '<div class="row" style="margin:4px 0"><input type="checkbox" id="rs-l' + i + '" style="width:auto">' +
+                '<span class="muted" style="min-width:3.2em">' + clock(l.start) + '</span>' +
+                '<input class="grow" id="rs-t' + i + '" value="' + esc(l.text) + '" style="width:auto"></div>';
+            }).join('');
+            $('#rs-lines').addEventListener('input', showRange);
+            $('#rs-lines').addEventListener('change', showRange);
+            return showRange();
+          }
+          if (r.failed) { $('#rs-status').textContent = fmt('mv_listen_failed', { e: r.failed }); return; }
+          await new Promise(function (ok) { setTimeout(ok, 3000); });
+        }
+      }
+      listen();
+      $('#rs-no').onclick = function () { dlg.close(); };
+      $('#rs-go').onclick = async function () {
+        var body = { take: t.id, style: $('#rs-style').value };
+        if (mode() === 'part') {
+          var r = range();
+          if (!r) { toast(S.rs_pick, true); return; }
+          // The song's words with the changed lines put in, tags and all.
+          var i = 0, lyr = words.split('\n').map(function (raw) {
+            if (!raw.trim() || /^\s*\[.*\]\s*$/.test(raw) || !lines || i >= lines.length) return raw;
+            var now = $('#rs-t' + i).value.trim(); i++;
+            return now || raw;
+          }).join('\n');
+          Object.assign(body, { lyrics: lyr, start: r.start, end: r.end });
+        } else {
+          Object.assign(body, { lyrics: $('#rs-lyrics').value, strength: $('#rs-s').value / 100, keep_voice: $('#rs-v').checked });
+        }
+        try {
+          await flushSave();
+          var j = await api('projects/' + p.id + '/items/' + a.id + '/rework', { method: 'POST', body: body });
+          dlg.close();
+          var first = (j.queued || [])[0];
+          if (first) toast(fmt('queued_note', { n: Math.max(0, (first.position || 1) - 1), t: dur(first.starts_in || 0) }));
+          current = await api('projects/' + p.id); loadQueue(); drawTab();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
+    }
+
+    // The video as it stands, in the browser: each chosen take in order, a
+    // card for the ones not made yet, and the soundtrack underneath, moved to
+    // where each shot starts so the two stay together. Nothing is rendered.
+    function previewPlayer() {
+      var p = current, dlg = $('#dlg');
+      var tracks = (p.audio || []).filter(function (a) { return chosen(a) && chosen(a).file; });
+      var st = (p.settings || {}).soundtrack || (tracks[0] && tracks[0].id) || '';
+      var segs = [], at = 0;
+      (p.shots || []).forEach(function (s, i) {
+        var t = chosen(s), len = s.exact ? +s.seconds : ((t && t.seconds) || s.seconds || 5);
+        segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', prompt: s.prompt || '', start: at, len: len });
+        at += len;
+      });
+      dlg.innerHTML = '<h2>▶ ' + S.preview + '</h2>' +
+        '<div id="pv-stage" style="position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">' +
+        '<video id="pv-v" playsinline style="width:100%;height:100%;object-fit:contain"></video>' +
+        '<div id="pv-card" style="position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:16px;color:#eee;font-size:.9rem;background:#222"></div></div>' +
+        '<div class="row" style="margin-top:8px"><span id="pv-at" class="muted"></span><span class="grow"></span>' +
+        (tracks.length ? '<label class="f" style="margin:0">' + S.soundtrack + '</label><select id="pv-a" style="width:auto"><option value="">' + S.none + '</option>' +
+          tracks.map(function (a) { return '<option value="' + a.id + '"' + (a.id === st ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' : '') +
+        '</div><label class="row" style="font-size:.86rem"><input type="checkbox" id="pv-m" style="width:auto"' + (st ? ' checked' : '') + '> ' + S.mute_shots + '</label>' +
+        '<div class="row" style="margin-top:12px"><button id="pv-play" class="primary">▶</button><span class="grow"></span><button id="pv-no">' + S.preview_close + '</button></div>';
+      dlg.showModal();
+      var v = $('#pv-v'), card = $('#pv-card'), audio = new Audio(), idx = 0, timer = null, playing = false;
+      function song() { var sel = $('#pv-a'); var a = sel && sel.value ? itemById(sel.value) : null; return a ? fileUrl(p.id, chosen(a).file) : ''; }
+      function stop() { playing = false; clearTimeout(timer); v.pause(); audio.pause(); $('#pv-play').textContent = '▶'; }
+      function show(i) {
+        clearTimeout(timer);
+        if (i >= segs.length) { stop(); idx = 0; return; }
+        idx = i; var seg = segs[i];
+        $('#pv-at').textContent = S.shot + ' ' + seg.n + ' / ' + segs.length + ' · ' + Math.floor(seg.start) + ' s';
+        var src = song();
+        if (src) {
+          if (audio.src.indexOf(src) < 0) audio.src = src;
+          if (Math.abs(audio.currentTime - seg.start) > 0.3) audio.currentTime = seg.start;
+          audio.play().catch(function () {});
+        }
+        if (seg.file) {
+          // style.display, not `hidden`: the card's own inline `display` beat
+          // the attribute, and it covered every shot (2026-09-28).
+          card.style.display = 'none'; v.style.visibility = 'visible'; v.muted = $('#pv-m').checked;
+          v.src = seg.file; v.play().catch(function () {});
+          v.onended = function () { if (playing) show(idx + 1); };
+          // A shot made long for its cut is shown only up to the cut.
+          v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
+        } else {
+          v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex';
+          card.innerHTML = '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
+          timer = setTimeout(function () { if (playing) show(idx + 1); }, seg.len * 1000);
+        }
+      }
+      $('#pv-play').onclick = function () {
+        if (playing) return stop();
+        playing = true; this.textContent = '⏸'; show(idx);
+      };
+      $('#pv-m').onchange = function () { v.muted = this.checked; };
+      $('#pv-no').onclick = function () { stop(); dlg.close(); };
+      dlg.addEventListener('close', stop, { once: true });
+    }
+
+    function renderDialog() {
+      var p = current, dlg = $('#dlg'), audio = (p.audio || []).filter(function (a) { return (a.takes || []).length; });
+      var soundtrack = (p.settings || {}).soundtrack || '';
+      dlg.innerHTML = '<h2>' + S.render + '</h2>' +
+        '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-x" style="width:auto"> ' + S.render_crossfade + '</label>' +
+        (audio.length ? '<label class="f">' + S.render_music + '</label><select id="rd-a"><option value="">' + S.none + '</option>' +
+          audio.map(function (a) { return '<option value="' + a.id + '"' + (a.id === soundtrack ? ' selected' : '') + '>' + esc(a.title || S['kind_' + (a.kind || 'song')]) + '</option>'; }).join('') + '</select>' +
+          '<div class="row"><div class="grow"><label class="f">' + S.render_volume + '</label><input type="range" id="rd-v" min="0" max="150" value="' + (soundtrack ? 100 : 80) + '"></div>' +
+          '<div class="grow"><label class="f">' + S.render_start + '</label><input type="number" id="rd-t" min="0" value="0"></div></div>' +
+          '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-m" style="width:auto"' + (soundtrack ? ' checked' : '') + '> ' + S.mute_shots + '</label>' : '') +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="rd-no">' + S.cancel + '</button><button class="primary" id="rd-go">' + S.render_go + '</button></div>';
+      dlg.showModal();
+      $('#rd-no').onclick = function () { dlg.close(); };
+      $('#rd-go').onclick = async function () {
+        var tracks = [], a = $('#rd-a');
+        if (a && a.value) tracks.push({ item: a.value, volume: $('#rd-v').value / 100, start: Number($('#rd-t').value) || 0 });
+        try {
+          var mute = $('#rd-m');
+          await api('projects/' + p.id + '/render', { method: 'POST', body: { crossfade: $('#rd-x').checked ? 0.5 : 0, tracks: tracks,
+                                                                              own_sound: !(mute && mute.checked && tracks.length) } });
+          dlg.close(); current = await api('projects/' + p.id); drawTab(); watchRender();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
+    }
+    function watchRender() {
+      var t = setInterval(async function () {
+        if (!current) return clearInterval(t);
+        var p = await api('projects/' + current.id);
+        if (!p.render || p.render.state !== 'running') { clearInterval(t); current = p; if (!dirty) drawTab(); }
+      }, 4000);
+    }
+
+    // What changed while the page was open: a job finished, a take arrived.
+    var lastSig = '';
+    async function syncJobs() {
+      if (!current || dirty || saving || busy || document.querySelector('dialog[open]')) return;
+      var active = document.activeElement;
+      var p = await api('projects/' + current.id);
+      var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),
+        ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) { return (i.takes || []).length; }); })]);
+      if (sig !== lastSig) {
+        lastSig = sig;
+        // Never redraw under somebody's cursor: the new takes wait for the
+        // next change of focus.
+        if (active && /INPUT|TEXTAREA|SELECT/.test(active.tagName) && active.closest('#v-edit')) { current.jobs = p.jobs; lastSig = ''; return; }
+        var y = window.scrollY; current = p; drawTab(); window.scrollTo(0, y);
+      }
+    }
+
+    // ── Start ─────────────────────────────────────────────────────────────
+    loadList();
+    loadQueue();
+    setInterval(loadQueue, 5000);
+    // The in-progress pictures change under the same URL; fetched again only
+    // while the page is looked at.
+    setInterval(function () {
+      if (document.hidden) return;
+      document.querySelectorAll('img.live').forEach(function (img) { img.src = img.dataset.src + '?t=' + Date.now(); });
+    }, 4000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) loadQueue(); });
+    window.addEventListener('beforeunload', flushSave);
+    var want = new URLSearchParams(location.search).get('project');
+    if (want) openProject(want).catch(function () { history.replaceState(null, '', '/studio'); });
+  })();
+  </script>
+</body>
+</html>

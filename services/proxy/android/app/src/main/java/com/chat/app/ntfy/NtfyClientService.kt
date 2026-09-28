@@ -87,6 +87,8 @@ class NtfyClientService : Service() {
         private const val NOTIF_REPLY_TAG = "notif_reply"
         private const val RING_TAG = "ring_phone"
         private const val RING_STOP_TAG = "ring_phone_stop"
+        // One command for one device (volume, open an app, ring): DeviceCommands.
+        private const val DEVICE_CMD_TAG = "device_cmd"
         // The family chat (HomeCore /family-chat). family_msg: alert until
         // seen; family_stop: it was seen or snoozed on one of this person's
         // devices; family_sms: a message this phone sent has not reached a
@@ -227,6 +229,8 @@ class NtfyClientService : Service() {
         Thread {
             runCatching { com.chat.app.family.FamilyDirectory.refresh(applicationContext) }
             runCatching { com.chat.app.family.FamilyStore.flush(applicationContext) }
+            // Which device this is, and what it can open, for "turn the tablet down".
+            runCatching { com.chat.app.device.DeviceIdentity.register(applicationContext) }
         }.start()
         val client = httpClient ?: return
         val cookie = CookieManager.getInstance().getCookie(API_BASE)
@@ -386,6 +390,11 @@ class NtfyClientService : Service() {
         if (TRACK_STOP_TAG in tags) {
             AppLog.log(applicationContext, TAG, "track stop received")
             LocationReporter.stopTrack(applicationContext)
+            return
+        }
+        if (DEVICE_CMD_TAG in tags) {
+            val o = try { JSONObject(json.optString("message")) } catch (e: Exception) { JSONObject() }
+            com.chat.app.device.DeviceCommands.handle(applicationContext, o)
             return
         }
         if (RING_TAG in tags) {

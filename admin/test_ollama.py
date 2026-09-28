@@ -246,7 +246,8 @@ check("  other slots from a measurement: estimated, and larger",
       need2["how"] == "estimated" and need2["bytes"] > need["bytes"])
 view = V.gpu_view([{"index": 0, "total_mib": 12288, "tenants": [{"owner": "container audio-cpp", "mib": 600},
                                                                 {"owner": "unit ollama", "mib": 4500}]}],
-                  [dict(inst, gpus=[0])], {"main": {"bytes": 13 * V.GIB, "how": "estimated"}})
+                  [dict(inst, gpus=[0], unit="ollama")], {"main": {"bytes": 13 * V.GIB, "how": "estimated"}},
+                  measured=False)
 check("  a card it does not fit says so, and counts the others but not Ollama twice",
       not view[0]["fits"] and [o["owner"] for o in view[0]["others"]] == ["container audio-cpp"], view)
 _units = [{"index": 0, "total_mib": 12288, "tenants": [
@@ -263,6 +264,26 @@ check("  and is drawn at what the host saw it hold",
 _p = V.gpu_view(_units, [_chat], {"chat": {"bytes": 9 * V.GIB, "how": "estimated"}}, measured=False)[0]
 check("  the preview draws the estimate: what it shows is not running yet",
       _p["instances"][0]["how"] == "estimated")
+# Saved, not applied (2026-09-27): Media saved as the 4B at 16k while the 8B
+# at 64k still ran on GPU0, and Text saved onto GPU0 while it ran on GPU1.
+_two = [{"index": 0, "total_mib": 12288, "tenants": [{"owner": "unit ollama-media", "mib": 9400}]},
+        {"index": 1, "total_mib": 12288, "tenants": [{"owner": "unit ollama-text", "mib": 9000},
+                                                     {"owner": "container faster-whisper", "mib": 2000}]}]
+_text = {"id": "text", "unit": "ollama-text", "gpus": [0], "setup": True, "model": "qwen3.5:4b"}
+_media = {"id": "media", "unit": "ollama-media", "gpus": [0], "setup": True, "model": "qwen3-vl:4b"}
+_needs = {"text": {"bytes": 4.7 * V.GIB, "how": "estimated"}, "media": {"bytes": 4.7 * V.GIB, "how": "estimated"}}
+_g0, _g1 = V.gpu_view(_two, [_text, _media], _needs, pending={"text", "media"})
+check("  a server saved with changes is drawn at the saved estimate, not the old model's size",
+      [(r["id"], r["how"], round(r["bytes"] / V.GIB, 1)) for r in _g0["instances"]]
+      == [("text", "pending", 4.7), ("media", "pending", 4.7)], _g0["instances"])
+check("  and the card it is leaving still shows it, until Apply",
+      [(o["owner"], o["until_apply"]) for o in _g1["others"]]
+      == [("container faster-whisper", False), ("unit ollama-text", True)]
+      and abs(_g1["free"] - (12288 - 11000) * 1024 * 1024) < 1, _g1)
+_g0, _g1 = V.gpu_view(_two, [dict(_text, gpus=[1]), _media], _needs)
+check("  with nothing pending, what runs is drawn as it runs",
+      _g0["instances"][0]["how"] == "measured" and _g1["instances"][0]["how"] == "measured"
+      and all(not o["until_apply"] for o in _g1["others"]), (_g0, _g1))
 
 
 print("\nslots Ollama will not run are not counted")

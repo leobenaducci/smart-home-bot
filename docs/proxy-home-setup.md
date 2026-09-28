@@ -96,6 +96,33 @@ with an address inside the house, which is a reasonable thing to set up and
 means the request never leaves the network. If it works on wifi and not on
 mobile data, the split horizon is hiding a broken tunnel.
 
+## 5. The house-only apps: who counts as home
+
+Cameras, Lights and the Studio (`services.<name>.house_only`) are served only
+to somebody at home. The copy of the proxy on the hub answers that by being
+there: only the LAN reaches it. The copy on the VPS has to be told, because
+the Android app dials the public name and so arrives there from anywhere,
+the home wifi included whenever the phone's resolver answers with the VPS.
+
+- **The VPN.** Tailscale's range, `100.64.0.0/10`, by default;
+  `cloud.vps.home_networks` adds others. Matched against the last
+  `X-Forwarded-For` hop, the one Caddy wrote, so it can be had but not claimed.
+- **The house's own connection, if the household says so.**
+  `cloud.vps.home_address_is_home: true` makes the home copy report the
+  address the house goes out on every five minutes -- signed with the proxy
+  secret over a timestamp, sent to `cloud.vps.host` with the domain as SNI,
+  because inside the house the domain answers the home copy -- and the VPS
+  treats requests from that address as home. Nothing is typed: an ISP change
+  is followed on the next report, and an address not confirmed for twenty
+  minutes stops counting (`services/proxy/server/house_address.py`). The cost
+  is stated where the switch is: anybody on the wifi who can sign in sees the
+  house-only apps, and behind CGNAT the address is shared with other
+  households. Off by default.
+
+To see which one a phone is using: `docker logs home-chat-proxy` on the VPS
+shows the address of each request, and `POST /_house/address` answering 200
+every five minutes is the house reporting in.
+
 ## What replaces what
 
 This describes the tunnel only. Everything on the VPS itself -- the proxy, its

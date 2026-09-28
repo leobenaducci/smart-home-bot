@@ -966,7 +966,7 @@ def _run_gateway(
             pass
         return await agent.process_direct(
             prompt, session_key=session_key, channel=channel, chat_id=chat_id,
-            on_progress=_quiet,
+            on_progress=_quiet, inline=True,
         )
 
     async def _morning_publish(chat_id: str, text: str) -> None:

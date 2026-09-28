@@ -1,0 +1,21 @@
+# The Studio's audio.cpp on the Studio's card: the CUDA build and the device.
+# Applied only when `services.home-studio.gpu` is on -- a `driver: nvidia`
+# reservation makes `up` fail outright on a machine without one.
+services:
+  audio-cpp-studio:
+    build:
+      args:
+        BUILD_BASE: nvidia/cuda:12.6.3-devel-ubuntu24.04
+        RUNTIME_BASE: nvidia/cuda:12.6.3-runtime-ubuntu24.04
+        AUDIOCPP_BACKEND: cuda
+        CUDA_ARCH: "86"
+    image: audio-cpp:cuda
+    environment:
+      - AUDIOCPP_BACKEND=cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${STUDIO_GPU_DEVICE:-0}"]
+              capabilities: [gpu]

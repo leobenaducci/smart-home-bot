@@ -1,0 +1,13 @@
+# The card home-studio owns (services.home-studio.gpu_device). An overlay,
+# like every GPU request in this stack, so a machine without an NVIDIA card
+# can still bring the rest of the stack up -- the studio itself has nothing to
+# offer without one.
+services:
+  home-studio:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${STUDIO_GPU_DEVICE:-0}"]
+              capabilities: [gpu]

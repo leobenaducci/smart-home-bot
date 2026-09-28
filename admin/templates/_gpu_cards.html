@@ -26,7 +26,7 @@
       <tr class="muted">
         <td><i class="dot other"></i>{{ o.owner | replace('container ', '') | replace('unit ', '') | replace('-web-homecameras-1', '') }}</td>
         <td class="num">{{ o.gib }} GiB</td>
-        <td>{{ t('admin.models.ollama_gpu_other') }}</td>
+        <td>{{ t('admin.models.ollama_gpu_until_apply') if o.until_apply else t('admin.models.ollama_gpu_other') }}</td>
       </tr>
       {% endfor %}
     </table>

@@ -1068,6 +1068,11 @@ def _proxy_auth():
             or secrets.compare_digest(secret, _proxy_user_token(puser))):
         _set_authenticated_user(puser)
         g.is_proxy = True
+        # The member's own token: the assistant acting for them, from inside
+        # the house -- not the chat proxy, whose X-Proxy-Lan says where a
+        # phone is. A house-only page must not lock out the person's own
+        # Alfred just because Alfred is not a phone on the wifi.
+        g.proxy_member = not secrets.compare_digest(secret, PROXY_SHARED_SECRET)
         # Which copy of home-chat forwarded this: the one on hub (inside the
         # house) or the one on the VPS. Only the proxy may set this header —
         # it drops any inbound copy along with X-Proxy-Secret / X-Proxy-User,
@@ -3617,7 +3622,8 @@ HOUSE_ONLY_APPS = {
 
 # App key -> the name it goes by in the Apps menu.
 _APP_LINK_NAMES = {'cameras': 'Cameras', 'files': 'Files', 'tasks': 'Chores',
-                   'grocery': 'Shopping', 'menu': 'Menu'}
+                   'grocery': 'Shopping', 'menu': 'Menu', 'studio': 'Studio',
+                   'lights': 'Lights'}
 CHAT_HOUSE_ONLY_LINKS = tuple(
     [_APP_LINK_NAMES[key] for key in sorted(HOUSE_ONLY_APPS)
      if key in _APP_LINK_NAMES]
@@ -3739,6 +3745,12 @@ def _at_home():
 CHAT_APP_LINKS = [
     {'name': 'Cameras', 'url': '/camaras/', 'icon': '📷',
      'description': 'What the house cameras can see', 'menu': 'casa'},
+    # Listed here, not added when the studio is on, so test_app_tiles_reachable
+    # sees it and checks the chat proxy forwards it -- it did not, and the
+    # Studio was missing from the app (2026-09-28). Hidden while the studio is
+    # off (_chat_external_links).
+    {'name': 'Studio', 'url': '/studio', 'icon': '🎬',
+     'description': "Video, pictures and songs, made on the house's own card", 'menu': 'casa'},
     # opencode's own interface, on `dns.code`. A link and not a panel, because
     # it is a different origin -- it has to be, its assets and its API are
     # absolute from the origin root and `/api` collides with this app's.
@@ -3817,7 +3829,24 @@ def _chat_external_links():
     # the house-only rule above exists to prevent, arriving by another door.
     if not _code_host():
         links = [link for link in links if link['name'] != 'Code']
-    return links + _extension_menu_links()['casa']
+    if not _studio_configured():
+        links = [link for link in links if link['name'] != 'Studio']
+    return [_link_in_language(link) for link in links + _extension_menu_links()['casa']]
+
+
+def _link_in_language(link):
+    """A menu link with its name and description in the reader's language:
+    `nav.app_<name>` and `nav.app_<name>_help`, when the catalogue has them.
+    The names in CHAT_APP_LINKS and in a plugin's tile are English and are
+    what the house-only rules match on, so they are translated here, last --
+    the Spanish page read "Cameras", "Studio" and "Lights"."""
+    slug = re.sub(r'[^a-z0-9]+', '_', str(link.get('name') or '').lower()).strip('_')
+    name, desc = t(f'nav.app_{slug}'), t(f'nav.app_{slug}_help')
+    return {**link,
+            # What code and tests match on: the name before translation.
+            'key': link.get('name'),
+            'name': name if name and name != f'nav.app_{slug}' else link.get('name'),
+            'description': desc if desc and desc != f'nav.app_{slug}_help' else link.get('description', '')}
 
 
 @app.route('/chat/apps')
@@ -3839,7 +3868,7 @@ def chat_apps():
     VPS does, and each tells the truth about itself.
     """
     return jsonify(
-        links=[{'name': l['name'], 'url': l['url'], 'icon': l['icon'],
+        links=[{'key': l.get('key', l['name']), 'name': l['name'], 'url': l['url'], 'icon': l['icon'],
                 'description': l['description']} for l in _chat_external_links()],
         at_home=_at_home(),
     )
@@ -4923,6 +4952,26 @@ def camaras_proxy(path):
     if house_only('cameras') and not _at_home():
         return jsonify(error='Available only at home or over the VPN.'), 404
     return _house_proxy(CAMERAS_APP_URL, '/camaras', path)
+
+
+# The Lights app (the household's `smart-lights` plugin), mounted like the
+# cameras: same-origin, so it opens inside the Alfred app instead of in a
+# browser tab on a raw LAN address, and the portal's own /theme.css reaches it.
+# The app already reads X-Forwarded-Prefix and fetches /luces/_csrf (above);
+# only this route was missing, so the tile pointed at http://<hub>:5010.
+@app.route('/luces')
+@login_required
+def luces_root():
+    return redirect('/luces/')
+
+
+@app.route('/luces/', defaults={'path': ''}, methods=_PROXY_METHODS)
+@app.route('/luces/<path:path>', methods=_PROXY_METHODS)
+@login_required
+def luces_proxy(path):
+    if house_only('lights') and not _at_home():
+        return jsonify(error='Available only at home or over the VPN.'), 404
+    return _house_proxy(LIGHTS_APP_URL, '/luces', path)
 
 
 # ---------------------------------------------------------------------------
@@ -13293,6 +13342,9 @@ LOGIN_KEYED_TABLES = (
     ('projects.db', 'projects', 'created_by'),
     ('projects.db', 'project_credentials', 'created_by'),
     ('projects.db', 'project_access', 'username'),
+    # Which phone or tablet is whose (the devices section): a device belongs to
+    # whoever is signed in on it.
+    ('devices.db', 'app_devices', 'login'),
 )
 
 
@@ -21257,6 +21309,604 @@ def _geo_sync_worker():
 
 
 # ---------------------------------------------------------------------------
+# The household's devices: every phone and tablet the Alfred app runs on, by
+# the name somebody gave it in the app ("the kids' tablet"), so Alfred can be
+# asked to turn one down, open an app on it, or make that one ring.
+#
+# The app registers itself (id, name, kind, the apps it can open) whenever it
+# connects. A command goes out on the owner's control channel with the device
+# id in it -- every device signed in as that person hears it, only the named
+# one acts -- and the device confirms, so Alfred can say "done" rather than
+# "sent". Remote control is switched on *on the device*, never from here: a
+# parent may drive a child's tablet, but only one somebody set up for it.
+# ---------------------------------------------------------------------------
+REMOTE_ACK_WAIT_S = 8
+REMOTE_ACTIONS = ('volume', 'open_app', 'ring', 'ring_stop')
+_REMOTE_STOP = {'de', 'del', 'la', 'el', 'los', 'las', 'mi', 'my', 'the', 'of', 's', 'su', 'a', 'on', 'en'}
+# What a person calls a kind of device, in the languages the house speaks.
+_REMOTE_KIND_WORDS = {'tablet': {'tablet', 'tableta', 'ipad'},
+                      'phone': {'phone', 'telefono', 'celular', 'cel', 'movil', 'mobile'}}
+_remote_acks = {}
+_remote_acks_lock = threading.Lock()
+
+
+def init_app_devices_db():
+    os.makedirs(os.path.dirname(DEVICE_DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DEVICE_DB_PATH)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS app_devices (
+            device_id TEXT PRIMARY KEY,
+            login TEXT NOT NULL,
+            name TEXT NOT NULL,
+            model TEXT,
+            kind TEXT,
+            remote INTEGER NOT NULL DEFAULT 0,
+            can_open INTEGER NOT NULL DEFAULT 0,
+            apps TEXT,
+            version TEXT,
+            registered_at INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+def _remote_norm(s):
+    """Lower case, no accents, "+" spelled out: "Disney+" and "disney plus" are one app."""
+    s = unicodedata.normalize('NFKD', str(s or '')).encode('ascii', 'ignore').decode().lower()
+    return re.sub(r'[^a-z0-9]+', ' ', s.replace('+', ' plus ')).strip()
+
+
+def _remote_tokens(s):
+    return {w for w in _remote_norm(s).split() if w not in _REMOTE_STOP}
+
+
+def _remote_devices(me):
+    """The devices *me* may see: their own, and everyone's for a parent."""
+    conn = sqlite3.connect(DEVICE_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        if _tasks_is_admin(me):
+            rows = conn.execute('SELECT * FROM app_devices ORDER BY login, name').fetchall()
+        else:
+            rows = conn.execute('SELECT * FROM app_devices WHERE login=? ORDER BY name', (me,)).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d['apps'] = json.loads(d.get('apps') or '[]')
+        except ValueError:
+            d['apps'] = []
+        d['owner_name'] = _tasks_display_name(d['login'])
+        out.append(d)
+    return out
+
+
+def _remote_public(d):
+    now = int(time.time())
+    return {'id': d['device_id'], 'name': d['name'], 'owner': d['login'],
+            'owner_name': d['owner_name'], 'kind': d['kind'], 'model': d['model'],
+            'remote_control': bool(d['remote']), 'can_open_apps': bool(d['can_open']),
+            'apps': len(d['apps']), 'last_seen_s_ago': max(0, now - (d['last_seen'] or 0))}
+
+
+def _remote_find(me, query):
+    """(device, candidates). A device's id, its name, or words from its name,
+    its owner and its kind: "la tablet de Juana" is Juana's tablet whatever it
+    was named. Ambiguous or unknown gives no device and what could be meant."""
+    devices = _remote_devices(me)
+    q = str(query or '').strip()
+    for d in devices:
+        if q and q == d['device_id']:
+            return d, []
+    exact = [d for d in devices if _remote_norm(d['name']) == _remote_norm(q)]
+    if len(exact) == 1:
+        return exact[0], []
+    words = _remote_tokens(q)
+    if not words:
+        return None, devices
+    hits = []
+    for d in devices:
+        hay = _remote_tokens(d['name']) | _remote_tokens(d['owner_name']) | \
+            _REMOTE_KIND_WORDS.get(d['kind'] or '', set()) | {d['kind'] or ''}
+        if words <= hay:
+            hits.append(d)
+    if len(hits) == 1:
+        return hits[0], []
+    return None, hits or devices
+
+
+def _remote_find_app(apps, query):
+    """(app, candidates) from the apps the device reported."""
+    q = _remote_norm(query)
+    if not q:
+        return None, []
+    for a in apps:
+        if _remote_norm(a['label']) == q or a['package'] == str(query).strip():
+            return a, []
+    words = set(q.split())
+    hits = [a for a in apps if words <= set(_remote_norm(a['label']).split())
+            or q.replace(' ', '') in _remote_norm(a['label']).replace(' ', '')]
+    if len(hits) == 1:
+        return hits[0], []
+    return None, hits
+
+
+@app.route('/devices/api/register', methods=['POST'])
+@_geo_native_auth
+def remote_register():
+    """The app says which device it is. Its own session: a device belongs to
+    whoever is signed in on it, and moves with a new sign-in."""
+    me = session['user']
+    d = request.get_json(silent=True) or {}
+    did = str(d.get('device_id') or '')
+    if not re.fullmatch(r'[A-Za-z0-9-]{8,64}', did):
+        return jsonify(error=t('devices.bad_request')), 400
+    model = str(d.get('model') or '').strip()[:80]
+    name = str(d.get('name') or '').strip()[:60] or model or did[:8]
+    kind = 'tablet' if d.get('kind') == 'tablet' else 'phone'
+    apps = []
+    for a in (d.get('apps') or [])[:500]:
+        if isinstance(a, dict) and a.get('package'):
+            apps.append({'label': str(a.get('label') or a['package'])[:80],
+                         'package': str(a['package'])[:200]})
+    now = int(time.time())
+    conn = sqlite3.connect(DEVICE_DB_PATH)
+    try:
+        conn.execute('''
+            INSERT INTO app_devices (device_id, login, name, model, kind, remote, can_open, apps,
+                                     version, registered_at, last_seen)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(device_id) DO UPDATE SET login=excluded.login, name=excluded.name,
+                model=excluded.model, kind=excluded.kind, remote=excluded.remote,
+                can_open=excluded.can_open, apps=excluded.apps, version=excluded.version,
+                last_seen=excluded.last_seen
+        ''', (did, me, name, model, kind, 1 if d.get('remote') else 0,
+              1 if d.get('can_open_apps') else 0, json.dumps(apps, ensure_ascii=False),
+              str(d.get('version') or '')[:40], now, now))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify(ok=True)
+
+
+@app.route('/devices/api/list')
+@api_login_required
+def remote_list():
+    return jsonify(devices=[_remote_public(d) for d in _remote_devices(session['user'])])
+
+
+@app.route('/devices/api/apps')
+@api_login_required
+def remote_apps():
+    dev, candidates = _remote_find(session['user'], request.args.get('device'))
+    if not dev:
+        return jsonify(error=t('devices.not_found', name=request.args.get('device') or ''),
+                       candidates=[c['name'] for c in candidates]), 404
+    return jsonify(device=dev['name'], apps=sorted(a['label'] for a in dev['apps']))
+
+
+@app.route('/devices/api/command', methods=['POST'])
+@api_login_required
+def remote_command():
+    """One command to one device, and what it answered. Parents may command
+    anyone's device; everybody else only their own -- the same rule as ringing
+    a phone (geo_ring)."""
+    me = session['user']
+    data = request.get_json(silent=True) or {}
+    action = data.get('action')
+    if action not in REMOTE_ACTIONS:
+        return jsonify(error=t('devices.unknown_action'), actions=list(REMOTE_ACTIONS)), 400
+    dev, candidates = _remote_find(me, data.get('device'))
+    if not dev:
+        key = 'devices.ambiguous' if candidates and len(candidates) < len(_remote_devices(me)) \
+            else 'devices.not_found'
+        return jsonify(error=t(key, name=data.get('device') or ''),
+                       candidates=[{'name': c['name'], 'owner': c['owner_name']} for c in candidates]), 404
+    if dev['login'] != me and not _tasks_is_admin(me):
+        return jsonify(error=t('devices.forbidden')), 403
+    if not dev['remote']:
+        return jsonify(error=t('devices.remote_off', name=dev['name'])), 409
+    cmd = secrets.token_hex(8)
+    payload = {'device_id': dev['device_id'], 'cmd': cmd, 'action': action,
+               'by': _tasks_display_name(me) if dev['login'] != me else ''}
+    if action == 'volume':
+        step = data.get('step')
+        if step in ('up', 'down', 'mute', 'unmute'):
+            payload['step'] = step
+        else:
+            try:
+                payload['level'] = max(0, min(100, int(data.get('level'))))
+            except (TypeError, ValueError):
+                return jsonify(error=t('devices.bad_volume')), 400
+    elif action == 'open_app':
+        found, apps = _remote_find_app(dev['apps'], data.get('app'))
+        if not found:
+            key = 'devices.ambiguous_app' if apps else 'devices.no_app'
+            return jsonify(error=t(key, app=data.get('app') or '', name=dev['name']),
+                           candidates=[a['label'] for a in apps][:10]), 404
+        payload.update(package=found['package'], label=found['label'])
+    elif action == 'ring':
+        try:
+            seconds = int(data.get('seconds') or GEO_RING_DEFAULT_S)
+        except (TypeError, ValueError):
+            seconds = GEO_RING_DEFAULT_S
+        payload['seconds'] = max(5, min(seconds, GEO_RING_MAX_S))
+    if not _ntfy_topic(dev['login']):
+        return jsonify(error=t('devices.no_channel', name=dev['name'])), 503
+    waiter = {'event': threading.Event(), 'login': dev['login'], 'result': None}
+    with _remote_acks_lock:
+        _remote_acks[cmd] = waiter
+    try:
+        _geo_push_control(dev['login'], 'device_cmd', payload)
+        waiter['event'].wait(timeout=REMOTE_ACK_WAIT_S)
+    finally:
+        with _remote_acks_lock:
+            _remote_acks.pop(cmd, None)
+    app.logger.info('devices: %s sent %s to %s (%s)', me, action, dev['device_id'][:8],
+                    'confirmed' if waiter['result'] else 'no answer')
+    out = {'ok': True, 'device': dev['name'], 'owner': dev['owner_name'], 'action': action,
+           'confirmed': waiter['result'] is not None}
+    if waiter['result'] is not None:
+        out['result'] = waiter['result']
+    if action == 'open_app':
+        out['app'] = payload['label']
+    return jsonify(out)
+
+
+@app.route('/devices/api/ack', methods=['POST'])
+@_geo_native_auth
+def remote_ack():
+    """A device's answer to a command. Accepted only from a session of the
+    person the command went to, so nobody else can confirm it."""
+    d = request.get_json(silent=True) or {}
+    with _remote_acks_lock:
+        waiter = _remote_acks.get(str(d.get('cmd') or ''))
+    if not waiter or waiter['login'] != session['user']:
+        return jsonify(ok=False), 404
+    waiter['result'] = {'ok': bool(d.get('ok')), 'detail': str(d.get('detail') or '')[:60],
+                        **({'level': int(d['level'])} if isinstance(d.get('level'), int) else {})}
+    waiter['event'].set()
+    return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# The Studio: video, pictures, songs and voices, generated on the house's own
+# card by `home-studio` (docs/home-studio.md). This app only fronts it: the
+# page, and `/studio/api/*` forwarded with the signed-in person's login, name
+# and whether they are a parent, vouched for by the derived secret. The
+# studio keeps projects per login and one queue for the whole house.
+# ---------------------------------------------------------------------------
+STUDIO_URL = (os.environ.get('STUDIO_URL') or '').rstrip('/')
+STUDIO_SECRET = os.environ.get('STUDIO_SECRET') or ''
+# Headers a browser may send that the studio needs (seeking in a video), and
+# ones it answers with that the browser needs back.
+_STUDIO_REQ_HEADERS = ('Range', 'If-None-Match', 'If-Modified-Since', 'Content-Type')
+_STUDIO_RESP_HEADERS = ('Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges',
+                        'ETag', 'Last-Modified', 'Cache-Control', 'Content-Disposition')
+STUDIO_LYRICS_TIMEOUT_S = 120
+
+
+# Every string the Studio page shows, handed to its script in one object.
+STUDIO_UI_KEYS = (
+    'default_project',
+    'title', 'subtitle', 'not_configured', 'unreachable', 'lyrics_need_theme', 'lyrics_failed',
+    'projects', 'new_project', 'new_project_name', 'untitled', 'empty_projects', 'back',
+    'duplicate', 'delete', 'delete_confirm', 'saved', 'saving', 'save_failed', 'tab_video',
+    'tab_audio', 'tab_images', 'tab_files', 'shot', 'add_shot', 'shots_total', 'shot_what',
+    'shot_what_ph', 'shot_says', 'shot_says_ph', 'shot_sound', 'shot_sound_ph', 'shot_music',
+    'shot_music_ph', 'shot_seconds', 'continuity', 'start_image', 'none', 'generate',
+    'regenerate', 'retouch', 'retouch_what', 'retouch_strength', 'retouch_go', 'move_up',
+    'move_down', 'remove', 'take', 'takes', 'no_take', 'generate_pending', 'long_scene',
+    'long_scene_help', 'long_scene_seconds', 'long_scene_go', 'render', 'render_crossfade',
+    'render_music', 'render_volume', 'render_start', 'render_go', 'render_running',
+    'render_failed', 'renders', 'download', 'resolution', 'res_wide', 'res_tall', 'res_square',
+    'language', 'add_song', 'add_instrumental', 'add_voice', 'kind_song', 'kind_instrumental',
+    'kind_voice', 'song_theme', 'song_theme_ph', 'write_lyrics', 'writing_lyrics', 'lyrics',
+    'lyrics_mode_edit', 'lyrics_mode_new', 'lyrics_confirm_new', 'lyrics_notes', 'lyrics_notes_ph',
+    'lyrics_go', 'music_video', 'mv_help', 'mv_idea', 'mv_idea_ph', 'mv_shot_len', 'mv_ref',
+    'mv_generate_now', 'mv_estimate', 'mv_existing', 'mv_go', 'mv_planning', 'mv_failed', 'mv_added',
+    'preview', 'preview_missing', 'preview_close', 'mute_shots', 'soundtrack', 'live_preview',
+    'cancel_all', 'cancel_all_confirm',
+    'delete_take', 'delete_take_confirm', 'delete_upload_confirm', 'remove_confirm',
+    'mv_listening', 'mv_heard', 'mv_heard_nowords', 'mv_listen_failed', 'shot_cut',
+    'favorite_set', 'favorite_clear',
+    'rs_button', 'rs_title', 'rs_mode_part', 'rs_mode_all', 'rs_pick', 'rs_range', 'rs_no_lines',
+    'rs_similar', 'rs_keep_voice', 'rs_go',
+    'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
+    'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
+    'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused',
+    'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
+    'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
+    'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
+    'err', 'min', 'sec', 'hours',
+)
+
+
+def _studio_configured():
+    return bool(STUDIO_URL and STUDIO_SECRET)
+
+
+def _studio_reachable():
+    """House-only unless the household says otherwise: a phone on the wifi or
+    the VPN, a browser on the LAN, or the person's own assistant."""
+    return (not house_only('studio') or _at_home() or getattr(g, 'proxy_member', False))
+
+
+def _studio_headers(username):
+    return {'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': username,
+            'X-Studio-Name': _tasks_display_name(username),
+            'X-Studio-Admin': '1' if _tasks_is_admin(username) else ''}
+
+
+@app.route('/studio')
+@login_required
+def studio_page():
+    if not _studio_reachable():
+        abort(404)
+    username = session['user']
+    return render_template('studio.html', user=username, user_name=_tasks_display_name(username),
+                           is_admin=_tasks_is_admin(username), configured=_studio_configured(),
+                           strings={k: t(f'studio.{k}') for k in STUDIO_UI_KEYS})
+
+
+@app.route('/studio/api/notify', methods=['POST'])
+def studio_notify():
+    """The studio says a job finished. Its own secret, no session: it is a
+    service reporting on somebody's behalf, and it names that somebody."""
+    if not _studio_configured() or not secrets.compare_digest(
+            request.headers.get('X-Studio-Secret', ''), STUDIO_SECRET):
+        abort(401)
+    d = request.get_json(silent=True) or {}
+    login = str(d.get('login') or '')
+    if not find_user(login):
+        return jsonify(ok=False), 404
+    project = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    _notify_user(login, str(d.get('text') or '')[:300], title=t_for(login, 'studio.title'),
+                 tags='clapper' if d.get('ok') else 'warning',
+                 click='/studio' + (f'?project={project}' if project else ''))
+    return jsonify(ok=True)
+
+
+@app.route('/studio/api/lyrics', methods=['POST'])
+@api_login_required
+def studio_lyrics():
+    """Lyrics written by the person's own assistant, in ACE-Step's shape:
+    section tags on their own lines, verses of similar length. The model that
+    writes is the household's; the card that sings is the studio's.
+
+    Two modes, and the page asks which before calling: `new` writes a song
+    from the theme, `edit` keeps the lyrics sent and changes only what `notes`
+    asks for -- or, with no notes, polishes them without rewriting them."""
+    if not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    mode = 'edit' if d.get('mode') == 'edit' else 'new'
+    theme = str(d.get('theme') or '').strip()[:600]
+    lyrics = str(d.get('lyrics') or '').strip()[:4000]
+    notes = str(d.get('notes') or '').strip()[:1000]
+    if mode == 'edit' and not lyrics:
+        mode = 'new'
+    if mode == 'new' and not theme:
+        return jsonify(error=t('studio.lyrics_need_theme')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(str(d.get('language') or 'es'), 'Spanish')
+    try:
+        seconds = max(20, min(600, int(float(d.get('seconds') or 90))))
+    except (TypeError, ValueError):
+        seconds = 90
+    style = str(d.get('style') or '').strip()[:200]
+    rules = (
+        "Format rules (for a singing model): put each section tag on its own line, such as "
+        "[Verse], [Chorus], [Bridge], [Outro]; separate sections with a blank line; 6-10 "
+        "syllables per line and similar line lengths within a section; no explanations, no "
+        "title, no quotes -- only the tagged lyrics."
+    )
+    if mode == 'edit':
+        prompt = (
+            f"Here are the lyrics of a song in {language}"
+            + (f" about: {theme}" if theme else "") + ".\n"
+            + (f"Musical style: {style}.\n" if style else "")
+            + (f"Change only this: {notes}\nLeave every other line exactly as it is -- same "
+               "words, same order, same section tags.\n" if notes else
+               "Improve them without rewriting them: fix the meter and the rhymes, tighten "
+               "weak lines, and keep the meaning, the language, the sections and every line "
+               "that already works.\n")
+            + rules + " Answer with the complete lyrics, changed lines and unchanged ones.\n\n"
+            + "LYRICS:\n" + lyrics
+        )
+    else:
+        prompt = (
+            f"Write original song lyrics in {language} about: {theme}.\n"
+            + (f"Musical style: {style}.\n" if style else "")
+            + (f"Also: {notes}\n" if notes else "")
+            + f"The song lasts about {seconds} seconds, so write about {max(2, seconds // 20)} short sections.\n"
+            + rules
+        )
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-lyrics'
+    text = _run_nanobot_turn(username, chat_id, prompt, STUDIO_LYRICS_TIMEOUT_S)
+    if not text:
+        return jsonify(error=t('studio.lyrics_failed')), 502
+    return jsonify(lyrics=text.strip())
+
+
+STUDIO_PLAN_TIMEOUT_S = 240
+
+
+def _studio_parse_plan(text, n):
+    """The shots Alfred planned, from whatever it answered: the first JSON
+    array in the text, each entry a description and whether it continues the
+    shot before. Exactly `n`, or None -- the page has already split the song
+    into `n` pieces of time, and a plan of another length would not fit."""
+    if not text:
+        return None
+    start, end = text.find('['), text.rfind(']')
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    shots = []
+    for i, entry in enumerate(raw if isinstance(raw, list) else []):
+        if isinstance(entry, str):
+            entry = {'prompt': entry}
+        if not isinstance(entry, dict) or not str(entry.get('prompt') or '').strip():
+            continue
+        shots.append({'prompt': str(entry['prompt']).strip()[:1200],
+                      'continues': bool(entry.get('continues')) and bool(shots)})
+    return shots if len(shots) == n else None
+
+
+@app.route('/studio/api/music-video', methods=['POST'])
+@api_login_required
+def studio_music_video():
+    """The shots of a music video, planned by the person's own assistant from
+    a song (or a voice, or an instrumental) already in the project.
+
+    The page decides how many shots and how long each is -- that is arithmetic
+    on the song's length -- and asks Alfred only for what to show in each, in
+    order, following the lyrics. It then adds the shots and queues them, so
+    every one is an ordinary shot the person can rewrite and redo."""
+    if not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    try:
+        n = max(1, min(80, int(d.get('shots') or 0)))
+        seconds = max(5, min(600, int(float(d.get('seconds') or 0))))
+    except (TypeError, ValueError):
+        return jsonify(error=t('studio.mv_failed')), 400
+    kind = str(d.get('kind') or 'song')
+    words = str(d.get('lyrics') or d.get('text') or '').strip()[:4000]
+    style = str(d.get('style') or '').strip()[:300]
+    title = str(d.get('title') or '').strip()[:120]
+    idea = str(d.get('idea') or '').strip()[:1000]
+    each = max(1, round(seconds / n))
+    # The cuts, when the Studio has listened to the song: each shot's time,
+    # the part of the song it falls in and the words actually sung during it
+    # (studio/analysis.py). Without them the words are spread evenly, which a
+    # song does not do -- an intro, a break and a repeated chorus later, shot 3
+    # was showing the chorus while the verse was still being sung.
+    plan = [c for c in (d.get('plan') or []) if isinstance(c, dict)][:80]
+    if plan:
+        n = len(plan)
+
+        def _clock(t):
+            t = float(t or 0)
+            return f"{int(t // 60)}:{t % 60:04.1f}"
+        timeline = "\n".join(
+            f"Shot {i + 1} ({_clock(c.get('start'))}-{_clock(c.get('end'))}"
+            + (f", {str(c.get('section'))[:30]}" if c.get('section') else '') + "): "
+            + (f'sung: "{str(c.get("words"))[:300]}"' if c.get('sung') else 'no singing -- music only')
+            for i, c in enumerate(plan))
+    prompt = (
+        f"Plan a music video for {'a song' if kind == 'song' else 'a narration' if kind == 'voice' else 'an instrumental piece'}"
+        + (f' called "{title}"' if title else '') + f", {seconds} seconds long, as exactly {n} shots"
+        + (", timed to the song as listed below" if plan else f" of about {each} seconds each") + ", in order.\n"
+        + (f"Musical style: {style}.\n" if style else "")
+        + (f"What the person wants it to look like: {idea}\n" if idea else "")
+        + (f"The shots, with what is heard during each (show what those words are about, "
+           f"and let the music-only ones carry the mood or the build):\n{timeline}\n" if plan else
+           f"The words, which the shots should follow in order (each shot covers about "
+           f"1/{n} of them):\n{words}\n" if words else "There are no words; follow the music's mood and build.\n")
+        + "For each shot write one description for a text-to-video model, in English: who and "
+          "what is on screen, the setting, the action, the camera (framing and movement), the "
+          "light and the mood -- 1 to 3 sentences, concrete and visual, no sounds, no quotes of the "
+          "lyrics, no text on screen. Keep the same characters and look across shots, describing "
+          "them the same way each time. Mark `continues: true` when a shot is the same moment "
+          "carrying on from the one before (same place, same action, no cut); otherwise false. "
+          "The first shot is always false.\n"
+          f'Answer with only a JSON array of exactly {n} objects, with no code fence and no other '
+          f'text: [{{"prompt": "...", "continues": false}}, ...]'
+    )
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-video'
+    shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S), n)
+    if shots is None:
+        # Once more, saying what went wrong: the usual miss is a count off by one.
+        again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only "
+                 f"the JSON array, exactly {n} entries, no code fence.")
+        shots = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S), n)
+    if shots is None:
+        return jsonify(error=t('studio.mv_failed')), 502
+    return jsonify(shots=shots)
+
+
+@app.route('/studio/v1/images/generations', methods=['POST'])
+@api_login_required
+def studio_images():
+    """The assistant's drawing skill, pointed at the house's Studio
+    (`studio:z_image` on an image slot): forwarded as the member it serves, so
+    the picture lands in their default project and waits in the one queue.
+    The Studio answers within ~3 minutes -- the picture, or "queued"."""
+    if not _studio_configured():
+        return jsonify(error=t('studio.not_configured')), 503
+    if not _studio_reachable():
+        abort(404)
+    try:
+        r = requests.post(f'{STUDIO_URL}/v1/images/generations', headers=_studio_headers(session['user']),
+                          json=request.get_json(silent=True) or {}, timeout=(5, 200))
+    except requests.RequestException as exc:
+        app.logger.warning('studio: drawing failed: %s', exc)
+        return jsonify(error=t('studio.unreachable')), 502
+    return Response(r.content, status=r.status_code, content_type=r.headers.get('Content-Type', 'application/json'))
+
+
+@app.route('/studio/api/<path:sub>', methods=['GET', 'POST', 'PUT', 'DELETE'])
+@api_login_required
+def studio_api(sub):
+    """Everything else, forwarded as it came, answered as it answers --
+    including a video's byte ranges, so seeking works."""
+    if not _studio_configured():
+        return jsonify(error=t('studio.not_configured')), 503
+    if not _studio_reachable():
+        abort(404)
+    if '..' in sub or sub.startswith('/'):
+        abort(404)
+    headers = _studio_headers(session['user'])
+    for h in _STUDIO_REQ_HEADERS:
+        if request.headers.get(h):
+            headers[h] = request.headers[h]
+    # `?download=<name>` on a project file: sent as an attachment, which is
+    # what the Android app's WebView hands to the phone's downloads. Decided
+    # here rather than in the studio, and never forwarded to it.
+    download = request.args.get('download') if request.method == 'GET' and '/file/' in sub else None
+    params = {k: v for k, v in request.args.items() if k != 'download'}
+    try:
+        upstream = requests.request(
+            request.method, f'{STUDIO_URL}/api/{sub}', params=params, headers=headers,
+            data=request.get_data() if request.method != 'GET' else None,
+            stream=True, timeout=(5, 120))
+    except requests.RequestException as exc:
+        app.logger.warning('studio: %s %s failed: %s', request.method, sub, exc)
+        return jsonify(error=t('studio.unreachable')), 502
+    out = Response(stream_with_context(upstream.iter_content(chunk_size=256 * 1024)),
+                   status=upstream.status_code)
+    for h in _STUDIO_RESP_HEADERS:
+        if h in upstream.headers:
+            out.headers[h] = upstream.headers[h]
+    if download is not None and upstream.status_code == 200:
+        out.headers['Content-Disposition'] = _studio_attachment(download, sub)
+    return out
+
+
+def _studio_attachment(name, sub):
+    """`attachment` with the name the page asked for and the file's own
+    extension. Both forms: `filename*` carries the accents, and the plain one
+    is what older Android download handlers read."""
+    ext = os.path.splitext(sub)[1][:10]
+    base = re.sub(r'[\x00-\x1f/\\:*?"<>|]+', ' ', str(name or '')).strip()[:100] or 'studio'
+    if ext and not base.lower().endswith(ext.lower()):
+        base += ext
+    plain = unicodedata.normalize('NFKD', base).encode('ascii', 'ignore').decode() or 'studio' + ext
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(base)}"
+
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
     # No init_backup_db(). It was called here and defined nowhere: the backup
     # history it set up belongs to `home-backups`, a service upstream ships and
@@ -21298,6 +21948,7 @@ if __name__ == '__main__':
     init_projects_db()
     init_profiles_db()
     init_family_chat_db()
+    init_app_devices_db()
     # Once, and then never again: the pre-per-day archive is filed under the
     # days it happened on and renamed aside. See migrate_legacy_history.
     migrate_legacy_history()

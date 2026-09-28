@@ -1450,6 +1450,7 @@ class AgentLoop:
         powerful: bool = False,
         profile: str | None = None,
         route_text: str | None = None,
+        inline: bool = False,
     ) -> tuple[str | None, list[str], list[dict], str, bool]:
         """Run the agent iteration loop.
 
@@ -1592,6 +1593,13 @@ class AgentLoop:
             powerful=powerful, profile=profile, use_vision=use_vision,
             route_text=route_text,
         )
+        # A message the system writes on a schedule -- the morning greeting --
+        # is answered now, in this turn: its instructions read like "several
+        # steps and a lookup" to the classifier, but the answer *is* the
+        # message. Labelled `long` on 2026-09-28 it went to pi, came back as
+        # pi's own chatter, and the person got that instead of a greeting.
+        if inline and route.label in ("long", "background"):
+            route = TurnClass("action", "everyday", f"scheduled message (was {route.label})", "forced")
         # Work that takes minutes goes to a sub-agent, and this turn only says
         # so (delegate.py). Not an image turn, a profession or a caller's
         # `powerful`, and not a channel where a later answer is no answer --
@@ -2023,8 +2031,11 @@ class AgentLoop:
                         msg, on_stream=on_stream, on_stream_end=on_stream_end,
                         pending_queue=pending,
                     )
-                    # For sub-agent results, cap summarisation at 20s so a
-                    # stalled Together AI call doesn't lose the result entirely.
+                    # For sub-agent results, cap summarisation so a stalled
+                    # provider call doesn't lose the result entirely. 60 s, not
+                    # 20: on 2026-09-28 a summariser that was working (calling
+                    # tools) was cut off at 20 s and the raw result -- a
+                    # sub-agent's reasoning, not an answer -- went to the chat.
                     _is_subagent_result = (
                         msg.channel == "system"
                         and msg.sender_id == "subagent"
@@ -2032,7 +2043,7 @@ class AgentLoop:
                     )
                     if _is_subagent_result:
                         try:
-                            response = await asyncio.wait_for(_process_coro, timeout=20.0)
+                            response = await asyncio.wait_for(_process_coro, timeout=60.0)
                         except asyncio.TimeoutError:
                             logger.warning(
                                 "Subagent summarisation timed out for session {}; "
@@ -2180,6 +2191,7 @@ class AgentLoop:
         pending_queue: asyncio.Queue | None = None,
         powerful: bool = False,
         profile: str | None = None,
+        inline: bool = False,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
@@ -2373,6 +2385,7 @@ class AgentLoop:
             pending_queue=pending_queue,
             powerful=powerful,
             profile=profile,
+            inline=inline,
             route_text=stored_text if isinstance(msg.content, str) else None,
         )
 
@@ -2697,8 +2710,12 @@ class AgentLoop:
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
         powerful: bool = False,
         profile: str | None = None,
+        inline: bool = False,
     ) -> OutboundMessage | None:
         """Process a message directly and return the outbound payload.
+
+        *inline* answers in this turn whatever the classifier makes of it: no
+        sub-agent, no plan. For messages the system writes on a schedule.
 
         *powerful* routes this one turn to the stronger model (see
         `powerful_model`). It is per-turn and not sticky: the caller decides
@@ -2719,4 +2736,7 @@ class AgentLoop:
             on_stream_end=on_stream_end,
             powerful=powerful,
             profile=profile,
+            # Only when set: anything standing in for _process_message (tests,
+            # wrappers) keeps working without learning a new keyword.
+            **({"inline": True} if inline else {}),
         )

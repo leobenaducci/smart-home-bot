@@ -207,6 +207,8 @@ services:
           # LAN. Nothing exported these, so app.py's own defaults ran -- and
           # they named a host and a port that had moved.
           CAMERAS_APP_URL: "http://{dns.cameras}:{services.home-cameras.web_port}"
+          # The Studio, when it is on (docs/home-studio.md).
+          STUDIO_URL: "{derived.studio_url}"
           NANOBOT_HOST: "{dns.assistant}"
           NANOBOT_API_PORT_BASE: "{services.nanobot.api_port_base}"
           NANOBOT_WEBSOCKET_PORT_BASE: "{services.nanobot.websocket_port_base}"
@@ -378,7 +380,10 @@ services:
       optional: [PROJECTS_KEY, PROJECTS_BROKER_TOKEN,
                  SHARE_SMB_PASSWORD, NTFY_CREDENTIALS, VOICE_GATEWAY_TOKEN,
                  OPENCODE_API_KEY, ACME_DNS_API_TOKEN,
-                 NANOBOT_DEBUG_SECRET, MENU_DEVICE_TOKEN]
+                 NANOBOT_DEBUG_SECRET, MENU_DEVICE_TOKEN,
+                 # Derived (derive_studio_secret); the Studio page only uses it
+                 # when STUDIO_URL says the studio is on.
+                 STUDIO_SECRET]
       # Per-member, expanded from services.nanobot.members
       per_member: ["NANOBOT_API_SECRET_{M}"]
 
@@ -583,6 +588,11 @@ services:
           # container is not deployed, and nanobot dials whatever is listed.
           crawl4ai:
             disable_mcp: [crawl4ai]
+          # The Studio skill only where there is a Studio. Off, its name and
+          # description would still enter every prompt, and every "make me a
+          # song" would end in the portal's "not configured".
+          home-studio:
+            disable_skills: [studio]
           # The browser, reached over the container network. Off, its entry goes
           # too: `http://browser-use:21034` does not resolve when the container
           # is not deployed, and that is a failed connect on every message.
@@ -903,6 +913,11 @@ services:
           # container is not deployed, and nanobot dials whatever is listed.
           crawl4ai:
             disable_mcp: [crawl4ai]
+          # The Studio skill only where there is a Studio. Off, its name and
+          # description would still enter every prompt, and every "make me a
+          # song" would end in the portal's "not configured".
+          home-studio:
+            disable_skills: [studio]
           # The browser, reached over the container network. Off, its entry goes
           # too: `http://browser-use:21034` does not resolve when the container
           # is not deployed, and that is a failed connect on every message.
@@ -1403,6 +1418,80 @@ services:
             # fails on a slow line for no reason but the clock. Measured here
             # with the packages already staged: 433 s end to end.
             timeout: 1200
+
+  home-studio:
+    description: >
+      Video, pictures, songs and voices on one card of the house -- one queue
+      for everybody, per-person projects. See docs/home-studio.md.
+    role: compute
+    # A tile on the portal's dashboard, to the portal's own Studio page -- never
+    # to the studio itself, whose API is for the portal and the assistants.
+    # House-only like the cameras: the wall leaves it out for someone away
+    # when `services.home-studio.house_only` says so.
+    tier: basic
+    icon: "🎬"
+    portal_path: "/studio"
+    units:
+      # The Studio's own audio.cpp, on the Studio's card: separating a song's
+      # vocals and aligning its lyrics to them, for a music video that follows
+      # the words. Built from audio-cpp's directory so it is the same image as
+      # that service's CUDA build; first, because the studio calls it.
+      - name: audio
+        dir: services/audio-cpp
+        compose:
+          - docker-compose.studio.yml
+          - { file: docker-compose.studio.gpu.yml, when: services.home-studio.gpu }
+        compose_project: home-studio-audio
+        build: true
+        pre_remove_containers: [audio-cpp-studio]
+        pre_create_networks: [nanobot-net]
+        env:
+          STUDIO_GPU_DEVICE: "{services.home-studio.gpu_device}"
+        state:
+          # The same package cache as audio-cpp's: one copy of each model.
+          - { path: "{paths.state}/audio-cpp/models", mount: /models,
+              env: AUDIOCPP_MODELS_DIR, backup: skip }
+          # Read-only here: it opens the files the Studio names.
+          - { path: "{paths.state}/home-studio/data", mount: "/data (read-only)",
+              env: STUDIO_DATA_DIR }
+        verify:
+          # The first start downloads ~1.4 GB of models before it answers.
+          - container_healthy: audio-cpp-studio
+            fail_message: "the Studio's audio.cpp is not answering; music videos will not follow the words"
+            timeout: 900
+      - name: studio
+        dir: services/home-studio
+        compose:
+          - docker-compose.yml
+          - { file: docker-compose.gpu.yml, when: services.home-studio.gpu }
+        build: true
+        pre_remove_containers: [home-studio]
+        pre_create_networks: [nanobot-net]
+        env:
+          STUDIO_PORT: "{services.home-studio.port}"
+          # One card, and nothing else on it: the manager owns it.
+          STUDIO_GPU_DEVICE: "{services.home-studio.gpu_device}"
+          STUDIO_IDLE_S: "{services.home-studio.idle_s}"
+          STUDIO_MEM_LIMIT: "{services.home-studio.mem_limit}"
+          # Where "done" goes: the portal tells the person on their phone.
+          STUDIO_NOTIFY_URL: "https://{dns.portal}:{services.home-core.port}/studio/api/notify"
+          STUDIO_AUDIO_URL: "http://audio-cpp-studio:8080"
+        state:
+          # Projects, the queue, takes and renders: the household's own work.
+          - { path: "{paths.state}/home-studio/data", mount: /data, env: STUDIO_DATA_DIR }
+          # WanGP's checkpoints, ~52 GB for video, pictures and songs, and
+          # downloaded again on demand -- the same trade audio-cpp's make.
+          - { path: "{paths.state}/home-studio/models", mount: /opt/wangp/ckpts,
+              env: STUDIO_MODELS_DIR, backup: skip }
+        verify:
+          # A payload, not a 200: the manager answers with its worker state.
+          - http: "http://127.0.0.1:{services.home-studio.port}/health"
+            expect_json: {ok: true}
+            timeout: 300
+    secrets:
+      # Derived from PROXY_SHARED_SECRET (derive_studio_secret): the portal
+      # holds the same one, and there is nothing to type.
+      required: [STUDIO_SECRET]
 
   home-voice:
     description: Voice gateway; panels reach the shared assistant through it.
@@ -2198,6 +2287,13 @@ services:
           AUTH_MODE: upstream
           HOUSE_ONLY_APPS: "{derived.house_only_apps}"
           CHAT_PROXY_DATA_DIR: "{paths.state}/local-proxy"
+          # When `cloud.vps.home_address_is_home` is on, this copy tells the
+          # VPS where the house is, every few minutes, so the app on the home
+          # wifi counts as home there. Empty, it reports nothing. See
+          # house_address_report() in deploy.py.
+          HOUSE_ADDRESS_IS_HOME: "{derived.house_address_is_home}"
+          HOUSE_BEACON_ADDRESS: "{derived.house_beacon_address}"
+          HOUSE_BEACON_NAME: "{derived.house_beacon_name}"
         # This was declared one level up, under the service, where the
         # deployer never looks: `guard_state_paths()` never saw it and the
         # directory was never created. It survived only because the unit's
@@ -2284,10 +2380,12 @@ optional_services:
           AUTH_MODE: upstream
           HOUSE_ONLY_APPS: "{derived.house_only_apps}"
           # Which addresses count as inside the house on the public copy. The
-          # app always arrives here, so the VPN is what distinguishes it; the
-          # household's own public address deliberately does not. Empty falls
-          # through to the compose default rather than meaning "nobody".
+          # app always arrives here, so the VPN is what distinguishes it. Empty
+          # falls through to the compose default rather than meaning "nobody".
           HOME_NETWORKS: "{derived.home_networks}"
+          # The household's own public address, learned from the copy at home,
+          # counts as inside only when `cloud.vps.home_address_is_home` says so.
+          HOUSE_ADDRESS_IS_HOME: "{derived.house_address_is_home}"
           PUBLISH_ENTRY_PAGE: "{cloud.vps.serve_entry_page}"
         # Rendered from cloud.vps.domain. The file in git named an internal
         # hostname, which is the one thing a public host cannot be called, so

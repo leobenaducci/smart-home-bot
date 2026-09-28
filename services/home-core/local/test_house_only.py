@@ -132,13 +132,13 @@ for path in ("/camaras/",):
 print("\nthe Apps menu offers what the request can actually open")
 with A.app.test_request_context("/chat", headers=AWAY):
     A._proxy_auth()
-    names = [s["name"] for s in A._chat_external_links()]
+    names = [s.get("key", s["name"]) for s in A._chat_external_links()]
 check("no Camaras tile from outside", "Cameras" not in names, names)
 check("the modules are panels, not links", "Files" not in names, names)
 
 with A.app.test_request_context("/chat", headers=HOME):
     A._proxy_auth()
-    names = [s["name"] for s in A._chat_external_links()]
+    names = [s.get("key", s["name"]) for s in A._chat_external_links()]
 check("the camera tile is offered at home", "Cameras" in names, names)
 
 print("\nthe menu can be re-asked when the phone changes networks")
@@ -151,12 +151,12 @@ print("\nthe menu can be re-asked when the phone changes networks")
 r = client.get('/chat/apps', headers=AWAY)
 check("the menu can be re-asked at all", r.status_code == 200,
       f"{r.status_code} {r.get_data(as_text=True)[:120]}")
-names = [l['name'] for l in (r.get_json() or {}).get('links', [])]
+names = [l.get('key', l['name']) for l in (r.get_json() or {}).get('links', [])]
 check("asked from outside it offers no house-only tile",
       'Cameras' not in names, names)
 check("and says so plainly", r.get_json()['at_home'] is False, r.get_json())
 r = client.get('/chat/apps', headers=HOME)
-names = [l['name'] for l in r.get_json()['links']]
+names = [l.get('key', l['name']) for l in r.get_json()['links']]
 check("asked from the house it offers the camera tile too",
       'Cameras' in names, names)
 # Against the list that has something in it. This ran on the away list, which is
@@ -256,6 +256,37 @@ check("a tile with no menu: is in no group at all",
       not any(t["name"] == "Wallonly"
               for rows in _home.values() for t in rows))
 A._dashboard_cache.update(key=None)
+
+# The Studio, house-only when the household keeps it so (2026-09-28): a phone
+# away without the VPN is refused, one on the wifi or the VPN is not, and the
+# person's own assistant -- its member token, no X-Proxy-Lan -- is not either.
+print("\nthe studio, when it is house-only")
+A.STUDIO_URL, A.STUDIO_SECRET = "http://studio.invalid:1", "s" * 32
+A.HOUSE_ONLY_APPS = set(A.HOUSE_ONLY_APPS) | {"studio"}
+c = A.app.test_client()
+check("  away: the page is not there", c.get("/studio", headers=AWAY).status_code == 404)
+check("  away: nor its API", c.get("/studio/api/queue", headers=AWAY).status_code == 404)
+check("  at home: the page is", c.get("/studio", headers=HOME).status_code == 200)
+member = {"X-Proxy-Secret": A._proxy_user_token(USER1), "X-Proxy-User": USER1}
+r = c.get("/studio/api/queue", headers=member)
+check("  the person's own assistant is not refused (it reaches the studio)",
+      r.status_code != 404, r.status_code)
+
+# The lights, mounted at /luces like the cameras (2026-09-28).
+print("\nthe lights, when they are house-only")
+A.HOUSE_ONLY_APPS = set(A.HOUSE_ONLY_APPS) | {"lights"}
+A.LIGHTS_APP_URL = "http://lights.invalid:1"
+check("  away: /luces is not there", c.get("/luces/", headers=AWAY).status_code == 404)
+check("  at home: it is forwarded (the far side is down here, so not a 404 of ours)",
+      c.get("/luces/", headers=HOME).status_code != 404)
+_real_t = A.t
+A.t = lambda key, **kw: {"nav.app_lights": "Luces", "nav.app_lights_help": "Cada luz"}.get(key, key)
+_named = A._link_in_language({"name": "Lights", "url": "/luces/", "description": "Every light"})
+_plain = A._link_in_language({"name": "Something", "url": "/x", "description": "d"})
+A.t = _real_t
+check("  a menu link takes its name from the catalogue, and keeps its own without one",
+      (_named["name"], _named["description"], _plain["name"], _plain["description"])
+      == ("Luces", "Cada luz", "Something", "d"), (_named, _plain))
 
 print()
 shutil.rmtree(tmp, ignore_errors=True)

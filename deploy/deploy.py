@@ -1834,6 +1834,10 @@ def derive(cfg: dict, secrets: dict) -> dict:
         "usage_token_cameras": (
             derive_service_token(secrets["PROXY_SHARED_SECRET"], "home-cameras")
             if secrets.get("PROXY_SHARED_SECRET") else ""),
+        # The Studio's address for the portal, or empty while it is off or
+        # has no name: an empty one hides the page and its menu entry, where an
+        # address that answers nothing would offer a studio that is not there.
+        "studio_url": studio_url(cfg),
         # Whatever GPU exporter the household already runs, or empty. See the
         # note in the example config for why this stack does not ship one.
         "gpu_exporter_url": str(
@@ -1846,6 +1850,7 @@ def derive(cfg: dict, secrets: dict) -> dict:
         "ollama_cloud_api_key": cloud_key or "disabled",
         "house_only_apps": house_only_apps(cfg),
         "home_networks": home_networks(cfg),
+        **house_address_report(cfg),
         # For a consumer on host networking. See ollama_endpoints().
         "ollama_url_host": endpoints.get("ollama_host", ("", ""))[0],
     }
@@ -1883,7 +1888,11 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 # services the portal actually proxies can be kept to the house -- everything
 # else is reachable exactly as far as its port is published, which is a
 # different question and a different setting.
-HOUSE_ONLY_APPS = {"home-cameras": "cameras"}
+# The Studio as well (2026-09-28): the household wants it on the wifi or the
+# VPN only, like the cameras.
+# And the lights, when a household plugin serves them (`smart-lights`, mounted
+# by the portal at /luces): switches for the whole house are not a public page.
+HOUSE_ONLY_APPS = {"home-cameras": "cameras", "home-studio": "studio", "smart-lights": "lights"}
 
 
 # Which host each `dns:` name stands in front of, so a name left blank can fall
@@ -2082,11 +2091,10 @@ def home_networks(cfg: dict) -> str:
     apart is the VPN, and the proxy defaults to Tailscale's range on its own --
     so this is empty unless the household adds to it.
 
-    Explicitly *not* the household's public address. That would show the
-    house-only links on the home wifi with no VPN at all, which is not what
-    "LAN or VPN" means: it reads "same building" as "came in privately", it
-    breaks silently when the ISP changes the address, and behind CGNAT it is
-    not even the same household.
+    Never the household's public address as a typed range: it breaks silently
+    the day the ISP changes it. A household that wants its home wifi to count
+    says `home_address_is_home` instead, and the address is learned from the
+    house -- see house_address_report().
 
     Empty is not "nobody": the compose file carries the real default and an
     empty export falls through to it.
@@ -2096,6 +2104,33 @@ def home_networks(cfg: dict) -> str:
     if isinstance(nets, str):
         nets = nets.split(",")
     return ",".join(str(n).strip() for n in nets if str(n).strip())
+
+
+def house_address_report(cfg: dict) -> dict:
+    """Whether the house's own public address counts as being at home, and
+    where the copy at home reports it to.
+
+    Off unless `cloud.vps.home_address_is_home` says so. On, the Android app
+    shows the house-only apps on the home wifi without the VPN -- it dials the
+    public name, so it reaches the VPS from the address the house goes out on.
+    That is a household's choice to make knowingly: anybody on that wifi who can
+    sign in is "at home", and behind CGNAT so is the neighbour's house.
+
+    The address is never configured. The copy at home reports every few
+    minutes, and the VPS records whichever public address the report arrived
+    from (services/proxy/server/house_address.py) -- so an ISP renumbering the
+    house is followed, and a house that stops reporting stops counting.
+
+    It dials `cloud.vps.host` rather than the domain: inside the house the
+    domain answers the house's own proxy, which is the split horizon working.
+    """
+    vps = ((cfg.get("cloud") or {}).get("vps") or {})
+    on = bool(vps.get("enabled") and vps.get("home_address_is_home"))
+    host = str(vps.get("host") or "").strip() if on else ""
+    domain = str(vps.get("domain") or "").strip() if on else ""
+    return {"house_address_is_home": "1" if on else "0",
+            "house_beacon_address": host if host and domain else "",
+            "house_beacon_name": domain if host and domain else ""}
 
 
 def house_only_apps(cfg: dict) -> str:
@@ -2304,6 +2339,26 @@ def derive_crawl4ai_secret(shared_secret: str, purpose: str) -> str:
         f"{shared_secret}:crawl4ai:{purpose}".encode()).hexdigest()
 
 
+def studio_url(cfg: dict) -> str:
+    """http://<dns.studio>:<port> when home-studio is on, else ""."""
+    svc = (cfg.get("services") or {}).get("home-studio") or {}
+    name = str((cfg.get("dns") or {}).get("studio") or "").strip()
+    if not svc.get("enabled") or not name:
+        return ""
+    # 21035 is home-studio's own default (NEW_SERVICES); 21040 is the registry's.
+    return f"http://{name}:{svc.get('port', 21035)}"
+
+
+def derive_studio_secret(shared_secret: str) -> str:
+    """home-studio's secret, which the portal also holds to call it.
+
+    The crawl4ai shape again: two containers must hold the same string, the
+    household has nobody to obtain it from, and deriving it means neither
+    end is ever out of step after PROXY_SHARED_SECRET is rotated.
+    """
+    return hashlib.sha256(f"{shared_secret}:home-studio".encode()).hexdigest()
+
+
 def derive_service_token(shared_secret: str, service: str) -> str:
     """A token that says "I am this container", not "I am this person".
 
@@ -2369,6 +2424,7 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
         secrets = {
             "CRAWL4AI_API_TOKEN": derive_crawl4ai_secret(shared, "token"),
             "CRAWL4AI_SECRET_KEY": derive_crawl4ai_secret(shared, "jwt"),
+            "STUDIO_SECRET": derive_studio_secret(shared),
             # The file still wins if somebody set one by hand: this is a
             # convenience, not a policy, and an operator who wants a specific
             # token should be able to have one.
@@ -3875,7 +3931,30 @@ def image_model_env(cfg: dict) -> dict:
         value = models.get(role, "")
         if not value:
             continue
+        # The Studio switched off with a drawing role still on it: export
+        # nothing, so the skill says it has no model rather than posting to a
+        # door that answers "not configured".
+        # A studio slot with nowhere to send it -- the Studio off, no
+        # `dns.studio` (the portal then answers "not configured"), or no
+        # `dns.portal` -- exports nothing, so the skill says it has no model.
+        # Exporting the model without IMAGE_API_URL sent `z_image` to the
+        # hosted default on the Together key: a paid call for a model it does
+        # not serve.
+        portal = str((cfg.get("dns") or {}).get("portal") or "").strip()
+        if value.startswith("studio:") and not (studio_url(cfg) and portal):
+            continue
         env[prefixed] = value
+        # `studio:<model>`: the house's own Studio draws it, through the one
+        # queue on its card (docs/home-studio.md). Reached through the portal,
+        # which forwards it as the member the assistant serves -- so the
+        # picture lands in that person's default project, and no assistant
+        # holds a key that could act as anyone else.
+        if value.startswith("studio:"):
+            env[bare] = value.split(":", 1)[1]
+            port = ((cfg.get("services") or {}).get("home-core") or {}).get("port", 21001)
+            env["IMAGE_API_URL" if role == "image_normal" else "IMAGE_API_URL_HIGH"] = (
+                f"https://{portal}:{port}/studio/v1/images/generations")
+            continue
         name, provider = split_model(value)
         # The bare id, for whoever posts it to an API. Exported for every
         # provider rather than only Together, because the skill that draws now
@@ -4582,6 +4661,12 @@ def apply_service_renames(cfg: dict) -> None:
 # somebody switched it on. Nothing deploys until they do.
 NEW_SERVICES = {
     "registry": {"enabled": False, "host": "hub", "port": 21040},
+    # Off, and it matters more than for most: `.get("enabled", True)` would
+    # otherwise deploy an 18 GB CUDA image onto a card for a household that
+    # upgraded past 2026-09-28 and never asked for a studio.
+    "home-studio": {"enabled": False, "host": "compute", "port": 21035, "gpu": True,
+                    "gpu_device": "0", "idle_s": 600, "mem_limit": "36g",
+                    "house_only": True},
     # Off, but present: both nanobot units interpolate
     # `{services.home-search.port}` and `.vane_port` unconditionally, so a
     # config written before home-search existed would fail to deploy the

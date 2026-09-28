@@ -262,6 +262,9 @@ dns:
   # The transcription server, named because the portal and the assistants
   # both reach it and neither should carry an address.
   whisper: whisper.home
+  # The Studio's API (home-studio), for the portal. Only asked for when the
+  # studio is switched on.
+  studio: studio.home
 
 # Absolute paths on the target hosts. Deliberately outside any deploy
 # workspace: live configuration that a re-deploy can wipe has cost this stack
@@ -468,6 +471,29 @@ services:
     host: compute
     web_port: 21020
     registry_port: 21021
+  home-studio:
+    # Video with sound, pictures, songs and cloned voices, generated on one of
+    # this machine's cards -- one queue for everybody, projects per person, a
+    # Studio page in the portal (docs/home-studio.md). Off by default: it
+    # wants a card of its own (12 GB measured), ~52 GB of weights on the
+    # state disk, and a lot of RAM while a video renders.
+    enabled: false
+    host: compute
+    port: 21035
+    gpu: true
+    # The card it owns. Nothing else should be placed on it: on a machine
+    # with two, the one nothing else uses; on a machine with one, it shares.
+    gpu_device: "0"
+    # Seconds with nothing to do before the model is unloaded and the card
+    # and RAM are given back.
+    idle_s: 600
+    # The container's memory cap: an out-of-memory stays its own problem.
+    mem_limit: 36g
+    # Only on the house wifi or the VPN, like the cameras: the chat proxy's
+    # public copy refuses /studio and the portal hides it. False opens it to
+    # anyone signed in from anywhere.
+    house_only: true
+
   audio-cpp:
     # One C++/ggml runtime for both halves of the voice path -- speech to text
     # and text to speech -- as GGUF packages, on the CPU or on an NVIDIA card.
@@ -1038,11 +1064,19 @@ cloud:
     # where the phone is.
     #
     # Empty falls through to the proxy's own default, Tailscale's range. Add a
-    # CIDR to widen it. Deliberately not a place for your public address: that
-    # would show house-only links to anyone on your home wifi with no VPN at
-    # all, break silently when your ISP changes it, and behind CGNAT would not
-    # even be your household.
+    # CIDR to widen it. Not a place for your public address: it would break
+    # silently when your ISP changes it. See the switch below instead.
     home_networks: []
+    # Let the home wifi count as home for the app, with no VPN. The copy of the
+    # proxy at home reports the address the house goes out on to the VPS every
+    # few minutes, and the VPS treats requests from that address as inside --
+    # so an ISP change is followed on its own, and a house that stops
+    # reporting stops counting after twenty minutes.
+    #
+    # Off by default, and worth deciding knowingly: anybody on your wifi who
+    # can sign in sees the house-only apps (cameras, lights, the studio), and
+    # behind CGNAT your public address is shared with other households.
+    home_address_is_home: false
 
     # Where the home end of the reverse tunnel lands on the VPS loopback. The
     # proxy has no other route to your machine, and nothing on the VPS listens

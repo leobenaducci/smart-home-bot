@@ -33,3 +33,5 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 | `home-assistant` | Read and edit Home Assistant configuration — automations, devices, entities (not device control: lights are `lights`, other devices the HA tools) |
 | `file-share` | Save, download, copy and share files on the family SMB share (per-user folders + HomeCore's share store) |
 | `family-message` | Send a direct message, optionally with an attachment, to another family member's Alfred |
+| `devices` | The household's phones and tablets by name: volume, open an app, ring one device (parents for anyone's) |
+| `studio` | Pictures, songs and videos on the house's own card, queued for everyone, into a Studio project |

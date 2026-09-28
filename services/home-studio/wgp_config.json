@@ -1,0 +1,381 @@
+{
+    "attention_mode": "auto",
+    "transformer_types": [],
+    "transformer_quantization": "int8",
+    "text_encoder_quantization": "int8",
+    "lm_decoder_engine": "",
+    "save_path": "outputs",
+    "image_save_path": "outputs",
+    "compile": "",
+    "metadata_type": "metadata",
+    "boost": 1,
+    "int8_kernels": "triton",
+    "kernel_precision": "fast",
+    "clear_file_list": 5,
+    "keep_intermediate_sliding_windows": 1,
+    "keep_resolution_on_model_switch": true,
+    "enable_4k_resolutions": 0,
+    "max_reserved_loras": -1,
+    "vae_config": 0,
+    "profile": 4,
+    "video_profile": 4,
+    "image_profile": 4,
+    "audio_profile": 3.5,
+    "preload_model_policy": [],
+    "UI_theme": "default",
+    "checkpoints_paths": [
+        "ckpts",
+        "."
+    ],
+    "loras_root": "loras",
+    "save_queue_if_crash": 1,
+    "queue_color_scheme": "pastel",
+    "process_queues_when_browser_unfocused": 1,
+    "multi_prompts_gen_type": "PG",
+    "model_hierarchy_type": 1,
+    "spatial_upsamplers": {
+        "persistence": 1,
+        "dlss5": {
+            "depth_resolution": "half",
+            "motion_vector": "original"
+        },
+        "flashvsr": {
+            "mode": 1,
+            "backend": "auto",
+            "topk_ratio": 0.0
+        },
+        "seedvr2": {
+            "window_size": 0
+        },
+        "pid": {
+            "version": "1.5",
+            "tiling_threshold": 0
+        },
+        "h3_face_refiner": {
+            "model_mode": "h3",
+            "detector_confidence": 0.25,
+            "crop_factor": 1.6,
+            "canvas_mode": "auto_no_downscale",
+            "canvas_width": 512,
+            "canvas_height": 512,
+            "smooth_window": 21,
+            "size_smooth_window": 51,
+            "smooth_method": "gaussian",
+            "size_mode": "per_frame",
+            "identity_threshold": 0.28,
+            "auto_min_face_height": 32,
+            "auto_min_presence": 0.2,
+            "fallback_detector": "person_yolov8m-seg.safetensors",
+            "fallback_head_frac": 0.5,
+            "denoising_strength": 0.45,
+            "sampling_steps": 4,
+            "flow_shift": 12.0,
+            "sample_solver": "er_sde",
+            "turbo_lora_strength": 1.0,
+            "strength": 0.75,
+            "paste_region": "face_only",
+            "mask_dilation": 24,
+            "feather": 24,
+            "colour_match": 1.0,
+            "blend": 1.0,
+            "undetected_frames": "fade_out",
+            "feather_scales_with_crop": false,
+            "window_size": 362,
+            "window_overlap": 18
+        },
+        "chain_of_zoom": {
+            "parallel_tile_processing": "auto"
+        },
+        "ltx2": {
+            "window_size": 81,
+            "window_overlap": 17
+        }
+    },
+    "audio_processors": {
+        "persistence": 1,
+        "mmaudio": {
+            "mode": 1
+        },
+        "prismaudio": {
+            "mode": 1,
+            "steps": 24,
+            "cfg_scale": 5.0
+        },
+        "seedvc": {
+            "mode": 2
+        }
+    },
+    "temporal_upsamplers": {},
+    "deepy_enabled": 1,
+    "deepy_type": "zero",
+    "deepy_vram_mode": "unload",
+    "deepy_voice_language": "auto",
+    "deepy_tool_edit_image": "Flux Klein 9B",
+    "deepy_tool_gen_image": "Krea 2 Turbo (8 Steps)",
+    "deepy_tool_gen_video": "LTX-2 2.5 Distilled",
+    "deepy_tool_gen_video_with_speech": "LTX-2.5 Distilled With Sound",
+    "deepy_tool_gen_song": "ACE-Step 1.5 Turbo LM 1.7B",
+    "deepy_tool_gen_video_with_refs": "MiniMax H3 Ref2VA Pruned Turbo Lightx2v 8 Steps",
+    "deepy_tool_gen_speech_from_description": "Qwen3 1.7B",
+    "deepy_tool_gen_speech_from_sample": "Index TTS 2",
+    "deepy_context_tokens": 16386,
+    "deepy_kv_cache_quantization": "auto",
+    "deepy_compaction_type": "discard",
+    "deepy_compaction_thinking": false,
+    "deepy_repetition_penalty": true,
+    "deepy_zero_custom_system_prompt": "",
+    "deepy_prime_custom_system_prompt": "Use the current Speed and Model Size preferences for choices left unspecified by the user when selecting beyond configured templates.",
+    "deepy_model_speed": "fast",
+    "deepy_model_size": "smaller",
+    "deepy_prime_mcp_servers": {},
+    "deepy_mcp_auto_discover_paths": false,
+    "deepy_allow_read_file_system": false,
+    "deepy_file_system_paths": [],
+    "deepy_read_everywhere": false,
+    "deepy_auto_cancel_queue_tasks": true,
+    "deepy_separate_requests_with_empty_line": true,
+    "deepy_session_reset_mode": "new_session",
+    "deepy_session_gallery_media_mode": "link",
+    "deepy_multi_session": "disabled",
+    "llm_engines": {
+        "deepy": "qwen35_4b",
+        "prompt_enhancer": "same_as_deepy",
+        "visual_inspector": "auto",
+        "profiles": {
+            "codex": {
+                "executable": "codex",
+                "model": "",
+                "reasoning_effort": "",
+                "model_catalog": [
+                    {
+                        "model": "gpt-5.6-sol",
+                        "display_name": "GPT-5.6-Sol",
+                        "is_default": true,
+                        "default_reasoning_effort": "low",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max",
+                            "ultra"
+                        ]
+                    },
+                    {
+                        "model": "gpt-5.6-terra",
+                        "display_name": "GPT-5.6-Terra",
+                        "is_default": false,
+                        "default_reasoning_effort": "medium",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max",
+                            "ultra"
+                        ]
+                    },
+                    {
+                        "model": "gpt-5.6-luna",
+                        "display_name": "GPT-5.6-Luna",
+                        "is_default": false,
+                        "default_reasoning_effort": "medium",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "gpt-5.5",
+                        "display_name": "GPT-5.5",
+                        "is_default": false,
+                        "default_reasoning_effort": "medium",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh"
+                        ]
+                    },
+                    {
+                        "model": "gpt-5.4",
+                        "display_name": "GPT-5.4",
+                        "is_default": false,
+                        "default_reasoning_effort": "medium",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh"
+                        ]
+                    },
+                    {
+                        "model": "gpt-5.4-mini",
+                        "display_name": "GPT-5.4-Mini",
+                        "is_default": false,
+                        "default_reasoning_effort": "medium",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh"
+                        ]
+                    },
+                    {
+                        "model": "gpt-5.3-codex-spark",
+                        "display_name": "GPT-5.3-Codex-Spark",
+                        "is_default": false,
+                        "default_reasoning_effort": "high",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh"
+                        ]
+                    }
+                ]
+            },
+            "claude": {
+                "executable": "claude",
+                "model": "",
+                "reasoning_effort": "",
+                "model_catalog": [
+                    {
+                        "model": "best",
+                        "display_name": "Best available",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "fable",
+                        "display_name": "Fable",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "sonnet",
+                        "display_name": "Latest Sonnet",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "opus",
+                        "display_name": "Latest Opus",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "haiku",
+                        "display_name": "Latest Haiku",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "sonnet[1m]",
+                        "display_name": "Sonnet (1M context)",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "opus[1m]",
+                        "display_name": "Opus (1M context)",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    },
+                    {
+                        "model": "opusplan",
+                        "display_name": "Opus for planning, Sonnet for execution",
+                        "is_default": false,
+                        "default_reasoning_effort": "",
+                        "reasoning_efforts": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                        ]
+                    }
+                ]
+            },
+            "opencode": {
+                "executable": "opencode",
+                "base_url": "http://127.0.0.1:4096",
+                "provider": "",
+                "model": "",
+                "reasoning_effort": "",
+                "config": "",
+                "model_catalog": []
+            }
+        }
+    },
+    "prompt_enhancer_quantization": "quanto_int8",
+    "prompt_enhancer_speculative_decoding": {
+        "method": "auto",
+        "tokens": null
+    },
+    "prompt_enhancer_temperature": 0.6,
+    "prompt_enhancer_top_p": 0.9,
+    "prompt_enhancer_randomize_seed": true,
+    "audio_save_path": "outputs",
+    "notification_apprise_urls": [],
+    "notification_apprise_urls_secure": true,
+    "notification_apprise_credential_id": "",
+    "notification_on_generation": false,
+    "notification_on_queue_complete": false,
+    "notification_on_queue_interrupted": false,
+    "enhancer_enabled": 3,
+    "extensions_defaults_version": "1.23",
+    "installed_remote_plugins": []
+}

@@ -394,6 +394,50 @@ for expected, models in checks:
 check("  the vision instance is local: free, and on the local side of the split",
       "ollama_vision" in M.LOCAL_SOURCES)
 
+# What a local model reads is Ollama's own answer (/api/show capabilities),
+# not a guess from its name: qwen3.5 and gemma4 read images with no "vl" in
+# the name, and the vision role could not be put on them (2026-09-27).
+print()
+print("a local model's modalities come from Ollama")
+
+
+class _Show:
+    CAPS = {"qwen3.5:4b": ["completion", "vision", "tools"], "gemma4:e4b": ["completion", "vision", "audio"],
+            "qwen3-vl:4b": ["completion", "vision"], "granite4.2:8b": ["completion", "tools"]}
+
+    def __init__(self, req, down=False):
+        self.url = req if isinstance(req, str) else req.full_url
+        self.body = None if isinstance(req, str) else req.data
+        self.down = down
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        if self.url.endswith("/api/tags"):
+            return json.dumps({"models": [{"name": n, "details": {}} for n in self.CAPS]}).encode()
+        if self.down:
+            raise urllib.error.URLError("show is down")
+        return json.dumps({"capabilities": self.CAPS[json.loads(self.body)["model"]]}).encode()
+
+
+urllib.request.urlopen = lambda req, timeout=None: _Show(req)
+try:
+    _got = {m["name"]: m for m in M.fetch_ollama("http://box:11434")[0]}
+    urllib.request.urlopen = lambda req, timeout=None: _Show(req, down=True)
+    _guessed = {m["name"]: m for m in M.fetch_ollama("http://box:11434")[0]}
+finally:
+    urllib.request.urlopen = _real_urlopen
+check("  qwen3.5 and gemma4 read images, with no 'vl' in the name",
+      _got["qwen3.5:4b"]["vision"] and _got["gemma4:e4b"]["vision"], _got)
+check("  gemma4 hears too; granite neither sees nor hears",
+      _got["gemma4:e4b"]["audio"] and not _got["granite4.2:8b"]["vision"] and not _got["granite4.2:8b"]["audio"])
+check("  without /api/show, the name is still the guess",
+      _guessed["qwen3-vl:4b"]["vision"] and not _guessed["qwen3.5:4b"]["vision"], _guessed)
+
 # The one that was wrong, and the only fetcher whose provider string comes out
 # of somebody else's JSON -- so the stub answers under models.dev's name and
 # the check is that the model does not come back wearing it.

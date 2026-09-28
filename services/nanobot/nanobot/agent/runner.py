@@ -651,6 +651,13 @@ _ACTION_TO_SKILL: dict[str, str] = {
     "upload_file": "file-share", "save_text": "file-share",
     "copy_file": "file-share", "move_file": "file-share",
     "make_folder": "file-share", "delete_file": "file-share",
+    # devices (the household's phones and tablets). Not `set_volume`: a model
+    # calling that as a function may mean a TV, which is Home Assistant.
+    "open_app": "devices", "ring_device": "devices", "stop_ring_device": "devices",
+    "list_devices": "devices", "list_apps": "devices",
+    # studio (the house's own generator)
+    "make_image": "studio", "make_song": "studio", "make_instrumental": "studio",
+    "make_video": "studio", "studio_queue": "studio",
     # family-message (Alfred → another member's Alfred)
     "send_family_message": "family-message", "send_message_to": "family-message",
     "ask_family": "family-message",
@@ -1080,7 +1087,13 @@ def _strip_skill_invocation_text(content: str | None) -> str:
     # never arrives, so the fenced pattern above cannot match and the object is
     # removed by the unfenced pass, leaving "```json" dangling at the end. That
     # is what reached the chat on every camera turn.
-    out = _ORPHAN_FENCE_RE.sub("", out)
+    #
+    # Only when a fence really is left open, by count. The pattern alone also
+    # matches the *closing* fence of an ordinary code block, and then every
+    # reply ending in one -- a script, the Studio's JSON shot list -- read as a
+    # broken invocation and was replaced with "nothing was executed".
+    if out.count("```") % 2 == 1:
+        out = _ORPHAN_FENCE_RE.sub("", out)
     return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 

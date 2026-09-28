@@ -37,6 +37,30 @@ loaded before it. `AUDIOCPP_TTS_PACKAGES=<one-package>` in the environment of a
 hand-run `docker compose up -d --force-recreate` is the quickest way to do
 that without touching the config.
 
+## A second instance, for the Studio
+
+The same image runs twice. This service is the house's voice (TTS and ASR, on
+the card `services.audio-cpp.gpu_device` names). `docker-compose.studio.yml`
+is the Studio's own instance, deployed as home-studio's `audio` unit on the
+Studio's card, serving music tools instead of a voice:
+
+| Task | Package | For |
+|---|---|---|
+| `sep` | `mel_band_roformer_q8_0` (241 MB) | separating a song's vocals |
+| `align` | `qwen3_forced_aligner_0_6b_q8_0` (1.1 GB) | placing the known lyrics on them, word by word |
+| `gen` | `ace_step_turbo_q8_0` (5.8 GB) | repainting a stretch of a song |
+
+The entrypoint takes these as `AUDIOCPP_SEP_PACKAGES`, `AUDIOCPP_ALIGN_PACKAGES`
+and `AUDIOCPP_GEN_PACKAGES` beside the TTS and ASR lists (`none` or empty for
+a task the instance does not serve), and extra server flags as
+`AUDIOCPP_SERVER_ARGS`. The Studio's instance holds one model at a time and
+unloads it five seconds after use, because its card belongs to the video
+generator. Both instances share one package cache. docs/home-studio.md has the
+measurements and the request shapes that were learnt by trying them: a
+separation or repaint names a file the server opens, the aligner must be given
+16 kHz mono, and ACE-Step's caption goes in `text`, its source in `audio`, and
+its single track comes back as `audio`.
+
 ## The question
 
 The household's voice path is two things: `faster-whisper` small on the CPU for

@@ -46,6 +46,13 @@ ASR_PKGS="${AUDIOCPP_ASR_PACKAGES:-${AUDIOCPP_ASR_PACKAGE:-qwen3_asr_0_6b_q8_0}}
 # model on the card.
 [ "$TTS_PKGS" = "none" ] && TTS_PKGS=""
 [ "$ASR_PKGS" = "none" ] && ASR_PKGS=""
+# Music tools, for the Studio's own instance (docker-compose.studio.yml):
+# separating a song's vocals, and aligning its known lyrics to them. Empty on
+# the house's voice instance, which serves neither.
+SEP_PKGS="${AUDIOCPP_SEP_PACKAGES:-}"
+ALIGN_PKGS="${AUDIOCPP_ALIGN_PACKAGES:-}"
+# Music generation (ACE-Step), for the Studio's repaint of a stretch of a song.
+GEN_PKGS="${AUDIOCPP_GEN_PACKAGES:-}"
 
 # The family used to be an environment variable next to the package, and that
 # was a second place to get it wrong: `qwen3_tts_0_6b_base_q8_0` with
@@ -130,6 +137,9 @@ add_entries() {   # add_entries <task> <comma-separated package ids>
 
 add_entries tts "$TTS_PKGS" || exit 1
 add_entries asr "$ASR_PKGS" || exit 1
+add_entries sep "$SEP_PKGS" || exit 1
+add_entries align "$ALIGN_PKGS" || exit 1
+add_entries gen "$GEN_PKGS" || exit 1
 
 cat > /app/server.json <<JSON
 {
@@ -144,4 +154,8 @@ cat > /app/server.json <<JSON
 JSON
 
 echo "config: $(cat /app/server.json)" >&2
-exec audiocpp_server --config /app/server.json
+# Extra server flags, word-split on purpose. The Studio's instance shares its
+# card with the video generator, so it unloads a model seconds after using it
+# (`--idle-unload-ms`) and holds one at a time (`--max-loaded-models 1`).
+# shellcheck disable=SC2086
+exec audiocpp_server --config /app/server.json ${AUDIOCPP_SERVER_ARGS:-}
