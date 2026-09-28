@@ -3,11 +3,14 @@ import subprocess, json, os, math
 
 # Through the portal, as the person: HomeCore forwards /studio/api/* to the
 # house's studio with their login.
-BASE = os.environ.get("TASKS_API_URL", "https://hub.home:21001/tasks/api").replace("/tasks/api", "/studio/api")
+# No default host: the deployer names the portal from `dns:`.
+BASE = os.environ.get("TASKS_API_URL", "").replace("/tasks/api", "/studio/api")
 USER_ID = os.environ.get("HOMECORE_USER_ID", "")
 TOKEN = os.environ.get("HOMECORE_PROXY_TOKEN", "")
 
 def _curl(method, path, data=None):
+    if not BASE:
+        return {"error": "The portal's address is not configured (TASKS_API_URL missing)."}
     if not USER_ID or not TOKEN:
         return {"error": "This account has no access to the Studio (HOMECORE_USER_ID/HOMECORE_PROXY_TOKEN missing)."}
     cmd = ["curl", "-sk", "--max-time", "60", "-X", method,

@@ -421,7 +421,9 @@ def draw(data):
 
     def _post(fields):
         headers = {"User-Agent": DRAW_UA, "Content-Type": "application/json"}
-        if key:
+        # A hosted provider's key is that provider's: never sent to the portal,
+        # which vouches for the person with the member token below.
+        if key and not studio:
             headers["Authorization"] = f"Bearer {key}"
         context = None
         if studio:

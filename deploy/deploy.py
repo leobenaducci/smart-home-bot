@@ -2346,7 +2346,8 @@ def studio_url(cfg: dict) -> str:
     name = str((cfg.get("dns") or {}).get("studio") or "").strip()
     if not svc.get("enabled") or not name:
         return ""
-    return f"http://{name}:{svc.get('port', 21040)}"
+    # 21035 is home-studio's own default (NEW_SERVICES); 21040 is the registry's.
+    return f"http://{name}:{svc.get('port', 21035)}"
 
 
 def derive_studio_secret(shared_secret: str) -> str:
@@ -3934,8 +3935,14 @@ def image_model_env(cfg: dict) -> dict:
         # The Studio switched off with a drawing role still on it: export
         # nothing, so the skill says it has no model rather than posting to a
         # door that answers "not configured".
-        if value.startswith("studio:") and not (
-                (cfg.get("services") or {}).get("home-studio") or {}).get("enabled"):
+        # A studio slot with nowhere to send it -- the Studio off, no
+        # `dns.studio` (the portal then answers "not configured"), or no
+        # `dns.portal` -- exports nothing, so the skill says it has no model.
+        # Exporting the model without IMAGE_API_URL sent `z_image` to the
+        # hosted default on the Together key: a paid call for a model it does
+        # not serve.
+        portal = str((cfg.get("dns") or {}).get("portal") or "").strip()
+        if value.startswith("studio:") and not (studio_url(cfg) and portal):
             continue
         env[prefixed] = value
         # `studio:<model>`: the house's own Studio draws it, through the one
@@ -3945,11 +3952,9 @@ def image_model_env(cfg: dict) -> dict:
         # holds a key that could act as anyone else.
         if value.startswith("studio:"):
             env[bare] = value.split(":", 1)[1]
-            portal = str((cfg.get("dns") or {}).get("portal") or "").strip()
             port = ((cfg.get("services") or {}).get("home-core") or {}).get("port", 21001)
-            if portal:
-                env["IMAGE_API_URL" if role == "image_normal" else "IMAGE_API_URL_HIGH"] = (
-                    f"https://{portal}:{port}/studio/v1/images/generations")
+            env["IMAGE_API_URL" if role == "image_normal" else "IMAGE_API_URL_HIGH"] = (
+                f"https://{portal}:{port}/studio/v1/images/generations")
             continue
         name, provider = split_model(value)
         # The bare id, for whoever posts it to an API. Exported for every

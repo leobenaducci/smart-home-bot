@@ -25,7 +25,7 @@ services:
     # On the LAN, because the portal reaches it by `dns.studio` -- and every
     # request without the derived secret is refused (studio/app.py `who`).
     ports:
-      - "${STUDIO_PORT:-21040}:8090"
+      - "${STUDIO_PORT:-21035}:8090"
     volumes:
       # Everything on the big disk: projects, the queue, and the tens of GB of
       # checkpoints, mounted where WanGP looks for them.

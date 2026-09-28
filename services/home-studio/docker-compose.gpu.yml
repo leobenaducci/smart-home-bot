@@ -9,5 +9,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${STUDIO_GPU_DEVICE:-1}"]
+              device_ids: ["${STUDIO_GPU_DEVICE:-0}"]
               capabilities: [gpu]

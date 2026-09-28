@@ -112,6 +112,7 @@ class Manager:
         # to its owner while the card works, removed when it finishes.
         self.previews: dict[str, Path] = {}
         self.paused = False
+        self._cancelling: set[str] = set()
         self._stop = threading.Event()
         self._wake = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="studio-manager", daemon=True)
@@ -135,6 +136,11 @@ class Manager:
         if not job:
             return None
         if job["state"] == "running" and self.worker and self.worker.alive():
+            # Remembered here, not only in the job's phase: the worker keeps
+            # reporting progress until WanGP stops, and each report rewrote the
+            # phase -- so a cancelled job ended "failed" and its owner was told
+            # it could not be made.
+            self._cancelling.add(job_id)
             self.worker.send(cancel=job_id)
             self.store.update(job_id, phase="cancelling")
             return "running"
@@ -208,7 +214,8 @@ class Manager:
                 continue
             if msg["kind"] == "progress":
                 share = (time.time() - began) / expected
-                self.store.update(job["id"], progress=overall_progress(msg, share), phase=msg.get("phase", "")[:60])
+                self.store.update(job["id"], progress=overall_progress(msg, share),
+                                  **({} if job["id"] in self._cancelling else {"phase": msg.get("phase", "")[:60]}))
             elif msg["kind"] == "preview" and msg.get("file"):
                 self.previews[job["id"]] = Path(msg["file"])
             elif msg["kind"] == "done":
@@ -219,14 +226,17 @@ class Manager:
         if stale:
             stale.unlink(missing_ok=True)
         if result is None:
+            self._cancelling.discard(job["id"])
             self.worker = None
             self.store.update(job["id"], state="failed", finished=time.time(),
                               error="the generator stopped unexpectedly (see worker.log)")
             self._notify(job, ok=False)
             return
         current = self.store.get(job["id"])
+        was_cancelled = job["id"] in self._cancelling
+        self._cancelling.discard(job["id"])
         if not result["success"]:
-            cancelled = current and current["phase"] == "cancelling"
+            cancelled = was_cancelled or bool(current and current["phase"] == "cancelling")
             self.store.update(job["id"], state="cancelled" if cancelled else "failed", finished=time.time(),
                               error="" if cancelled else "; ".join(result.get("errors") or [])[:1000])
             if not cancelled:

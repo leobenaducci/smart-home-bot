@@ -486,8 +486,12 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             projects.add_render(me.login, pid, {"file": str(out.relative_to(base)),
                                                 "seconds": round(media.probe(out)["seconds"], 1)})
             render_state[key] = {"state": "done", "file": str(out.relative_to(base))}
-        except (media.MediaError, OSError) as exc:
-            render_state[key] = {"state": "failed", "error": str(exc)}
+        except Exception as exc:                               # noqa: BLE001
+            # Anything, not only ffmpeg's own errors: a render that times out
+            # (subprocess.TimeoutExpired is not an OSError) or reads a bad
+            # probe left the state "running" and the page polling forever.
+            log.warning("render %s failed: %s", key, exc)
+            render_state[key] = {"state": "failed", "error": str(exc) or exc.__class__.__name__}
 
     renders.submit(work)
     return {"ok": True, "render": render_state[key]}

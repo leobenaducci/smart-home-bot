@@ -3,11 +3,15 @@ import subprocess, json, os
 from urllib.parse import urlencode
 
 # Same HomeCore host/creds as the chores skill; just a different path.
-BASE = os.environ.get("TASKS_API_URL", "https://hub.home:21001/tasks/api").replace("/tasks/api", "/devices/api")
+# No default host: the deployer names the portal from `dns:`, and an invented
+# name would be some other household's.
+BASE = os.environ.get("TASKS_API_URL", "").replace("/tasks/api", "/devices/api")
 USER_ID = os.environ.get("HOMECORE_USER_ID", "")
 TOKEN = os.environ.get("HOMECORE_PROXY_TOKEN", "")
 
 def _curl(method, path, data=None, params=None):
+    if not BASE:
+        return {"error": "The portal's address is not configured (TASKS_API_URL missing)."}
     if not USER_ID or not TOKEN:
         return {"error": "This account has no access to the household's devices (HOMECORE_USER_ID/HOMECORE_PROXY_TOKEN missing)."}
     url = f"{BASE}/{path}"

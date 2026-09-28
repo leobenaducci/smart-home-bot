@@ -332,7 +332,10 @@ def gpu_view(gpus: list[dict], instances: list[dict], needs: dict[str, dict],
         others = [t for t in tenants if not str(t.get("owner", "")).startswith(own)]
         seen = {str(t.get("owner", ""))[len("unit "):]: t for t in tenants
                 if str(t.get("owner", "")).startswith(own)}
-        rows, drawn = [], set()
+        # An unpinned or CPU server is shown apart, not moved by a save: seen
+        # on this card it is not "running until Apply", so it is never listed
+        # with the tenants that are.
+        rows, drawn = [], {inst.get("unit") or "" for inst in instances if not inst["gpus"]}
         for inst in instances:
             cards = inst["gpus"]
             if cards and idx not in cards:
