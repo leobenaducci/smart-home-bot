@@ -1068,6 +1068,11 @@ def _proxy_auth():
             or secrets.compare_digest(secret, _proxy_user_token(puser))):
         _set_authenticated_user(puser)
         g.is_proxy = True
+        # The member's own token: the assistant acting for them, from inside
+        # the house -- not the chat proxy, whose X-Proxy-Lan says where a
+        # phone is. A house-only page must not lock out the person's own
+        # Alfred just because Alfred is not a phone on the wifi.
+        g.proxy_member = not secrets.compare_digest(secret, PROXY_SHARED_SECRET)
         # Which copy of home-chat forwarded this: the one on hub (inside the
         # house) or the one on the VPS. Only the proxy may set this header —
         # it drops any inbound copy along with X-Proxy-Secret / X-Proxy-User,
@@ -3617,7 +3622,7 @@ HOUSE_ONLY_APPS = {
 
 # App key -> the name it goes by in the Apps menu.
 _APP_LINK_NAMES = {'cameras': 'Cameras', 'files': 'Files', 'tasks': 'Chores',
-                   'grocery': 'Shopping', 'menu': 'Menu'}
+                   'grocery': 'Shopping', 'menu': 'Menu', 'studio': 'Studio'}
 CHAT_HOUSE_ONLY_LINKS = tuple(
     [_APP_LINK_NAMES[key] for key in sorted(HOUSE_ONLY_APPS)
      if key in _APP_LINK_NAMES]
@@ -21579,6 +21584,12 @@ def _studio_configured():
     return bool(STUDIO_URL and STUDIO_SECRET)
 
 
+def _studio_reachable():
+    """House-only unless the household says otherwise: a phone on the wifi or
+    the VPN, a browser on the LAN, or the person's own assistant."""
+    return (not house_only('studio') or _at_home() or getattr(g, 'proxy_member', False))
+
+
 def _studio_headers(username):
     return {'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': username,
             'X-Studio-Name': _tasks_display_name(username),
@@ -21588,6 +21599,8 @@ def _studio_headers(username):
 @app.route('/studio')
 @login_required
 def studio_page():
+    if not _studio_reachable():
+        abort(404)
     username = session['user']
     return render_template('studio.html', user=username, user_name=_tasks_display_name(username),
                            is_admin=_tasks_is_admin(username), configured=_studio_configured(),
@@ -21618,6 +21631,8 @@ def studio_lyrics():
     """Lyrics written by the person's own assistant, in ACE-Step's shape:
     section tags on their own lines, verses of similar length. The model that
     writes is the household's; the card that sings is the studio's."""
+    if not _studio_reachable():
+        abort(404)
     username = session['user']
     d = request.get_json(silent=True) or {}
     theme = str(d.get('theme') or '').strip()[:600]
@@ -21649,6 +21664,8 @@ def studio_api(sub):
     including a video's byte ranges, so seeking works."""
     if not _studio_configured():
         return jsonify(error=t('studio.not_configured')), 503
+    if not _studio_reachable():
+        abort(404)
     if '..' in sub or sub.startswith('/'):
         abort(404)
     headers = _studio_headers(session['user'])

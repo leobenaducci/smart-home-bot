@@ -1887,7 +1887,9 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 # services the portal actually proxies can be kept to the house -- everything
 # else is reachable exactly as far as its port is published, which is a
 # different question and a different setting.
-HOUSE_ONLY_APPS = {"home-cameras": "cameras"}
+# The Studio as well (2026-09-28): the household wants it on the wifi or the
+# VPN only, like the cameras.
+HOUSE_ONLY_APPS = {"home-cameras": "cameras", "home-studio": "studio"}
 
 
 # Which host each `dns:` name stands in front of, so a name left blank can fall

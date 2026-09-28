@@ -257,6 +257,21 @@ check("a tile with no menu: is in no group at all",
               for rows in _home.values() for t in rows))
 A._dashboard_cache.update(key=None)
 
+# The Studio, house-only when the household keeps it so (2026-09-28): a phone
+# away without the VPN is refused, one on the wifi or the VPN is not, and the
+# person's own assistant -- its member token, no X-Proxy-Lan -- is not either.
+print("\nthe studio, when it is house-only")
+A.STUDIO_URL, A.STUDIO_SECRET = "http://studio.invalid:1", "s" * 32
+A.HOUSE_ONLY_APPS = set(A.HOUSE_ONLY_APPS) | {"studio"}
+c = A.app.test_client()
+check("  away: the page is not there", c.get("/studio", headers=AWAY).status_code == 404)
+check("  away: nor its API", c.get("/studio/api/queue", headers=AWAY).status_code == 404)
+check("  at home: the page is", c.get("/studio", headers=HOME).status_code == 200)
+member = {"X-Proxy-Secret": A._proxy_user_token(USER1), "X-Proxy-User": USER1}
+r = c.get("/studio/api/queue", headers=member)
+check("  the person's own assistant is not refused (it reaches the studio)",
+      r.status_code != 404, r.status_code)
+
 print()
 shutil.rmtree(tmp, ignore_errors=True)
 if failures:

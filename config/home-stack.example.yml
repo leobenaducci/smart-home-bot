@@ -488,6 +488,10 @@ services:
     idle_s: 600
     # The container's memory cap: an out-of-memory stays its own problem.
     mem_limit: 36g
+    # Only on the house wifi or the VPN, like the cameras: the chat proxy's
+    # public copy refuses /studio and the portal hides it. False opens it to
+    # anyone signed in from anywhere.
+    house_only: true
 
   audio-cpp:
     # One C++/ggml runtime for both halves of the voice path -- speech to text

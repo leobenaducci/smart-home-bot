@@ -850,7 +850,11 @@ async def proxy_studio(request: Request, rest: str):
     """The Studio page and /studio/api/* (home-studio, docs/home-studio.md).
     The seventh of these: the app comes through this proxy even on the home
     wifi, so without the prefix the Studio was in the Apps menu on a browser
-    and nowhere in the app. Streams, so a film seeks by byte range."""
+    and nowhere in the app. Streams, so a film seeks by byte range.
+    House-only by default (HOUSE_ONLY_APPS): the wifi or the VPN."""
+    refused = _lan_only(request, "studio")
+    if refused:
+        return refused
     early, user = _settings_gate(request, rest)
     if early:
         return early
