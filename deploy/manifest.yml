@@ -294,10 +294,6 @@ services:
           # has. Same class as the literal port above.
           HOME_STACK_PORTAL_URL: "https://{dns.portal}:{services.home-core.port}"
           HOME_STACK_DOMAIN: "{site.domain}"
-          # Whether the entry page offers the Studio: "1" while home-studio is
-          # on, empty otherwise. A copy served elsewhere (shared hosting) sets
-          # it in its own environment, like the portal's address.
-          HOME_STACK_STUDIO: "{derived.studio_on}"
         state:
           - { path: "{paths.state}/home-core/users.json",
               mount: /var/www/html/users.json,
@@ -1428,10 +1424,13 @@ services:
       Video, pictures, songs and voices on one card of the house -- one queue
       for everybody, per-person projects. See docs/home-studio.md.
     role: compute
-    # Reached through the portal's Studio page, never directly: its API is for
-    # the portal and the assistants, so there is no tile of its own.
-    tier: none
+    # A tile on the portal's dashboard, to the portal's own Studio page -- never
+    # to the studio itself, whose API is for the portal and the assistants.
+    # House-only like the cameras: the wall leaves it out for someone away
+    # when `services.home-studio.house_only` says so.
+    tier: basic
     icon: "🎬"
+    portal_path: "/studio"
     units:
       # The Studio's own audio.cpp, on the Studio's card: separating a song's
       # vocals and aligning its lyrics to them, for a music video that follows

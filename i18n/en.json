@@ -999,6 +999,8 @@
   "portal.service.grocery.about": "The shared shopping list",
   "portal.service.home-cameras": "Cameras",
   "portal.service.home-cameras.about": "What the house cameras can see",
+  "portal.service.home-studio": "Studio",
+  "portal.service.home-studio.about": "Video, pictures and songs, made on the house's own card",
   "portal.service.home-core": "Portal",
   "portal.service.home-core.about": "This page",
   "portal.service.home-paperless": "Documents",
@@ -1530,7 +1532,6 @@
   "nav.app_lights": "Lights",
   "nav.app_lights_help": "Every light and wall button in the house",
   "nav.lan_only_note": "only on the house network",
-  "entry.studio": "Studio",
   "admin.models.source_studio": "the house's Studio (GPU)",
   "studio.default_project": "Requests to Alfred"
 }

@@ -1838,7 +1838,6 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # has no name: an empty one hides the page and its menu entry, where an
         # address that answers nothing would offer a studio that is not there.
         "studio_url": studio_url(cfg),
-        "studio_on": "1" if studio_url(cfg) else "",
         # Whatever GPU exporter the household already runs, or empty. See the
         # note in the example config for why this stack does not ship one.
         "gpu_exporter_url": str(

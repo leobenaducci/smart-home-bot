@@ -1211,9 +1211,9 @@ IMPACT = {
     # which is the whole reason this table exists.
     "services.home-voice.tts_engine": ["home-voice"],
     "services.home-voice.tts_voice": ["home-voice"],
-    # The Studio reaches four other services: the portal's STUDIO_URL (its page
-    # and menu entry) and the entry page's HOME_STACK_STUDIO, the assistants'
-    # `studio` skill (`when_service`), and both proxies' HOUSE_ONLY_APPS
+    # The Studio reaches four other services: the portal's STUDIO_URL and its
+    # dashboard tile, the assistants' `studio` skill (`when_service`), and
+    # both proxies' HOUSE_ONLY_APPS
     # (`house_only`). Switching it on redeployed only home-studio itself, and
     # the portal kept answering "not configured".
     "services.home-studio": ["home-core", "nanobot", "nanobot-house",

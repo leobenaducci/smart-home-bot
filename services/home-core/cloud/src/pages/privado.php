@@ -44,10 +44,8 @@ $portalUrl = getenv('HOME_STACK_PORTAL_URL')
     // page, so a container that was never told where the portal is spins
     // forever on "Detectando red…" instead of saying what is missing.
     var portal = <?= json_encode($portalUrl) ?>;
-    // A page inside the portal when the entry asked for one (/estudio).
-    var where = <?= json_encode($portalPath ?? '') ?>;
     if (portal) {
-      location.replace(portal + where);
+      location.replace(portal);
     } else {
       document.querySelector('.spinner').remove();
       document.querySelector('p').textContent =

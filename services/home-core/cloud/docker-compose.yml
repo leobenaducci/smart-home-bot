@@ -20,8 +20,6 @@ services:
       # arrived nowhere, which is the failure that fix was written for.
       - HOME_STACK_PORTAL_URL=${HOME_STACK_PORTAL_URL:-}
       - HOME_STACK_DOMAIN=${HOME_STACK_DOMAIN:-}
-      # "1" when the household runs the Studio; empty hides its button.
-      - HOME_STACK_STUDIO=${HOME_STACK_STUDIO:-}
       - HOME_STACK_SITE_NAME=${HOME_STACK_SITE_NAME:-}
     volumes:
       # The live user store, not the copy baked into the image, so

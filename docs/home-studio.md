@@ -188,8 +188,8 @@ the container:
   it is not in any prompt;
 - a drawing role still set to `studio:…` exports nothing and the drawing
   skill says it has no model, rather than posting to a door that is closed;
-- the entry page shows no Studio button (`HOME_STACK_STUDIO`; a copy on shared
-  hosting sets it in its own environment, next to the portal's address).
+- the portal's dashboard has no Studio tile (on, it is a `basic` tile to
+  `/studio`, left out for someone away while it is house-only).
 
 ## Where things live
 
