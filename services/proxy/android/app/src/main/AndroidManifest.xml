@@ -18,6 +18,14 @@
          still plays, just at whatever volume the alarm stream was left at). -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <!-- The family chat: SMS is the way through when there is no data, both to
+         send a family message from this SIM and to recognise one arriving. -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <!-- Required on Android 14 for an alert to take the screen: the family
+         chat's urgent messages and "find my phone" both ask for it, and
+         without this they arrive as an ordinary heads-up. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -141,6 +149,36 @@
             android:name=".ntfy.NotifyActionReceiver"
             android:exported="false" />
 
+        <!-- The family chat, native and offline-first: its own launcher entry,
+             with its own icon, so it can be opened when the chat page cannot
+             load and is not mistaken for a second copy of the app. -->
+        <activity
+            android:name=".family.FamilyActivity"
+            android:exported="true"
+            android:label="Familia Chat"
+            android:icon="@mipmap/ic_family"
+            android:roundIcon="@mipmap/ic_family"
+            android:windowSoftInputMode="adjustResize"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- "Posponer 5 min" on a family message alert. -->
+        <receiver
+            android:name=".family.FamilyAlert$ActionReceiver"
+            android:exported="false" />
+        <!-- A family message arriving as an SMS. Exported, and guarded by the
+             permission only the system's SMS provider holds. -->
+        <receiver
+            android:name=".family.FamilySmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
         <!-- "Detener" on the find-my-phone ring notification. -->
         <receiver
             android:name=".ring.PhoneRinger$StopReceiver"

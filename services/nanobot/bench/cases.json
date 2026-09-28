@@ -513,6 +513,22 @@
       "tier": "complex"
     },
     {
+      "id": "route_ha_missing_device",
+      "prompt": "No veo el Fingerbot de Tomi en el dashboard de oficina de HA, pero sí veo el de Mora, que es otro y es correcto",
+      "tier": "long",
+      "_why": "2026-09-27: a problem reported as a statement was labelled chat; the everyday model spent 4.5 minutes and 374k prompt tokens searching old conversations instead of planning"
+    },
+    {
+      "id": "route_device_not_responding",
+      "prompt": "la luz del escritorio no responde",
+      "tier": "long"
+    },
+    {
+      "id": "route_problem_solved",
+      "prompt": "listo, ya aparece, gracias",
+      "tier": "chat"
+    },
+    {
       "id": "route_light_on",
       "prompt": "prendé la luz del living",
       "tier": "action"

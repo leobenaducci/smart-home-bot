@@ -909,9 +909,33 @@ class MainActivity : FragmentActivity() {
             Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_FINE_LOCATION,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.POST_NOTIFICATIONS else null,
+            // The family chat's way through with no data: texting the family
+            // from this SIM, and recognising a family text when one arrives.
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.RECEIVE_SMS,
         ).filter { !hasPermission(it) }
         if (needed.isNotEmpty()) {
             permissionLauncher.launch(needed.toTypedArray())
+        }
+        askForDoNotDisturbAccessOnce()
+    }
+
+    /**
+     * A family message has to get through Do Not Disturb, and the channel that
+     * carries it only may once the person grants this app DND access -- a
+     * settings page, not a runtime dialog. Asked once; the page stays reachable
+     * from Android's settings if somebody says no.
+     */
+    private fun askForDoNotDisturbAccessOnce() {
+        val nm = getSystemService(android.app.NotificationManager::class.java) ?: return
+        if (nm.isNotificationPolicyAccessGranted) return
+        val prefs = getSharedPreferences("alfred_prompts", MODE_PRIVATE)
+        if (prefs.getBoolean("dnd_asked", false)) return
+        prefs.edit().putBoolean("dnd_asked", true).apply()
+        Toast.makeText(this, "Permití 'No molestar' para que los mensajes de la familia suenen siempre.",
+            Toast.LENGTH_LONG).show()
+        runCatching {
+            startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
         }
     }
 

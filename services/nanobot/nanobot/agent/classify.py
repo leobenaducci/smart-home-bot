@@ -65,7 +65,7 @@ _PROMPT = """Classify the household's request to its assistant. Answer with ONE 
 chat    - conversation, a fact, a translation, a joke, a quick question, thanks
 action  - one or two steps in ONE system: turn something on or off, take a photo, add to a list, set a reminder, ask what a sensor says
 complex - a hard question the person is waiting on, answered in one go: reasoning, a calculation, a decision, advice, explaining something in depth, a short piece of code
-long    - work of several steps to do now: more than one system, checking or comparing or cross-referencing one thing against another, reviewing or fixing something, going through a list
+long    - work of several steps to do now: more than one system, checking or comparing or cross-referencing one thing against another, reviewing or fixing something, going through a list; also a problem the person reports in a system (Home Assistant, a dashboard, the lights, a camera, a device) -- something missing, wrong, duplicated, unavailable or not responding -- even when it is said as a statement rather than asked as a question, because finding out why takes several steps
 background - work of hours, research to read later, a report or document to prepare, or anything the person asks to be done "in the background" / "en segundo plano"
 
 Examples:
@@ -80,9 +80,14 @@ Examples:
 "investigá esto durante un par de horas" -> background
 "revisá por qué el backup de anoche falló y arreglalo" -> long
 "compará los precios de estas tres cámaras" -> long
+"No veo el Fingerbot de Tomi en el dashboard de oficina de HA, pero sí el de Mora" -> long
+"la luz del escritorio no responde" -> long
+"Home Assistant muestra el sensor del patio como no disponible" -> long
+"the living room lamp shows up twice in HA" -> long
 "en segundo plano, armame un resumen de los gastos del mes" -> background
 "armame un informe con todo lo que pasó con la calefacción este mes" -> background
 "gracias!" -> chat
+"listo, ya aparece, gracias" -> chat
 "sí, dale" (after the assistant proposed a long task) -> long
 "sí, dale" (after the assistant proposed something simple) -> action
 

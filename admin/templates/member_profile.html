@@ -89,6 +89,17 @@
             {{ t('admin.profile.parents') }}
           </label>
           <p class="help">{{ t('admin.profile.parents_help') }}</p>
+
+          {# The family chat's way through when there is no data: a message
+             that is not delivered in a few minutes goes out as an SMS from
+             the sender's own phone, and a phone with only SMS still gets it.
+             Built into each APK, so it works offline. #}
+          <div class="field">
+            <label for="phone">{{ t('admin.profile.phone') }}</label>
+            <input type="tel" id="phone" name="phone" value="{{ person.phone or '' }}"
+                   placeholder="+1 555 0100" autocomplete="off" style="max-width:220px">
+            <p class="help">{{ t('admin.profile.phone_help') }}</p>
+          </div>
       </div>
     </div>
   </div>

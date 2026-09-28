@@ -2,4 +2,11 @@
 <resources>
     <color name="plaster">#EFE9DC</color>
     <color name="wall">#3C4630</color>
+    <!-- The family chat: its launcher icon, names and the urgent red. -->
+    <color name="family_accent">#C1653A</color>
+    <color name="family_urgent">#C0392B</color>
+    <color name="family_ink">#2B2A24</color>
+    <color name="family_muted">#847E6E</color>
+    <color name="family_line">#DDD5C3</color>
+    <color name="family_card">#F7F3EA</color>
 </resources>

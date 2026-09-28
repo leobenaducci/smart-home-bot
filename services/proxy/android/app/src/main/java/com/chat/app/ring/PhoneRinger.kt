@@ -72,7 +72,8 @@ object PhoneRinger {
     fun start(ctx: Context, seconds: Int, by: String) {
         stop(ctx)  // restart cleanly if one is already going
         ensureChannel(ctx)
-        val secs = seconds.coerceIn(5, 120)
+        // Up to ten minutes: "find Juana's phone" in a house is a search, not a beep.
+        val secs = seconds.coerceIn(5, 600)
         AppLog.log(ctx, TAG, "ringing for ${secs}s" + (if (by.isNotBlank()) " (by $by)" else ""))
 
         val am = ctx.getSystemService(AudioManager::class.java)

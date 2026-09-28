@@ -3707,9 +3707,64 @@ def build_family_directory(cfg: dict) -> str:
                           if h.strip().lstrip("-").strip()],
             "notes": str(member.get("notes") or "").strip(),
             "relations": relations,
+            # The family chat: who is in the Parents group, and the number its
+            # SMS fallback dials.
+            "parents": bool(member.get("parents")),
+            "phone": str(member.get("phone") or "").strip(),
         })
-    return json.dumps({"people": people, "generated_by": "deploy/deploy.py"},
+    return json.dumps({"people": people, "groups": family_chat_groups(cfg),
+                       "generated_by": "deploy/deploy.py"},
                       ensure_ascii=False, indent=2) + "\n"
+
+
+def app_family_directory(cfg: dict) -> str:
+    """The family chat's directory as the phone app carries it, built into
+    each APK so a phone with no data can still text the family and recognise
+    a family SMS. The same shape as the portal's /family-chat/api/directory
+    (login ids, `g:<id>` threads), so the app reads either the same way; the
+    app refreshes it from there whenever it is online.
+
+    Household data: written only into the build's staging copy of the app
+    sources, never into this repository.
+    """
+    logins = portal_logins(cfg)
+    by_id = {str(m.get("id") or "").strip(): m for m in (cfg.get("members") or [])}
+    people = []
+    for mid, member in by_id.items():
+        if mid and member.get("active", True) and mid in logins:
+            people.append({"login": logins[mid], "member": mid,
+                           "name": str(member.get("display_name") or mid),
+                           "phone": str(member.get("phone") or "").strip(),
+                           "parents": bool(member.get("parents"))})
+    groups = [{"id": g["id"], "thread": "g:" + g["id"], "name": g["name"],
+               "members": [logins[m] for m in g["members"] if m in logins]}
+              for g in family_chat_groups(cfg)]
+    return json.dumps({"me": None, "people": people,
+                       "groups": [g for g in groups if g["members"]],
+                       "built_at": int(time.time())},
+                      ensure_ascii=False, indent=2) + "\n"
+
+
+def family_chat_groups(cfg: dict) -> list[dict]:
+    """The family chat's groups, by member id: `family` (every active member)
+    and `parents` (the active members with the Parents box) -- the same two the
+    phones' ntfy topics are, so they follow the members instead of being
+    stored -- then the household's own from `family_chat.groups`. A member
+    who is gone or inactive is dropped from every group, and a group left with
+    nobody in it is dropped too."""
+    active = [str(m.get("id") or "").strip() for m in (cfg.get("members") or [])
+              if str(m.get("id") or "").strip() and m.get("active", True)]
+    parents = [str(m.get("id")).strip() for m in (cfg.get("members") or [])
+               if str(m.get("id") or "").strip() in active and m.get("parents")]
+    groups = [{"id": "family", "name": "Family", "preset": True, "members": active}]
+    if parents:
+        groups.append({"id": "parents", "name": "Parents", "preset": True, "members": parents})
+    for g in ((cfg.get("family_chat") or {}).get("groups") or []):
+        gid = str(g.get("id") or "").strip()
+        members = [m for m in (g.get("members") or []) if m in active]
+        if gid and gid not in ("family", "parents") and members:
+            groups.append({"id": gid, "name": str(g.get("name") or gid)[:40], "members": members})
+    return groups
 
 
 def build_member_profile(cfg: dict, member: dict) -> str:

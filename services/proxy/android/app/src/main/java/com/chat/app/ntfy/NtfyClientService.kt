@@ -87,6 +87,13 @@ class NtfyClientService : Service() {
         private const val NOTIF_REPLY_TAG = "notif_reply"
         private const val RING_TAG = "ring_phone"
         private const val RING_STOP_TAG = "ring_phone_stop"
+        // The family chat (HomeCore /family-chat). family_msg: alert until
+        // seen; family_stop: it was seen or snoozed on one of this person's
+        // devices; family_sms: a message this phone sent has not reached a
+        // recipient, so text it to them from this SIM.
+        private const val FAMILY_MSG_TAG = "family_msg"
+        private const val FAMILY_STOP_TAG = "family_stop"
+        private const val FAMILY_SMS_TAG = "family_sms"
         private const val UPDATE_APK_FILENAME = "alfred-update.apk"
 
         fun start(context: Context) {
@@ -215,6 +222,12 @@ class NtfyClientService : Service() {
     private fun fetchConfigAndConnect() {
         if (hasSocket) return
         hasSocket = true
+        // Back online (or starting): the family directory may have changed on
+        // the users page, and anything texted while offline goes to the portal.
+        Thread {
+            runCatching { com.chat.app.family.FamilyDirectory.refresh(applicationContext) }
+            runCatching { com.chat.app.family.FamilyStore.flush(applicationContext) }
+        }.start()
         val client = httpClient ?: return
         val cookie = CookieManager.getInstance().getCookie(API_BASE)
         val reqBuilder = Request.Builder().url("$API_BASE/api/ntfy-config")
@@ -380,6 +393,57 @@ class NtfyClientService : Service() {
             val o = try { JSONObject(json.optString("message")) } catch (e: Exception) { JSONObject() }
             AppLog.log(applicationContext, TAG, "ring request received")
             PhoneRinger.start(applicationContext, o.optInt("seconds", 45), o.optString("by"))
+            return
+        }
+        if (FAMILY_MSG_TAG in tags) {
+            val o = try { JSONObject(json.optString("message")) } catch (e: Exception) { JSONObject() }
+            val id = o.optInt("id")
+            val thread = o.optString("thread")
+            val ctx = applicationContext
+            AppLog.log(ctx, TAG, "family message $id received")
+            // Delivered the moment it lands -- "not delivered" is what makes the
+            // portal fall back to SMS, so this is said before anything else.
+            if (id > 0) Thread { com.chat.app.family.FamilyApi.post("/family-chat/api/delivered",
+                JSONObject().put("ids", org.json.JSONArray().put(id))) }.start()
+            val cid = o.optString("client_id")
+            val key = if (cid.isNotBlank() && cid != "null") cid else "s$id"
+            // An SMS the portal asked the sender to text is keyed `s<id>`, not
+            // by the client id: the same message, if it got here that way first.
+            if (!com.chat.app.family.FamilyStore.has(ctx, "s$id")) com.chat.app.family.FamilyStore.add(ctx, com.chat.app.family.FamilyStore.Msg(
+                key, thread, o.optString("from_name"), o.optString("text"), o.optBoolean("urgent"),
+                o.optLong("ts", System.currentTimeMillis() / 1000), mine = false, via = "app"))
+            // Always alert: the portal only pushes what this person has not
+            // seen yet -- a new message, a re-push nobody confirmed, or the end
+            // of a snooze -- so a push is itself the reason to alert again.
+            com.chat.app.family.FamilyAlert.start(ctx, com.chat.app.family.FamilyAlert.Alert(
+                thread, o.optString("thread_name"), o.optString("from_name"), o.optString("text"), o.optBoolean("urgent")))
+            return
+        }
+        if (FAMILY_STOP_TAG in tags) {
+            val o = try { JSONObject(json.optString("message")) } catch (e: Exception) { JSONObject() }
+            // A snooze (here or on another phone) keeps a local re-alert: if the
+            // portal's own one never arrives, the message must not go quiet.
+            if (o.optString("reason") == "snooze") com.chat.app.family.FamilyAlert.snoozeLocally(applicationContext, o.optString("thread"))
+            else com.chat.app.family.FamilyAlert.stop(applicationContext, o.optString("thread"))
+            return
+        }
+        if (FAMILY_SMS_TAG in tags) {
+            val o = try { JSONObject(json.optString("message")) } catch (e: Exception) { JSONObject() }
+            val ctx = applicationContext
+            val body = com.chat.app.family.FamilySms.format(o.optString("thread_name"), o.optString("from_name"),
+                o.optString("text"), o.optBoolean("urgent"), "s" + o.optInt("id"))
+            val to = o.optJSONArray("to") ?: org.json.JSONArray()
+            Thread {
+                for (i in 0 until to.length()) {
+                    val r = to.optJSONObject(i) ?: continue
+                    // The portal's number, or this phone's own copy of it.
+                    val phone = r.optString("phone").ifBlank {
+                        com.chat.app.family.FamilyDirectory.person(ctx, r.optString("login"))?.phone.orEmpty()
+                    }
+                    com.chat.app.family.FamilySms.send(ctx, phone, body)
+                }
+            }.start()
+            AppLog.log(ctx, TAG, "family SMS fallback for message ${o.optInt("id")}: ${to.length()} recipient(s)")
             return
         }
         if (RING_STOP_TAG in tags) {

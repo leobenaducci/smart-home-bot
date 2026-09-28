@@ -760,6 +760,24 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
     .app-ext { margin-left:auto; font-size:.62rem; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:var(--ink-soft); background:var(--paper); border:1px solid var(--line); border-radius:999px; padding:2px 7px; }
 
     /* ── Grocery panel (mirrors the tasks panel) ── */
+    #family-panel { display:none; position:absolute; inset:0; z-index:50; background:var(--plaster); flex-direction:column; }
+    #family-panel.open { display:flex; }
+    #family-panel-header { background:var(--paper); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; align-items:center; gap:10px; flex-shrink:0; }
+    #family-panel-header button { padding:5px 13px; border:1px solid var(--line); border-radius:999px; background:var(--paper-2); color:var(--ink-soft); font-size:.8rem; font-weight:600; cursor:pointer; flex-shrink:0; }
+    #family-panel-title { flex:1; font-size:.95rem; font-weight:700; color:var(--ink); }
+    #family-threads, #family-log { flex:1; overflow-y:auto; padding:10px 14px; }
+    .fc-thread { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--line); border-radius:12px; background:var(--paper); margin-bottom:8px; cursor:pointer; }
+    .fc-thread .fc-name { font-weight:700; color:var(--ink); }
+    .fc-thread .fc-last { flex:1; min-width:0; color:var(--ink-soft); font-size:.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .fc-badge { background:var(--brick, #c0392b); color:#fff; border-radius:999px; font-size:.75rem; font-weight:700; padding:2px 8px; }
+    .fc-msg { max-width:80%; margin:6px 0; padding:8px 12px; border-radius:14px; background:var(--paper); border:1px solid var(--line); }
+    .fc-msg.mine { margin-left:auto; background:var(--paper-2); }
+    .fc-msg.urgent { border:2px solid var(--brick, #c0392b); }
+    .fc-msg .fc-meta { font-size:.72rem; color:var(--ink-soft); margin-top:4px; }
+    #family-compose { display:none; gap:8px; padding:10px 14px; border-top:1px solid var(--line); background:var(--paper); flex-shrink:0; align-items:center; }
+    #family-compose.on { display:flex; }
+    #family-input { flex:1; padding:9px 12px; border:1px solid var(--line); border-radius:12px; background:var(--plaster); color:var(--ink); }
+    #family-urgent { display:flex; align-items:center; gap:4px; font-size:.8rem; font-weight:700; color:var(--brick, #c0392b); white-space:nowrap; }
     #grocery-panel { display:none; position:absolute; inset:0; z-index:50; background:var(--plaster); flex-direction:column; }
     #grocery-panel.open { display:flex; }
     #grocery-panel-header { background:var(--paper); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; align-items:center; gap:10px; flex-shrink:0; }
@@ -1315,6 +1333,7 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
           <button class="app-item group-btn" data-group="apps-group" role="menuitem"
                   aria-expanded="false" title="{{ t('nav.panels_help') }}">▦ {{ t('nav.panels') }} <span class="group-caret">▸</span></button>
           <div class="menu-group" id="apps-group">
+            <button class="app-item" data-app="family" role="menuitem">👪 {{ t('nav.family_chat') }}</button>
             <button class="app-item" data-app="tasks" role="menuitem">⭐ {{ t('common.tasks') }}</button>
             <button class="app-item" data-app="files" role="menuitem">📁 {{ t('common.files') }}</button>
             <button class="app-item" data-app="grocery" role="menuitem">🛒 {{ t('nav.shopping_panel') }}</button>
@@ -1593,6 +1612,23 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
     </div>
 
     <!-- Grocery panel overlay -->
+    {# The family chat: person to person and to the household's groups.
+       Every message vibrates the recipient's phone through Do Not Disturb until
+       it is opened or snoozed; an urgent one rings too. See /family-chat/api. #}
+    <div id="family-panel">
+      <div id="family-panel-header">
+        <button id="family-back-btn">&#8592; {{ t('common.back') }}</button>
+        <div id="family-panel-title">👪 {{ t('nav.family_chat') }}</div>
+      </div>
+      <div id="family-threads"></div>
+      <div id="family-log" style="display:none"></div>
+      <div id="family-compose">
+        <input id="family-input" placeholder="{{ t('family_chat.placeholder') }}" autocomplete="off" maxlength="2000">
+        <label id="family-urgent" title="{{ t('family_chat.urgent_help') }}"><input type="checkbox" id="family-urgent-box"> {{ t('family_chat.urgent') }}</label>
+        <button id="family-send-btn">{{ t('family_chat.send') }}</button>
+      </div>
+    </div>
+
     <div id="grocery-panel">
       <div id="grocery-panel-header">
         <button id="grocery-back-btn">&#8592; Back</button>
@@ -2686,7 +2722,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   (function () {
     var panels = ['notif-panel', 'wa-panel', 'bg-panel', 'bg-detail', 'files-panel',
                   'tasks-panel', 'grocery-panel', 'menu-panel', 'log-panel',
-                  'persona-panel', 'registry-panel']
+                  'persona-panel', 'registry-panel', 'family-panel']
       .map(function (id) { return document.getElementById(id); })
       .filter(Boolean);
     if (!panels.length) return;
@@ -2746,7 +2782,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     // out the way the person walked in.
     ['bg-detail', 'bg-panel', 'notif-panel', 'wa-panel', 'files-panel',
      'tasks-panel', 'grocery-panel', 'menu-panel', 'log-panel',
-     'persona-panel', 'registry-panel'].forEach(function (id) {
+     'persona-panel', 'registry-panel', 'family-panel'].forEach(function (id) {
       var p = openEl(id);
       if (p) t.push(function () {
         if (id === 'bg-detail') closeBgDetail();
@@ -5834,6 +5870,107 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     loadTasks();
   });
 
+  /* ── Family chat ── (talks to /family-chat/api/*) */
+  var FC = {
+    panel: document.getElementById('family-panel'), threads: document.getElementById('family-threads'),
+    log: document.getElementById('family-log'), compose: document.getElementById('family-compose'),
+    input: document.getElementById('family-input'), urgent: document.getElementById('family-urgent-box'),
+    title: document.getElementById('family-panel-title'), thread: null, lastId: 0, seenId: 0, timer: null,
+    S: {{ {'title': t('nav.family_chat'), 'delivered': t('family_chat.delivered'), 'seen': t('family_chat.seen'),
+          'pending': t('family_chat.pending'), 'none': t('family_chat.no_messages'),
+          'urgent_tag': t('family_chat.urgent_tag'), 'failed': t('family_chat.failed')}|tojson }}
+  };
+  async function fcApi(path, body) {
+    var opts = { method: body ? 'POST' : 'GET', headers: {} };
+    if (body) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.headers['X-CSRF-Token'] = CSRF_TOKEN;
+      opts.body = JSON.stringify(body);
+    }
+    var r = await fetch('/family-chat/api/' + path, opts);
+    var d = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
+  }
+  function fcEsc(s) { var e = document.createElement('div'); e.textContent = s == null ? '' : s; return e.innerHTML; }
+  function fcTime(ts) { return new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); }
+  function fcPoll(fn) { clearInterval(FC.timer); FC.timer = setInterval(function () {
+    if (!FC.panel.classList.contains('open')) { clearInterval(FC.timer); return; } fn(); }, 3000); }
+  async function fcLoadThreads() {
+    var d = await fcApi('threads').catch(function () { return {threads: []}; });
+    FC.threads.innerHTML = d.threads.map(function (t) {
+      return '<div class="fc-thread" data-thread="' + fcEsc(t.thread) + '">' +
+        '<span>' + (t.kind === 'group' ? '👪' : '👤') + '</span>' +
+        '<span class="fc-name">' + fcEsc(t.name) + '</span>' +
+        '<span class="fc-last">' + (t.last ? fcEsc(t.last.text) : '') + '</span>' +
+        (t.unread ? '<span class="fc-badge">' + t.unread + '</span>' : '') + '</div>';
+    }).join('');
+    FC.threads.querySelectorAll('.fc-thread').forEach(function (el) {
+      el.addEventListener('click', function () { fcOpenThread(el.getAttribute('data-thread')); });
+    });
+  }
+  function fcReceipts(m) {
+    if (m.sender !== CHAT_USER || !m.receipts.length) return '';
+    return m.receipts.map(function (r) {
+      return fcEsc(r.name) + ' ' + (r.seen ? '✓✓' : r.delivered ? '✓' : '…');
+    }).join(' · ');
+  }
+  async function fcLoadMessages(full) {
+    if (!FC.thread) return;
+    var d = await fcApi('messages?thread=' + encodeURIComponent(FC.thread)).catch(function () { return null; });
+    if (!d) return;
+    FC.title.textContent = '👪 ' + d.name;
+    var newest = d.messages.length ? d.messages[d.messages.length - 1].id : 0;
+    FC.log.innerHTML = d.messages.length ? d.messages.map(function (m) {
+      var mine = m.sender === CHAT_USER;
+      return '<div class="fc-msg' + (mine ? ' mine' : '') + (m.urgent ? ' urgent' : '') + '">' +
+        (mine ? '' : '<b>' + fcEsc(m.from_name) + '</b><br>') + fcEsc(m.text) +
+        '<div class="fc-meta">' + (m.urgent ? FC.S.urgent_tag + ' · ' : '') + fcTime(m.ts) +
+        (mine ? ' · ' + fcReceipts(m) : '') + '</div></div>';
+    }).join('') : '<p class="fc-meta">' + fcEsc(FC.S.none) + '</p>';
+    if (full || newest > FC.lastId) FC.log.scrollTop = FC.log.scrollHeight;
+    // Looking at it is seeing it: the alert stops on every one of my phones.
+    // Only while the page is actually on screen -- a tab left open on a
+    // laptop or a wall panel must not silence an emergency (seen also counts
+    // as delivered, which cancels the SMS hand-off).
+    if (newest > FC.seenId && !document.hidden) {
+      FC.seenId = newest;
+      fcApi('seen', {thread: FC.thread}).catch(function () {});
+    }
+    FC.lastId = newest;
+  }
+  async function fcOpenThread(thread) {
+    FC.thread = thread; FC.lastId = 0; FC.seenId = 0;
+    FC.threads.style.display = 'none'; FC.log.style.display = ''; FC.compose.classList.add('on');
+    await fcLoadMessages(true);
+    fcPoll(function () { fcLoadMessages(false); });
+    FC.input.focus();
+  }
+  function fcShowList() {
+    FC.thread = null; FC.title.textContent = '👪 ' + FC.S.title;
+    FC.threads.style.display = ''; FC.log.style.display = 'none'; FC.compose.classList.remove('on');
+    fcLoadThreads(); fcPoll(fcLoadThreads);
+  }
+  function openFamily(thread) {
+    FC.panel.classList.add('open');
+    if (thread) fcOpenThread(thread); else fcShowList();
+  }
+  async function fcSend() {
+    var text = FC.input.value.trim();
+    if (!text || !FC.thread) return;
+    var body = {thread: FC.thread, text: text, urgent: FC.urgent.checked,
+                client_id: 'w-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)};
+    FC.input.value = '';
+    try { await fcApi('send', body); FC.urgent.checked = false; }
+    catch (e) { FC.input.value = text; alert(FC.S.failed + ' ' + e.message); }
+    fcLoadMessages(true);
+  }
+  document.getElementById('family-send-btn').addEventListener('click', fcSend);
+  FC.input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); fcSend(); } });
+  document.getElementById('family-back-btn').addEventListener('click', function () {
+    if (FC.thread) fcShowList(); else { FC.panel.classList.remove('open'); clearInterval(FC.timer); }
+  });
+
   /* ── Grocery panel ── (shared family list; talks to /grocery/api/*) */
   var CHAT_USER = {{ user|tojson }};
   var groceryPanel = document.getElementById('grocery-panel');
@@ -7063,6 +7200,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
       if (app === 'tasks') openTasks('mine');
       else if (app === 'files') openFiles();
       else if (app === 'grocery') openGrocery();
+      else if (app === 'family') openFamily();
       else if (app === 'menu') openMenu();
       else if (app === 'notif') openNotif();
       else if (app === 'wa') openWa();
@@ -7203,6 +7341,8 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
         openTasks(params.get('mode') || 'mine', task);
       } else if (params.get('panel') === 'grocery') {
         openGrocery();
+      } else if (params.get('panel') === 'family') {
+        openFamily(params.get('thread'));
       } else if (params.get('panel') === 'menu') {
         openMenu();
       } else if (params.get('panel') === 'files') {
