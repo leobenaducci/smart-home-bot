@@ -74,6 +74,12 @@ def _start() -> None:
 
 
 def _housekeeping() -> None:
+    try:
+        n = projects.compress_audio_takes(media.compress_audio)
+        if n:
+            log.info("compressed %d audio take(s) to mp3", n)
+    except Exception:                                          # noqa: BLE001
+        log.exception("compressing old audio takes failed")
     while True:
         try:
             projects.purge_trash()

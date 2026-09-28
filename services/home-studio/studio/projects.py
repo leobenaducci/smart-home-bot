@@ -208,6 +208,42 @@ class Projects:
             self._write(owner, pid, doc)
             return added
 
+    def compress_audio_takes(self, compress) -> int:
+        """Every lossless audio take already filed, through `compress`
+        (media.compress_audio), with the project pointing at the result.
+
+        Takes are compressed as they are filed now; this is for the ones made
+        before that, and a no-op once there are none. One project at a time,
+        under its lock, so a save from the page cannot land in between. A take
+        that will not compress keeps its WAV and is tried again next start.
+        """
+        done = 0
+        for doc_path in sorted(self.root.glob("*/*/project.json")):
+            owner, pid = doc_path.parent.parent.name, doc_path.parent.name
+            if not LOGIN_RE.fullmatch(owner) or not ID_RE.fullmatch(pid):
+                continue
+            with self._lock(f"{owner}/{pid}"):
+                try:
+                    doc = self.load(owner, pid)
+                except ProjectError:
+                    continue
+                base, changed = self.dir(owner, pid), False
+                for section in SECTIONS:
+                    for item in doc.get(section) or []:
+                        for take in item.get("takes") or []:
+                            rel = str(take.get("file") or "")
+                            if not rel.lower().endswith((".wav", ".flac")) or not (base / rel).is_file():
+                                continue
+                            try:
+                                new = compress(base / rel)
+                            except Exception:                  # noqa: BLE001
+                                continue
+                            take["file"] = str(Path(new).relative_to(base))
+                            changed, done = True, done + 1
+                if changed:
+                    self._write(owner, pid, doc)
+        return done
+
     def delete(self, owner: str, pid: str) -> None:
         src = self.dir(owner, pid)
         if not src.is_dir():

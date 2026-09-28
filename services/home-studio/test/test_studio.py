@@ -197,11 +197,49 @@ else:
           len(doc["shots"][0]["takes"]) == 2 and fake.seen[2].get("image_end", "").endswith(t2["first"])
           and fake.seen[2]["image_prompt_type"] == "E", (doc["shots"][0]["takes"], fake.seen[2]))
 
+    # A song comes out of the generator as WAV and is kept as MP3: the disk
+    # keeps every take, and WAV is ~10 MB a minute.
+    song = projects.append(JUANA, p["id"], "audio", [{"kind": "song", "lyrics": "[Verse]\nla"}])[0]
+    j4 = store2.add(owner=JUANA, owner_name="Juana", kind="song", model=recipes.SONG_MODEL,
+                    params={"lyrics": "[Verse]\nla", "seconds": 10}, project=p["id"], target=song["id"])
+    mgr.wake()
+    while time.time() < deadline and store2.get(j4["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    doc = projects.load(JUANA, p["id"])
+    st = Projects.chosen_take(doc["audio"][-1]) or {}
+    song_dir = projects.dir(JUANA, p["id"])
+    check("  a song is filed as MP3, with its length",
+          st.get("file", "").endswith(".mp3") and (song_dir / st["file"]).is_file() and st.get("seconds", 0) > 0.5,
+          (store2.get(j4["id"]), st))
+    check("  and no WAV is left beside it", not list((song_dir / "takes").rglob("*.wav")))
+
     from studio import media
+    # One made before that: a WAV take on disk, which the start-up pass converts
+    # and re-points, and a second pass leaves alone.
+    old = song_dir / "takes" / song["id"] / "old-0.wav"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=220",
+                    "-t", "1", str(old)], check=True)
+    projects.add_take(JUANA, p["id"], song["id"], {"file": str(old.relative_to(song_dir)), "kind": "song"})
+    check("  an old WAV take is converted once", projects.compress_audio_takes(media.compress_audio) == 1
+          and projects.compress_audio_takes(media.compress_audio) == 0)
+    st = Projects.chosen_take(projects.load(JUANA, p["id"])["audio"][-1])
+    check("  and the project points at the MP3", st["file"].endswith("old-0.mp3") and not old.exists()
+          and (song_dir / st["file"]).is_file(), st)
+
+    shot_file = projects.dir(JUANA, p["id"]) / Projects.chosen_take(doc["shots"][0])["file"]
+    check("  a shot is kept as H.265, under the name the generator's file had",
+          media.probe(shot_file)["codec"] == "hevc" and media.probe(shot_file)["has_audio"], media.probe(shot_file))
+    check("  and the generator is handed H.264 when it has to read one",
+          media.probe(media.for_generator(shot_file, tmp / "gen" / "source.mp4"))["codec"] == "h264")
+
     film = media.stitch([projects.dir(JUANA, p["id"]) / Projects.chosen_take(s)["file"] for s in doc["shots"]],
                         tmp / "film.mp4", crossfade=0.2)
     check("  the shots stitch into one film with sound", media.probe(film)["has_audio"]
           and 1.5 < media.probe(film)["seconds"] < 2.1, media.probe(film))
+    check("  as H.265", media.probe(film)["codec"] == "hevc", media.probe(film))
+    mixed = media.mix(film, [{"file": song_dir / st["file"], "volume": 0.8}], tmp / "mixed.mp4")
+    check("  and a song laid under it keeps the picture as it was",
+          media.probe(mixed)["codec"] == "hevc" and media.probe(mixed)["has_audio"], media.probe(mixed))
     mgr.stop()
 
 print("\nthe API: who sees what")

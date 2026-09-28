@@ -252,7 +252,8 @@ class Manager:
             take = Projects.chosen_take(found[2]) if found else None
             if not take:
                 raise ProjectError("nothing to edit yet")
-            p["source_video"] = str(base / take["file"])
+            p["source_video"] = str(media.for_generator(
+                base / take["file"], self.scratch / job["id"] / "source.mp4"))
             p.setdefault("start_image", str(base / take["first"]))
             p.setdefault("end_image", str(base / take["last"]))
         return p
@@ -274,6 +275,17 @@ class Manager:
         for i, src in enumerate(produced):
             dst = take_dir / f"{job['id']}-{i}{src.suffix.lower()}"
             shutil.move(str(src), dst)
+            if dst.suffix == ".mp4":
+                try:
+                    media.compress_video(dst)
+                except (media.MediaError, OSError, subprocess.SubprocessError) as exc:
+                    log.warning("could not compress %s: %s", dst.name, exc)
+            if dst.suffix in media.LOSSLESS_AUDIO:
+                try:
+                    dst = media.compress_audio(dst)
+                except (media.MediaError, OSError, subprocess.SubprocessError) as exc:
+                    # Kept as it came: a big file beats a lost take.
+                    log.warning("could not compress %s: %s", dst.name, exc)
             rel = str(dst.relative_to(dest_root))
             rel_files.append(rel)
             if i == 0:

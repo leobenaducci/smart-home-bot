@@ -19,6 +19,16 @@ class MediaError(RuntimeError):
     pass
 
 
+# How every video this studio keeps is encoded: H.265, about half the size of
+# the H.264 the generator writes at the same look. On the CPU on purpose -- the
+# card belongs to the generator, and a five-second shot takes seconds here.
+# `hvc1` is the tag Safari and iOS insist on; without it they show nothing.
+# The catch, and the reason it is one constant: browsers without HEVC decoding
+# (Firefox, most Linux desktops) cannot play these. Phones and the app can.
+X265 = ["-c:v", "libx265", "-preset", "medium", "-crf", "23", "-tag:v", "hvc1",
+        "-pix_fmt", "yuv420p", "-x265-params", "log-level=error"]
+
+
 def _run(args: list[str], timeout: int = 1800) -> str:
     done = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
                           capture_output=True, text=True, timeout=timeout)
@@ -37,6 +47,7 @@ def probe(path: Path) -> dict:
     video = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
     return {"seconds": float((info.get("format") or {}).get("duration") or 0),
             "width": int(video.get("width") or 0), "height": int(video.get("height") or 0),
+            "codec": str(video.get("codec_name") or ""),
             "has_audio": any(s.get("codec_type") == "audio" for s in info.get("streams", []))}
 
 
@@ -55,6 +66,59 @@ def frame(video: Path, out: Path, which: str = "last") -> Path:
         _run(["-sseof", "-1", "-i", str(video), "-update", "1", "-frames:v", "10000", str(out)])
     if not out.is_file():
         raise MediaError(f"no {which} frame in {Path(video).name}")
+    return out
+
+
+# What the generators write for songs and voices, and what is kept instead.
+LOSSLESS_AUDIO = (".wav", ".flac")
+
+
+def compress_audio(src: Path) -> Path:
+    """A song or a voice as MP3 beside *src*, which is then removed.
+
+    ACE-Step and the voice models write WAV: ~10 MB a minute, on a disk that
+    keeps every take ever made. VBR at ~190 kbps is a sixth of that and not
+    something a phone speaker or a film's soundtrack can tell apart -- and MP3
+    plays and downloads everywhere, which Opus still does not quite. The WAV
+    is removed only once the MP3 reads back with a duration.
+    """
+    src = Path(src)
+    out = src.with_suffix(".mp3")
+    _run(["-i", str(src), "-vn", "-c:a", "libmp3lame", "-q:a", "2", str(out)], timeout=600)
+    if probe(out)["seconds"] <= 0:
+        out.unlink(missing_ok=True)
+        raise MediaError(f"{src.name} did not compress")
+    src.unlink()
+    return out
+
+
+def compress_video(src: Path) -> Path:
+    """*src* re-encoded to H.265 in place: same name, same sound, so nothing
+    that points at it has to change. Replaced only once the new file reads back
+    with a picture; one that already is HEVC is left alone."""
+    src = Path(src)
+    info = probe(src)
+    if info["codec"] == "hevc":
+        return src
+    tmp = src.with_name(src.stem + ".x265" + src.suffix)
+    _run(["-i", str(src), "-map", "0:v:0", "-map", "0:a?", *X265, "-c:a", "copy",
+          "-movflags", "+faststart", str(tmp)], timeout=1800)
+    if probe(tmp)["codec"] != "hevc":
+        tmp.unlink(missing_ok=True)
+        raise MediaError(f"{src.name} did not compress")
+    tmp.replace(src)
+    return src
+
+
+def for_generator(src: Path, out: Path) -> Path:
+    """An H.264 copy of *src* for the generator to read. What the studio keeps
+    is H.265, and whether every reader inside WanGP decodes that is not
+    something worth finding out on somebody's retouch."""
+    if probe(src)["codec"] != "hevc":
+        return Path(src)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-i", str(src), "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
+          "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "copy", str(out)])
     return out
 
 
@@ -95,7 +159,7 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0) -> Path:
         parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
         maps = ["[v]", "[a]"]
     _run([*args, "-filter_complex", ";".join(parts), "-map", maps[0], "-map", maps[1],
-          "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-b:a", "192k",
+          *X265, "-c:a", "aac", "-b:a", "192k",
           "-movflags", "+faststart", str(out)])
     return out
 
@@ -119,7 +183,8 @@ def mix(video: Path, tracks: list[dict], out: Path) -> Path:
         labels.append(f"[a{i}]")
     parts.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0[mix]")
     _run([*args, "-filter_complex", ";".join(parts), "-map", "0:v", "-map", "[mix]",
-          "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{info['seconds']:.3f}",
+          "-c:v", "copy", *(["-tag:v", "hvc1"] if info["codec"] == "hevc" else []),
+          "-c:a", "aac", "-b:a", "192k", "-t", f"{info['seconds']:.3f}",
           "-movflags", "+faststart", str(out)])
     return out
 

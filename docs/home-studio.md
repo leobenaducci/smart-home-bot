@@ -100,6 +100,15 @@ the container image:
 `paths.state` is on the big disk on this house (`/mnt/data`); only the image
 (~20 GB) is on the system SSD.
 
+What is kept is compressed, on the CPU, as each take is filed
+(`studio/media.py`): songs and voices as MP3 (VBR ~190 kbps -- the generators
+write WAV at ~10 MB a minute, and WAV takes from before this are converted
+once at start-up), and every shot and film as H.265 (`X265`, CRF 23, tagged
+`hvc1`), about half the H.264 the generator writes. The price of H.265 is
+playback: phones, the Android app and Safari play it; Firefox and most Linux
+desktop browsers do not, and show a video that will not start. A retouch hands
+the generator an H.264 copy of the shot, never the kept file.
+
 ## Settings
 
 `services.home-studio`: `enabled`, `port` (21040), `gpu`, `gpu_device` (the
