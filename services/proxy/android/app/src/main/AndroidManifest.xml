@@ -150,11 +150,15 @@
             android:exported="false" />
 
         <!-- The family chat, native and offline-first: its own launcher entry,
-             so it can be opened when the chat page cannot load. -->
+             with its own icon, so it can be opened when the chat page cannot
+             load and is not mistaken for a second copy of the app. -->
         <activity
             android:name=".family.FamilyActivity"
             android:exported="true"
-            android:label="Familia"
+            android:label="Familia Chat"
+            android:icon="@mipmap/ic_family"
+            android:roundIcon="@mipmap/ic_family"
+            android:windowSoftInputMode="adjustResize"
             android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

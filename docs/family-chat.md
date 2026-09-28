@@ -39,6 +39,10 @@ the build by the admin page (`app_family_directory` in the deployer) and
 refreshed from `/family-chat/api/directory` whenever the phone is online. It
 is never in this repository: the build writes it into its staging copy only.
 
+The app's own screen for it (`FamilyActivity`) is a second launcher entry,
+**Familia Chat**, with its own icon: the chat page's Family panel needs the
+portal, and this screen opens with no data at all.
+
 ## The SMS format
 
 The protocol between two phones that may share nothing else at that moment,
