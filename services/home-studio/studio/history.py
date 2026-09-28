@@ -55,7 +55,7 @@ LABELS = {
     "es": {"shots": "Toma {n}", "images": "Imagen {n}", "song": "Canción", "instrumental": "Música",
            "voice": "Voz", "character": "Personaje", "project": "Proyecto", "order": "el orden",
            "added": "nueva", "removed": "quitada", "more": "y {n} más", "revert": "Revertido: {s}",
-           "restore": "Vuelta a la revisión del {d}", "copy": "Copia de «{s}»", "start": "Proyecto creado",
+           "restore": "Vuelta a la revisión del {d}", "copy": "Copia de «{s}»", "start": "Proyecto creado", "begun": "Historial iniciado",
            "fields": {"prompt": "descripción", "soundscape": "sonido", "music": "música", "dialogue": "diálogo",
                       "seconds": "duración", "continuity": "continuidad", "refs": "imagen de inicio", "title": "título",
                       "exact": "corte", "start": "corte", "cast": "reparto", "description": "descripción",
@@ -67,7 +67,7 @@ LABELS = {
     "en": {"shots": "Shot {n}", "images": "Picture {n}", "song": "Song", "instrumental": "Music",
            "voice": "Voice", "character": "Character", "project": "Project", "order": "the order",
            "added": "added", "removed": "removed", "more": "and {n} more", "revert": "Reverted: {s}",
-           "restore": "Back to the revision of {d}", "copy": "Copy of “{s}”", "start": "Project created",
+           "restore": "Back to the revision of {d}", "copy": "Copy of “{s}”", "start": "Project created", "begun": "History started",
            "fields": {"prompt": "description", "soundscape": "sound", "music": "music", "dialogue": "dialogue",
                       "seconds": "length", "continuity": "continuity", "refs": "start picture", "title": "title",
                       "exact": "cut", "start": "cut", "cast": "cast", "description": "description",
@@ -344,6 +344,24 @@ class History:
                 args.append("--amend")
             self._git(d, *args)
             return self._git(d, "rev-parse", "HEAD").stdout.decode().strip()
+
+    def begin_all(self) -> int:
+        """A first revision for every project that has none -- those from
+        before the history -- so the first edit after it has a before to go
+        back to. Once each; returns how many were begun."""
+        n = 0
+        for f in sorted(self.projects.root.glob("*/*/project.json")):
+            owner, pid = f.parent.parent.name, f.parent.name
+            if owner.startswith(".") or (f.parent / HISTORY_DIR / ".git").is_dir() or not ID_RE.fullmatch(pid):
+                continue
+            try:
+                doc = self.projects.load(owner, pid)
+                if self.record(owner, pid, owner, "Studio", kind="start",
+                               message=LABELS[self._lang(doc)]["begun"]):
+                    n += 1
+            except (ProjectError, OSError):
+                continue
+        return n
 
     # -- reading --------------------------------------------------------------------------
     def log(self, owner: str, pid: str, limit: int = 300) -> dict:

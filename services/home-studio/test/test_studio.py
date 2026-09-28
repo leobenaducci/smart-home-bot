@@ -762,6 +762,11 @@ try:
     check("  a revision is a hash, nothing else", False)
 except ProjectError:
     check("  a revision is a hash, nothing else", True)
+old = hp.create(JUANA, "De antes", "free")
+hp.save(JUANA, old["id"], {"images": [{"prompt": "un faro"}]})
+check("  a project from before the history gets its first revision, once",
+      hist.begin_all() >= 1 and hist.begin_all() == 0
+      and [r["subject"] for r in hist.log(JUANA, old["id"])["revisions"]] == ["Historial iniciado"])
 cp = hp.duplicate(JUANA, hpid)
 check("  a copy keeps the history it was copied from",
       len(hist.log(JUANA, cp["id"])["revisions"]) == len(hist.log(JUANA, hpid)["revisions"]))

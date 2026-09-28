@@ -97,6 +97,12 @@ def _start() -> None:
 
 def _housekeeping() -> None:
     try:
+        n = history.begin_all()
+        if n:
+            log.info("began the history of %d project(s)", n)
+    except Exception:                                          # noqa: BLE001
+        log.exception("beginning project histories failed")
+    try:
         n = projects.compress_audio_takes(media.compress_audio)
         if n:
             log.info("compressed %d audio take(s) to mp3", n)
