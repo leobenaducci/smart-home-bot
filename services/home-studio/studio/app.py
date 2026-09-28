@@ -578,7 +578,11 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
             continue
         cast = characters.describe(shot.get("cast") or [], me.login, pid)
         prompt = (f"{look}. " if look else "") + f"Film still: {what}" + (f" Characters: {cast}." if cast else "")
-        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size}, pid, shot["id"],
+        # `shot_prompt`: the description as it was when the frame was asked
+        # for, kept on the frame so the page can tell a frame whose shot has
+        # been described differently since -- one to draw again.
+        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200]},
+                               pid, shot["id"],
                                shot.get("title") or f"{doc['name']} {idx + 1}")["id"])
     if not queued:
         _bad(ValueError("every shot already has a frame"))

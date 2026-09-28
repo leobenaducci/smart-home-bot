@@ -472,7 +472,8 @@ else:
                                     "settings": {"look": "película de los 80, neón"}})
     sdoc = projects.load(JUANA, sb["id"])
     jb = store2.add(owner=JUANA, owner_name="Juana", kind="board", model=recipes.IMAGE_MODEL,
-                    params={"prompt": "película de los 80. Film still: un pelícano", "size": "1344x768"},
+                    params={"prompt": "película de los 80. Film still: un pelícano", "size": "1344x768",
+                            "shot_prompt": "la moto salta"},
                     project=sb["id"], target=sdoc["shots"][1]["id"])
     # The repaint above let the generator go; a new one says it is ready.
     with fake._lock:
@@ -485,6 +486,7 @@ else:
     shot2 = projects.load(JUANA, sb["id"])["shots"][1]
     check("  a frame lands on its shot as a storyboard frame, not as a take",
           len(shot2.get("boards") or []) == 1 and not shot2.get("takes")
+          and shot2["boards"][0].get("prompt") == "la moto salta"
           and (projects.dir(JUANA, sb["id"]) / Projects.chosen_board(shot2)["file"]).is_file(), (store2.get(jb["id"]), shot2))
     check("  the image recipe draws it at the shot's shape",
           recipes.settings_for("board", {"prompt": "x", "size": recipes.BOARD_SIZE["480x832"]})["resolution"] == "768x1344")
@@ -674,6 +676,7 @@ r = c.post(f"/api/projects/{sbp['id']}/storyboard", json={}, headers=h(JUANA, "J
 check("  asking for the storyboard queues a frame per shot with a description",
       len(r.get("queued") or []) == 2 and all(q["kind"] == "board" for q in r["queued"]), r)
 job = A.store.get(r["queued"][0]["id"])
+check("  and remembers the description it was drawn from", job["params"].get("shot_prompt") == "uno", job["params"])
 check("  drawn with the project's look first, at the video's shape",
       job["params"]["prompt"].startswith("neón, noche. Film still: uno") and job["params"]["size"] == "1344x768", job["params"])
 check("  asked again while they are being drawn, nothing is queued twice",

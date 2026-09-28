@@ -119,6 +119,11 @@
     dialog p.muted { font-size: .86rem; line-height: 1.45; }
     dialog::backdrop { background: rgba(0,0,0,.4); }
     img.board { width: 100%; border-radius: var(--r-sm); display: block; }
+    .sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+    .sb-frame { aspect-ratio: 16 / 9; border-radius: var(--r-sm); background: var(--line); display: flex; align-items: center;
+                justify-content: center; overflow: hidden; }
+    .sb-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .sb-card textarea { min-height: 84px; }
     img.live { width: 100%; border-radius: var(--r-sm); display: block; background: #000; }
     dialog label.choice { display: flex; gap: 8px; align-items: center; padding: 6px 0; cursor: pointer; }
   </style>
@@ -381,9 +386,64 @@
         '<label class="f">' + S.ch_voice + '</label><div class="row"><input type="file" id="ch-vfile" accept="audio/*" style="width:auto">' +
         '<button id="ch-rec">' + S.ch_record + '</button><span class="muted" id="ch-vstate">' + (c.voice ? '✓' : '') + '</span></div>' +
         '<label class="f">' + S.ch_voice_text + '</label><input id="ch-vtext" value="' + esc(c.voice_text || '') + '">' +
-        '<label class="f">' + S.ch_pictures + '</label><input type="file" id="ch-pics" accept="image/*" multiple style="width:auto">' +
+        '<label class="f">' + S.ch_pictures + '</label><div class="row"><input type="file" id="ch-pics" accept="image/*" multiple style="width:auto">' +
+        '<button id="ch-pick-studio">🎬 ' + S.ch_pick_studio + '</button><button id="ch-pick-files">📁 ' + S.ch_pick_files + '</button></div>' +
+        '<div id="ch-picked" class="row" style="flex-wrap:wrap;gap:6px"></div><div id="ch-picker" hidden></div>' +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ch-no">' + S.cancel + '</button><button class="primary" id="ch-go">' + S.ch_save + '</button></div>';
       dlg.showModal();
+      // Pictures that are already somewhere: this project's images, frames
+      // and references, or the person's own Archivos. Fetched as they are
+      // saved and sent like a picture from the device, so the Studio checks
+      // and files them the same way.
+      var picked = [];
+      function drawPicked() {
+        $('#ch-picked').innerHTML = picked.map(function (p, i) {
+          return '<span class="row" style="gap:4px;border:1px solid var(--line, #8884);border-radius:6px;padding:2px 4px"><img src="' + esc(p.thumb || p.url) + '" alt="" style="height:40px;border-radius:4px;vertical-align:middle"> ' +
+            esc(p.name) + ' <button class="icon" data-unpick="' + i + '" title="' + esc(S.delete) + '">✕</button></span>'; }).join('');
+        $('#ch-picked').querySelectorAll('[data-unpick]').forEach(function (b) {
+          b.onclick = function () { picked.splice(Number(b.dataset.unpick), 1); drawPicked(); }; });
+      }
+      function pick(url, name) {
+        if (!picked.some(function (p) { return p.url === url; })) picked.push({ url: url, name: name });
+        drawPicked();
+      }
+      var IMG = /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i;
+      $('#ch-pick-studio').onclick = function () {
+        var box = $('#ch-picker'), pid = current.id, seen = {}, out = [];
+        function add(rel, name) { if (rel && IMG.test(rel) && !seen[rel]) { seen[rel] = 1; out.push({ rel: rel, name: name }); } }
+        (current.images || []).forEach(function (it) { (it.takes || []).forEach(function (t) { add(t.file, it.title || ''); }); });
+        (current.shots || []).forEach(function (sh, i) { (sh.boards || []).forEach(function (b) { add(b.file, '#' + (i + 1)); }); });
+        (current.uploads || []).forEach(function (u) { add(u.file, u.name); });
+        box.hidden = false;
+        box.innerHTML = out.length ? '<div class="row" style="flex-wrap:wrap;gap:6px;max-height:260px;overflow:auto">' + out.map(function (o, i) {
+          return '<button class="icon" data-pick="' + i + '" title="' + esc(o.name) + '"><img src="' + esc(fileUrl(pid, o.rel)) +
+            '" alt="" loading="lazy" style="height:72px;border-radius:6px"></button>'; }).join('') + '</div>'
+          : '<p class="muted">' + S.ch_pick_none + '</p>';
+        box.querySelectorAll('[data-pick]').forEach(function (b) {
+          b.onclick = function (e) { e.preventDefault(); var o = out[Number(b.dataset.pick)]; pick(fileUrl(pid, o.rel), o.name); }; });
+      };
+      async function browse(path) {
+        var box = $('#ch-picker'), r;
+        box.hidden = false; box.innerHTML = '<p class="muted">…</p>';
+        try {
+          var resp = await fetch('/files/api/list?path=' + encodeURIComponent(path));
+          r = await resp.json();
+          if (!resp.ok) throw new Error(r.error || ('HTTP ' + resp.status));
+        } catch (e) { box.innerHTML = '<p class="muted">' + esc(fmt('err', { e: e.message })) + '</p>'; return; }
+        var entries = (r.entries || []).filter(function (e) { return e.is_dir || IMG.test(e.name); });
+        var up = path ? path.split('/').slice(0, -1).join('/') : null;
+        function url(name) { return '/files/api/download?path=' + encodeURIComponent((path ? path + '/' : '') + name); }
+        box.innerHTML = '<p class="muted">📁 /' + esc(path) + '</p><div style="max-height:260px;overflow:auto">' +
+          (up !== null ? '<div><button class="icon" data-dir="' + esc(up) + '">⬆️ ..</button></div>' : '') +
+          entries.map(function (e) {
+            return e.is_dir ? '<div><button class="icon" data-dir="' + esc((path ? path + '/' : '') + e.name) + '">📁 ' + esc(e.name) + '</button></div>'
+              : '<div><button class="icon" data-file="' + esc(e.name) + '">🖼️ ' + esc(e.name) + '</button></div>'; }).join('') +
+          (entries.length ? '' : '<p class="muted">' + S.ch_pick_none + '</p>') + '</div>';
+        box.querySelectorAll('[data-dir]').forEach(function (b) { b.onclick = function (e) { e.preventDefault(); browse(b.dataset.dir); }; });
+        box.querySelectorAll('[data-file]').forEach(function (b) {
+          b.onclick = function (e) { e.preventDefault(); pick(url(b.dataset.file), b.dataset.file); }; });
+      }
+      $('#ch-pick-files').onclick = function () { browse(''); };
       $('#ch-no').onclick = function () { if (rec) rec.stop(); dlg.close(); };
       $('#ch-rec').onclick = async function () {
         var b = this;
@@ -414,6 +474,11 @@
           if ($('#ch-vfile').files[0]) await send($('#ch-vfile').files[0], 'voice');
           else if (voiceBlob) await send(voiceBlob, 'voice', 'grabacion.' + ((voiceBlob.type.split('/')[1] || 'webm').split(';')[0]));
           for (var i = 0; i < $('#ch-pics').files.length; i++) await send($('#ch-pics').files[i], 'picture');
+          for (var k = 0; k < picked.length; k++) {
+            var got = await fetch(picked[k].url);
+            if (!got.ok) throw new Error(picked[k].name + ': HTTP ' + got.status);
+            await send(await got.blob(), 'picture', picked[k].name);
+          }
           dlg.close(); await loadCast(); drawTab();
         } catch (e) { toast(fmt('err', { e: e.message }), true); go.disabled = false; }
       };
@@ -421,7 +486,12 @@
     async function openProject(pid) {
       current = await api('projects/' + pid);
       await loadCast();
-      if (current.kind === 'music_video' && !(current.shots || []).length) tab = 'audio';
+      if (current.kind === 'recording' && tab === 'board') tab = 'video';
+      if (current.kind === 'music_video' || current.kind === 'short_film') {
+        var shotsNow = current.shots || [];
+        if (!shotsNow.length) tab = current.kind === 'music_video' ? 'audio' : tab;
+        else if (!shotsNow.some(function (sh) { return (sh.takes || []).length; })) tab = 'board';
+      }
       history.replaceState(null, '', '/studio?project=' + pid);
       $('#v-list').hidden = true; $('#v-edit').hidden = false;
       drawEditor();
@@ -566,7 +636,7 @@
       var html = '<div class="row"><button id="back">← ' + S.back + '</button>' +
         '<input id="pname" class="grow" style="font-weight:800;font-size:1.05rem" value="' + esc(p.name) + '">' +
         '<span class="muted" id="saved">' + S.saved + '</span></div>' +
-        '<div class="tabs">' + ['video', 'audio', 'images', 'cast', 'files'].map(function (t) {
+        '<div class="tabs">' + (p.kind === 'recording' ? [] : ['board']).concat(['video', 'audio', 'images', 'cast', 'files']).map(function (t) {
           return '<button data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
         }).join('') + '<span class="grow"></span><button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div>' +
         (p.kind === 'music_video' ? '<p class="note">🎵 ' + S.mv_steps + '</p>' : '') +
@@ -577,10 +647,67 @@
     function drawTab() {
       var body = $('#tabbody');
       if (tab === 'cast') { body.innerHTML = castTab(); return; }
+      if (tab === 'board') { body.innerHTML = boardTab(); loadSung(); return; }
       if (tab === 'video') body.innerHTML = videoTab();
       else if (tab === 'audio') body.innerHTML = audioTab();
       else if (tab === 'images') body.innerHTML = imagesTab();
       else body.innerHTML = filesTab();
+    }
+
+    // Storyboard: a frame per shot, looked at and changed before any video
+    // is made. Each frame is the picture its video starts from, so the
+    // description beside it is what both are drawn from -- and a frame whose
+    // description has changed since is marked, to draw again.
+    var sung = { song: '', lines: null };
+    function shotSung(s) {
+      if (!sung.lines || !s.exact) return null;
+      var a = +s.start || 0, b = a + (+s.seconds || 0);
+      var words = sung.lines.filter(function (l) { return l.start < b && l.end > a; }).map(function (l) { return l.text; });
+      return words.join(' / ');
+    }
+    async function loadSung() {
+      var p = current, st = (p.settings || {}).soundtrack, song = st && itemById(st), t = song && chosen(song);
+      if (!t || !(t.analysis || {}).file || sung.song === t.id) return;
+      try {
+        var r = await api('projects/' + p.id + '/items/' + st + '/analyze', { method: 'POST', body: { take: t.id } });
+        sung = { song: t.id, lines: r.lines || [] };
+        if (tab === 'board' && current === p) $('#tabbody').innerHTML = boardTab();
+      } catch (e) { sung = { song: t.id, lines: [] }; }
+    }
+    function boardChanged(s) {
+      var b = chosenBoard(s);
+      return !!(b && b.prompt && b.prompt !== (s.prompt || '').trim());
+    }
+    function boardJob(s) { var j = jobFor(s.id); return j && j.kind === 'board' ? j : null; }
+    function boardTab() {
+      var p = current, shots = (p.shots || []).filter(function (s) { return !s.recorded; });
+      if (!shots.length) return '<div class="card"><p class="muted">' + S.sb_empty + '</p></div>';
+      var missing = shots.filter(function (s) { return !(s.boards || []).length && s.prompt && !boardJob(s); });
+      var changed = shots.filter(function (s) { return boardChanged(s) && !boardJob(s); });
+      var todo = shots.filter(function (s) { return !(s.takes || []).length && !jobFor(s.id); });
+      var html = '<div class="card"><p class="muted" style="margin-top:0">' + S.sb_help + '</p><div class="row" style="flex-wrap:wrap">' +
+        (missing.length ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: missing.length }) + '</button>' : '') +
+        (changed.length ? '<button id="sb-redraw-changed">🔄 ' + fmt('sb_redraw_changed', { n: changed.length }) + '</button>' : '') +
+        '<button id="preview">▶ ' + S.sb_animatic + '</button><span class="grow"></span>' +
+        (todo.length ? '<button class="primary" id="sb-videos">🎥 ' + fmt('sb_make_videos', { n: todo.length }) + '</button>' : '') +
+        '</div></div><div class="sb-grid">';
+      (p.shots || []).forEach(function (s, i) {
+        if (s.recorded) return;
+        var b = chosenBoard(s), j = boardJob(s), t = chosen(s), words = shotSung(s);
+        var frame = j && j.state === 'running' && j.preview ? livePreview(s)
+          : b ? '<img src="' + fileUrl(p.id, b.file) + '" alt="" loading="lazy">'
+          : '<span class="muted">' + (j ? S.sb_drawing : S.no_take) + '</span>';
+        html += '<div class="card sb-card" id="sb-' + s.id + '"><div class="sb-frame">' + frame + '</div>' +
+          '<div class="row" style="margin:6px 0"><b>' + S.shot + ' ' + (i + 1) + '</b><span class="muted">' +
+          (s.exact ? clock(s.start) + ' · ' : '') + (+(s.seconds || 5)).toFixed(s.exact ? 1 : 0) + ' ' + S.sec + '</span>' +
+          (j ? '<span class="pill run">' + (j.state === 'running' ? S.sb_drawing : S.state_queued) + '</span>' : '') +
+          (t ? '<span class="pill ok">🎥</span>' : '') + '<span class="grow"></span>' +
+          (boardChanged(s) ? '<span class="pill" title="' + esc(S.sb_changed) + '">✏️ ' + S.sb_changed_short + '</span>' : '') + '</div>' +
+          (words !== null ? '<p class="muted" style="margin:0 0 6px;font-size:.82rem">🎤 ' + (words ? esc(words) : S.sb_music_only) + '</p>' : '') +
+          '<textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
+          boardRow(s) + castRow(s) + '</div>';
+      });
+      return html + '</div>';
     }
 
     // Video
@@ -927,6 +1054,26 @@
           toast(fmt('board_queued', { n: rb.queued.length }));
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
+        if (b.id === 'sb-redraw-changed') {
+          await saveNow();
+          var ch = current.shots.filter(function (s) { return boardChanged(s) && !boardJob(s); }).map(function (s) { return s.id; });
+          if (!ch.length) return;
+          var rr = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: ch } });
+          toast(fmt('board_queued', { n: rr.queued.length }));
+          current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
+        }
+        if (b.id === 'sb-videos') {
+          await saveNow();
+          var vids = current.shots.filter(function (s) { return !s.recorded && !(s.takes || []).length && !jobFor(s.id); });
+          if (!vids.length) return;
+          var secs = vids.reduce(function (x, s) { return x + (+s.seconds || 5); }, 0), rate = (queueState && queueState.video_rate) || 360;
+          var bare = vids.filter(function (s) { return !(s.boards || []).length; }).length;
+          var stale = vids.filter(boardChanged).length;
+          if (!confirm(fmt('sb_videos_confirm', { n: vids.length, s: Math.round(secs), t: dur(rate * secs) }) +
+                       (bare ? '\n\n' + fmt('sb_no_frame_warn', { n: bare }) : '') +
+                       (stale ? '\n\n' + fmt('sb_stale_warn', { n: stale }) : ''))) return;
+          return generate(vids.map(function (s) { return s.id; }));
+        }
         if (d.boardChoose) {
           await flushSave();
           await api('projects/' + p.id + '/items/' + d.boardChoose + '/board', { method: 'POST', body: { index: Number(d.i) } });
@@ -1127,7 +1274,7 @@
           fresh.settings = Object.assign({}, fresh.settings, { soundtrack: a.id }, idea ? { look: idea } : {});
           current = fresh; await saveNow();
           var ids = current.shots.slice(before).map(function (sh) { return sh.id; });
-          dlg.close(); tab = 'video'; drawEditor();
+          dlg.close(); tab = then === 'board' ? 'board' : 'video'; drawEditor();
           toast(fmt('mv_added', { n: ids.length }));
           if (then === 'board' && ids.length) {
             var rq = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: ids } });

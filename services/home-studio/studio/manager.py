@@ -444,7 +444,8 @@ class Manager:
             return []
         elif job["project"] and job["target"]:
             if job["kind"] == "board":
-                self.projects.add_board(owner, pid, job["target"], {"file": take["file"], "job": job["id"]})
+                self.projects.add_board(owner, pid, job["target"], {"file": take["file"], "job": job["id"],
+                                                                     "prompt": job["params"].get("shot_prompt", "")})
             else:
                 self.projects.add_take(owner, pid, job["target"], take)
         return rel_files
