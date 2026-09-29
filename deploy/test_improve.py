@@ -263,6 +263,52 @@ stack_name = next(r["name"] for r in found if r["kind"] == "stack")
 found = RP.discover({"plugins": [str(plug)], "assistant": {"improve": {"exclude": ["luces", stack_name]}}})
 check("exclude leaves an automatic one out", found == [], [r["name"] for r in found])
 
+print("\na fix is made in a worktree, and committed by code")
+import work as W  # noqa: E402
+imp = tmp / "improve-work"
+for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"],
+            ["commit", "-q", "--allow-empty", "-m", "base"]):
+    subprocess.run(["git", "-C", str(plug), *cmd], check=True)
+(plug / "skill.py").write_text("BASE = 'http://viejo.home:5010/api'\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(plug), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(plug), "commit", "-q", "-m", "skill"], check=True)
+repos = RP.discover({"plugins": [str(plug)]})
+repos = [r for r in repos if r["name"] == "luces"] + [dict(r, name="pila", kind="stack")
+                                                     for r in repos if r["name"] == "luces"]
+wt = W.start(imp, repos[:1], "7", "luces")
+check("start makes a worktree on improve/<id>, inside the pipeline's folder",
+      wt == imp / "work" / "7-luces" and W._git(wt, "rev-parse", "--abbrev-ref", "HEAD") == "improve/7")
+check("and the plugin's own checkout is untouched",
+      W._git(plug, "rev-parse", "--abbrev-ref", "HEAD") in ("master", "main"))
+check("a second start reuses it", W.start(imp, repos[:1], "7", "luces") == wt)
+for bad in (("x7", "luces"), ("7", "../etc"), ("7", "otro-que-no-esta")):
+    try:
+        W.start(imp, repos[:1], *bad)
+        check(f"refuses {bad}", False)
+    except W.WorkError:
+        check(f"refuses {bad}", True)
+try:
+    W.commit(imp, repos[:1], "7", "luces", "arreglo con mensaje")
+    check("nothing changed is refused", False)
+except W.WorkError as exc:
+    check("nothing changed is refused", "nothing changed" in str(exc))
+(wt / "skill.py").write_text("import os\nBASE = os.environ['LUCES_API_URL']\n", encoding="utf-8")
+out = W.commit(imp, repos[:1], "7", "luces", "Lights skill: no fallback to a dead host")
+log = W._git(wt, "log", "-1", "--format=%ae|%B")
+check("the commit is made, as the repository's owner", "dueno@example.org|" in log
+      and "Fix request #7" in log, log)
+check("and not on the plugin's own branch", "no fallback" not in W._git(plug, "log", "-1", "--format=%s"))
+check("the stack refuses changes to how it is deployed, judged or guarded",
+      W.refusals("stack", [(" M", "deploy/deploy.py"), (" M", "services/nanobot/bench/cases.json"),
+                           (" M", "CLAUDE.md"), (" M", "services/home-core/local/app.py")])
+      and len(W.refusals("stack", [(" M", "deploy/deploy.py")])) == 1
+      and W.refusals("stack", [(" M", "services/home-core/local/app.py")]) == [])
+check("and anywhere, a deleted test", W.refusals("plugin", [(" D", "tests/test_x.py")]) != [])
+shim = W.write_shim(imp)
+check("the Programmer's shim lives in the pipeline's folder and runs this cli",
+      shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()
+      and os.access(shim, os.X_OK))
+
 import shutil  # noqa: E402
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")

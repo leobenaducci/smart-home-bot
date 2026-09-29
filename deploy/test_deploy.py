@@ -3746,6 +3746,18 @@ check("  the unit reads them, optionally",
 # No `provider` block is written, and that is deliberate: opencode discovers
 # providers from the environment, so its config file carries no secrets.
 _DEPLOY_SRC = (D.ROOT / "deploy/deploy.py").read_text(encoding="utf-8")
+# The self-improvement pipeline's folder is the Programmer's to work in -- the
+# inbox, repos.json and the worktrees `improve start` makes -- and nothing
+# else of the state or the checkouts is.
+_oc = json.loads(D.build_opencode_config("user1", "t", 21999, workspace="/srv/state/nanobot-code-workspace",
+                                         improve="/srv/state/improve"))["permission"]["external_directory"]
+check("  opencode may work in the self-improvement folder, and in no other state",
+      _oc.get("/srv/state/improve/*") == "allow"
+      and not any(k.startswith("/srv/state/") and "improve" not in k and "nanobot-code-workspace/user1" not in k
+                  for k in _oc), _oc)
+check("  and without a state path it grants nothing for it",
+      not any("improve" in k for k in json.loads(D.build_opencode_config(
+          "user1", "t", 21999))["permission"]["external_directory"]))
 check("  and the config file it writes carries no credentials",
       '"provider"' not in _DEPLOY_SRC.split("def build_opencode_config")[1][:1200],
       "opencode reads keys from the environment; the config stays secret-free")

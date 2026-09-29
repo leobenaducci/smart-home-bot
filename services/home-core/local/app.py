@@ -7502,6 +7502,7 @@ def _improve_prompt(row):
     because this is the text the person reviews before sending: what it says
     it will do is what they are agreeing to."""
     rid, problem, context = row
+    tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
     where = (f"`{IMPROVE_DIR}/repos.json` lists where a fix may go -- this stack "
              f"and each plugin, with what each provides; recent turns, redacted, "
              f"are in `{IMPROVE_DIR}/inbox/`." if IMPROVE_DIR else
@@ -7523,9 +7524,11 @@ def _improve_prompt(row):
               "Only after I say yes:",
               "3. If it is a setting (an address, a model, a switch), say which and where "
               "it is set. Never write a household value into code.",
-              f"4. If it is code: a new branch `improve/{rid}` in a git worktree of the "
-              "repository it belongs to -- never on main, never in the checkout that "
-              "deploys -- with a test, committed.",
+              f"4. If it is code: `{tool} start {rid} <repo>` makes a worktree of that "
+              f"repository on branch `improve/{rid}` and prints its path. Edit only there -- "
+              "never the checkout that deploys -- add a test, and commit with "
+              f"`{tool} commit {rid} <repo> -m \"<what and why>\"`. Git itself is refused "
+              "here; these do it, with the checks.",
               "5. Do not deploy and do not push. Tell me what changed and how to check it.",
               "",
               "If it turns out nothing is broken, say so plainly: that is an answer too."]

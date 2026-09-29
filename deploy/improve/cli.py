@@ -6,6 +6,11 @@
     ./home-stack improve collect --no-model      without the local model's name pass
     ./home-stack improve inbox                   what the inbox holds, by signal
     ./home-stack improve repos                   where a fix may be made: this stack and its plugins
+    ./home-stack improve start <id> <repo>       a worktree on improve/<id> for request <id>
+    ./home-stack improve commit <id> <repo> -m   commit the fix there, after the checks
+    ./home-stack improve status <id>             the request's worktrees and commits
+
+The Programmer calls the last three as `{paths.state}/improve/bin/improve`.
 
 Nothing here calls a model outside the house. The inbox it writes is what the
 evaluator reads (docs/self-improvement.md); the raw history never is.
@@ -29,6 +34,7 @@ sys.path.insert(0, str(HERE))
 import collect as C  # noqa: E402
 import redact as R  # noqa: E402
 import repos as RP  # noqa: E402
+import work as W  # noqa: E402
 
 TEXT_FIELDS = ("request", "answer", "next", "feedback")
 
@@ -42,9 +48,10 @@ def live_config() -> dict:
 def improve_dir(cfg: dict) -> Path:
     state = Path((cfg.get("paths") or {}).get("state") or "/var/lib/home-stack/state")
     d = Path(os.environ.get("HOME_STACK_IMPROVE_DIR") or state / "improve")
-    for sub in ("", "inbox", "private"):
+    for sub in ("", "inbox", "private", "work"):
         (d / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(d / sub, 0o700)
+    W.write_shim(d)
     return d
 
 
@@ -161,6 +168,34 @@ def cmd_inbox(args) -> int:
     return 0
 
 
+def _work(fn):
+    try:
+        print(fn())
+        return 0
+    except W.WorkError as exc:
+        print(f"improve: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_start(args) -> int:
+    cfg = live_config()
+    d = improve_dir(cfg)
+    repos = RP.discover(cfg)
+    RP.write(d, repos)
+    return _work(lambda: f"worktree: {W.start(d, repos, args.id, args.repo)}\n"
+                         f"edit there, then: improve commit {args.id} {args.repo} -m \"...\"")
+
+
+def cmd_commit(args) -> int:
+    cfg = live_config()
+    return _work(lambda: W.commit(improve_dir(cfg), RP.discover(cfg), args.id, args.repo,
+                                  args.message))
+
+
+def cmd_status(args) -> int:
+    return _work(lambda: W.status(improve_dir(live_config()), args.id))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="home-stack improve")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -176,6 +211,18 @@ def main(argv: list[str] | None = None) -> int:
     i.set_defaults(func=cmd_inbox)
     r = sub.add_parser("repos", help="where a fix may be made")
     r.set_defaults(func=cmd_repos)
+    s = sub.add_parser("start", help="a worktree for a fix request")
+    s.add_argument("id")
+    s.add_argument("repo")
+    s.set_defaults(func=cmd_start)
+    c2 = sub.add_parser("commit", help="commit a fix request's change")
+    c2.add_argument("id")
+    c2.add_argument("repo")
+    c2.add_argument("-m", "--message", required=True)
+    c2.set_defaults(func=cmd_commit)
+    st = sub.add_parser("status", help="a fix request's worktrees")
+    st.add_argument("id")
+    st.set_defaults(func=cmd_status)
     args = ap.parse_args(argv)
     if getattr(args, "day", None):
         date.fromisoformat(args.day)

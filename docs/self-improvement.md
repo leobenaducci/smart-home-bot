@@ -169,8 +169,21 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   the admin page, never written into code; a fix that only makes sense for
   this house goes to its plugin or its config, never here (`CLAUDE.md`,
   "Household data never enters git").
-- **The fixer** works in a git worktree of the repo the issue names, one
-  issue, one commit, on its own branch.
+- **The fixer** (built) works in a git worktree, and code makes it. The
+  Programmer may not run git that changes anything (`build_opencode_config`
+  refuses branch, worktree, commit, and says why), so it calls
+  `{paths.state}/improve/bin/improve`, a shim for `./home-stack improve`:
+  `start <id> <repo>` makes a worktree of a repository from `repos.json` on
+  branch `improve/<id>`, under `{paths.state}/improve/work/`; `commit <id>
+  <repo> -m` commits there as the repository's owner, after refusing, for this
+  stack, changes to `deploy/`, `admin/`, `secrets/`, `CLAUDE.md`, `home-stack`
+  and the benchmark, a deleted test anywhere, and anything the sanitizer
+  calls household data; `status <id>` lists what was made. That folder is the
+  one the Programmer's config lets it reach besides its own workspace -- the
+  live checkouts are not, and still stop the run on a permission it cannot
+  be given. Found by the first live request: the investigation read
+  `repos.json`, opencode asked permission for it, and the portal aborted the
+  turn, as it does for any ask nobody can answer.
 - **The judge** is a fresh session: blind A/B of the replay cases against
   the baseline, three runs each, rubric from the issue.
 

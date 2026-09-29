@@ -123,9 +123,11 @@ check("and what Alfred knew", "> skill lights, flash_light: connection refused."
 check("where a fix may go", "/srv/state/improve/repos.json" in p and "/srv/state/improve/inbox/" in p, p)
 check("it investigates only, and asks before changing anything",
       "investigate only -- change nothing" in p and "ask me whether to apply it" in p
-      and p.index("Only after I say yes") < p.index("improve/1"), p)
+      and p.index("Only after I say yes") < p.index("start 1"), p)
 check("what Alfred knew is a lead to check, not a fact", "leads to check, not facts" in p, p)
-check("a branch in a worktree, never main", "never on main" in p, p)
+check("the fix goes through the tool, in a worktree, never the deploying checkout",
+      "/srv/state/improve/bin/improve start 1 <repo>" in p and "improve commit 1" in p
+      and "never the checkout that deploys" in p and "Git itself is refused" in p, p)
 check("and nothing broken is an answer", "nothing is broken, say so plainly" in p, p)
 check("a setting is not code", "Never write a household value into code" in p, p)
 check("and no deploy, no push", "Do not deploy and do not push" in p, p)

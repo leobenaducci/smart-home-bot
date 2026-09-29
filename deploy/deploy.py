@@ -3414,7 +3414,7 @@ def tile_icon(value) -> str:
 
 
 def build_opencode_config(member: str, token: str, port: int,
-                          workspace: str = "") -> str:
+                          workspace: str = "", improve: str = "") -> str:
     """`opencode.json` for one member's `opencode serve`.
 
     Deliberately a file of this stack's own, pointed at by OPENCODE_CONFIG,
@@ -3580,7 +3580,15 @@ def build_opencode_config(member: str, token: str, port: int,
             "external_directory": ({
                 f"{workspace.rstrip('/')}/{member}": "allow",
                 f"{workspace.rstrip('/')}/{member}/*": "allow",
-            } if workspace else {}) | {
+            } if workspace else {}) | ({
+                # The self-improvement pipeline's folder (docs/self-improvement.md):
+                # the redacted inbox, repos.json, and `work/`, where a fix
+                # request's worktrees are made by `improve start` -- code, not
+                # the agent's git, which the block above refuses. The live
+                # checkouts it branches from are not here and still ask.
+                f"{improve.rstrip('/')}": "allow",
+                f"{improve.rstrip('/')}/*": "allow",
+            } if improve else {}) | {
                 "/tmp": "allow",
                 "/tmp/*": "allow",
             },
@@ -6065,6 +6073,9 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                     workspace=(
                         f"{(base_paths(cfg) or {}).get('state', '').rstrip('/')}"
                         "/nanobot-code-workspace"
+                        if (base_paths(cfg) or {}).get("state") else ""),
+                    improve=(
+                        f"{(base_paths(cfg) or {}).get('state', '').rstrip('/')}/improve"
                         if (base_paths(cfg) or {}).get("state") else ""))
                 digest.update(rendered.encode("utf-8"))
                 tmp = Path(tempfile.mkstemp(suffix=".json")[1])
