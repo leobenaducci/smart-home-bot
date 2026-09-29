@@ -88,7 +88,9 @@ with both. Stop (`interrupted`) and a fork (`branch_of`) were already there.
   the names no list knows. A self-test fails the run if a live identifier
   survives. The mapping goes to `bench-house-names.json`, as the benchmark's
   already does, so a replay can still reach a real device.
-- **label and cluster**, by the evaluator model (Claude Sonnet 5), on the
+- **label and cluster**, by the evaluator model (Claude Sonnet 5, on
+  `ANTHROPIC_API_KEY`, set with the other model keys on the admin page's
+  credentials), on the
   redacted episodes only: every episode with a hard signal (👎, Stop, a
   rephrase inside two minutes, a failing stop reason, a tool error, a
   fallback) and a small sample of the ones that look fine. Hard signals
