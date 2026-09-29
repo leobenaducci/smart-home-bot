@@ -9,6 +9,8 @@
     ./home-stack improve start <id> <repo>       a worktree on improve/<id> for request <id>
     ./home-stack improve commit <id> <repo> -m   commit the fix there, after the checks
     ./home-stack improve status <id>             the request's worktrees and commits
+    ./home-stack improve publish <id> <repo>     fast-forward the repository to the fix (and push a plugin's)
+    ./home-stack improve deploy <id> <repo>      deploy what the published fix changed
 
 The Programmer calls the last three as `{paths.state}/improve/bin/improve`.
 
@@ -35,6 +37,7 @@ import collect as C  # noqa: E402
 import redact as R  # noqa: E402
 import repos as RP  # noqa: E402
 import work as W  # noqa: E402
+import ship as S  # noqa: E402
 
 TEXT_FIELDS = ("request", "answer", "next", "feedback")
 
@@ -192,6 +195,17 @@ def cmd_commit(args) -> int:
                                   args.message))
 
 
+def cmd_publish(args) -> int:
+    cfg = live_config()
+    return _work(lambda: S.publish(improve_dir(cfg), RP.discover(cfg), args.id, args.repo))
+
+
+def cmd_deploy(args) -> int:
+    cfg = live_config()
+    state = Path((cfg.get("paths") or {}).get("state") or "/var/lib/home-stack/state")
+    return _work(lambda: S.deploy(improve_dir(cfg), RP.discover(cfg), args.id, args.repo, state))
+
+
 def cmd_status(args) -> int:
     return _work(lambda: W.status(improve_dir(live_config()), args.id))
 
@@ -223,6 +237,14 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("status", help="a fix request's worktrees")
     st.add_argument("id")
     st.set_defaults(func=cmd_status)
+    pb = sub.add_parser("publish", help="put a committed fix on its repository")
+    pb.add_argument("id")
+    pb.add_argument("repo")
+    pb.set_defaults(func=cmd_publish)
+    dp = sub.add_parser("deploy", help="deploy a published fix")
+    dp.add_argument("id")
+    dp.add_argument("repo")
+    dp.set_defaults(func=cmd_deploy)
     args = ap.parse_args(argv)
     if getattr(args, "day", None):
         date.fromisoformat(args.day)

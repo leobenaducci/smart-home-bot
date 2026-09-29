@@ -149,7 +149,10 @@ check("the fix goes through the tool, in a worktree, never the deploying checkou
       and "never the checkout that deploys" in p and "Git itself is refused" in p, p)
 check("and nothing broken is an answer", "nothing is broken, say so plainly" in p, p)
 check("a setting is not code", "Never write a household value into code" in p, p)
-check("and no deploy, no push", "Do not deploy and do not push" in p, p)
+check("publish and deploy only when told, only through the tool",
+      "only when I say so" in p and "/srv/state/improve/bin/improve publish 1 <repo>" in p
+      and "improve deploy 1 <repo>" in p and "never by hand" in p
+      and "do not work around it" in p, p)
 r = other.get("/improve/api/requests/1/prompt")
 check("nobody else can read it", r.status_code == 404, r.status_code)
 lst = coder.get("/improve/api/requests").get_json()["requests"]

@@ -7571,7 +7571,10 @@ def _improve_prompt(row, username=None):
               "never the checkout that deploys -- add a test, and commit with "
               f"`{tool} commit {rid} <repo> -m \"<what and why>\"`. Git itself is refused "
               "here; these do it, with the checks.",
-              "5. Do not deploy and do not push. Tell me what changed and how to check it.",
+              "5. Tell me what changed and how to check it, and stop. Publish and deploy only "
+              f"when I say so, and only with `{tool} publish {rid} <repo>` (puts the fix on the "
+              f"repository, and pushes a plugin's) and then `{tool} deploy {rid} <repo>` -- "
+              "never by hand. If either refuses, tell me why; do not work around it.",
               "",
               "If it turns out nothing is broken, say so plainly: that is an answer too."]
     return "\n".join(lines)

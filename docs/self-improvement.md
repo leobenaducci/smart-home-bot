@@ -181,7 +181,18 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   calls household data; `status <id>` lists what was made. That folder is the
   one the Programmer's config lets it reach besides its own workspace -- the
   live checkouts are not, and still stop the run on a permission it cannot
-  be given. Found by the first live request: the investigation read
+  be given. `publish <id> <repo>` and `deploy <id> <repo>` (`ship.py`) are
+  the last two steps, which the Programmer runs only when the person says so
+  in the request's conversation -- the household's decision on 2026-09-29,
+  after the first fix sat committed with no way out. Publishing is a
+  fast-forward of the repository's own checkout, never a merge, refused over
+  somebody's uncommitted work or a checkout that moved on; a plugin's is then
+  pushed to its remote, and this stack's never is (a pull request from the
+  publishing clone, as `CLAUDE.md` says). Deploying deploys only what is
+  published -- a plugin's services, or the stack services whose units the
+  fix touched, then admin -- and refuses beside another deploy, during a
+  benchmark, or from a stack checkout with uncommitted work.
+  Found by the first live request: the investigation read
   `repos.json`, opencode asked permission for it, and the portal aborted the
   turn, as it does for any ask nobody can answer.
 - **The judge** is a fresh session: blind A/B of the replay cases against

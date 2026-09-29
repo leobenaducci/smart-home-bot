@@ -350,6 +350,105 @@ try:
 except W.WorkError as exc:
     check("a sanitizer that cannot run refuses the commit, and says so",
           "could not run" in str(exc) and "household data" not in str(exc), str(exc))
+print("\npublishing and deploying a fix, with the checks in code")
+import ship as S  # noqa: E402
+remote = tmp / "luces-remote.git"
+subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+lp = tmp / "luces-live"
+subprocess.run(["git", "clone", "-q", str(remote), str(lp)], check=True)
+for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(lp), *cmd], check=True)
+(lp / "skill.py").write_text("BASE = 'http://viejo.home:5010/api'\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(lp), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(lp), "commit", "-q", "-m", "base"], check=True)
+br = W._git(lp, "rev-parse", "--abbrev-ref", "HEAD")
+subprocess.run(["git", "-C", str(lp), "push", "-q", "origin", br], check=True)
+lrepo = {"name": "luces2", "kind": "plugin", "path": str(lp), "branch": br, "remote": str(remote),
+         "provides": {"services": ["luces-api"]}}
+lwt = W.start(imp, [lrepo], "11", "luces2")
+(lwt / "skill.py").write_text("import os\nBASE = os.environ['LUCES_API_URL']\n", encoding="utf-8")
+try:
+    S.publish(imp, [lrepo], "11", "luces2")
+    check("an uncommitted fix is not published", False)
+except W.WorkError as exc:
+    check("an uncommitted fix is not published", "uncommitted" in str(exc), str(exc))
+W.commit(imp, [lrepo], "11", "luces2", "Lights skill: no dead fallback")
+(lp / "notes.txt").write_text("somebody's work\n", encoding="utf-8")
+try:
+    S.publish(imp, [lrepo], "11", "luces2")
+    check("a checkout with somebody's uncommitted work is not touched", False)
+except W.WorkError as exc:
+    check("a checkout with somebody's uncommitted work is not touched",
+          "uncommitted work" in str(exc) and W._git(lp, "log", "-1", "--format=%s") == "base", str(exc))
+(lp / "notes.txt").unlink()
+try:
+    S.deploy(imp, [lrepo], "11", "luces2", tmp, run=lambda *a, **k: None, busy=lambda: False)
+    check("an unpublished fix is not deployed", False)
+except W.WorkError as exc:
+    check("an unpublished fix is not deployed", "not published" in str(exc), str(exc))
+out = S.publish(imp, [lrepo], "11", "luces2")
+check("publishing fast-forwards the plugin's checkout",
+      W._git(lp, "log", "-1", "--format=%s") == "Lights skill: no dead fallback", out)
+check("and pushes it to the plugin's remote", "pushed to origin" in out
+      and W._git(remote, "log", "-1", "--format=%s", br) == "Lights skill: no dead fallback", out)
+try:
+    S.publish(imp, [lrepo], "11", "luces2")
+    check("publishing twice is refused, not repeated", False)
+except W.WorkError as exc:
+    check("publishing twice is refused, not repeated", "nothing" in str(exc), str(exc))
+ran = []
+
+
+class _R:
+    returncode = 0
+    stdout = "ok  all 1 service(s) deployed and answering\n"
+
+
+out = S.deploy(imp, [lrepo], "11", "luces2", tmp, run=lambda argv, **k: ran.append(argv) or _R(),
+               busy=lambda: False)
+check("deploying runs the deployer for the plugin's services, and not admin",
+      [a[2] for a in ran] == ["luces-api"] and "luces-api: ok" in out, (ran, out))
+try:
+    S.deploy(imp, [lrepo], "11", "luces2", tmp, run=lambda *a, **k: _R(), busy=lambda: True)
+    check("not beside another deploy", False)
+except W.WorkError as exc:
+    check("not beside another deploy", "another deploy" in str(exc))
+(tmp / "admin" / "bench").mkdir(parents=True)
+(tmp / "admin" / "bench" / "job.json").write_text('{"running": true}', encoding="utf-8")
+try:
+    S.deploy(imp, [lrepo], "11", "luces2", tmp, run=lambda *a, **k: _R(), busy=lambda: False)
+    check("nor during a benchmark", False)
+except W.WorkError as exc:
+    check("nor during a benchmark", "benchmark" in str(exc))
+(tmp / "admin" / "bench" / "job.json").write_text('{"running": false}', encoding="utf-8")
+
+# The stack: published by fast-forward only, deployed by the files it changed, admin last.
+(stack / "deploy" / "sanitize.py").write_text("import sys; sys.exit(0)\n", encoding="utf-8")
+(stack / "deploy" / "manifest.yml").write_text(
+    "services:\n  portal:\n    units: [{dir: services/portal}]\n"
+    "  otro:\n    units: [{dir: services/otro}]\n", encoding="utf-8")
+(stack / "services" / "portal").mkdir()
+(stack / "services" / "portal" / "app.py").write_text("x = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(stack), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(stack), "commit", "-qm", "portal"], check=True)
+swt3 = W.start(imp, [srepo], "12", "pila")
+(swt3 / "services" / "portal" / "app.py").write_text("x = 2\n", encoding="utf-8")
+W.commit(imp, [srepo], "12", "pila", "Portal: x is two")
+out = S.publish(imp, [srepo], "12", "pila")
+check("this stack is published by fast-forward and never pushed",
+      "never pushes" in out and W._git(stack, "log", "-1", "--format=%s") == "Portal: x is two", out)
+ran.clear()
+out = S.deploy(imp, [srepo], "12", "pila", tmp, run=lambda argv, **k: ran.append(argv) or _R(),
+               busy=lambda: False)
+check("its deploy is the services the fix touched, then admin last",
+      [a[2] for a in ran] == ["portal", "admin"], [a[2] for a in ran])
+(stack / "services" / "otro.txt").write_text("sin commitear\n", encoding="utf-8")
+try:
+    S.deploy(imp, [srepo], "12", "pila", tmp, run=lambda *a, **k: _R(), busy=lambda: False)
+    check("and never from a stack checkout with uncommitted work", False)
+except W.WorkError as exc:
+    check("and never from a stack checkout with uncommitted work", "uncommitted" in str(exc))
+
 shim = W.write_shim(imp)
 check("the Programmer's shim lives in the pipeline's folder and runs this cli",
       shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()
