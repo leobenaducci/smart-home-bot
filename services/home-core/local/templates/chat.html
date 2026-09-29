@@ -4286,6 +4286,8 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
      What is left for the page is picking a running turn back up: reading the
      stream from where it is, into the conversation it belongs to. */
   var attachedTurns = {};
+  var TURN_QUIET_MS = 20000;
+  var TURN_CUT_TEXT = {{ t('chat.turn_cut') | tojson }};
 
   async function consumeTurn(resp, ref, turnConv, turnDay) {
     var reader = resp.body.getReader(), decoder = new TextDecoder(), buffer = '';
@@ -4293,9 +4295,33 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
        frame and the backend in the event after it, so reconnecting to a turn
        that is already running rebuilds the bubble out of the replay. */
     var turnId = '', turnBackend = '', failed = false;
+    /* A stream that is still open but no longer fed. When the portal restarts
+       mid-answer, something between here and it can keep this connection open,
+       and `reader.read()` then waits for ever: the page showed Alfred working
+       on a turn the server had forgotten. So, after a quiet spell, ask the
+       server whether this conversation still has a turn running -- the same
+       question pumpQueue asks -- and stop waiting when it does not. A silent
+       turn that is alive (minutes inside a tool) is still listed, so it is
+       left alone. */
+    var lastChunk = Date.now(), cutOff = false;
+    var watchdog = setInterval(async function() {
+      if (Date.now() - lastChunk < TURN_QUIET_MS) return;
+      try {
+        var r = await fetch('/chat/queue?date=' + encodeURIComponent(turnDay || curDay)
+                            + '&conv=' + ((turnConv || convStart()) || '') + spaceQ('&'));
+        if (!r.ok) return;
+        var d = await r.json();
+        if (!d.running || (turnId && d.running.id !== turnId)) {
+          cutOff = true;
+          try { reader.cancel(); } catch (e) {}
+        }
+      } catch (e) {}
+    }, 10000);
+    try {
     while (true) {
       var chunk = await reader.read();
       if (chunk.done) break;
+      lastChunk = Date.now();
       buffer += decoder.decode(chunk.value, { stream: true });
       var lines = buffer.split('\n'); buffer = lines.pop();
       for (var i = 0; i < lines.length; i++) {
@@ -4337,6 +4363,13 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
           }
         } catch (e) {}
       }
+    }
+    } finally {
+      clearInterval(watchdog);
+    }
+    if (cutOff) {
+      ref.div.classList.add('interrupted');
+      if (turnConv === convStart() && turnDay === curDay) addHint(TURN_CUT_TEXT);
     }
     /* However the loop ended -- finished, errored, stopped, or the socket
        simply closing. The bubble owns a running clock and a ticking icon, so
