@@ -493,6 +493,13 @@ services:
           # which table it is documented in, so the two disagreed quietly.
           - { path: "{paths.state}/admin", mount: /cache,
               env: HOME_STACK_ADMIN_CACHE_DIR, backup: skip }
+          # The self-improvement pipeline's house side (docs/self-improvement.md):
+          # the redacted inbox `./home-stack improve collect` writes, and the
+          # key its tokens are hashed with. Written on the host, not by this
+          # container -- listed here because the Improvements page will read it,
+          # and the state mount already reaches it at the same path. 0700: the
+          # inbox is redacted, the key is what keeps it that way.
+          - { path: "{paths.state}/improve", mode: "0700" }
         verify:
           - http: "http://127.0.0.1:{services.admin.port}/healthz"
             expect_json: {status: ok}

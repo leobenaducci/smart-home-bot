@@ -5,18 +5,35 @@ pipeline that reads what went wrong in the assistant's turns, proposes a fix,
 proves the fix is better, and ships it -- and which parts of that are a model's
 judgement and which are code that cannot be talked out of a rule.
 
-**Status:** phase 1 (the evidence) is built. Everything after it is the plan.
+**Status:** phase 1 (the evidence) is built, and phase 2's house side --
+collect and redact. The evaluator, the request path, the improver and the gate
+are the plan.
 
 ## The shape
 
 ```
-nightly, on the house              on request, sandboxed            no model
-collect -> redact -> label   ->    improver: pi + a coding   ->    gate: paths, suites,
--> cluster into issues             model, one issue, one           privacy, blind judge,
-   + replay cases                  commit in a worktree            bench -> a person
-                                                                   approves -> deploy
+nightly, on the house        when a person asks, in the Programmer space      no model
+collect -> redact     ->     evaluate: label, cluster, replay cases     ->    gate: paths, suites,
+   (inbox)                   fix: one issue, one commit, in the repo          privacy, bench,
+                             it belongs to                                    a person approves
+Alfred, asked in chat  ->    (a request becomes an issue the same way)        -> deploy
           ^---------- did the issue come back in the next 7 days? -----------'
 ```
+
+**Where the models run, and why only there.** Every model step -- evaluating,
+fixing, judging a fix -- runs in `opencode serve` on OpenCode **Go**, Kimi K2
+code, started by a person in the Programmer space. `CLAUDE.md` allows Go only
+for that: opencode's own binary answering somebody at the keyboard. A nightly
+job that opened an opencode session with nobody there would be the unattended
+load Go's terms police, just routed through opencode, so **nothing model-driven
+is scheduled**. What runs on its own is collect and redact, which are local.
+(Measured alternative, 2026-09-29: GPT-6 Sol on Zen, per token, would have
+been about $10-20 a month for the same evaluation, unattended.)
+
+The judge is the weak point of one model doing everything, and three things
+cover it: it is a fresh session that never sees the fix, the diff or the
+fixer's claim; its rubric is written from the issue before any fix exists; and
+the gate, which is code, can refuse what the judge liked.
 
 A model proposes and a model judges; code decides. The roadmap has the reason
 ("A coding harness behind the broker -- built, and removed"): *a prompt cannot
@@ -75,46 +92,77 @@ is found by its text and the nearest time rather than an id -- the page and
 the server each file a reply with their own clocks, and only those two travel
 with both. Stop (`interrupted`) and a fork (`branch_of`) were already there.
 
-## Phase 2: the evaluator (planned)
+## Phase 2: collect and redact (built)
 
-`deploy/improve/`, run nightly on the host, state in `{paths.state}/improve`.
+`./home-stack improve collect` (`deploy/improve/`), by default yesterday;
+`--day`, `--days N`. It reads and never writes the house's records, and writes
+one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
 
-- **collect** joins `token_usage`, `turn_events`, the portal's history, the
-  sessions, `bgtasks.db`, the notification triage and the Studio's jobs into
-  one episode per turn.
-- **redact** before anything leaves the house: the live config's members, the
-  user store's logins, phones and emails, and `sanitize-rules.local.py`
-  become the invented cast, consistently within an issue; a local model finds
-  the names no list knows. A self-test fails the run if a live identifier
-  survives. The mapping goes to `bench-house-names.json`, as the benchmark's
-  already does, so a replay can still reach a real device.
-- **label and cluster**, by the evaluator model (Claude Sonnet 5, on
-  `ANTHROPIC_API_KEY`, set with the other model keys on the admin page's
-  credentials), on the
-  redacted episodes only: every episode with a hard signal (👎, Stop, a
-  rephrase inside two minutes, a failing stop reason, a tool error, a
-  fallback) and a small sample of the ones that look fine. Hard signals
-  override its verdict.
-- **replay cases** per issue, in `bench/cases.json`'s format, kept in state
-  and not in git because they come from household data.
+- **collect** (`collect.py`) turns a day into episodes: each answer in the
+  chat or a profession, joined to the usage rows its turn billed (an
+  escalation's two rows are one episode), and every turn nobody reads in the
+  chat -- events, background tasks -- from its usage alone. Each carries its
+  **signals**: 👎, Stop, a correction or a rephrase within two minutes, a
+  failing stop reason, failed calls or tools, an escalation, a slow answer,
+  the runner's codes. Every episode with one is kept, and 8% of the rest
+  (`--sample`), so the evaluator can say how often "no signal" is still wrong.
+  A heartbeat is never sampled.
+- **redact** (`redact.py`), before anything is written:
+  1. the sanitizer's map (with the local rules) turns the household's names,
+     logins and domains into the invented cast;
+  2. e-mail addresses, private links and bare machine names (`box.home:5010`)
+     become tokens, by shape;
+  3. what the house knows about itself -- members and their relationships,
+     logins, the family directory, saved places, WhatsApp contacts, e-mail
+     accounts, the site's hosts, every credential in the env file --
+     becomes a token, whole names and their parts, with or without accents;
+  4. IPs, MACs, coordinates, phone numbers and long numbers, by shape;
+  5. the local text model names what no list knows (a friend, a shop, a
+     street), and code it offers -- a variable, a file, a call -- is kept:
+     it identifies nobody and is what a technical failure is about.
+  Tokens are `[persona-3f2a]`, keyed on `private/salt`, so one name is one
+  token on every run and no table of real names is kept. Who asked is
+  `member-xxxx`, the same way.
+- **the guard** looks for every harvested value again, folded, in each
+  finished episode, and withholds any that still has one; the run says how
+  many, never which. On the first live run it withheld five of six, over a
+  member's `whatsapp: true` harvested as a phone -- "true" is in every episode
+  as JSON -- which is why flags are not harvested.
 
-## Phase 3: the improver and the gate (planned)
+## Phase 3: evaluate, fix, judge (planned)
 
-The improver is pi (`@mariozechner/pi-coding-agent`, the version the harness
-pins) with its coding tools, in a throwaway container whose only writable
-mount is a git worktree of the working checkout. No docker socket, no state,
-no env file; its one network route is a local proxy that adds the provider
-key, so neither the model nor its shell ever holds it. One issue in, one
-commit out.
+- **The evaluator** is an opencode agent (`deploy/host/opencode/agents/`)
+  with no shell and no file tools: it reads the inbox and writes labels and
+  issues through tools that serve only the redacted inbox. Hard signals
+  override its verdict. It groups failures into issues and writes replay
+  cases in `bench/cases.json`'s format, kept in state, not git.
+- **A request is an issue too.** "The lights skill points to the wrong
+  server -- fix it", said to Alfred, goes through a `self-improve` skill: it
+  files an issue with the person's words and the episodes around it, and
+  answers with a link that opens the Programmer space with the fix already
+  asked. The person presses send, which is what keeps it interactive. Only a
+  member marked `programmer` may; from WhatsApp or another member's question
+  it is refused like every other acting skill.
+- **Where a fix belongs** is part of the issue, because it is not always this
+  repository. `assistant.improve.repos` in the live config names the
+  checkouts the improver may work in -- this one, and a plugin's own
+  repository (the lights skill is served by a plugin that lives outside this
+  tree). A fix that is a setting (a URL, a model) is proposed as a change on
+  the admin page, never written into code; a fix that only makes sense for
+  this house goes to its plugin or its config, never here (`CLAUDE.md`,
+  "Household data never enters git").
+- **The fixer** works in a git worktree of the repo the issue names, one
+  issue, one commit, on its own branch.
+- **The judge** is a fresh session: blind A/B of the replay cases against
+  the baseline, three runs each, rubric from the issue.
 
 The gate is code: allowed paths (never `deploy/`, `admin/`, the manifest, the
 bench, or `deploy/improve/` itself), no loosened assertion, the service
 suites, `sanitize.py --check` and `publish_check.py` on the branch, the
-standing benchmark within its measured noise, the prompt's token count, and a
-blind A/B judgement of the replay cases by a fresh evaluator that never sees
-the diff or the improver's claim. Then a person approves, and the deploy
-follows `CLAUDE.md`'s rules: a clean checkout, no deploy running, no
-assistant mid-turn, no benchmark, one change per deploy, admin last.
+standing benchmark within its measured noise, the prompt's token count, and the
+judge's verdict. Then a person approves, and the deploy follows `CLAUDE.md`'s
+rules: a clean checkout, no deploy running, no assistant mid-turn, no
+benchmark, one change per deploy, admin last.
 
 Nothing here pushes. Commits are generic by construction, and publishing
 stays the person's (`CLAUDE.md`, "Publishing").
