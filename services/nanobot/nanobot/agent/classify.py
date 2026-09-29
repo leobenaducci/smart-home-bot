@@ -63,7 +63,7 @@ _PROMPT = """Classify the household's request to its assistant. Answer with ONE 
 {{"label": "chat" | "action" | "complex" | "long" | "background", "reason": "<a few words>"}}
 
 chat    - conversation, a fact, a translation, a joke, a quick question, thanks
-action  - one or two steps in ONE system: turn something on or off, take a photo, add to a list, set a reminder, ask what a sensor says
+action  - one or two steps in ONE system: turn something on or off, take a photo, add to a list, set a reminder, ask what a sensor says; also asking the assistant to fix or change ITSELF -- one of its skills ("the lights skill", "tu skill", "la skill de X"), a rule it follows, how it does something -- even with the problem explained at length, because that is one request handed to the Programmer, filed now, not worked out here
 complex - a hard question the person is waiting on, answered in one go: reasoning, a calculation, a decision, advice, explaining something in depth, a short piece of code
 long    - work of several steps to do now: more than one system, checking or comparing or cross-referencing one thing against another, reviewing or fixing something, going through a list; also a problem the person reports in a system (Home Assistant, a dashboard, the lights, a camera, a device) -- something missing, wrong, duplicated, unavailable or not responding -- even when it is said as a statement rather than asked as a question, because finding out why takes several steps
 background - work of hours, research to read later, a report or document to prepare, or anything the person asks to be done "in the background" / "en segundo plano"
@@ -84,6 +84,8 @@ Examples:
 "la luz del escritorio no responde" -> long
 "Home Assistant muestra el sensor del patio como no disponible" -> long
 "the living room lamp shows up twice in HA" -> long
+"la skill de luces apunta al servidor equivocado, arreglala" -> action
+"fix your weather skill, it keeps answering in English" -> action
 "en segundo plano, armame un resumen de los gastos del mes" -> background
 "armame un informe con todo lo que pasó con la calefacción este mes" -> background
 "gracias!" -> chat

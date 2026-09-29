@@ -45,6 +45,9 @@ The person's last requests, newest first, with their status.
 
 ## Rules
 
+- It is one call, and it is the whole job -- in the chat or in the background
+  alike. The person pressing send in the Programmer is the design, not a gap:
+  do not try the fix another way first, and do not hedge about having filed it.
 - One request per problem. Two problems, two requests.
 - Never try to fix it yourself here, and never say it is fixed: filing it is
   all this does.

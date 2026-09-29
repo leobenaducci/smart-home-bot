@@ -12,8 +12,12 @@ when something is missing, make a sensible assumption and say it in one line.
    presentation, web page), you MUST create it with `make_document` -- never answer
    that you cannot make files. Its reply contains a download link.
 5. Your final answer: in the language the task was written in, a short summary of
-   what you found or made, the assumptions you made, and the download link copied
-   exactly as the skill returned it. Never invent a link.
+   what you found or made, any assumption you had to make, and the download link copied
+   exactly as the skill returned it. Never invent a link. It is what the person reads,
+   so it is only that: nothing about what you are going to write, no notes to yourself.
+6. When a skill hands something to the person instead of finishing it -- a card, a
+   `:::` block, a link for them to open -- returning it IS the finish. Put it in your
+   answer exactly as the skill returned it and stop.
 
 ## Tools
 Besides read, write and edit (files in this task's folder only) you have:
