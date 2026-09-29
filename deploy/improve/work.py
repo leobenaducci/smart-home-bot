@@ -32,6 +32,11 @@ ROOT = HERE.parent.parent
 # A fix to the stack may not change how it is deployed, judged or guarded.
 STACK_PROTECTED = ("deploy/", "admin/", "secrets/", "CLAUDE.md", "home-stack",
                    "services/nanobot/bench/", ".github/")
+# The benchmark's answer key. The assistant once read the case written for the
+# request it was answering and answered from it; a fixer that can read the
+# cases can fix to the test. Not in the worktree at all -- hidden from git's
+# eyes too, so the missing file is never a change and never committed.
+STACK_HIDDEN = ("services/nanobot/bench/cases.json",)
 _ID = re.compile(r"^[0-9]{1,9}$")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -83,6 +88,10 @@ def start(d: Path, repos: list[dict], rid: str, name: str) -> Path:
     else:
         _git(repo["path"], "worktree", "add", "-b", branch, str(path), base)
     if repo["kind"] == "stack":
+        for rel in STACK_HIDDEN:
+            if (path / rel).exists():
+                _git(path, "update-index", "--skip-worktree", rel)
+                (path / rel).unlink()
         # The sanitizer's household rules are gitignored, so a fresh worktree
         # would check shapes only; linked, never copied, never committed.
         local = Path(repo["path"]) / "deploy" / "sanitize-rules.local.py"
@@ -134,7 +143,12 @@ def commit(d: Path, repos: list[dict], rid: str, name: str, message: str) -> str
         if r.returncode != 0:
             # Where, never what: the matching line is household data.
             where = sorted({m.group(1) for m in re.finditer(r"^\s*(\S+?):\d+", r.stdout, re.M)})
-            why.append("the sanitizer found household data in: " + (", ".join(where[:8]) or "?"))
+            if where:
+                why.append("the sanitizer found household data in: " + ", ".join(where[:8]))
+            else:
+                # It did not get as far as looking. Said as that, not as a find.
+                tail = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["no output"]
+                why.append(f"the sanitizer could not run: {tail[0][:200]}")
     if why:
         raise WorkError("refused, nothing committed:\n  " + "\n  ".join(why))
     # The owner's identity, as the repository already commits with it: for

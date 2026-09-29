@@ -3757,6 +3757,9 @@ check("  opencode may work in the self-improvement folder, and in no other state
                   for k in _oc), _oc)
 check("  anything else is refused, not asked about, and the refusal comes first",
       list(_oc)[0] == "*" and _oc["*"] == "deny", list(_oc)[:2])
+_bash = json.loads(D.build_opencode_config("user1", "t", 21999))["permission"]["bash"]
+check("  and the Programmer's shell refuses the benchmark's answer key",
+      _bash.get("*bench/cases.json*") == "deny" and list(_bash).index("*bench/cases.json*") > 0)
 check("  and without a state path it grants nothing for it",
       not any("improve" in k for k in json.loads(D.build_opencode_config(
           "user1", "t", 21999))["permission"]["external_directory"]))

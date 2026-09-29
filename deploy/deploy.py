@@ -3559,6 +3559,11 @@ def build_opencode_config(member: str, token: str, port: int,
                 "*git --exec-path*": "deny",
                 "*GIT_DIR=*": "deny",
                 "*GIT_WORK_TREE=*": "deny",
+                # The benchmark's answer key, by any route to it -- `cat`, `git
+                # show HEAD:…`, a grep. A fixer that can read the cases can fix
+                # to the test (docs/self-improvement.md); `improve start` leaves
+                # the file out of the worktree, and this refuses the rest.
+                "*bench/cases.json*": "deny",
                 # Last match wins, so the read-only spellings come back after
                 # the blanket refusals above. `git branch` and `git tag` with
                 # no arguments *list*; refusing them refuses the plainest

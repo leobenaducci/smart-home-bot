@@ -321,6 +321,35 @@ check("the stack refuses changes to how it is deployed, judged or guarded",
       and len(W.refusals("stack", [(" M", "deploy/deploy.py")])) == 1
       and W.refusals("stack", [(" M", "services/home-core/local/app.py")]) == [])
 check("and anywhere, a deleted test", W.refusals("plugin", [(" D", "tests/test_x.py")]) != [])
+stack = tmp / "pila"
+(stack / "services" / "nanobot" / "bench").mkdir(parents=True)
+(stack / "services" / "nanobot" / "bench" / "cases.json").write_text('{"routing": []}', encoding="utf-8")
+(stack / "services" / "x.py").write_text("x = 1\n", encoding="utf-8")
+(stack / "deploy").mkdir()
+(stack / "deploy" / "sanitize.py").write_text("import sys; sys.exit(0)\n", encoding="utf-8")
+for cmd in (["init", "-q"], ["config", "user.email", "dueno@example.org"], ["add", "-A"],
+            ["commit", "-q", "-m", "base"]):
+    subprocess.run(["git", "-C", str(stack), *cmd], check=True)
+srepo = {"name": "pila", "kind": "stack", "path": str(stack), "branch": W._git(stack, "rev-parse", "--abbrev-ref", "HEAD")}
+swt = W.start(imp, [srepo], "8", "pila")
+check("the benchmark's cases are not in the stack's worktree",
+      not (swt / "services" / "nanobot" / "bench" / "cases.json").exists())
+check("and their absence is not a change", W._changed(swt) == [], W._changed(swt))
+(swt / "services" / "x.py").write_text("x = 2\n", encoding="utf-8")
+W.commit(imp, [srepo], "8", "pila", "Change x so the test passes")
+check("so a commit there never deletes them",
+      "cases.json" not in W._git(swt, "show", "--stat", "--format=", "HEAD")
+      and W._git(stack, "cat-file", "-e", "improve/8:services/nanobot/bench/cases.json", check=False) == "")
+(stack / "deploy" / "sanitize.py").write_text("raise SystemExit('boom')\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(stack), "commit", "-qam", "broken sanitizer"], check=True)
+swt2 = W.start(imp, [srepo], "9", "pila")
+(swt2 / "services" / "x.py").write_text("x = 3\n", encoding="utf-8")
+try:
+    W.commit(imp, [srepo], "9", "pila", "Change x again for the test")
+    check("a sanitizer that cannot run refuses the commit, and says so", False)
+except W.WorkError as exc:
+    check("a sanitizer that cannot run refuses the commit, and says so",
+          "could not run" in str(exc) and "household data" not in str(exc), str(exc))
 shim = W.write_shim(imp)
 check("the Programmer's shim lives in the pipeline's folder and runs this cli",
       shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()
