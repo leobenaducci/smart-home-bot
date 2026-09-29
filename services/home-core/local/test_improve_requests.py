@@ -117,8 +117,9 @@ check("and the request remembers it", st == ("investigating", day, conv), st)
 A.PROJECT_SPACES = set(getattr(A, "PROJECT_SPACES", ())) | {"programmer"}
 with A.app.test_request_context():
     A.session["user"] = CODER
-    check("a project sent in a fix request's conversation is ignored",
-          A._valid_project({"project": "fracciones", "conv": conv}, "programmer") is None)
+    check("a fix request's conversation is on Alfred himself, whatever is sent",
+          A._valid_project({"project": "fracciones", "conv": conv}, "programmer") == "alfred-self"
+          and A._valid_project({"conv": conv}, "programmer") == "alfred-self")
     check("and kept in any other conversation",
           A._valid_project({"project": "fracciones", "conv": conv + 1}, "programmer") == "fracciones")
     A.session["user"] = OTHER
@@ -128,6 +129,21 @@ A._turn_launch = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("opencode d
 d = coder.post("/improve/api/requests", headers=H, json={"problem": "otra cosa"}).get_json()
 check("when it cannot start, the request is still filed and the card fills the input instead",
       d.get("ok") and d.get("investigating") is False and "conv:" not in d["card"], d)
+
+print("\nthe special project: Alfred himself")
+A.PROJECT_SPACES = ("programmer",)
+A._projects_visible_to = lambda login: [{"slug": "fracciones", "name": "Fracciones"}]
+lst = coder.get("/chat/projects?space=programmer").get_json()["projects"]
+check("it is first in the Programmer's selector", lst[0]["slug"] == "alfred-self"
+      and lst[0].get("special") and lst[1]["slug"] == "fracciones", lst)
+check("and only for somebody whose Programmer can reach the tool",
+      [p["slug"] for p in other.get("/chat/projects?space=programmer").get_json()["projects"]]
+      == ["fracciones"])
+blk = A._project_block("alfred-self", CODER)
+check("choosing it tells the Programmer how fixes to Alfred are made",
+      "not a project of the code broker" in blk and f"/srv/state/improve/bin/improve list --login {CODER}" in blk
+      and "improve/bin/improve publish <id> <repo>" in blk and "never by hand" in blk, blk)
+check("and any other project is still a checkout", "checkout(\"fracciones\")" in A._project_block("fracciones", CODER))
 
 print("\nthe prompt the Programmer opens with")
 r = coder.get("/improve/api/requests/1/prompt")
@@ -162,10 +178,11 @@ check("and nobody else's", other.get("/improve/api/requests").get_json()["reques
 print("\nthe page")
 page = open(os.path.join(SRC, "templates", "chat.html"), encoding="utf-8").read()
 check("a goto card may carry a request number and a conversation", "(space|label|why|request|date|conv)" in page)
-check("a fix request's conversation shows no project, and sends none",
+check("a fix request's conversation shows the special project, locked, and sends it",
       "fixConv = !!(first && /^Fix request #\\d+/.test(first.text || ''));" in page
-      and "if (fixConv) return null;" in page and "markFixConversation(msgs);" in page
-      and "markFixConversation([]);" in page)
+      and "if (fixConv) return IMPROVE_PROJECT;" in page and "markFixConversation(msgs);" in page
+      and "markFixConversation([]);" in page and "var IMPROVE_PROJECT = 'alfred-self';" in page)
+check("the page and the server name the special project the same", A.IMPROVE_PROJECT == "alfred-self")
 check("which it opens when the investigation started", "a.href += '?date=' + fields.date + '&conv=' + fields.conv" in page)
 check("which becomes ?improve= on the Programmer's link", "a.href += '?improve=' + fields.request" in page)
 check("the Programmer fetches the text into the input",

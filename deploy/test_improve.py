@@ -449,6 +449,21 @@ try:
 except W.WorkError as exc:
     check("and never from a stack checkout with uncommitted work", "uncommitted" in str(exc))
 
+print("\nthe fix requests, as the portal filed them")
+import sqlite3 as _sq  # noqa: E402
+(state / "home-core" / "data").mkdir(parents=True, exist_ok=True)
+_c = _sq.connect(state / "home-core" / "data" / "improve.db")
+_c.executescript("""CREATE TABLE improve_requests (id INTEGER PRIMARY KEY, username TEXT, created_at INTEGER,
+    problem TEXT, context TEXT, status TEXT, day TEXT, conv INTEGER);
+    INSERT INTO improve_requests VALUES (1, '999000111', 1790690000, 'la luz', '', 'closed', '', 0);
+    INSERT INTO improve_requests VALUES (2, '999000222', 1790690100, 'otra cosa', '', 'open', '', 0);
+    INSERT INTO improve_requests VALUES (3, '999000111', 1790690200, 'el clima', '', 'investigating', '', 0);""")
+_c.commit(); _c.close()
+check("newest first, and only that person's when asked",
+      [q["id"] for q in cli.requests(state, "999000111")] == [3, 1]
+      and [q["id"] for q in cli.requests(state)] == [3, 2, 1])
+check("and no database is no requests, not an error", cli.requests(tmp / "nada") == [])
+
 shim = W.write_shim(imp)
 check("the Programmer's shim lives in the pipeline's folder and runs this cli",
       shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()

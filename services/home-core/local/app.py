@@ -1620,18 +1620,19 @@ def _valid_project(body, space):
     """
     if space not in PROJECT_SPACES:
         return None
+    # A fix request's conversation is always on Alfred himself, whatever the
+    # page sends. The selector is one remembered choice for the whole space,
+    # so answering "yes" to the investigation sent the person's last project
+    # with it -- and pointed the Programmer at that checkout instead of the
+    # repository the fix is for.
+    if has_request_context() and session.get('user') and _improve_conversation(
+            session['user'], body.get('conv')):
+        return IMPROVE_PROJECT
     slug = body.get('project')
     if not isinstance(slug, str):
         return None
     slug = slug.strip().lower()[:40]
     if not re.match(r'^[a-z0-9][a-z0-9-]{1,39}$', slug):
-        return None
-    # A fix request's conversation belongs to no project. The page's selector
-    # is one remembered choice for the whole space, so answering "yes" to the
-    # investigation sent the person's last project with it -- and pointed the
-    # Programmer at that checkout instead of the repository the fix is for.
-    if has_request_context() and session.get('user') and _improve_conversation(
-            session['user'], body.get('conv')):
         return None
     return slug
 
@@ -4284,8 +4285,14 @@ def chat_projects():
     space = _valid_space(request.args.get('space'))
     if space not in PROJECT_SPACES:
         return jsonify(projects=[])
-    return jsonify(projects=[{'slug': p['slug'], 'name': p['name']}
-                             for p in _projects_visible_to(session['user'])])
+    projects = [{'slug': p['slug'], 'name': p['name']}
+                for p in _projects_visible_to(session['user'])]
+    # First, and only for whoever has an opencode Programmer -- the one that
+    # can reach the improve tool -- in a house that has the pipeline at all.
+    if IMPROVE_DIR and _opencode_url(session['user']):
+        projects.insert(0, {'slug': IMPROVE_PROJECT, 'name': t('improve.project_name'),
+                            'special': True})
+    return jsonify(projects=projects)
 
 
 def init_theme_db():
@@ -6105,7 +6112,35 @@ def _nanobot_for(username):
     return nanobot_url(nanobot_id), nanobot_id
 
 
-def _project_block(project):
+# The project that is not a repository: Alfred himself (docs/self-improvement.md).
+# Chosen in the Programmer's selector, the conversation is about fixing and
+# improving the stack and its plugins -- through the `improve` tool, in
+# worktrees -- rather than one of the code broker's projects. A fix request's
+# conversation is always on it.
+IMPROVE_PROJECT = 'alfred-self'
+
+
+def _improve_block(username):
+    tool = f'{IMPROVE_DIR}/bin/improve'
+    login = f' --login {username}' if username else ''
+    return (
+        '[The project this conversation is about]\n'
+        'Alfred himself: this stack and its plugins, not a project of the code broker. '
+        'Fixes and improvements to Alfred go through the `improve` tool, never through '
+        '`checkout` or the broker, and never by editing a live checkout:\n'
+        f'- `{tool} list{login}` -- this person\'s fix requests, what each is about, its '
+        'worktrees and whether it is committed or published. Start here when they name '
+        'one ("the lights fix", "#6") or say "publish" without saying which.\n'
+        f'- `{IMPROVE_DIR}/repos.json` -- where a fix may go, with what each repository '
+        f'provides; `{IMPROVE_DIR}/inbox/` -- recent turns, redacted.\n'
+        f'- `{tool} start <id> <repo>` a worktree; `{tool} commit <id> <repo> -m "..."`; '
+        f'`{tool} status <id>`.\n'
+        f'- `{tool} publish <id> <repo>` and then `{tool} deploy <id> <repo>` -- only when '
+        'the person has said to publish or deploy, in this conversation, and never by '
+        'hand. If either refuses, say why; do not work around it.')
+
+
+def _project_block(project, username=None):
     """Which project this turn is about, for the spaces that have a selector.
 
     The selector has always sent its choice and nothing has ever read it: the
@@ -6132,6 +6167,8 @@ def _project_block(project):
     """
     if not project:
         return ''
+    if project == IMPROVE_PROJECT:
+        return _improve_block(username) if IMPROVE_DIR else ''
     return (f'[The project this conversation is about]\n'
             f'It is `{project}`. When you are asked to change "this app" or '
             f'"the project", that is the one: `checkout("{project}")` before '
@@ -6296,7 +6333,7 @@ def _compose_turn_content(username, content, images, docs, space, seed=None,
     # The project goes with the space's own rules rather than above the
     # question: it says *what about*, and the two are read together.
     space_block = '\n\n'.join(filter(
-        None, [space_block, _project_block(project), _ask_block(),
+        None, [space_block, _project_block(project, username), _ask_block(),
                # Last on purpose; see _OFFERS_BLOCK.
                _offers_block(space)]))
     if space_block:

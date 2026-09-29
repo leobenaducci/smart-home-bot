@@ -1998,16 +1998,17 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
 
   /* Project selector for the Programador space. */
   function activeProject() {
-    if (fixConv) return null;
+    if (fixConv) return IMPROVE_PROJECT;
     return (projectSel && HAS_PROJECTS) ? (projectSel.value || null) : null;
   }
-  /* A fix request's conversation (docs/self-improvement.md) belongs to no
-     project: the fix is in the stack or one of its plugins, and the Programmer
-     finds which. The selector is one remembered choice for the whole space, so
-     without this, answering the investigation sent that choice along and
-     pointed the Programmer at the wrong checkout. Shown as none and locked
-     while the conversation is open; the remembered choice is left alone and
-     comes back in the next one. The server refuses a project there as well. */
+  /* A fix request's conversation (docs/self-improvement.md) is on the special
+     project, Alfred himself: the fix is in the stack or one of its plugins,
+     through the improve tool. The selector is one remembered choice for the
+     whole space, so without this, answering the investigation sent that
+     choice along and pointed the Programmer at the wrong checkout. Shown and
+     locked while the conversation is open; the remembered choice is left
+     alone and comes back in the next one. The server applies it there too. */
+  var IMPROVE_PROJECT = 'alfred-self';
   var fixConv = false;
   function markFixConversation(msgs) {
     var first = (msgs || []).filter(function(m) { return m.role === 'user'; })[0];
@@ -2015,7 +2016,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     if (!projectSel || !HAS_PROJECTS) return;
     if (fixConv) {
       projectSel.dataset.fix = '1';
-      projectSel.value = '';
+      projectSel.value = IMPROVE_PROJECT;
       projectSel.disabled = true;
     } else if (projectSel.dataset.fix) {
       delete projectSel.dataset.fix;
@@ -2068,7 +2069,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
          nothing on screen said why. */
     }
     projectSel.disabled = fixConv;
-    if (fixConv) projectSel.value = '';
+    if (fixConv) projectSel.value = IMPROVE_PROJECT;
     return loaded;
   }
   if (projectSel) {

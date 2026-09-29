@@ -192,6 +192,14 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   published -- a plugin's services, or the stack services whose units the
   fix touched, then admin -- and refuses beside another deploy, during a
   benchmark, or from a stack checkout with uncommitted work.
+  In the Programmer's project selector, **🛠 Alfred (mejoras)** is the project
+  that is not a repository (`IMPROVE_PROJECT`, `alfred-self`): chosen, each
+  turn carries the tool and its rules instead of "checkout this project", and
+  `improve list` shows the person's requests, their worktrees and whether
+  each is committed or published -- so "publish the lights fix" works in any
+  conversation, not only the request's own. A fix request's conversation is
+  always on it, shown locked; the server applies it there whatever the page
+  sends. It appears for whoever has an opencode Programmer.
   Found by the first live request: the investigation read
   `repos.json`, opencode asked permission for it, and the portal aborted the
   turn, as it does for any ask nobody can answer.

@@ -8,6 +8,7 @@
     ./home-stack improve repos                   where a fix may be made: this stack and its plugins
     ./home-stack improve start <id> <repo>       a worktree on improve/<id> for request <id>
     ./home-stack improve commit <id> <repo> -m   commit the fix there, after the checks
+    ./home-stack improve list [--login L]        fix requests, their worktrees, committed or published
     ./home-stack improve status <id>             the request's worktrees and commits
     ./home-stack improve publish <id> <repo>     fast-forward the repository to the fix (and push a plugin's)
     ./home-stack improve deploy <id> <repo>      deploy what the published fix changed
@@ -195,6 +196,58 @@ def cmd_commit(args) -> int:
                                   args.message))
 
 
+def requests(state: Path, login: str | None = None, limit: int = 20) -> list[dict]:
+    """Fix requests as the portal filed them (improve.db), newest first. Read
+    only: the portal owns that database."""
+    import sqlite3  # noqa: PLC0415
+    db = state / "home-core" / "data" / "improve.db"
+    if not db.exists():
+        return []
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        sql = "SELECT id, username, created_at, status, problem FROM improve_requests"
+        args: list = []
+        if login:
+            sql += " WHERE username = ?"
+            args.append(login)
+        rows = con.execute(sql + " ORDER BY id DESC LIMIT ?", args + [limit]).fetchall()
+    finally:
+        con.close()
+    return [{"id": r[0], "login": r[1], "created": r[2], "status": r[3], "problem": r[4]}
+            for r in rows]
+
+
+def cmd_list(args) -> int:
+    import datetime  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    cfg = live_config()
+    state = Path((cfg.get("paths") or {}).get("state") or "/var/lib/home-stack/state")
+    d = improve_dir(cfg)
+    repos = {r["name"]: r for r in RP.discover(cfg)}
+    reqs = requests(state, args.login)
+    if not reqs:
+        print("no fix requests")
+        return 0
+    for q in reqs:
+        when = datetime.datetime.fromtimestamp(q["created"]).strftime("%Y-%m-%d %H:%M")
+        print(f"#{q['id']}  {q['status']:<13} {when}  {' '.join(q['problem'].split())[:110]}")
+        for wt in sorted((d / "work").glob(f"{q['id']}-*")):
+            name = wt.name.split("-", 1)[1]
+            live = (repos.get(name) or {}).get("path")
+            n = len([c for c in W._git(live or wt, "rev-list", f"HEAD..improve/{q['id']}",
+                                       check=False).split() if c]) if live else 0
+            published = bool(live) and subprocess.run(
+                ["git", "-C", live, "merge-base", "--is-ancestor", f"improve/{q['id']}", "HEAD"],
+                capture_output=True).returncode == 0 and bool(W._git(
+                    live, "log", "--format=%h", "--fixed-strings",
+                    f"--grep=Fix request #{q['id']},", "HEAD", "-n", "1", check=False))
+            state_ = ("published" if published else
+                      f"{n} commit(s) to publish" if n else "nothing committed")
+            dirty = len(W._changed(wt))
+            print(f"      {name:<16} {state_}{f', {dirty} uncommitted' if dirty else ''}  {wt}")
+    return 0
+
+
 def cmd_publish(args) -> int:
     cfg = live_config()
     return _work(lambda: S.publish(improve_dir(cfg), RP.discover(cfg), args.id, args.repo))
@@ -237,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("status", help="a fix request's worktrees")
     st.add_argument("id")
     st.set_defaults(func=cmd_status)
+    ls = sub.add_parser("list", help="fix requests and where each stands")
+    ls.add_argument("--login", help="only this person's")
+    ls.set_defaults(func=cmd_list)
     pb = sub.add_parser("publish", help="put a committed fix on its repository")
     pb.add_argument("id")
     pb.add_argument("repo")

@@ -889,6 +889,7 @@
   "improve.card_label": "Fix request #{id}",
   "improve.card_why": "Opens the Programmer with the fix already written out. Read it, then send.",
   "improve.card_started": "Alfred's Programmer is already looking into it. Open it to watch; it asks before changing anything.",
+  "improve.project_name": "🛠 Alfred (improvements)",
   "common.accept": "Accept",
   "common.add": "Add",
   "common.back": "Back",
