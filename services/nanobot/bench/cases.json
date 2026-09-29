@@ -622,6 +622,12 @@
       "prompt": "la luz del escritorio no responde",
       "tier": "long",
       "_why": "the self-repair rule must not swallow a device problem: finding out why takes several steps."
+    },
+    {
+      "id": "route_publish_own_fix",
+      "prompt": "publica el ultimo fix de smart-lights",
+      "tier": "action",
+      "_why": "2026-09-29: publishing a fix the Programmer already made is one publish_fix call. Labelled long, it waited three minutes, went to the background, and filed a new request instead."
     }
   ],
   "_about_steps": "One step of a plan, through the plan-steps harness (AgentLoop._step_runner: slim prompt, read-only unless the plan's acts names the step, thinking off), with the model under test as the step model. The steps are written as the planner is told to write them -- the exact tool or skill action, its arguments, what to report -- so this measures following an instruction, not working one out. A step that dead-ends fails: the planner would have had to redo it.",

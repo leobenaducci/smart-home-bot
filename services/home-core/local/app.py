@@ -6131,8 +6131,10 @@ def _improve_block(username):
         f'- `{tool} list{login}` -- this person\'s fix requests, what each is about, its '
         'worktrees and whether it is committed or published. Start here when they name '
         'one ("the lights fix", "#6") or say "publish" without saying which.\n'
-        f'- `{IMPROVE_DIR}/repos.json` -- where a fix may go, with what each repository '
-        f'provides; `{IMPROVE_DIR}/inbox/` -- recent turns, redacted.\n'
+        f'- `{IMPROVE_DIR}/repos.json` -- where a fix may go: each repository, what it '
+        'provides, and what deploying it means (`deploys`) -- a plugin or extension is '
+        f'deployed by the services its plugin.yml declares; `{IMPROVE_DIR}/inbox/` -- '
+        'recent turns, redacted.\n'
         f'- `{tool} start <id> <repo>` a worktree; `{tool} commit <id> <repo> -m "..."`; '
         f'`{tool} status <id>`.\n'
         f'- `{tool} publish <id> <repo>` and then `{tool} deploy <id> <repo>` -- only when '
@@ -7688,8 +7690,7 @@ def _improve_start(username, rid, problem, context):
         # first line of the conversation, and the reply files after it.
         append_user_history(username, {'role': 'user', 'text': prompt, 'ts': conv, 'conv': conv},
                             day, OPENCODE_SPACE)
-        msg_content = _compose_turn_content(username, prompt, [], [], OPENCODE_SPACE)
-        _turn_launch(username, day, conv, OPENCODE_SPACE, msg_content, api, nanobot_id)
+        _improve_turn(username, day, conv, prompt, api, nanobot_id)
     except Exception as exc:  # noqa: BLE001 -- a request filed is still worth the card
         app.logger.warning('improve: investigation for #%s not started: %s', rid, exc)
         return None
@@ -7701,6 +7702,81 @@ def _improve_start(username, rid, problem, context):
     finally:
         conn.close()
     return day, conv
+
+
+def _improve_turn(username, day, conv, text, api, nanobot_id):
+    """One turn of a fix request's Programmer conversation, as the person's own
+    message, on the project that is Alfred himself."""
+    msg_content = _compose_turn_content(username, text, [], [], OPENCODE_SPACE,
+                                        project=IMPROVE_PROJECT)
+    _turn_launch(username, day, conv, OPENCODE_SPACE, msg_content, api, nanobot_id,
+                 project=IMPROVE_PROJECT)
+
+
+@app.route('/improve/api/requests/publish', methods=['POST'])
+@api_login_required
+def improve_request_publish():
+    """"Publish the lights fix", said in the chat: that request's own Programmer
+    conversation is told to publish it -- and deploy it, if asked -- as the
+    person's message, and the card opens it.
+
+    The Programmer does the work with `improve publish` / `improve deploy`,
+    whose checks are code (deploy/improve/ship.py). This only carries the
+    person's word to the conversation that has the fix in it: without it,
+    "publish the last fix" in the chat had nowhere to go, and a background
+    task filed a new request instead (#7, 2026-09-29)."""
+    username = session['user']
+    body = request.get_json(silent=True) or {}
+    if not _opencode_url(username):
+        return jsonify(ok=False, error='the Programmer does not run on opencode for this '
+                       'member, so there is nothing to publish with.'), 409
+    try:
+        rid = int(body.get('id') or 0)
+    except (TypeError, ValueError):
+        rid = 0
+    also_deploy = bool(body.get('deploy'))
+    conn = _improve_conn()
+    try:
+        # The one named, or the person's latest that has a conversation --
+        # "the last fix" -- never somebody else's.
+        row = conn.execute(
+            'SELECT id, day, conv, problem FROM improve_requests WHERE username = ? AND conv > 0 '
+            + ('AND id = ? ' if rid else "AND status != 'closed' ")
+            + 'ORDER BY id DESC LIMIT 1', (username, rid) if rid else (username,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify(ok=False, error=(f'no fix request #{rid} of yours' if rid else
+                                        'no open fix request of yours to publish')), 404
+    rid, day, conv, problem = row
+    tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
+    text = (f'Publish{" and deploy" if also_deploy else ""} fix request #{rid} now -- I asked '
+            f'for it in the chat. Run `{tool} list` to see which repository holds its commit, '
+            f'then `{tool} publish {rid} <repo>`'
+            + (f' and, if that worked, `{tool} deploy {rid} <repo>`' if also_deploy else '')
+            + '. Tell me what each said. If there is nothing committed, or either refuses, '
+            'tell me why and stop.')
+    try:
+        api, nanobot_id = _nanobot_for(username)
+        if not api:
+            raise RuntimeError('no assistant for this member')
+        ts = int(time.time() * 1000)
+        append_user_history(username, {'role': 'user', 'text': text, 'ts': ts, 'conv': conv},
+                            day, OPENCODE_SPACE)
+        # Through the conversation's queue, as a typed message goes: if the
+        # Programmer is still answering there, this waits its turn instead of
+        # talking over it on the same session.
+        chat_id = _conv_chat_id(username, day, conv, OPENCODE_SPACE)
+        item = _queue_item(username, day, conv, OPENCODE_SPACE, text, [], [],
+                           project=IMPROVE_PROJECT)
+        if not _queue_add(chat_id, item):
+            raise RuntimeError('that conversation\'s queue is full')
+        _queue_advance(username, chat_id)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning('improve: publish of #%s not started: %s', rid, exc)
+        return jsonify(ok=False, error=f'could not start it: {exc}'), 503
+    return jsonify(ok=True, id=rid, problem=problem[:200], deploy=also_deploy,
+                   card=_improve_card(username, rid, (day, conv)))
 
 
 @app.route('/improve/api/requests', methods=['GET'])

@@ -1,6 +1,6 @@
 ---
 name: self-improve
-description: "Invoke with JSON: {\"skill\":\"self-improve\",\"action\":\"...\"}. Ask for a fix to Alfred himself: request_fix(problem, [context]) | list_fix_requests(). Call it AT ONCE, before looking into anything yourself -- the Programmer investigates. Use it when the person says something about how YOU work is broken or wrong and asks for it to be fixed or changed -- a skill that fails or talks to the wrong place, a rule you keep getting wrong, a feature of yours that misbehaves. Not for a device that is off, an answer they just want redone, or their own projects."
+description: "Invoke with JSON: {\"skill\":\"self-improve\",\"action\":\"...\"}. Ask for a fix to Alfred himself: request_fix(problem, [context]) | publish_fix([id], [deploy]) | list_fix_requests(). Call it AT ONCE, before looking into anything yourself -- the Programmer investigates. Use it when the person says something about how YOU work is broken or wrong and asks for it to be fixed or changed -- a skill that fails or talks to the wrong place, a rule you keep getting wrong, a feature of yours that misbehaves. Not for a device that is off, an answer they just want redone, or their own projects."
 # On demand: the description carries the invocation and the API.
 metadata: {"nanobot":{"translatable":true}}
 ---
@@ -39,6 +39,28 @@ with the request written out, for them to send.
 
 `"ok": false` with an error means there is nowhere to hand it -- usually the
 Programmer is not on for this person. Say that, in one line, and stop.
+
+## publish_fix
+
+When the person asks to **publish** (or publish and deploy) a fix that was
+already made -- "publicá el último fix", "publish the lights fix and deploy it"
+-- this is the whole job. It tells that request's own Programmer conversation
+to publish it (and deploy, with `deploy: true`), as the person's word, and the
+Programmer does it there with its checks. Never file a new request for this,
+and never try it another way.
+
+- `id` (optional): the request's number when the person names one; left out,
+  their latest open request.
+- `deploy` (optional): `true` when they asked to deploy as well.
+
+```json
+{"skill": "self-improve", "action": "publish_fix", "deploy": true}
+{"skill": "self-improve", "action": "publish_fix", "id": 6}
+```
+
+It answers `{"ok": true, "id": 6, "card": ":::goto ... :::"}`: one short line --
+the Programmer is publishing it and will say how it went -- then the `card`
+exactly as returned. `"ok": false` says why; say that in one line.
 
 ## list_fix_requests
 

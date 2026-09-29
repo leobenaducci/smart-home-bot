@@ -30,6 +30,14 @@ def request_fix(problem, context="", **kw):
                  {"problem": str(problem), "context": str(context or "")})
 
 
+def publish_fix(id=None, deploy=False, **kw):
+    """Tell a fix request's Programmer conversation to publish (and deploy) it."""
+    body = {"deploy": bool(deploy) and str(deploy).lower() not in ("false", "0", "no")}
+    if id not in (None, ""):
+        body["id"] = int(str(id).lstrip("#"))
+    return _call("POST", "/improve/api/requests/publish", body, timeout=40)
+
+
 def list_fix_requests(**kw):
     """The person's last fix requests, newest first."""
     return _call("GET", "/improve/api/requests")

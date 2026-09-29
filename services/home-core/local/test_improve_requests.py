@@ -130,6 +130,37 @@ d = coder.post("/improve/api/requests", headers=H, json={"problem": "otra cosa"}
 check("when it cannot start, the request is still filed and the card fills the input instead",
       d.get("ok") and d.get("investigating") is False and "conv:" not in d["card"], d)
 
+print("\npublishing a fix, asked for in the chat")
+queued = []
+A._queue_add = lambda chat_id, item, front=False: queued.append((chat_id, item)) or True
+A._queue_advance = lambda login, chat_id: None
+r = coder.post("/improve/api/requests/publish", headers=H, json={"deploy": True})
+d = r.get_json()
+latest = d.get("id")
+check("the person's latest open request with a conversation is the one published",
+      r.status_code == 200 and latest and queued, d)
+chat_id, item = queued[-1]
+check("its conversation is told to publish and deploy, through the tool",
+      item["project"] == "alfred-self" and f"Publish and deploy fix request #{latest}" in item["content"]
+      and f"improve publish {latest} <repo>" in item["content"]
+      and f"improve deploy {latest} <repo>" in item["content"], item)
+conn = A._improve_conn()
+day_, conv_ = conn.execute("SELECT day, conv FROM improve_requests WHERE id = ?", (latest,)).fetchone()
+conn.close()
+check("in that request's own conversation, as the person's message",
+      item["conv"] == conv_ and any(m.get("conv") == conv_ and m["text"].startswith("Publish and deploy")
+                                    for m in A.load_user_history(CODER, day_, "programmer")))
+check("and the card opens it", f"conv: {conv_}" in d.get("card", ""), d)
+d = coder.post("/improve/api/requests/publish", headers=H, json={"id": latest}).get_json()
+check("without deploy it only publishes", "deploy" not in queued[-1][1]["content"].split("now")[0]
+      and "improve deploy" not in queued[-1][1]["content"], queued[-1][1]["content"])
+A.OPENCODE_SERVERS["user2"] = "http://127.0.0.1:4097"
+check("nobody publishes another person's request, even with a Programmer of their own",
+      other.post("/improve/api/requests/publish", headers=H, json={"id": latest}).status_code == 404)
+del A.OPENCODE_SERVERS["user2"]
+check("a request that does not exist is said so",
+      coder.post("/improve/api/requests/publish", headers=H, json={"id": 999}).status_code == 404)
+
 print("\nthe special project: Alfred himself")
 A.PROJECT_SPACES = ("programmer",)
 A._projects_visible_to = lambda login: [{"slug": "fracciones", "name": "Fracciones"}]
