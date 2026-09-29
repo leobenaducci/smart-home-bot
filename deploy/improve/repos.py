@@ -62,7 +62,23 @@ def _repo(name: str, kind: str, path: Path, source: str, provides: dict) -> dict
             "remote": remote, "web": web_url(remote),
             "branch": _git(path, "rev-parse", "--abbrev-ref", "HEAD"),
             "clean": _git(path, "status", "--porcelain") == "",
-            "provides": provides}
+            "provides": provides, "deploys": _deploys(kind, provides)}
+
+
+def _deploys(kind: str, provides: dict) -> str:
+    """What `improve deploy` does for this repository, said where the
+    Programmer reads it: a plugin or extension is deployed like any service,
+    by the names its plugin.yml declares, and the assistants pick up a skill
+    it serves on their next fetch."""
+    if kind == "stack":
+        return ("the stack services whose files the fix changed (their units' `dir:` in "
+                "deploy/manifest.yml), then admin")
+    services = provides.get("services") or []
+    if not services:
+        return "nothing: it declares no services"
+    return (f"its services from plugin.yml: {', '.join(services)} "
+            f"(`./home-stack deploy <service>` each); a skill it serves reaches the "
+            f"assistants within five minutes, when they fetch it again -- no assistant deploy")
 
 
 def _stack_provides() -> dict:

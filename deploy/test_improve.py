@@ -276,6 +276,9 @@ check("the stack itself, from this checkout", any(r["kind"] == "stack" for r in 
 check("a plugin, with what it provides", names.get("luces", {}).get("provides", {}).get("env")
       == ["LUCES_API_URL"] and names["luces"]["web"] == "https://github.com/ejemplo/luces", names.get("luces"))
 check("and an extra one from the config", names.get("otro", {}).get("source") == "config", list(names))
+check("each says what deploying it means: a plugin, by its services",
+      "luces-api" in names["luces"]["deploys"] and "./home-stack deploy" in names["luces"]["deploys"],
+      names["luces"].get("deploys"))
 stack_name = next(r["name"] for r in found if r["kind"] == "stack")
 found = RP.discover({"plugins": [str(plug)], "assistant": {"improve": {"exclude": ["luces", stack_name]}}})
 check("exclude leaves an automatic one out", found == [], [r["name"] for r in found])
