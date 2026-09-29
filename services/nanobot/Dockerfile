@@ -92,6 +92,11 @@ COPY nanobot/harness/pi/alfred.ts /opt/pi/ext/alfred.ts
 # `docker exec` and it always matches the nanobot it measures. Below the
 # install, so editing a case does not rebuild the wheel.
 COPY bench/ bench/
+# The cases are the answer key, and the assistant runs here as `nanobot` with a
+# shell: it once read the case written for the request it was answering and
+# answered from it. Root-only; the admin page copies a fresh set in per run and
+# the benchmark deletes it once read (forget_cases in model_bench.py).
+RUN chown root:root bench/cases.json && chmod 600 bench/cases.json
 
 # Built bridge from the builder stage. After the wheel build on purpose.
 COPY --from=bridge-build /app/bridge/node_modules bridge/node_modules

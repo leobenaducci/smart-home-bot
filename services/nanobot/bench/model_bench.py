@@ -488,6 +488,25 @@ def judge(case: dict, reply: str, rec: Recorder, heartbeat: tuple[str, str] | No
 
 # --- the run ----------------------------------------------------------------
 
+def forget_cases(path: str) -> None:
+    """Delete a per-run copy of the cases once they are read.
+
+    They are the answer key -- each case's checks and the `_why` beside them --
+    and the assistant being measured runs in this same container, as the same
+    user, with a shell. On 2026-09-29, asked to fix a skill, it found
+    /app/bench/cases.json, read the routing case written for that very
+    request, and decided what to do from it ("the bench grades this"). The
+    image's copy is root-only since; the admin page's per-run copy
+    (`/tmp/<run>-bench/`) goes as soon as it has been read. Only that shape of
+    path: a checkout's own cases.json, run by hand, is left alone."""
+    p = Path(path)
+    if p.parent.name.endswith("-bench") and p.parent.parent == Path("/tmp"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
 def _cases_digest(path: str) -> str:
     """Short content hash of the cases file, so a run says what scored it."""
     try:
@@ -1105,7 +1124,10 @@ async def main() -> int:
         from nanobot.cli import commands as C
         print(setup_digest(C._load_runtime_config()))
         return 0
-    cases = json.loads(house_names(Path(args.cases).read_text(encoding="utf-8")))
+    raw = Path(args.cases).read_bytes()
+    args.cases_digest = hashlib.sha256(raw).hexdigest()[:12]
+    cases = json.loads(house_names(raw.decode("utf-8")))
+    forget_cases(args.cases)
     if args.classify_only:
         return await classify_only(args, cases)
     if not args.model:
@@ -1213,7 +1235,7 @@ async def main() -> int:
            # side by side in the table looking comparable. lfm2.5 failed `time`
            # for "expected GetDateTime, got none" against a case that no longer
            # asks for a tool at all.
-           "cases_digest": _cases_digest(args.cases),
+           "cases_digest": getattr(args, "cases_digest", "") or _cases_digest(args.cases),
            # And what the model was given: skills, prompts, code, tool lists.
            "setup_digest": setup,
            "speed": speed, "memory": memory, "contended": contended, "cases": results,
