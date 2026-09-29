@@ -886,6 +886,7 @@
   "chat.feedback.send": "Send",
   "chat.feedback.thanks": "Thanks, noted.",
   "chat.feedback.failed": "Could not save the rating. Try again.",
+  "chat.interrupted": "Interrupted",
   "chat.turn_cut": "The answer was cut off: the server restarted while it was being written. Send your message again.",
   "improve.card_label": "Fix request #{id}",
   "improve.card_why": "Opens the Programmer with the fix already written out. Read it, then send.",

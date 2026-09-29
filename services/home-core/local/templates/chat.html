@@ -3885,6 +3885,8 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     return true;
   }
 
+  var CHAT_INTERRUPTED_T = {{ t('chat.interrupted') | tojson }};
+
   // `ts` is the message's own timestamp — history has to render with the time
   // it was actually said, not the time the page happened to paint it.
   function addMessage(textContent, role, images, ts, opts) {
@@ -3910,7 +3912,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     if (opts.interrupted) {
       div.classList.add('interrupted');
       var mark = document.createElement('span'); mark.className = 'msg-stopped';
-      mark.textContent = 'interrumpido';
+      mark.textContent = CHAT_INTERRUPTED_T;
       timeSpan.insertBefore(mark, timeSpan.firstChild);
     }
     // Inherited from the conversation this branch came out of: shown, because
