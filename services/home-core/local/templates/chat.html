@@ -3367,7 +3367,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   function parseGotoBlock(body) {
     var fields = {};
     body.split('\n').forEach(function (line) {
-      var m = /^\s*(space|label|why|request)\s*:\s*(.+?)\s*$/i.exec(line);
+      var m = /^\s*(space|label|why|request|date|conv)\s*:\s*(.+?)\s*$/i.exec(line);
       if (m) fields[m[1].toLowerCase()] = m[2];
     });
     return fields;
@@ -3384,7 +3384,14 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     a.className = 'goto-card'; a.href = '/chat/' + prof.url;
     // A fix request (the self-improve skill): the Programmer opens with it
     // already asked. Only the number travels; the page fetches the text.
-    if (/^\d{1,9}$/.test(fields.request || '')) a.href += '?improve=' + fields.request;
+    // With `date` and `conv` the investigation has already started, in its own
+    // conversation there, and the card opens that; without, the page fills the
+    // Programmer's input with the request for the person to send.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(fields.date || '') && /^\d{10,16}$/.test(fields.conv || '')) {
+      a.href += '?date=' + fields.date + '&conv=' + fields.conv;
+    } else if (/^\d{1,9}$/.test(fields.request || '')) {
+      a.href += '?improve=' + fields.request;
+    }
     var label = document.createElement('div'); label.className = 'gc-label';
     label.textContent = prof.icon + ' ' + (fields.label || ('Abrir Alfred ' + prof.title)) + ' →';
     a.appendChild(label);

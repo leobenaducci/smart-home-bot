@@ -48,7 +48,11 @@ what the caller *is*.
 `opencode serve` may use Go, and does: it is OpenCode's own binary, driven by a
 person sitting in the Programmer space, holding its own credential and
 identifying itself as the client Go is sold for. That is the shape the flat plan
-was built around, and the household pays for it.
+was built around, and the household pays for it. A person asking Alfred in the
+chat to fix himself counts as driving it: the `self-improve` skill starts *one*
+Programmer run for that request, at their pace, in a conversation they are
+watching (docs/self-improvement.md). A timer, a nightly job or an evaluator
+pass starting one does not, and runs on Zen.
 
 Nothing else in this stack may. Go's traffic is "monitored for abusive traffic
 that degrades the experience for other users" and expects a client that

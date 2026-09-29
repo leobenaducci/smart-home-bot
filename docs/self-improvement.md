@@ -141,12 +141,19 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   `self-improve` skill: `request_fix(problem, context)` files the person's
   words and the facts Alfred had (`POST /improve/api/requests`, the portal's
   `improve.db`), and Alfred answers with a `:::goto` card carrying only the
-  request's number. The card opens `/chat/programmer?improve=<id>`, and the
-  page fetches the request into the input -- the person's words, what Alfred
-  knew, where a fix may go (`repos.json`, the inbox), and the rules: cause
-  first, a setting is not code, a branch in a worktree, no deploy, no push.
-  **Nothing sends it**: the person reads it and presses send, which is what
-  keeps the Programmer a person at the keyboard. Only somebody whose
+  request's number and the conversation it started: filing it opens a new
+  conversation in the person's Programmer and starts the investigation there
+  at once, on opencode and the Go plan -- the person's own request, one run,
+  in a space they are watching, which is what `CLAUDE.md` means by a person at
+  the keyboard. The prompt is the person's words; what Alfred knew, marked as
+  leads to check rather than facts (Alfred cannot read a skill's environment
+  or code, and the first request here was built on exactly that kind of
+  guess); where a fix may go (`repos.json`, the inbox); and the rules --
+  investigate only, report the cause and the proposed fix, and ask; only after
+  a yes, a setting is named rather than coded, code goes on a branch in a
+  worktree, no deploy, no push. When it cannot start, the card opens the
+  Programmer with the request in the input (`?improve=<id>`) instead, for the
+  person to send. Only somebody whose
   Programmer runs on opencode may file one (anybody else is told why); only
   they can read it back; `request_fix` is not a read, so it is refused from
   WhatsApp and from another member's question like every acting skill, and

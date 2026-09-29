@@ -76,7 +76,8 @@ d = r.get_json()
 check("it is filed", r.status_code == 200 and d.get("ok") and d.get("id") == 1, d)
 check("and answered with a card for the Programmer, carrying only the number",
       d.get("card", "").startswith(":::goto\nspace: programmer\nlabel: ") and "request: 1\n" in d["card"]
-      and d["card"].count("\n") == 5
+      and all(ln.split(":")[0] in ("space", "label", "request", "date", "conv", "why")
+              for ln in d["card"].splitlines()[1:-1])
       and "luces" not in d["card"], d.get("card"))
 r = other.post("/improve/api/requests", headers=H, json={"problem": "arreglá algo"})
 check("somebody without an opencode Programmer is told why, and gets no card",
@@ -90,14 +91,42 @@ check("and a long one is kept to its limit", len(conn.execute(
     "SELECT problem FROM improve_requests WHERE id = ?", (long["id"],)).fetchone()[0]) == 2000)
 conn.close()
 
+print("\nthe investigation starts at once, in its own Programmer conversation")
+launched = []
+A._nanobot_for = lambda login: ("http://nanobot.invalid", 1)
+A._turn_launch = lambda *a, **kw: launched.append(a) or {"id": "t"}
+r = coder.post("/improve/api/requests", headers=H, json={"problem": "el clima contesta en inglés"})
+d = r.get_json()
+check("it is started", d.get("investigating") is True and len(launched) == 1, d)
+login, day, conv, space, content = launched[0][:5]
+check("as the person, in the Programmer, in a new conversation",
+      login == CODER and space == "programmer" and conv > 10 ** 12, launched[0][:4])
+check("and the card opens that conversation", f"date: {day}\nconv: {conv}\n" in d["card"], d["card"])
+hist = [m for m in A.load_user_history(CODER, day, "programmer") if m.get("conv") == conv]
+check("the request is the conversation's first message, as theirs",
+      hist and hist[0]["role"] == "user"
+      and hist[0]["text"].startswith(f"Fix request #{d['id']}"), hist[:1])
+conn = A._improve_conn()
+st = conn.execute("SELECT status, day, conv FROM improve_requests WHERE id = ?", (d["id"],)).fetchone()
+conn.close()
+check("and the request remembers it", st == ("investigating", day, conv), st)
+A._turn_launch = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("opencode down"))
+d = coder.post("/improve/api/requests", headers=H, json={"problem": "otra cosa"}).get_json()
+check("when it cannot start, the request is still filed and the card fills the input instead",
+      d.get("ok") and d.get("investigating") is False and "conv:" not in d["card"], d)
+
 print("\nthe prompt the Programmer opens with")
 r = coder.get("/improve/api/requests/1/prompt")
 p = (r.get_json() or {}).get("prompt", "")
 check("the person's words, verbatim", "> La skill de luces apunta al servidor equivocado; arreglala." in p, p)
 check("and what Alfred knew", "> skill lights, flash_light: connection refused." in p, p)
 check("where a fix may go", "/srv/state/improve/repos.json" in p and "/srv/state/improve/inbox/" in p, p)
-check("cause first, then a branch in a worktree, never main",
-      "before changing anything" in p and "improve/1" in p and "never on main" in p, p)
+check("it investigates only, and asks before changing anything",
+      "investigate only -- change nothing" in p and "ask me whether to apply it" in p
+      and p.index("Only after I say yes") < p.index("improve/1"), p)
+check("what Alfred knew is a lead to check, not a fact", "leads to check, not facts" in p, p)
+check("a branch in a worktree, never main", "never on main" in p, p)
+check("and nothing broken is an answer", "nothing is broken, say so plainly" in p, p)
 check("a setting is not code", "Never write a household value into code" in p, p)
 check("and no deploy, no push", "Do not deploy and do not push" in p, p)
 r = other.get("/improve/api/requests/1/prompt")
@@ -108,7 +137,8 @@ check("and nobody else's", other.get("/improve/api/requests").get_json()["reques
 
 print("\nthe page")
 page = open(os.path.join(SRC, "templates", "chat.html"), encoding="utf-8").read()
-check("a goto card may carry a request number", "(space|label|why|request)" in page)
+check("a goto card may carry a request number and a conversation", "(space|label|why|request|date|conv)" in page)
+check("which it opens when the investigation started", "a.href += '?date=' + fields.date + '&conv=' + fields.conv" in page)
 check("which becomes ?improve= on the Programmer's link", "a.href += '?improve=' + fields.request" in page)
 check("the Programmer fetches the text into the input",
       "'/improve/api/requests/' + fix + '/prompt'" in page and "SPACE === 'programmer'" in page)

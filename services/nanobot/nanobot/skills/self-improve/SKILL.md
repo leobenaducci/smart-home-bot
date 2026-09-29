@@ -8,9 +8,10 @@ metadata: {"nanobot":{"translatable":true}}
 # Self-improve
 
 A fix to Alfred is made in the Programmer, by its coding agent, with the person
-watching -- never by you in this chat, and never in the background. This skill
-files what the person asked and gives back a card that opens the Programmer
-with the fix already written out, for them to read and send.
+watching -- never by you in this chat. This skill files what the person asked
+and starts the Programmer investigating it at once, in a conversation of its
+own; the card you get back opens that conversation. It asks the person before
+changing anything.
 
 Write the JSON block as plain text in your reply; the system intercepts and runs
 it. Never exec, echo, curl, or Python you write.
@@ -19,18 +20,22 @@ it. Never exec, echo, curl, or Python you write.
 
 - `problem`: what the person said is wrong and what they want, in their words
   and their language. Do not soften it or diagnose it.
-- `context` (optional): the facts you have that they did not say -- which skill
-  or tool, the exact error it returned, what you tried. Facts only: no guess
-  about the cause, no secrets, no tokens.
+- `context` (optional): what you have that they did not say -- which skill or
+  tool, the exact error it returned, what you tried. Mark what you **checked**
+  apart from what you **could not check**: you cannot read a skill's own
+  environment or code, so "the variable is not set" is a guess unless you saw
+  it. No guess about the cause, no secrets, no tokens.
 
 ```json
 {"skill": "self-improve", "action": "request_fix", "problem": "The lights skill points to the wrong server; fix it.", "context": "skill lights, flash_light: connection refused at its default address."}
 ```
 
-It answers `{"ok": true, "id": 7, "card": ":::goto ... :::"}`. Reply with one
-short line saying the fix is ready to hand to the Programmer, then the `card`
-**exactly as returned**, on its own lines. Do not rewrite it or add a link of
-your own.
+It answers `{"ok": true, "id": 7, "investigating": true, "card": ":::goto ... :::"}`.
+Reply with one short line -- the Programmer is already looking into it, and
+will ask before changing anything -- then the `card` **exactly as returned**, on
+its own lines. Do not rewrite it or add a link of your own. With
+`"investigating": false` it could not start: say the card opens the Programmer
+with the request written out, for them to send.
 
 `"ok": false` with an error means there is nowhere to hand it -- usually the
 Programmer is not on for this person. Say that, in one line, and stop.

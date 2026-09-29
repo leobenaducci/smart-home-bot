@@ -7456,11 +7456,16 @@ def code_task_status(task_id):
 # Asking Alfred to fix something (docs/self-improvement.md)
 # ---------------------------------------------------------------------------
 # "The lights skill points at the wrong server -- fix it." The `self-improve`
-# skill files what the person said, and Alfred answers with a card that opens
-# the Programmer with the fix already asked, for the person to send. The
-# person sending it is the point: the Programmer runs on opencode, whose Go
-# plan is for somebody at the keyboard (CLAUDE.md), so nothing here starts a
-# model turn on its own.
+# skill files what the person said and starts the investigation at once, as a
+# new conversation in their Programmer -- on opencode, on the Go plan -- and
+# Alfred answers with a card that opens it.
+#
+# Why that is still "a person at the keyboard" (CLAUDE.md): it is started by
+# the person's own request, in the chat, one run, at their pace, in a space
+# they are watching -- the same as typing it into the Programmer themselves.
+# What must never start one is anything else: a timer, the nightly collect, an
+# evaluator pass. And it only investigates: the fix is applied when the person
+# answers yes in that conversation.
 IMPROVE_DB_PATH = os.path.join('backup_data', 'improve.db')
 # The pipeline's folder as the *host* sees it -- repos.json and the redacted
 # inbox. Never opened by this container: it is written into the prompt, for
@@ -7479,6 +7484,10 @@ def _improve_conn():
         context TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'open'
     )''')
+    cols = {r[1] for r in conn.execute('PRAGMA table_info(improve_requests)')}
+    for col, decl in (('day', "TEXT NOT NULL DEFAULT ''"), ('conv', 'INTEGER NOT NULL DEFAULT 0')):
+        if col not in cols:
+            conn.execute(f'ALTER TABLE improve_requests ADD COLUMN {col} {decl}')
     return conn
 
 
@@ -7500,16 +7509,26 @@ def _improve_prompt(row):
     lines = [f"Fix request #{rid}, asked of Alfred:", "",
              *[f"> {ln}" for ln in problem.splitlines() or [problem]], ""]
     if context:
-        lines += ["What Alfred knew when it was asked:", "",
+        lines += ["What Alfred had when it was asked -- leads to check, not facts. Alfred "
+                  "cannot read a skill's own environment or its code, so part of this may be "
+                  "a guess:", "",
                   *[f"> {ln}" for ln in context.splitlines()], ""]
     lines += [where, "",
-              "1. Find the cause first and tell me what it is before changing anything.",
-              "2. If it is a setting (an address, a model, a switch), say which and where "
+              "First, investigate only -- change nothing:",
+              "1. Check each claim above against the running system (the container's "
+              "environment, the skill's code, the service answering) and say which held.",
+              "2. Find the cause. Then tell me the cause, where it lives (which repository, "
+              "or which setting), and the fix you propose -- and ask me whether to apply it.",
+              "",
+              "Only after I say yes:",
+              "3. If it is a setting (an address, a model, a switch), say which and where "
               "it is set. Never write a household value into code.",
-              f"3. If it is code: a new branch `improve/{rid}` in a git worktree of the "
+              f"4. If it is code: a new branch `improve/{rid}` in a git worktree of the "
               "repository it belongs to -- never on main, never in the checkout that "
               "deploys -- with a test, committed.",
-              "4. Do not deploy and do not push. Tell me what changed and how to check it."]
+              "5. Do not deploy and do not push. Tell me what changed and how to check it.",
+              "",
+              "If it turns out nothing is broken, say so plainly: that is an answer too."]
     return "\n".join(lines)
 
 
@@ -7537,12 +7556,46 @@ def improve_request_new():
         conn.commit()
     finally:
         conn.close()
+    started = _improve_start(username, rid, problem, context)
     # In the language of whoever asked: the card is shown to them. One line
     # each, since a goto field ends at the line.
     label = ' '.join(t_for(username, 'improve.card_label', id=rid).split())
-    why = ' '.join(t_for(username, 'improve.card_why').split())
-    card = f':::goto\nspace: programmer\nlabel: {label}\nrequest: {rid}\nwhy: {why}\n:::'
-    return jsonify(ok=True, id=rid, card=card)
+    why = ' '.join(t_for(username, 'improve.card_started' if started
+                         else 'improve.card_why').split())
+    where = (f'date: {started[0]}\nconv: {started[1]}\n' if started else '')
+    card = f':::goto\nspace: programmer\nlabel: {label}\nrequest: {rid}\n{where}why: {why}\n:::'
+    return jsonify(ok=True, id=rid, card=card, investigating=bool(started))
+
+
+def _improve_start(username, rid, problem, context):
+    """Open a Programmer conversation for request *rid* and start the
+    investigation in it. (day, conv) of that conversation, or None when it
+    could not be started -- then the card only fills the Programmer's input,
+    as it did before, and the person sends it themselves."""
+    try:
+        api, nanobot_id = _nanobot_for(username)
+        if not api:
+            return None
+        day = _writing_day(None)
+        conv = int(time.time() * 1000)
+        prompt = _improve_prompt((rid, problem, context))
+        # Filed as the person's message: it is their request, it reads as the
+        # first line of the conversation, and the reply files after it.
+        append_user_history(username, {'role': 'user', 'text': prompt, 'ts': conv, 'conv': conv},
+                            day, OPENCODE_SPACE)
+        msg_content = _compose_turn_content(username, prompt, [], [], OPENCODE_SPACE)
+        _turn_launch(username, day, conv, OPENCODE_SPACE, msg_content, api, nanobot_id)
+    except Exception as exc:  # noqa: BLE001 -- a request filed is still worth the card
+        app.logger.warning('improve: investigation for #%s not started: %s', rid, exc)
+        return None
+    conn = _improve_conn()
+    try:
+        conn.execute("UPDATE improve_requests SET status = 'investigating', day = ?, conv = ? "
+                     'WHERE id = ?', (day, conv, rid))
+        conn.commit()
+    finally:
+        conn.close()
+    return day, conv
 
 
 @app.route('/improve/api/requests', methods=['GET'])
