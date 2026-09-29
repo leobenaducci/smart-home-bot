@@ -7,7 +7,6 @@ interface was set to another locale saw Spanish text mixed into the chat.
 """
 import json
 import os
-import re
 import sys
 
 SRC = os.path.dirname(os.path.abspath(__file__))
