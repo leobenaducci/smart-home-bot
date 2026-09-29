@@ -159,6 +159,11 @@ services:
           # app.py then keeps its own default on OLLAMA_URL above -- so the
           # export must never beat that default with an empty string. The
           # URL is host-facing (home-core is on the host's network).
+          # The vision model the Studio's storyboard review looks with
+          # (`assistant.models.vision`), resolved like the titler's.
+          STUDIO_VISION_MODEL: "{derived.studio_vision_model}"
+          STUDIO_VISION_URL: "{derived.studio_vision_url}"
+          STUDIO_VISION_KEY: "{derived.studio_vision_key}"
           CHAT_TITLE_MODEL: "{derived.title_model}"
           CHAT_TITLE_URL: "{derived.title_url}"
           CHAT_TITLE_KEY: "{derived.title_key}"

@@ -506,8 +506,9 @@ class Manager:
             return []
         elif job["project"] and job["target"]:
             if job["kind"] == "board":
-                self.projects.add_board(owner, pid, job["target"], {"file": take["file"], "job": job["id"],
-                                                                     "prompt": job["params"].get("shot_prompt", "")})
+                self.projects.add_board(owner, pid, job["target"], {
+                    "file": take["file"], "job": job["id"], "prompt": job["params"].get("shot_prompt", ""),
+                    **({"drawn_from": job["params"]["drawn_from"]} if job["params"].get("drawn_from") else {})})
             else:
                 # The frame a video started from, so the storyboard can tell
                 # a video made before its frame was drawn -- one to make again.

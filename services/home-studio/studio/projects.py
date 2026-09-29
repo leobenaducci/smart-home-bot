@@ -428,6 +428,55 @@ class Projects:
         if base.resolve() in path.parents and path.is_file():
             path.unlink()
 
+    def set_board_review(self, owner: str, pid: str, item_id: str, board_id: str, review: dict) -> dict:
+        """A frame's review: a score out of ten, what works, what does not,
+        and the prompt the reviewer would draw it with -- or `state: running`
+        while it is being looked at. Shaped here: it is shown to the person."""
+        def words(xs):
+            return [str(x).strip()[:300] for x in (xs or []) if str(x).strip()][:8] if isinstance(xs, list) else []
+        clean = {"state": review.get("state") if review.get("state") in ("running", "done", "failed") else "done",
+                 "at": time.time()}
+        if clean["state"] == "done":
+            try:
+                clean["score"] = max(0, min(10, round(float(review.get("score")))))
+            except (TypeError, ValueError):
+                raise ProjectError("a review needs a score") from None
+            clean.update(ok=words(review.get("ok")), problems=words(review.get("problems")),
+                         prompt=str(review.get("prompt") or "").strip()[:1200],
+                         round=max(0, min(9, int(review.get("round") or 0))),
+                         # The checklist the score was counted from: each thing
+                         # the shot asks for, and whether the frame shows it.
+                         checks=[{"item": str(c.get("item") or "").strip()[:200],
+                                  "shown": c.get("shown") if c.get("shown") in ("yes", "partly", "no") else "no",
+                                  "why": str(c.get("why") or "").strip()[:300]}
+                                 for c in (review.get("checks") or []) if isinstance(c, dict)][:12])
+        elif clean["state"] == "failed":
+            clean["error"] = str(review.get("error") or "")[:300]
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            found = self.find(doc, item_id)
+            if not found or found[0] != "shots":
+                raise ProjectError("no such shot")
+            board = next((b for b in found[2].get("boards") or [] if b.get("id") == board_id), None)
+            if board is None:
+                raise ProjectError("no such frame")
+            board["review"] = clean
+            self._write(owner, pid, doc)
+            return board
+
+    def retime(self, owner: str, pid: str, cuts: dict[str, tuple[float, float]], song_id: str) -> None:
+        """Shots given their place on the song: where each starts and how
+        long it is, cut to the music (`exact`). Their words are left alone."""
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            for shot in doc.get("shots") or []:
+                if shot["id"] in cuts:
+                    start, seconds = cuts[shot["id"]]
+                    shot.update(start=_clean("start", start, shot), seconds=_clean("seconds", seconds, shot), exact=True)
+            doc["settings"]["soundtrack"] = song_id
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+
     def stash_removed(self, owner: str, pid: str, item: dict) -> None:
         """An item's full record, kept when it leaves the timeline."""
         if not ID_RE.fullmatch(str(item.get("id") or "")):

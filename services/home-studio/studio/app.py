@@ -81,6 +81,17 @@ def _notify(job: dict) -> None:
                       headers={"X-Studio-Secret": SECRET}, timeout=10, verify=False)
     except requests.RequestException as exc:
         log.warning("notify failed: %s", exc)
+    # A frame drawn inside a refine loop goes back to the portal to be looked
+    # at: the reviewer is the person's assistant, which the Studio cannot reach.
+    refine = (job.get("params") or {}).get("refine")
+    if job.get("ok") and job.get("kind") == "board" and refine and NOTIFY_URL.endswith("/notify"):
+        try:
+            requests.post(NOTIFY_URL[:-len("notify")] + "frame-review",
+                          json={"login": job["owner"], "project": job["project"], "shot": job["target"],
+                                "job": job["id"], "refine": refine},
+                          headers={"X-Studio-Secret": SECRET}, timeout=10, verify=False)
+        except requests.RequestException as exc:
+            log.warning("frame review hook failed: %s", exc)
 
 
 manager = Manager(store, projects, DATA / "scratch", DATA / "logs", idle_s=IDLE_S, notify=_notify,
@@ -616,6 +627,23 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
     except ProjectError as exc:
         _bad(exc, 404)
     want = [str(i) for i in body.get("items") or []]
+    # `prompts`: what to draw instead of a shot's description -- a reviewer's
+    # improved prompt -- which leaves the description the person wrote as it
+    # is. `refine`: rounds of review left after this drawing (the portal
+    # reviews each frame drawn with some and redraws it while it scores low).
+    overrides = {str(k): str(v).strip()[:1200] for k, v in (body.get("prompts") or {}).items() if str(v).strip()}
+    # Every frame is looked at when it lands -- a first drawing, a redraw,
+    # the planner's, the assistant's -- so a redraw is never a guess nobody
+    # checked: a budget of no further rounds unless one is asked for, and
+    # none at all only when asked (`review: false`).
+    refine = None if body.get("review") is False else {"rounds": 0, "threshold": 7, "round": 0}
+    if isinstance(body.get("refine"), dict):
+        try:
+            refine = {"rounds": max(0, min(3, int(body["refine"].get("rounds", 0)))),
+                      "threshold": max(1, min(10, int(body["refine"].get("threshold", 7)))),
+                      "round": max(0, min(9, int(body["refine"].get("round", 0))))}
+        except (TypeError, ValueError):
+            pass
     look = str(doc["settings"].get("look") or "").strip()
     size = recipes.BOARD_SIZE.get(doc["settings"].get("resolution", "832x480"), "1344x768")
     busy = {j["target"] for j in store.active() if j["owner"] == me.login and j["kind"] == "board"}
@@ -628,12 +656,18 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
         what = str(shot.get("prompt") or "").strip()
         if not what:
             continue
+        drawn = overrides.get(shot["id"], what)
         cast = characters.describe(shot.get("cast") or [], me.login, pid)
-        prompt = (f"{look}. " if look else "") + f"Film still: {what}" + (f" Characters: {cast}." if cast else "")
+        prompt = (f"{look}. " if look else "") + f"Film still: {drawn}" + (f" Characters: {cast}." if cast else "")
         # `shot_prompt`: the description as it was when the frame was asked
         # for, kept on the frame so the page can tell a frame whose shot has
         # been described differently since -- one to draw again.
-        queued.append(_enqueue(me, "board", {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200]},
+        params = {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200]}
+        if drawn != what:
+            params["drawn_from"] = drawn
+        if refine:
+            params["refine"] = refine
+        queued.append(_enqueue(me, "board", params,
                                pid, shot["id"],
                                shot.get("title") or f"{doc['name']} {idx + 1}")["id"])
     if not queued:
@@ -821,6 +855,57 @@ def song_score(pid: str, item_id: str, body: dict | None = None, me: Who = Depen
     return {"take": take["id"], "job": _public(store.get(job["id"]) or job, me)}
 
 
+def _listened(me: Who, pid: str, take: dict) -> dict:
+    """A song version's analysis, on the steady beat grid: one listened to
+    before the grid existed gets it the first time it is asked for (a few
+    seconds on the CPU), and keeps it."""
+    meta = take.get("analysis") or {}
+    if not meta.get("file"):
+        _bad(ProjectError("this version has not been listened to yet"), 409)
+    try:
+        path = projects.file(me.login, pid, meta["file"])
+        an = json.loads(path.read_text())
+        if an.get("grid") != 2:
+            an = analysis.regrid(an, projects.file(me.login, pid, take["file"]))
+            path.write_text(json.dumps(an, ensure_ascii=False))
+        return an
+    except (ProjectError, OSError, ValueError, KeyError) as exc:
+        _bad(exc, 400)
+
+
+@app.post("/api/projects/{pid}/retime")
+def retime_shots(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """The project's shots, as they are, refitted to its song: each keeps its
+    place and its words, and gets a length that starts and ends on the music
+    (the song's bars, its section changes). A shot whose video is now shorter
+    than its length is named, to be made again."""
+    body = body or {}
+    doc = _project(me, pid)
+    song_id = str(body.get("song") or doc["settings"].get("soundtrack") or "")
+    if not song_id:
+        song = next((a for a in doc.get("audio") or [] if a.get("takes")), None)
+        song_id = song["id"] if song else ""
+    if not song_id:
+        _bad(ProjectError("this project has no song to fit the shots to"), 409)
+    _doc, _item, take = _item_take(me, pid, song_id, str(body.get("take") or ""))
+    an = _listened(me, pid, take)
+    shots = [s for s in doc.get("shots") or [] if not s.get("recorded")]
+    if not shots:
+        _bad(ProjectError("no shots to fit"))
+    try:
+        cuts = analysis.cuts_for(an, len(shots))
+    except ValueError as exc:
+        _bad(exc)
+    plan = {s["id"]: c for s, c in zip(shots, cuts)}
+    projects.retime(me.login, pid, {sid: (c["start"], c["seconds"]) for sid, c in plan.items()}, song_id)
+    _remember(me, pid)
+    short = [i + 1 for i, s in enumerate(doc.get("shots") or [])
+             if s["id"] in plan and Projects.chosen_take(s) and float(Projects.chosen_take(s).get("seconds") or 0)
+             < plan[s["id"]]["seconds"] - 0.05]
+    return {"shots": len(cuts), "tempo": an["tempo"], "grid": an.get("grid") == 2, "short": short,
+            "cuts": cuts}
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/cuts")
 def music_video_cuts(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """Where a music video's cuts fall on this song, for shots of about
@@ -828,13 +913,10 @@ def music_video_cuts(pid: str, item_id: str, body: dict | None = None, me: Who =
     it. Arithmetic on the analysis; nothing is queued."""
     body = body or {}
     _doc, _item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
-    meta = take.get("analysis") or {}
-    if not meta.get("file"):
-        _bad(ProjectError("this version has not been listened to yet"), 409)
+    an = _listened(me, pid, take)
     try:
-        an = json.loads(projects.file(me.login, pid, meta["file"]).read_text())
         shot = float(body.get("shot_seconds") or 8)
-    except (ProjectError, OSError, ValueError, TypeError) as exc:
+    except (ValueError, TypeError) as exc:
         _bad(exc, 400)
     return {"take": take["id"], "duration": an["duration"], "tempo": an["tempo"],
             "aligned": an["aligned"], "error": an.get("error", ""),
@@ -909,6 +991,34 @@ def board_from(pid: str, item_id: str, body: dict, me: Who = Depends(who)):
         return projects.board_from(me.login, pid, item_id, str(body.get("file") or ""))
     except ProjectError as exc:
         _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/prompt")
+def set_shot_prompt(pid: str, item_id: str, body: dict, me: Who = Depends(who)):
+    """One shot's description, set on its own -- a reviewer's improved prompt
+    taken up -- without sending the whole project (which a page holding an
+    older copy would). In the history under whoever asked."""
+    text = str(body.get("prompt") or "").strip()
+    if not text:
+        _bad(ValueError("a description cannot be empty"))
+    try:
+        found = Projects.find(projects.load(me.login, pid), item_id)
+        if not found or found[0] != "shots":
+            raise ProjectError("no such shot")
+        projects.set_item_field(me.login, pid, item_id, "prompt", text[:1200])
+    except ProjectError as exc:
+        _bad(exc, 404)
+    _remember(me, pid)
+    return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/boards/{board_id}/review")
+def board_review(pid: str, item_id: str, board_id: str, body: dict, me: Who = Depends(who)):
+    """What the person's assistant saw in a frame, kept on it."""
+    try:
+        return projects.set_board_review(me.login, pid, item_id, board_id, dict(body.get("review") or {}))
+    except ProjectError as exc:
+        _bad(exc, 404)
 
 
 @app.post("/api/projects/{pid}/items/{item_id}/favorite")

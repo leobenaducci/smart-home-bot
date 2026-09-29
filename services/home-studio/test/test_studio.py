@@ -369,6 +369,25 @@ else:
           names[0] == ("Instrumental", False) and ("Verso", True) in names and ("Coro", True) in names
           and names[-1] == ("Instrumental", False), names)
     check("  the beats are found (120 bpm clicks)", 100 < an["tempo"] < 140 and len(an["beats"]) >= 12, (an["tempo"], len(an["beats"])))
+    gaps = [b - a for a, b in zip(an["beats"], an["beats"][1:])]
+    check("  on a steady grid: one tempo, every beat the same distance apart",
+          an.get("grid") == 2 and abs(an["tempo"] - 120) < 1.0 and max(gaps) - min(gaps) < 0.005, (an["tempo"], min(gaps), max(gaps)))
+    fake_an = {"duration": 60.0, "tempo": 120.0, "beats": [0.25 + 0.5 * i for i in range(119)],
+               "bars": [0.25 + 2.0 * i for i in range(30)], "lines": [],
+               "sections": [{"name": "Verso", "start": 0.0, "end": 22.1, "sung": True},
+                            {"name": "Coro", "start": 22.1, "end": 60.0, "sung": True}]}
+    fitted = analysis.cuts_for(fake_an, 6)
+    ends = [c["end"] for c in fitted]
+    check("  refitting: exactly the shots asked for, covering the song end to end",
+          len(fitted) == 6 and fitted[0]["start"] == 0 and ends[-1] == 60.0
+          and all(abs(a["end"] - b["start"]) < 1e-6 for a, b in zip(fitted, fitted[1:])), ends)
+    check("  each cut on a bar line, and a section change sung just off its bar goes to the bar",
+          all(any(abs(e - b) <= 1 / 48 for b in fake_an["bars"]) for e in ends[:-1]) and any(abs(e - 22.25) < 1 / 48 for e in ends), ends)
+    try:
+        analysis.cuts_for(fake_an, 2)
+        check("  too few shots for the song is said, not stretched", False)
+    except ValueError:
+        check("  too few shots for the song is said, not stretched", True)
     cuts = analysis.plan_cuts(an, 4)
     check("  the cuts cover the song exactly, end to end",
           cuts[0]["start"] == 0 and cuts[-1]["end"] == an["duration"]
@@ -678,6 +697,7 @@ else:
     mgr.stop()
 
 print("\na project's words under version control")
+import json  # noqa: E402
 from studio.history import History
 hp = Projects(tmp / "hist")
 hc = Characters(tmp / "hist")
@@ -704,8 +724,10 @@ hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis y algo"}]})
 hist.record(JUANA, hpid, JUANA, "Juana")
 hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
 hist.record(JUANA, hpid, JUANA, "Juana")
+now_revs = hist.log(JUANA, hpid)["revisions"]
 check("  typed and undone within a revision leaves it as it was",
-      [r["rev"] for r in hist.log(JUANA, hpid)["revisions"]] == [r["rev"] for r in revs], hist.log(JUANA, hpid)["revisions"])
+      [(r["subject"], r["kind"]) for r in now_revs] == [(r["subject"], r["kind"]) for r in revs]
+      and json.loads((hdir / "items" / f"{s1}.json").read_text())["prompt"] == "uno bis", now_revs)
 hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno"}]})
 hist.record(JUANA, hpid, JUANA, "Juana")
 hp.save(JUANA, hpid, {"shots": [{"id": s1, "prompt": "uno bis"}]})
@@ -986,6 +1008,56 @@ check("  a page's save cannot move the chosen frame back (a newer one stays chos
 c.post(f"/api/projects/{sbp['id']}/items/{s1['id']}/board", json={"index": 0}, headers=h(JUANA, "Juana"))
 check("  choosing one is its own call",
       c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"][1]["board"] == 0)
+s1id = sdoc["shots"][1]["id"]
+for q in [j for j in A.store.active() if j["kind"] == "board"]:
+    A.manager.cancel(q["id"])
+rq = c.post(f"/api/projects/{sbp['id']}/storyboard", json={"items": [s1id], "prompts": {s1id: "a brighter lighthouse at dawn"},
+                                                          "refine": {"rounds": 1, "threshold": 8}}, headers=h(JUANA, "Juana")).json()
+bp_ = A.store.get(rq["queued"][0]["id"])["params"]
+check("  a frame can be drawn from a reviewer's prompt, the person's description left as it is",
+      "Film still: a brighter lighthouse at dawn" in bp_["prompt"] and bp_["drawn_from"] == "a brighter lighthouse at dawn"
+      and bp_["shot_prompt"] == sdoc["shots"][1]["prompt"].strip()
+      and bp_["refine"] == {"rounds": 1, "threshold": 8, "round": 0}, bp_)
+A.manager.cancel(rq["queued"][0]["id"])
+rq2 = c.post(f"/api/projects/{sbp['id']}/storyboard", json={"items": [s1id]}, headers=h(JUANA, "Juana")).json()
+check("  a plain redraw is still looked at when it lands", A.store.get(rq2["queued"][0]["id"])["params"].get("refine")
+      == {"rounds": 0, "threshold": 7, "round": 0})
+A.manager.cancel(rq2["queued"][0]["id"])
+rq3 = c.post(f"/api/projects/{sbp['id']}/storyboard", json={"items": [s1id], "review": False}, headers=h(JUANA, "Juana")).json()
+check("  unless asked not to be", "refine" not in A.store.get(rq3["queued"][0]["id"])["params"])
+A.manager.cancel(rq3["queued"][0]["id"])
+hooked = []
+saved_post, saved_url = A.requests.post, A.NOTIFY_URL
+A.requests.post = lambda url, json=None, **kw: hooked.append((url, json))
+A.NOTIFY_URL = "https://portal.invalid/studio/api/notify"
+A._notify({"id": "jb1", "kind": "board", "owner": JUANA, "project": sbp["id"], "target": s1id, "title": "",
+           "params": {"refine": {"rounds": 1, "threshold": 8, "round": 0}}, "ok": True})
+A._notify({"id": "jb2", "kind": "board", "owner": JUANA, "project": sbp["id"], "target": s1id, "title": "",
+           "params": {}, "ok": True})
+A.requests.post, A.NOTIFY_URL = saved_post, saved_url
+check("  a frame drawn inside a refine loop goes back to the portal to be looked at -- only that one",
+      [u for u, _ in hooked if u.endswith("/frame-review")] == ["https://portal.invalid/studio/api/frame-review"]
+      and next(j for u, j in hooked if u.endswith("/frame-review"))["job"] == "jb1", hooked)
+check("  one shot's description can be set on its own",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/prompt", json={"prompt": "un faro al amanecer"},
+             headers=h(JUANA, "Juana")).status_code == 200
+      and next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s1id)["prompt"]
+      == "un faro al amanecer")
+check("  never emptied, and never someone else's",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/prompt", json={"prompt": " "}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/{s1id}/prompt", json={"prompt": "x"}, headers=h(TOMI, "Tomi")).status_code == 404)
+bd = Projects.chosen_board(next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s1id))
+rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
+            json={"review": {"score": 12, "ok": ["luz"], "problems": ["<b>mano</b>"] * 20, "prompt": "p", "round": 1}},
+            headers=h(JUANA, "Juana")).json()
+check("  a review is kept on its frame, shaped: a score out of ten, a few findings",
+      rv["review"]["score"] == 10 and len(rv["review"]["problems"]) == 8 and rv["review"]["state"] == "done", rv.get("review"))
+check("  a review without a score is refused",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review", json={"review": {"ok": []}},
+             headers=h(JUANA, "Juana")).status_code == 404)
+check("  and nobody else can write one",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review", json={"review": {"score": 5}},
+             headers=h(TOMI, "Tomi")).status_code == 404)
 s0 = sdoc["shots"][0]["id"]
 bf = c.post(f"/api/projects/{sbp['id']}/items/{s0}/board_from", json={"file": "takes/f.png"}, headers=h(JUANA, "Juana")).json()
 s0doc = next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s0)
@@ -1210,6 +1282,36 @@ check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
+
+print("\n  the shots refitted to the song")
+import json  # noqa: E402
+rt = c.post("/api/projects", json={"name": "A la canción"}, headers=h(JUANA, "Juana")).json()
+rsong = c.put(f"/api/projects/{rt['id']}", json={"audio": [{"kind": "song", "lyrics": "[Coro]\nla"}],
+                                                "shots": [{"prompt": f"toma {i}", "seconds": 5} for i in range(6)]},
+              headers=h(JUANA, "Juana")).json()
+rdir = A.projects.dir(JUANA, rt["id"])
+(rdir / "takes").mkdir(exist_ok=True)
+shutil.copy(song_file, rdir / "takes" / "song.wav") if "song_file" in globals() else None
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=60", str(rdir / "takes" / "s.wav")], check=True)
+A.projects.add_take(JUANA, rt["id"], rsong["audio"][0]["id"], {"file": "takes/s.wav", "kind": "song"})
+stake = c.get(f"/api/projects/{rt['id']}", headers=h(JUANA, "Juana")).json()["audio"][0]["takes"][0]
+old_an = {"duration": 60.0, "tempo": 120.0, "beats": [0.25 + 0.5 * i for i in range(119)],
+          "bars": [0.25 + 2.0 * i for i in range(30)], "lines": [], "sections": [], "aligned": False}
+(rdir / "takes" / "an.json").write_text(json.dumps(old_an))
+A.projects.set_take_field(JUANA, rt["id"], rsong["audio"][0]["id"], stake["id"], "analysis", {"file": "takes/an.json", "tempo": 120})
+A.analysis.regrid = lambda an, song: {**an, "grid": 2}          # the CPU part, measured above
+first_shot = c.get(f"/api/projects/{rt['id']}", headers=h(JUANA, "Juana")).json()["shots"][0]["id"]
+A.projects.add_take(JUANA, rt["id"], first_shot, {"file": "takes/v.mp4", "seconds": 5.0})
+out = c.post(f"/api/projects/{rt['id']}/retime", json={}, headers=h(JUANA, "Juana")).json()
+after = c.get(f"/api/projects/{rt['id']}", headers=h(JUANA, "Juana")).json()
+check("  every shot keeps its place and its words, and gets its cut on the song",
+      out.get("shots") == 6 and [s["prompt"] for s in after["shots"]] == [f"toma {i}" for i in range(6)]
+      and all(s.get("exact") for s in after["shots"]) and abs(sum(s["seconds"] for s in after["shots"]) - 60.0) < 0.01
+      and after["settings"]["soundtrack"] == rsong["audio"][0]["id"], (out, [(s["start"], s["seconds"]) for s in after["shots"]]))
+check("  a video now shorter than its shot is named, to make again", out.get("short") == [1], out.get("short"))
+check("  an analysis from before the grid is given one, and keeps it",
+      json.loads((rdir / "takes" / "an.json").read_text()).get("grid") == 2)
+check("  nobody else's", c.post(f"/api/projects/{rt['id']}/retime", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 
 print("\n  a project's history, through the API")
 hq = c.post("/api/projects", json={"name": "Con historia"}, headers=h(JUANA, "Juana")).json()

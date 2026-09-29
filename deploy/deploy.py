@@ -1524,6 +1524,11 @@ def derive(cfg: dict, secrets: dict) -> dict:
         cfg, secrets, str(_models.get("titles") or ""), host_network=True)
     docs_name, docs_base, docs_key = model_endpoint(
         cfg, secrets, str(_models.get("documents") or ""))
+    # `assistant.models.vision`, for the portal's Studio: storyboard frames are
+    # looked at by the house's own vision model, called directly (home-core
+    # is on the host's network).
+    vision_name, vision_base, vision_key = model_endpoint(
+        cfg, secrets, str(_models.get("vision") or ""), host_network=True)
     # A household's own Ollama gets Paperless's Ollama client: structured JSON
     # with thinking off, against the server's root. Anything else is Paperless's
     # OpenAI-compatible client, which answers through a tool call -- a model
@@ -1784,6 +1789,9 @@ def derive(cfg: dict, secrets: dict) -> dict:
         "title_model": title_name if title_base else "",
         "title_url": f"{title_base}/chat/completions" if title_base else "",
         "title_key": title_key if title_base else "",
+        "studio_vision_model": vision_name if vision_base else "",
+        "studio_vision_url": f"{vision_base}/chat/completions" if vision_base else "",
+        "studio_vision_key": vision_key if vision_base else "",
         # `assistant.models.documents`, for Paperless's AI -- under the names
         # Paperless 3.x reads (PAPERLESS_AI_LLM_*). The stack exported
         # PAPERLESS_AI_MODEL/ENDPOINT/API_KEY/PROVIDER until 2026-09-12, which

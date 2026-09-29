@@ -157,6 +157,9 @@ services:
       # model to point anywhere OpenAI-compatible.
       - OPENCODE_API_KEY=${OPENCODE_API_KEY:-}
       - CHAT_TITLE_URL=${CHAT_TITLE_URL:-}
+      - STUDIO_VISION_MODEL=${STUDIO_VISION_MODEL:-}
+      - STUDIO_VISION_URL=${STUDIO_VISION_URL:-}
+      - STUDIO_VISION_KEY=${STUDIO_VISION_KEY:-}
       - CHAT_TITLE_MODEL=${CHAT_TITLE_MODEL:-}
       - CHAT_TITLE_KEY=${CHAT_TITLE_KEY:-}
       # The Programmer profession, when it runs on opencode instead of the

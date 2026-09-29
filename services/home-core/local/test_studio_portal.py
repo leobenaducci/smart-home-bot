@@ -102,6 +102,8 @@ check("empty lyrics + no theme -> 400", lyrics(mode="edit", lyrics="  ")[0].stat
 
 print("\nand every string the dialog shows is handed to the page, in both catalogues")
 # Staged beside the app in the image; from a checkout, the repository's own.
+import base64
+import time
 import json  # noqa: E402
 I18N = next(d for d in (os.path.join(SRC, "i18n"), os.path.join(SRC, "..", "..", "..", "i18n"))
             if os.path.isfile(os.path.join(d, "en.json")))
@@ -117,7 +119,7 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "favorite_set", "favorite_clear", "rs_button", "rs_title", "rs_mode_part", "rs_mode_all",
             "rs_pick", "rs_range", "rs_no_lines", "rs_similar", "rs_keep_voice", "rs_go",
             "preview_download", "preview_rendering",
-            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "hist_button", "hist_title", "hist_help", "hist_empty", "hist_show", "hist_nothing", "hist_reordered", "hist_revert", "hist_revert_help", "hist_revert_confirm", "hist_restore", "hist_restore_help", "hist_restore_confirm", "hist_tag_now", "hist_tag_prompt", "hist_untag_confirm", "hist_done", "hist_conflicts", "score_make", "score_open", "score_running", "score_retry", "score_confirm", "score_queued", "sb_use", "sb_starts_from", "sb_video_older", "sb_to_video", "sb_to_video_off", "sb_video_stale", "sb_continues", "sb_use_frame", "board_from", "board_from_none", "ref_add", "ref_add_short", "ref_is", "ref_added", "tab_board", "sb_help", "sb_empty", "sb_redraw_changed", "sb_animatic", "sb_changed", "sb_changed_short", "sb_drawing", "sb_music_only", "mv_steps", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
+            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "sb_review_apply", "sb_review_applied", "sb_redrawing_review", "project_name", "more", "rail_label", "rail_song", "rail_song_none", "rail_song_bpm", "rail_song_unheard", "rail_board", "rail_board_st", "rail_weak", "rail_videos", "rail_videos_st", "rail_making", "rail_stale", "rail_film", "rail_film_st", "rail_film_none", "rail_none", "sb_video_old", "sb_has_video", "sb_review_n", "fit_button", "fit_help", "fit_confirm", "fit_done", "fit_short", "sb_review", "sb_review_help", "sb_review_all", "sb_reviewing", "sb_review_started", "sb_review_failed", "sb_review_round", "sb_review_suggests", "sb_refine", "sb_refine_help", "sb_refine_confirm", "sb_refine_started", "sb_refine_busy", "hist_button", "hist_title", "hist_help", "hist_empty", "hist_show", "hist_nothing", "hist_reordered", "hist_revert", "hist_revert_help", "hist_revert_confirm", "hist_restore", "hist_restore_help", "hist_restore_confirm", "hist_tag_now", "hist_tag_prompt", "hist_untag_confirm", "hist_done", "hist_conflicts", "score_make", "score_open", "score_running", "score_retry", "score_confirm", "score_queued", "sb_use", "sb_starts_from", "sb_video_older", "sb_to_video", "sb_to_video_off", "sb_video_stale", "sb_continues", "sb_use_frame", "board_from", "board_from_none", "ref_add", "ref_add_short", "ref_is", "ref_added", "tab_board", "sb_help", "sb_empty", "sb_redraw_changed", "sb_animatic", "sb_changed", "sb_changed_short", "sb_drawing", "sb_music_only", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
             "tab_cast", "ch_none", "ch_new", "ch_edit", "ch_name", "ch_look", "ch_look_ph", "ch_personality", "ch_personality_ph", "ch_voice", "ch_voice_text", "ch_record", "ch_stop", "ch_pictures", "ch_save", "ch_pick_studio", "ch_pick_files", "ch_pick_none", "ch_portrait", "ch_speak", "ch_speak_what", "ch_speak_ph", "ch_widen_person", "ch_widen_family", "ch_scope_project", "ch_scope_person", "ch_scope_family", "ch_widen_confirm", "ch_delete_confirm", "ch_in_shot",
             "rec_title", "rec_screen", "rec_cam", "rec_mic", "rec_start", "rec_pause", "rec_resume", "rec_stop", "rec_uploading", "rec_saved", "rec_processing", "rec_failed", "rec_no_screen", "rec_need_source", "rec_default_title", "rec_denied", "delete_render_confirm",
             "rec_subs", "rec_subs_running", "rec_subs_failed", "rec_transcript", "rec_trim", "rec_trim_running", "rec_trim_done", "rec_trim_failed", "render_subs",
@@ -131,9 +133,13 @@ plans = []
 chats = []
 
 
-def _planner(username, chat_id, text, timeout, profile=None):
+profiles = []
+
+
+def _planner(username, chat_id, text, timeout, profile=None, images=None):
     asked.append(text)
     chats.append(chat_id)
+    profiles.append(profile)
     return plans.pop(0) if plans else ""
 
 
@@ -146,6 +152,7 @@ r = client.post("/studio/api/music-video", headers=HOME, json={
     "title": "Noche", "idea": "80s film look"})
 shots = (r.get_json() or {}).get("shots") or []
 check("three shots come back, read out of the prose around them", r.status_code == 200 and len(shots) == 3, r.data[:200])
+check("the storyboard is written by the Designer", profiles and profiles[-1] == "designer", profiles[-1:])
 check("the first never continues anything", shots and shots[0]["continues"] is False, shots[:1])
 check("a later one keeps what Alfred said", len(shots) > 1 and shots[1]["continues"] is True, shots)
 check("a bare string is a shot too", len(shots) > 2 and shots[2]["prompt"] == "Neon street, wide shot", shots)
@@ -294,6 +301,170 @@ for f in ("alphaTab.mjs", "alphaTab.core.mjs", "alphaTab.worker.mjs", "alphaTab.
 entry = open(os.path.join(SRC, "static", "vendor", "alphatab", "alphaTab.mjs"), encoding="utf-8").read()
 check("the entry starts its worker beside itself, which 'self' allows",
       '"./alphaTab.worker.mjs"' in entry and '"./alphaTab.core.mjs"' in entry)
+
+print("\na frame reviewed by the person's assistant, and refined")
+FRAME = b"\xff\xd8 a frame"
+PORTRAIT = b"\x89PNG portrait"
+RDOC = {"id": "abc123def456", "name": "Faro", "settings": {"look": "pastel watercolour", "language": "es", "soundtrack": "s9"},
+        "audio": [{"id": "s9", "chosen": 0, "takes": [{"id": "t9", "file": "takes/s9/t9.mp3", "analysis": {"file": "takes/s9/a.json"}}]}],
+        "shots": [{"id": "sh1", "prompt": "Bruma climbs the lighthouse stairs", "cast": ["ch1"], "exact": True, "start": 8.0,
+                   "seconds": 8.0, "board": 0, "boards": [{"id": "bd1", "file": "takes/sh1/f.jpg", "job": "jb1"}]}]}
+RCHARS = {"characters": [{"id": "ch1", "name": "Bruma", "look": "a red fox in a yellow slicker",
+                          "pictures": ["pictures/p.png"], "portrait": 0}]}
+calls = []
+
+
+class _R:
+    def __init__(self, code, body=None, content=b"", ctype="application/json"):
+        self.status_code, self._body, self.content, self.headers = code, body, content, {"Content-Type": ctype}
+
+    def json(self):
+        return self._body
+
+
+def _studio_req(method, url, headers=None, json=None, timeout=None, **kw):
+    calls.append((method, url.split("/api/", 1)[1], json, dict(headers or {})))
+    path = url.split("/api/", 1)[1]
+    if path == "projects/abc123def456":
+        return _R(200, RDOC)
+    if path == "projects/abc123def456/characters":
+        return _R(200, RCHARS)
+    if path.endswith("/analyze"):
+        return _R(200, {"lines": [{"text": "sube la escalera", "start": 9.0, "end": 11.0},
+                                  {"text": "otra cosa", "start": 30.0, "end": 32.0}]})
+    return _R(200, {"ok": True, "queued": []})
+
+
+def _studio_get2(url, headers=None, timeout=None, **kw):
+    path = url.split("/api/", 1)[1]
+    calls.append(("GET", path, None, dict(headers or {})))
+    if path == "projects/abc123def456/file/takes/sh1/f.jpg":
+        return _R(200, content=FRAME, ctype="image/jpeg")
+    if path == "projects/abc123def456/characters/ch1/file/pictures/p.png":
+        return _R(200, content=PORTRAIT, ctype="image/png")
+    return _R(404)
+
+
+seen = []
+looked = []
+vision_answers = []
+
+
+def _reviewer(username, chat_id, text, timeout, profile=None, images=None):
+    seen.append({"text": text, "profile": profile, "images": images or [], "chat": chat_id})
+    return plans.pop(0) if plans else ""
+
+
+class _V:
+    ok = True
+    status_code = 200
+
+    def __init__(self, text):
+        self._text = text
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._text}}]}
+
+
+def _vision_post(url, json=None, headers=None, timeout=None, **kw):
+    looked.append({"url": url, "body": json, "headers": dict(headers or {})})
+    return _V(vision_answers.pop(0) if vision_answers else "")
+
+
+A.requests.request, A.requests.get, A._run_nanobot_turn = _studio_req, _studio_get2, _reviewer
+A.requests.post = _vision_post
+A.STUDIO_VISION_URL, A.STUDIO_VISION_MODEL, A.STUDIO_VISION_KEY = "http://127.0.0.1:11437/v1/chat/completions", "qwen3.5:9b", "ollama"
+vision_answers[:] = ['{"items": ["un zorro rojo", "un impermeable amarillo", "la escalera del faro"]}',
+                     '{"checks": [{"item": "un zorro rojo", "shown": "yes", "why": "un zorro rojo"},'
+                     ' {"item": "un impermeable amarillo", "shown": "no", "why": "Bruma no tiene el impermeable"},'
+                     ' {"item": "la escalera del faro", "shown": "partly", "why": "una escalera, sin faro"}], "defects": []}']
+plans[:] = ['"A red fox in a yellow slicker climbing a white lighthouse spiral stair"']
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+out = r.get_json() or {}
+check("the score is counted from the checklist, not chosen: one of three shown, one partly -> 5",
+      r.status_code == 200 and out.get("review", {}).get("score") == 5
+      and [c["shown"] for c in out["review"]["checks"]] == ["yes", "no", "partly"]
+      and out["review"]["problems"][0].startswith("un impermeable amarillo: Bruma no tiene"), out)
+req_body = looked[-2]["body"] if len(looked) > 1 else {}
+check("first the shot made into a checklist, by the house's model and with no picture",
+      req_body.get("response_format") == {"type": "json_object"}
+      and [p_["type"] for p_ in req_body["messages"][0]["content"]] == ["text"]
+      and all(x in req_body["messages"][0]["content"][0]["text"] for x in (
+          "Bruma climbs the lighthouse stairs", "pastel watercolour", "a red fox in a yellow slicker", "Spanish")), req_body)
+parts = looked[-1]["body"]["messages"][0]["content"] if looked else []
+check("looked at by the house's vision model, frame and character portrait, without thinking",
+      looked and looked[-1]["url"].startswith("http://127.0.0.1:11437") and looked[-1]["body"]["model"] == "qwen3.5:9b"
+      and [p_["image_url"]["url"] for p_ in parts if p_["type"] == "image_url"]
+      == ["data:image/jpeg;base64," + base64.b64encode(FRAME).decode(), "data:image/png;base64," + base64.b64encode(PORTRAIT).decode()]
+      and looked[-1]["body"]["reasoning_effort"] == "none", looked[-1:] and looked[-1]["url"])
+vtext = parts[0]["text"] if parts else ""
+check("then the frame checked against each item, strictly, rendering defects apart",
+      all(x in vtext for x in ("- un zorro rojo", "- la escalera del faro", "Be strict", "rendering defects only"))
+      and looked[-1]["body"].get("response_format") == {"type": "json_object"})
+check("under the bar, the Designer writes the redraw -- from the findings, with no picture sent to it",
+      seen and seen[-1]["profile"] == "designer" and not seen[-1]["images"]
+      and "Bruma no tiene el impermeable" in seen[-1]["text"]
+      and out["review"]["prompt"] == "A red fox in a yellow slicker climbing a white lighthouse spiral stair", seen[-1:])
+posted = [c for c in calls if c[1].endswith("/boards/bd1/review")]
+check("the frame is marked as being looked at, then given the review",
+      [c[2]["review"]["state"] for c in posted] == ["running", "done"] and posted[-1][2]["review"]["score"] == 5, posted)
+check("as the person", posted and posted[-1][3].get("X-Studio-User") == USER1)
+seen.clear()
+vision_answers[:] = ['{"items": ["un zorro rojo", "un impermeable amarillo", "la escalera del faro"]}', '{"checks": [{"item": "a", "shown": "yes"}, {"item": "b", "shown": "yes"}], "defects": []}']
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+check("a frame that is fine costs no writing", r.status_code == 200 and not seen and not r.get_json()["review"].get("prompt"))
+calls.clear()
+vision_answers[:] = ['{"items": ["un zorro rojo", "un impermeable amarillo", "la escalera del faro"]}', "not json"]
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+check("a verdict that cannot be read is a failure, and the frame says so",
+      r.status_code == 502 and [c[2]["review"]["state"] for c in calls if c[1].endswith("/review")] == ["running", "failed"])
+saved_url = A.STUDIO_VISION_URL
+A.STUDIO_VISION_URL = ""
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+check("with no vision model set, it says it cannot, rather than sending the picture elsewhere",
+      r.status_code == 502 and not any(l for l in looked if l["url"] == ""))
+A.STUDIO_VISION_URL = saved_url
+
+print("\n  the Studio's hook: a refined frame, reviewed and redrawn while it scores low")
+calls.clear()
+vision_answers[:] = ['{"items": ["un zorro rojo", "un impermeable amarillo", "la escalera del faro"]}', '{"checks": [{"item": "a", "shown": "partly", "why": "dark"}], "defects": []}']
+plans[:] = ["brighter lighthouse at dawn"]
+check("the hook needs the Studio's secret",
+      client.post("/studio/api/frame-review", json={"login": USER1}).status_code == 401)
+r = client.post("/studio/api/frame-review", headers={"X-Studio-Secret": A.STUDIO_SECRET}, json={
+    "login": USER1, "project": "abc123def456", "shot": "sh1", "job": "jb1", "refine": {"rounds": 1, "threshold": 7, "round": 1}})
+deadline = time.time() + 10
+while time.time() < deadline and not any(c[1] == "projects/abc123def456/storyboard" for c in calls):
+    time.sleep(0.05)
+redraw = [c for c in calls if c[1] == "projects/abc123def456/storyboard"]
+took = [c for c in calls if c[1] == "projects/abc123def456/items/sh1/prompt"]
+check("under the bar with a round left, the Designer's prompt becomes the description -- as Alfred, for the history",
+      took and took[0][2] == {"prompt": "brighter lighthouse at dawn"} and took[0][3].get("X-Studio-Via") == "Alfred", took)
+check("and the frame is redrawn from it, one round fewer",
+      r.status_code == 200 and redraw and redraw[0][2] == {"items": ["sh1"], "refine": {"rounds": 0, "threshold": 7, "round": 2}}
+      and calls.index(took[0]) < calls.index(redraw[0]), redraw)
+calls.clear()
+vision_answers[:] = ['{"items": ["un zorro rojo", "un impermeable amarillo", "la escalera del faro"]}', '{"checks": [{"item": "a", "shown": "partly", "why": "dark"}], "defects": []}']
+plans[:] = ["x"]
+client.post("/studio/api/frame-review", headers={"X-Studio-Secret": A.STUDIO_SECRET}, json={
+    "login": USER1, "project": "abc123def456", "shot": "sh1", "job": "jb1", "refine": {"rounds": 0, "threshold": 7, "round": 2}})
+deadline = time.time() + 10
+while time.time() < deadline and not any(c[1].endswith("/review") and c[2]["review"]["state"] == "done" for c in calls):
+    time.sleep(0.05)
+time.sleep(0.2)
+check("with no rounds left it is reviewed and left as it is",
+      any(c[1].endswith("/review") and c[2]["review"]["state"] == "done" for c in calls)
+      and not any(c[1] == "projects/abc123def456/storyboard" for c in calls))
+
+calls.clear()
+saved_url = A.STUDIO_VISION_URL
+A.STUDIO_VISION_URL = ""
+r = client.post("/studio/api/frame-review", headers={"X-Studio-Secret": A.STUDIO_SECRET}, json={
+    "login": USER1, "project": "abc123def456", "shot": "sh1", "job": "jb1", "refine": {"rounds": 0, "threshold": 7}})
+time.sleep(0.3)
+check("every drawn frame is sent, and a house with no vision model leaves them unreviewed rather than failed",
+      r.status_code == 200 and r.get_json().get("reviewed") is False and not calls, calls)
+A.STUDIO_VISION_URL = saved_url
 
 shutil.rmtree(tmp, ignore_errors=True)
 print()
