@@ -435,6 +435,43 @@ check("with its own renderer", 'toolTable(' in page)
 for col in ('Calls', 'Turns', 'Mean prompt', 'Cached'):
     check(f"and a «{col}» column", col in page, col)
 
+print("\nhow the turn went, kept past the assistant's restart")
+import sqlite3  # noqa: E402
+client.post('/chat/usage', headers=_h(), json={
+    'session_key': 'websocket:homeweb:%s:2026-09-29:1790000000001' % USER1,
+    'model': 'deepseek-v4.1-flash', 'usage': {'prompt_tokens': 900},
+    'stop_reason': 'Empty_Final_Response; DROP TABLE',
+    'route': {'tier': 'everyday', 'label': 'action', 'source': 'model',
+              'classifier_ms': 412, 'escalated': True, 'escalated_from': 'max_iterations'},
+    'turn': {'turn_id': 'ABCDEF0123456789', 'latency_ms': 8123, 'call_errors': 1,
+             'tool_errors': 2, 'retry_wait_ms': 1500,
+             'events': {'parse:dsml': 2, 'tool_error:exec': 1, '<b>x</b>': 1, 'bad': 'many'}},
+})
+client.post('/chat/usage', headers=_h(), json={
+    'session_key': 'x', 'model': 'm', 'usage': {'prompt_tokens': 1},
+    'turn': {'turn_id': 'feed', 'events': {f'code{i}': 1 for i in range(60)}}})
+db = sqlite3.connect(A.USAGE_DB_PATH)
+r = db.execute('SELECT stop_reason, turn_id, latency_ms, call_errors, tool_errors, '
+               'retry_wait_ms, classifier_ms, escalated, escalated_from FROM token_usage '
+               "WHERE turn_id = 'abcdef0123456789'").fetchone()
+check("the stop reason is kept, and only as a word", r[0] == 'empty_final_responsedroptable'[:32], r)
+check("the turn id joins the rows", r[1] == 'abcdef0123456789', r)
+check("latency and failures are columns", r[2:6] == (8123, 1, 2, 1500), r)
+check("and so is the classifier's escalation", r[6:] == (412, 1, 'max_iterations'), r)
+ev = dict(db.execute("SELECT code, n FROM turn_events WHERE turn_id = 'abcdef0123456789'"))
+check("the runner's codes land in turn_events", ev.get('parse:dsml') == 2
+      and ev.get('tool_error:exec') == 1, ev)
+check("markup is stripped from a code", 'bxb' in ev and not any('<' in c for c in ev), ev)
+check("a count that is not a number is dropped", 'bad' not in ev, ev)
+capped = db.execute("SELECT COUNT(*) FROM turn_events WHERE turn_id = 'feed'").fetchone()[0]
+check("and one row carries at most forty codes", capped == 40, capped)
+client.post('/chat/usage', headers=_h(), json={'session_key': 'ev-heartbeat', 'model': 'm',
+                                               'usage': {'prompt_tokens': 5}})
+r = db.execute('SELECT stop_reason, turn_id, latency_ms FROM token_usage '
+               'ORDER BY id DESC LIMIT 1').fetchone()
+check("a report with no turn leaves latency unknown, not zero", r == ('', '', None), r)
+db.close()
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")
 raise SystemExit(1 if failures else 0)

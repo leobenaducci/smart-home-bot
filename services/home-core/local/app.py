@@ -17847,8 +17847,76 @@ def init_usage_db():
     # every row before this, shown as "not recorded" rather than guessed.
     if 'provider' not in cols:
         conn.execute("ALTER TABLE token_usage ADD COLUMN provider TEXT NOT NULL DEFAULT ''")
+    # How the turn went, 2026-09-29, for reading a week of turns back to find
+    # what goes wrong (docs/self-improvement.md). Until now latency, failed
+    # calls and the runner's stop reason lived in the assistant's memory and
+    # its container log, and both are gone within days. `turn_id` joins the
+    # rows one turn bills in parts (an escalation reports the cheap attempt,
+    # then the one that answered). NULL latency is "not reported" -- every row
+    # before this, and a heartbeat, which has no turn -- not "instant".
+    for _col, _decl in (('stop_reason', "TEXT NOT NULL DEFAULT ''"),
+                        ('turn_id', "TEXT NOT NULL DEFAULT ''"),
+                        ('latency_ms', 'INTEGER'),
+                        ('call_errors', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('tool_errors', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('retry_wait_ms', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('classifier_ms', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('escalated', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('escalated_from', "TEXT NOT NULL DEFAULT ''")):
+        if _col not in cols:
+            conn.execute(f'ALTER TABLE token_usage ADD COLUMN {_col} {_decl}')
+    # What the runner noticed during a turn, as codes and counts: DSML written
+    # as text, a skill block that resolved to nothing, an empty answer retried,
+    # a refused action, a tool that failed. Never message text: the codes are
+    # as private as the tool names beside them, which is what lets this table
+    # be read by something outside the house after the fact.
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS turn_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            turn_id TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL,
+            ts INTEGER NOT NULL,
+            day TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT '',
+            code TEXT NOT NULL,
+            n INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_turn_events_day ON turn_events(day);
+        CREATE INDEX IF NOT EXISTS idx_turn_events_turn ON turn_events(turn_id);
+    ''')
     conn.commit()
     conn.close()
+
+
+# An event code as the runner writes it (`parse:dsml`, `tool_error:exec`,
+# `skill:no_code:lights`), and how many one row may carry: a runaway turn is
+# interesting for having failed forty times, not for the fortieth code.
+_TURN_EVENT_RE = re.compile(r'[^A-Za-z0-9_:.\-]')
+_TURN_EVENTS_MAX = 40
+
+
+def _turn_block(data):
+    """The `turn` block of a usage report, cleaned: (columns, events)."""
+    turn = data.get('turn') if isinstance(data.get('turn'), dict) else {}
+
+    def _int(v, cap=10 ** 9):
+        return max(0, min(int(v), cap)) if isinstance(v, (int, float)) else 0
+
+    latency = turn.get('latency_ms')
+    cols = (
+        re.sub(r'[^a-z_]', '', str(data.get('stop_reason') or '').lower())[:32],
+        re.sub(r'[^a-f0-9]', '', str(turn.get('turn_id') or '').lower())[:32],
+        _int(latency) if isinstance(latency, (int, float)) else None,
+        _int(turn.get('call_errors'), 10000), _int(turn.get('tool_errors'), 10000),
+        _int(turn.get('retry_wait_ms')),
+    )
+    events = []
+    raw = turn.get('events') if isinstance(turn.get('events'), dict) else {}
+    for code, n in list(raw.items())[:_TURN_EVENTS_MAX]:
+        code = _TURN_EVENT_RE.sub('', str(code))[:80]
+        if code and isinstance(n, (int, float)) and n > 0:
+            events.append((code, min(int(n), 10000)))
+    return cols, events
 
 
 # Tool names as the household should read them. nanobot reports what the model
@@ -18078,18 +18146,33 @@ def usage_ingest():
     row = row + (str(route.get('tier') or '')[:16], str(route.get('label') or '')[:16],
                  str(route.get('source') or '')[:24])
     row = row + (re.sub(r'[^a-z0-9_]', '', str(data.get('provider') or '').lower())[:32],)
+    turn_cols, events = _turn_block(data)
+    classifier_ms = route.get('classifier_ms')
+    row = row + turn_cols + (
+        max(0, min(int(classifier_ms), 10 ** 7)) if isinstance(classifier_ms, (int, float)) else 0,
+        1 if route.get('escalated') else 0,
+        re.sub(r'[^a-z_]', '', str(route.get('escalated_from') or '').lower())[:32],
+    )
     conn = _usage_conn()
     try:
         conn.execute(
             'INSERT INTO token_usage (username, ts, day, scope, model, prompt_tokens, '
             'cached_tokens, completion_tokens, reasoning_tokens, tools, tool_names, '
-            'cost_usd, tier, label, route_source, provider) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
+            'cost_usd, tier, label, route_source, provider, stop_reason, turn_id, '
+            'latency_ms, call_errors, tool_errors, retry_wait_ms, classifier_ms, '
+            'escalated, escalated_from) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
+        if events:
+            conn.executemany(
+                'INSERT INTO turn_events (turn_id, username, ts, day, scope, code, n) '
+                'VALUES (?,?,?,?,?,?,?)',
+                [(turn_cols[1], username, now, row[2], row[3], code, n) for code, n in events])
         # Cheap enough to do inline and it keeps the file from being a surprise
         # in a year; the index makes it a range delete.
         if row[1] % 200 == 0:
             cutoff = (_tasks_today() - timedelta(days=USAGE_KEEP_DAYS)).isoformat()
             conn.execute('DELETE FROM token_usage WHERE day < ?', (cutoff,))
+            conn.execute('DELETE FROM turn_events WHERE day < ?', (cutoff,))
     finally:
         conn.close()
     return jsonify(ok=True)

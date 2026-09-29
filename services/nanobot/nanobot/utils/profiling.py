@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -117,9 +118,42 @@ class Span:
 
     outcome: dict[str, Any] = field(default_factory=dict)
 
+    # What the usage report carries out of the process, which the ring buffers
+    # above do not: they are gone on the next restart, and a self-improvement
+    # pass reading a week of turns needs the week (docs/self-improvement.md).
+    # `turn_id` joins the rows one turn bills in several parts (an escalation
+    # reports the cheap attempt, then the one that answered). `events` counts
+    # codes -- `parse:dsml`, `retry:empty`, `tool_error:<tool>` -- never text,
+    # so what leaves here is as private as the tool names already are.
+    turn_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    events: dict[str, int] = field(default_factory=dict)
+    _taken: dict[str, float] = field(default_factory=dict)
+
     def note(self, **fields: Any) -> None:
         """Attach outcome fields known only once the span is done."""
         self.outcome.update({k: v for k, v in fields.items() if v is not None})
+
+    def event(self, code: str, n: int = 1) -> None:
+        self.events[code[:80]] = self.events.get(code[:80], 0) + n
+
+    def take(self) -> dict[str, Any]:
+        """What happened since the last take (or the start): the part of the
+        turn one usage row bills. Events are drained, so a turn reported in
+        two rows does not count its first attempt's failures twice."""
+        now = time.perf_counter()
+        last = self._taken
+        out = {
+            "turn_id": self.turn_id,
+            "latency_ms": round((now - last.get("t", self._t0)) * 1000),
+            "call_errors": self.call_errors - int(last.get("call_errors", 0)),
+            "tool_errors": self.tool_errors - int(last.get("tool_errors", 0)),
+            "retry_wait_ms": round((self.retry_wait_s - last.get("retry_wait_s", 0.0)) * 1000),
+            "events": dict(self.events),
+        }
+        self._taken = {"t": now, "call_errors": self.call_errors,
+                       "tool_errors": self.tool_errors, "retry_wait_s": self.retry_wait_s}
+        self.events = {}
+        return out
 
     def _record(self) -> dict[str, Any]:
         duration_s = time.perf_counter() - self._t0
@@ -161,6 +195,21 @@ class Span:
 
 
 _CURRENT: ContextVar[Span | None] = ContextVar("nanobot_profiling_span", default=None)
+
+
+def current_span() -> Span | None:
+    return _CURRENT.get()
+
+
+def note_event(code: str) -> None:
+    """Count *code* on the turn in flight; nothing when there is none.
+
+    A code, not a message: it leaves the process in the usage report, and the
+    places that call this know things -- what the model wrote, whose session --
+    that must not go with it."""
+    span = _CURRENT.get()
+    if span is not None:
+        span.event(code)
 
 
 class Profiler:
@@ -285,7 +334,13 @@ class Profiler:
             span.retry_wait_s += wait_s
             if finish_reason == "error":
                 span.call_errors += 1
+            if record["empty"]:
+                span.event("llm:empty")
+            if finish_reason == "length":
+                span.event("llm:truncated")
             served = served_by or model
+            if served != model:
+                span.event("llm:fallback")
             span.models_served[served] = span.models_served.get(served, 0) + 1
             for key, value in tokens.items():
                 span.tokens[key] = span.tokens.get(key, 0) + value
@@ -330,6 +385,7 @@ class Profiler:
             span.tool_names[name] = span.tool_names.get(name, 0) + 1
             if status == "error":
                 span.tool_errors += 1
+                span.event(f"tool_error:{name}")
         else:
             record["scope"] = "unscoped"
         with self._lock:

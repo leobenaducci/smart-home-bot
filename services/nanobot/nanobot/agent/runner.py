@@ -23,7 +23,7 @@ from nanobot.utils.debug_log import log_error as _log_error
 from nanobot.utils.prompt_templates import render_template
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from nanobot.utils.profiling import PROFILER
+from nanobot.utils.profiling import PROFILER, note_event
 from nanobot.utils.helpers import (
     build_assistant_message,
     estimate_message_tokens,
@@ -1368,6 +1368,7 @@ def _resolve_block_beside_calls(
              for tc in response.tool_calls],
         )
         return dataclasses.replace(response, tool_calls=[], finish_reason="stop")
+    note_event("parse:block_beside_calls")
     logger.warning(
         "Text tool call parsing: {} wrote a skill-invocation block beside {}; "
         "the block is taken out of the text and run too if it resolves",
@@ -1972,6 +1973,7 @@ class AgentRunner:
                 messages_for_model = self._drop_orphan_tool_results(messages_for_model)
                 messages_for_model = self._backfill_missing_tool_results(messages_for_model)
             except Exception as exc:
+                note_event("context:repair")
                 logger.warning(
                     "Context governance failed on turn {} for {}: {}; applying minimal repair",
                     iteration,
@@ -2016,6 +2018,7 @@ class AgentRunner:
                     if tool_call_counts[_sig] >= _REPEATED_TOOL_CALL_LIMIT:
                         stuck_call = _sig
                 if stuck_call is not None:
+                    note_event("stop:repeated_tool_calls")
                     logger.warning(
                         "Repeated tool call: {} called {}({}) {} times in one turn; "
                         "stopping the turn rather than looping to max_iterations",
@@ -2193,6 +2196,7 @@ class AgentRunner:
                 continue
 
             if response.has_tool_calls:
+                note_event("parse:calls_ignored")
                 logger.warning(
                     "Ignoring tool calls under finish_reason='{}' for {}",
                     response.finish_reason,
@@ -2203,6 +2207,7 @@ class AgentRunner:
             if response.finish_reason != "error" and is_blank_text(clean):
                 empty_content_retries += 1
                 if empty_content_retries < _MAX_EMPTY_RETRIES:
+                    note_event("retry:empty")
                     logger.warning(
                         "Empty response on turn {} for {} ({}/{}); retrying",
                         iteration,
@@ -2214,6 +2219,7 @@ class AgentRunner:
                         await hook.on_stream_end(context, resuming=False)
                     await hook.after_iteration(context)
                     continue
+                note_event("retry:finalize")
                 logger.warning(
                     "Empty response on turn {} for {} after {} retries; attempting finalization",
                     iteration,
@@ -2518,6 +2524,7 @@ class AgentRunner:
                 allowed = (_WHATSAPP_READABLE_ACTIONS if from_whatsapp
                            else _ASK_READABLE_ACTIONS)
                 if action not in allowed:
+                    note_event("refused:whatsapp" if from_whatsapp else "refused:ask")
                     logger.warning(
                         "{} session: refused action {} on skill {}",
                         "whatsapp" if from_whatsapp else "ask",
@@ -2552,6 +2559,7 @@ class AgentRunner:
 
             if _has_go_ahead(invocation) and not _person_answered_pending(messages):
                 action = str(invocation.get("action", ""))
+                note_event("refused:go_ahead")
                 logger.warning("refused a go-ahead nobody gave: {} on skill {}",
                                action, invocation.get("skill"))
                 refusal = (f"'{action}' was called as already confirmed, but the person has "
@@ -2565,6 +2573,7 @@ class AgentRunner:
 
             if getattr(spec, "read_only", False) and not is_read_action(invocation):
                 action = str(invocation.get("action", ""))
+                note_event("refused:read_only")
                 logger.warning("read-only plan step: refused action {} on skill {}",
                                action, invocation.get("skill"))
                 if spec.refused is not None:
@@ -2608,6 +2617,7 @@ class AgentRunner:
                     # translator that emitted only the bare call can't NameError.
                     python_code = f"{python_guide}\n\n{python_code}"
             if not python_code:
+                note_event(f"skill:no_code:{skill_name}")
                 logger.warning("Skill translation: no code generated for {}, falling back to read_file", skill_name)
                 new_tool_calls[i] = ToolCallRequest(id=tc.id, name="read_file", arguments={"path": path})
                 changed = True
@@ -2621,6 +2631,7 @@ class AgentRunner:
             try:
                 compile(python_code, f"<skill:{skill_name}>", "exec")
             except (SyntaxError, ValueError) as exc:
+                note_event(f"skill:bad_code:{skill_name}")
                 logger.warning(
                     "Skill translation produced invalid Python for {} ({}); falling back to read_file",
                     skill_name, exc,
@@ -2702,9 +2713,11 @@ class AgentRunner:
                 code = fence.group(1).strip()
             return code if code else None
         except asyncio.TimeoutError:
+            note_event(f"skill:timeout:{skill_name}")
             logger.warning("Skill translation timed out for {}", skill_name)
             return None
         except Exception as _e:
+            note_event(f"skill:failed:{skill_name}")
             logger.warning("Skill translation LLM call failed: {}", _e)
             return None
 
@@ -2736,6 +2749,7 @@ class AgentRunner:
         if response.finish_reason == "error":
             return _without_skill_invocation_text(response)
         if response.content and "DSML" in response.content:
+            note_event("parse:dsml")
             response = dataclasses.replace(response, content=_dsml_as_qwen35(response.content))
         if response.has_tool_calls:
             response = _lift_echoed_skill_blocks(response, spec.session_key)
@@ -2765,6 +2779,7 @@ class AgentRunner:
                     return dataclasses.replace(
                         response, tool_calls=[*response.tool_calls, *block_calls])
                 if stripped_block:
+                    note_event("parse:block_unresolved")
                     logger.warning(
                         "Text tool call parsing: the block beside {} for {} resolved to "
                         "no call; it is stripped, not executed. It wrote: {!r}",
@@ -2830,6 +2845,7 @@ class AgentRunner:
             # report but "no hizo nada".
             if _has_skill_invocation_text(response.content):
                 asked = _named_skill_invocations(response.content)
+                note_event("parse:block_no_call")
                 logger.warning(
                     "Text tool call parsing: {} wrote a skill-invocation block that "
                     "resolved to no call ({}); the turn ends here with nothing executed. "
@@ -2893,6 +2909,7 @@ class AgentRunner:
             # to be the only silent exit in the whole parser, and a stall that
             # writes nothing to the log cannot be told apart from a model that
             # simply chose to stop talking.
+            note_event("parse:dup_calls")
             logger.warning(
                 "Text tool call parsing: dropped {} already-run call(s) {} for {}; "
                 "nothing left to execute, so this response ends the turn",
@@ -3344,6 +3361,7 @@ class AgentRunner:
             system_tokens = sum(estimate_message_tokens(msg) for msg in system_messages)
             remaining_budget = max(128, budget - system_tokens)
             if budget - system_tokens < 128:
+                note_event("context:starved")
                 logger.warning(
                     "History snip for {}: the system prompt (~{} tokens) fills the "
                     "{}-token budget; only the newest message reaches the model",

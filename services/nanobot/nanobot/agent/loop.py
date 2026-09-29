@@ -1277,6 +1277,7 @@ class AgentLoop:
                            "even if the step names one: it would be refused. Instead, end the step "
                            "saying which change it asks for and that it needs the person's go-ahead.")
             msgs = system() + [{"role": "user", "content": prompt}]
+            step_t0 = time.perf_counter()
             # The step model gets the tools this step names (tools_for_step);
             # the planner's model, running a step the step model could not
             # finish, gets all of them -- it is the one that wrote the plan.
@@ -1326,7 +1327,9 @@ class AgentLoop:
                                                       "escalated": by.startswith(back_model) and local,
                                                       "escalated_from": ""},
                          provider=res.served_by_provider
-                         or ran_on.serving_route(by.split(" ")[0])[1])
+                         or ran_on.serving_route(by.split(" ")[0])[1],
+                         stop_reason=res.stop_reason,
+                         latency_ms=round((time.perf_counter() - step_t0) * 1000))
             text = res.final_content or ""
             if refused:
                 # Said to the planner, not left to the step's own words: a
@@ -1805,7 +1808,8 @@ class AgentLoop:
                 report_usage(session.key if session else None,
                              result.served_by_model or serving, result.usage,
                              result.tools_used or [], route=route.as_record(),
-                             provider=_billed_provider(result))
+                             provider=_billed_provider(result),
+                             stop_reason=result.stop_reason)
                 await plan_tool.say(turn_plan, "handoff")
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "continue", route,
@@ -1816,7 +1820,8 @@ class AgentLoop:
                 report_usage(session.key if session else None,
                              result.served_by_model or serving, result.usage,
                              result.tools_used or [], route=route.as_record(),
-                             provider=_billed_provider(result))
+                             provider=_billed_provider(result),
+                             stop_reason=result.stop_reason)
                 return await self._delegate_turn(
                     initial_messages, session, channel, chat_id, "dead_end", route,
                     done="\n\n".join(x for x in (plan_note, delegate.already_done(result.messages)) if x),
@@ -1831,7 +1836,8 @@ class AgentLoop:
                              first_attempt.served_by_model or serving,
                              first_attempt.usage, first_attempt.tools_used or [],
                              route=route.as_record(),
-                             provider=_billed_provider(first_attempt))
+                             provider=_billed_provider(first_attempt),
+                             stop_reason=first_attempt.stop_reason)
                 serving, displaced = self._powerful_runner.provider.serving_model(self.powerful_model)
                 bill_via, bill_model = self._powerful_runner.provider, self.powerful_model
                 loop_hook.turn_model = serving
@@ -1888,9 +1894,11 @@ class AgentLoop:
                 "Turn was labelled {} but answered by {} (fallback fired mid-turn)",
                 serving, result.served_by_model,
             )
+        # After the span has closed, so it is handed over rather than found.
         report_usage(session.key if session else None, billed,
                      result.usage, result.tools_used or [], route=route.as_record(),
-                     provider=_billed_provider(result))
+                     provider=_billed_provider(result), stop_reason=result.stop_reason,
+                     span=span)
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
             # Push final content through stream so streaming channels (e.g. Feishu)
