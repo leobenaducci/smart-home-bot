@@ -5,6 +5,7 @@
     ./home-stack improve collect --days 7        the last seven days
     ./home-stack improve collect --no-model      without the local model's name pass
     ./home-stack improve inbox                   what the inbox holds, by signal
+    ./home-stack improve repos                   where a fix may be made: this stack and its plugins
 
 Nothing here calls a model outside the house. The inbox it writes is what the
 evaluator reads (docs/self-improvement.md); the raw history never is.
@@ -27,6 +28,7 @@ sys.path.insert(0, str(HERE))
 
 import collect as C  # noqa: E402
 import redact as R  # noqa: E402
+import repos as RP  # noqa: E402
 
 TEXT_FIELDS = ("request", "answer", "next", "feedback")
 
@@ -122,6 +124,27 @@ def cmd_collect(args) -> int:
     if red.withheld:
         print(f"  withheld {red.withheld} episode(s): an identifier survived redaction")
     print(f"inbox: {total} episode(s) in {d / 'inbox'}")
+    # Kept current beside the inbox: a plugin added since yesterday is a place
+    # a fix may go today.
+    RP.write(d, RP.discover(cfg))
+    return 0
+
+
+def cmd_repos(args) -> int:
+    cfg = live_config()
+    repos = RP.discover(cfg)
+    path = RP.write(improve_dir(cfg), repos)
+    for r in repos:
+        what = r["provides"]
+        detail = ", ".join(what.get("services") or []) or what.get("about") or ""
+        if what.get("env"):
+            detail += f"  (assistant env: {', '.join(what['env'])})"
+        print(f"  {r['name']:<18} {r['kind']:<7} {r['path']}")
+        print(f"  {'':<18} {r['web'] or r['remote'] or 'no remote'}  on {r['branch'] or '?'}"
+              f"{'' if r['clean'] else ', uncommitted changes'}")
+        if detail:
+            print(f"  {'':<18} {detail[:150]}")
+    print(f"{len(repos)} repositor{'y' if len(repos) == 1 else 'ies'}, written to {path}")
     return 0
 
 
@@ -151,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("inbox", help="what the inbox holds")
     i.add_argument("--days", type=int, default=14)
     i.set_defaults(func=cmd_inbox)
+    r = sub.add_parser("repos", help="where a fix may be made")
+    r.set_defaults(func=cmd_repos)
     args = ap.parse_args(argv)
     if getattr(args, "day", None):
         date.fromisoformat(args.day)

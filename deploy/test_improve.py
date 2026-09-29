@@ -232,6 +232,37 @@ check("readable by this user alone",
 check("and the salt stays private",
       oct((tmp / "improve" / "private" / "salt").stat().st_mode & 0o777) == "0o600")
 
+print("\nwhere a fix may be made")
+import subprocess  # noqa: E402
+import repos as RP  # noqa: E402
+check("a GitHub remote opens on GitHub",
+      RP.web_url("git@github.com:ejemplo/stack.git") == "https://github.com/ejemplo/stack")
+check("an Azure DevOps one on Azure DevOps",
+      RP.web_url("u@vs-ssh.visualstudio.com:v3/org/proj/repo") == "https://dev.azure.com/org/proj/_git/repo")
+check("and credentials in an https remote never reach the link",
+      RP.web_url("https://user:tok@git.example.org/r.git") == "https://git.example.org/r")
+plug = tmp / "luces-plugin"
+plug.mkdir()
+(plug / "plugin.yml").write_text(
+    "name: luces\ncontract: 1\nservices:\n  luces-api:\n    description: x\n    units: []\n"
+    "contributes:\n  nanobot:\n    env: {LUCES_API_URL: 'http://x/api'}\n", encoding="utf-8")
+for cmd in (["init", "-q"], ["remote", "add", "origin", "git@github.com:ejemplo/luces.git"]):
+    subprocess.run(["git", "-C", str(plug), *cmd], check=True)
+extra = tmp / "otro"
+extra.mkdir()
+subprocess.run(["git", "-C", str(extra), "init", "-q"], check=True)
+found = RP.discover({"plugins": [str(plug), str(tmp / "no-git-here")],
+                     "assistant": {"improve": {"repos": [{"path": str(extra), "about": "notas"}],
+                                               "exclude": []}}})
+names = {r["name"]: r for r in found}
+check("the stack itself, from this checkout", any(r["kind"] == "stack" for r in found), list(names))
+check("a plugin, with what it provides", names.get("luces", {}).get("provides", {}).get("env")
+      == ["LUCES_API_URL"] and names["luces"]["web"] == "https://github.com/ejemplo/luces", names.get("luces"))
+check("and an extra one from the config", names.get("otro", {}).get("source") == "config", list(names))
+stack_name = next(r["name"] for r in found if r["kind"] == "stack")
+found = RP.discover({"plugins": [str(plug)], "assistant": {"improve": {"exclude": ["luces", stack_name]}}})
+check("exclude leaves an automatic one out", found == [], [r["name"] for r in found])
+
 import shutil  # noqa: E402
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")

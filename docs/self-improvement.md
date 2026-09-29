@@ -144,10 +144,13 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   member marked `programmer` may; from WhatsApp or another member's question
   it is refused like every other acting skill.
 - **Where a fix belongs** is part of the issue, because it is not always this
-  repository. `assistant.improve.repos` in the live config names the
-  checkouts the improver may work in -- this one, and a plugin's own
-  repository (the lights skill is served by a plugin that lives outside this
-  tree). A fix that is a setting (a URL, a model) is proposed as a change on
+  repository. `./home-stack improve repos` (built) lists where one may go, and
+  keeps `{paths.state}/improve/repos.json` current on every collect: this
+  checkout and its GitHub remote, and every plugin in `plugins:` that is a git
+  repository, each with what it provides -- services, the assistant env it
+  contributes (the lights skill is found by its `HOME_LIGHTS_API_URL`), and
+  for the stack its skills. `assistant.improve.repos` adds others (`{name,
+  path, about}`), `assistant.improve.exclude` leaves one out by name. A fix that is a setting (a URL, a model) is proposed as a change on
   the admin page, never written into code; a fix that only makes sense for
   this house goes to its plugin or its config, never here (`CLAUDE.md`,
   "Household data never enters git").
