@@ -439,6 +439,22 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
     /* A stopped answer keeps what it managed to say. The mark is what stops it
        being read as a complete one that simply trailed off. */
     .msg-stopped { float:left; color:var(--clay); font-style:italic; }
+    /* Rating an answer. Quiet until wanted: faint beside the time, clearer on
+       hover or once chosen, never on an answer still being written. */
+    .fb { display:inline-flex; gap:2px; margin-left:8px; vertical-align:middle; }
+    .fb button { background:none; border:0; padding:2px 4px; cursor:pointer; font-size:.8rem;
+      line-height:1; border-radius:6px; opacity:.35; filter:grayscale(1); transition:opacity .15s; }
+    .msg.bot:hover .fb button, .fb button:focus-visible { opacity:.75; }
+    .fb button[aria-pressed="true"] { opacity:1; filter:none; background:rgba(87,99,63,.12); }
+    .fb button:focus-visible { outline:2px solid var(--olive); outline-offset:1px; }
+    .msg.streaming .fb, .msg.from-parent .fb { display:none; }
+    @media (hover:none) { .fb button { opacity:.6; } }
+    .fb-note { display:flex; gap:6px; margin-top:6px; }
+    .fb-note input { flex:1; min-width:0; font:inherit; font-size:.8rem; padding:6px 8px;
+      border:1px solid var(--line); border-radius:8px; background:var(--paper, #fff); color:var(--ink); }
+    .fb-note button { font:inherit; font-size:.78rem; font-weight:600; padding:6px 10px; border-radius:8px;
+      border:1px solid var(--olive); background:var(--olive); color:#fff; cursor:pointer; }
+    .fb-thanks { font-size:.72rem; color:var(--ink-soft); margin-top:4px; font-style:italic; }
     .msg.interrupted { border-style:dashed; }
     /* The messages a branch inherited from the conversation it came out of:
        shown, because a branch without them is unreadable, but not pretending
@@ -2175,7 +2191,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     (msgs || []).forEach(function(m) {
       if (m.role === 'bot' && m.plan) paintPlan(planCard(null), m.plan);
       addMessage(m.text || '', m.role, null, m.ts,
-                 { interrupted: m.interrupted, fromParent: m.from_parent });
+                 { interrupted: m.interrupted, fromParent: m.from_parent, feedback: m.feedback });
     });
     paintBranchSwitch(msgs);
   }
@@ -2433,7 +2449,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     pumpQueue();      // and whatever is waiting behind it, from before this load
     try {
       var wp = new URLSearchParams(window.location.search).get('welcome');
-      if (wp) addMessage(wp, 'bot');  // greeting from a notification tap (ephemeral, not persisted)
+      if (wp) addMessage(wp, 'bot', null, null, { noFeedback: true });  // greeting from a notification tap (ephemeral, not persisted)
     } catch (e) {}
   }
 
@@ -3782,6 +3798,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   }
 
   function renderMessageContent(textSpan, text) {
+    textSpan._raw = text; textSpan._at = Date.now();
     text = text.replace(
       /\[([^\]]+)\]\(file:\/\/\/home\/nanobot\/\.nanobot\/workspace\/([^)]+)\)/g,
       '[$1](download:$2)'
@@ -3864,8 +3881,72 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     // the thread you are in.
     if (opts.fromParent) div.classList.add('from-parent');
     div.appendChild(timeSpan);
+    if (role === 'bot' && !opts.noFeedback) feedbackBar(div, timeSpan, textSpan, ts, opts.feedback);
     messagesEl.appendChild(div); scrollBottom();
     return { div:div, textSpan:textSpan };
+  }
+
+  /* ── Rating an answer ──
+     👍 or 👎 on each of Alfred's answers, and for a 👎 an optional line on
+     what was wrong. Filed on the answer in the history (/chat/feedback), where
+     the self-improvement pass reads it with the question beside it. The
+     answer is named by its text and its time rather than an id: the page and
+     the server each file a reply, and only those two travel with both. */
+  var FB_T = { up: {{ t('chat.feedback.up') | tojson }}, down: {{ t('chat.feedback.down') | tojson }},
+               ask: {{ t('chat.feedback.ask') | tojson }}, send: {{ t('chat.feedback.send') | tojson }},
+               thanks: {{ t('chat.feedback.thanks') | tojson }}, failed: {{ t('chat.feedback.failed') | tojson }} };
+  function feedbackBar(div, timeSpan, textSpan, ts, saved) {
+    var bar = document.createElement('span'); bar.className = 'fb';
+    var state = { rating: (saved && saved.rating) || '' };
+    function btn(kind, glyph) {
+      var b = document.createElement('button'); b.type = 'button'; b.textContent = glyph;
+      b.title = FB_T[kind]; b.setAttribute('aria-label', FB_T[kind]);
+      b.setAttribute('aria-pressed', state.rating === kind ? 'true' : 'false');
+      b.addEventListener('click', function(e) { e.stopPropagation(); choose(kind); });
+      bar.appendChild(b); return b;
+    }
+    var up = btn('up', '👍'), down = btn('down', '👎');
+    function paint() {
+      up.setAttribute('aria-pressed', state.rating === 'up' ? 'true' : 'false');
+      down.setAttribute('aria-pressed', state.rating === 'down' ? 'true' : 'false');
+    }
+    function note(text) {
+      var old = div.querySelector('.fb-thanks'); if (old) old.remove();
+      var n = document.createElement('div'); n.className = 'fb-thanks'; n.textContent = text;
+      div.appendChild(n); setTimeout(function() { n.remove(); }, 4000);
+    }
+    function send(rating, extra) {
+      var body = { rating: rating, ts: ts || textSpan._at || Date.now(), text: textSpan._raw || '',
+                   date: curDay, space: SPACE };
+      if (extra) body.note = extra;
+      return fetch('/chat/feedback', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+        body: JSON.stringify(body) }).then(function(r) { if (!r.ok) throw new Error(r.status); });
+    }
+    function closeAsk() { var f = div.querySelector('.fb-note'); if (f) f.remove(); }
+    function choose(kind) {
+      var before = state.rating;
+      state.rating = before === kind ? '' : kind; paint(); closeAsk();
+      send(state.rating).then(function() {
+        if (state.rating === 'down') ask(); else if (state.rating === 'up') note(FB_T.thanks);
+      }).catch(function() { state.rating = before; paint(); note(FB_T.failed); });
+    }
+    function ask() {
+      var f = document.createElement('form'); f.className = 'fb-note';
+      var i = document.createElement('input'); i.type = 'text'; i.maxLength = 500;
+      i.placeholder = FB_T.ask; i.setAttribute('aria-label', FB_T.ask);
+      var s = document.createElement('button'); s.type = 'submit'; s.textContent = FB_T.send;
+      f.appendChild(i); f.appendChild(s); div.appendChild(f); i.focus();
+      i.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeAsk(); });
+      f.addEventListener('submit', function(e) {
+        e.preventDefault(); var v = i.value.trim(); closeAsk();
+        if (!v) return;
+        send('down', v).then(function() { note(FB_T.thanks); })
+                       .catch(function() { note(FB_T.failed); });
+      });
+    }
+    paint();
+    timeSpan.appendChild(bar);
   }
 
   /* ── Branches ──

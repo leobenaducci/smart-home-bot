@@ -65,9 +65,15 @@ turn's profiler span and leaves with the next usage report. Codes are cleaned
 to `[A-Za-z0-9_:.-]`, 80 characters, 40 per row, and age out with the rest of
 `usage.db` (`USAGE_KEEP_DAYS`).
 
-What phase 1 does not have yet: a signal from the person. Stop (`interrupted`)
-and fork (`branch_of`) are already in the portal's history; a 👍/👎 on an answer
-is the next change.
+And a signal from the person. The runner's codes only see what the runtime
+noticed, so an answer that ran cleanly and was simply wrong reads, from
+there, as a success. Every answer in the chat now has 👍 and 👎 beside its
+time, and a 👎 asks, optionally, what was wrong. `POST /chat/feedback` files it
+on the answer in the portal's history, as `feedback: {rating, at, note}`,
+where the question and the rest of the conversation already are. The answer
+is found by its text and the nearest time rather than an id -- the page and
+the server each file a reply with their own clocks, and only those two travel
+with both. Stop (`interrupted`) and a fork (`branch_of`) were already there.
 
 ## Phase 2: the evaluator (planned)
 

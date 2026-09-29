@@ -2531,6 +2531,81 @@ def append_chat_history():
     return jsonify(ok=True)
 
 
+# How far from the time the page saw an answer the stored copy may be. The
+# page and the server each file a reply, with their own clocks and a stream in
+# between, so the page's `ts` is near the stored one rather than equal to it.
+FEEDBACK_MATCH_MS = 15 * 60 * 1000
+FEEDBACK_NOTE_MAX = 500
+
+
+def _feedback_target(msgs, ts, text):
+    """The bot message a rating is about: the same text nearest *ts*, or --
+    for a page that could not say the text -- the nearest answer at all, if
+    it is within two minutes."""
+    key = _dedup_key(text) if text else ''
+    best, best_d = None, None
+    for m in msgs:
+        if m.get('role') != 'bot':
+            continue
+        d = abs((m.get('ts') or 0) - ts)
+        if key:
+            if _dedup_key(m.get('text')) != key or d > FEEDBACK_MATCH_MS:
+                continue
+        elif d > 2 * 60 * 1000:
+            continue
+        if best_d is None or d < best_d:
+            best, best_d = m, d
+    return best
+
+
+@app.route('/chat/feedback', methods=['POST'])
+@api_login_required
+def chat_feedback():
+    """A person's 👍 or 👎 on one of Alfred's answers, and what was wrong.
+
+    Kept on the answer itself, in the history file, because that is where the
+    question, the answer and the rest of the conversation already are; the
+    self-improvement pass reads it from there (docs/self-improvement.md).
+    `rating` '' takes a rating back.
+    """
+    body = request.get_json(silent=True) or {}
+    rating = body.get('rating') or ''
+    if rating not in ('', 'up', 'down'):
+        return jsonify(error='invalid rating'), 400
+    try:
+        ts = int(body.get('ts') or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return jsonify(error='invalid ts'), 400
+    text = str(body.get('text') or '')
+    note = re.sub(r'\s+', ' ', str(body.get('note') or '')).strip()[:FEEDBACK_NOTE_MAX]
+    user = session['user']
+    space = _valid_space(body.get('space'))
+    first = _valid_day(body.get('date'))
+    # An answer given just before midnight is filed under the day it was
+    # asked; a page left open past it asks about "today".
+    days = [first]
+    try:
+        days.append((date.fromisoformat(first) - timedelta(days=1)).isoformat())
+    except ValueError:
+        pass
+    for day in days:
+        with _history_lock((user, day, space)):
+            msgs = load_user_history(user, day, space)
+            target = _feedback_target(msgs, ts, text)
+            if target is None:
+                continue
+            if rating:
+                target['feedback'] = {'rating': rating, 'at': int(time.time() * 1000),
+                                      **({'note': note} if note and rating == 'down' else {})}
+            else:
+                target.pop('feedback', None)
+            save_user_history(user, msgs, day, space)
+        return jsonify(ok=True, ts=target.get('ts'))
+    return jsonify(ok=False, error='not found'), 404
+
+
 @app.route('/chat/history', methods=['PUT'])
 @api_login_required
 def replace_chat_history():
