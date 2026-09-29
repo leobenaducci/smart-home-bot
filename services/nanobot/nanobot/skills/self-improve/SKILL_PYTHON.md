@@ -26,13 +26,17 @@ def _call(method, path, body=None, timeout=30):
 
 def request_fix(problem, context="", **kw):
     """File a fix to Alfred himself; returns the card that opens the Programmer on it."""
+    # Which conversation this is, from the runtime: every request asked in
+    # one conversation shares one Programmer session.
     return _call("POST", "/improve/api/requests",
-                 {"problem": str(problem), "context": str(context or "")})
+                 {"problem": str(problem), "context": str(context or ""),
+                  "origin": os.environ.get("NANOBOT_SESSION_KEY", "")})
 
 
 def publish_fix(id=None, deploy=False, **kw):
     """Tell a fix request's Programmer conversation to publish (and deploy) it."""
-    body = {"deploy": bool(deploy) and str(deploy).lower() not in ("false", "0", "no")}
+    body = {"deploy": bool(deploy) and str(deploy).lower() not in ("false", "0", "no"),
+            "origin": os.environ.get("NANOBOT_SESSION_KEY", "")}
     if id not in (None, ""):
         body["id"] = int(str(id).lstrip("#"))
     return _call("POST", "/improve/api/requests/publish", body, timeout=40)

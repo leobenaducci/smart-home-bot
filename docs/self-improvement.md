@@ -192,6 +192,15 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   published -- a plugin's services, or the stack services whose units the
   fix touched, then admin -- and refuses beside another deploy, during a
   benchmark, or from a stack checkout with uncommitted work.
+  **One chat conversation, one Programmer session.** Every request asked in
+  the same Alfred conversation continues the Programmer conversation the
+  first one opened -- behind whatever is running there -- so they share one
+  opencode session and its context. The conversation comes from the runtime,
+  never the model: the exec tool gives a skill `NANOBOT_SESSION_KEY` from the
+  turn's own span (pi's skills get it too), and the skill sends it as the
+  request's `origin`. A second request from the same conversation is a
+  duplicate only when it is the same problem again; `publish_fix` without a
+  number means the latest request from the conversation it is asked in.
   In the Programmer's project selector, **🛠 Alfred (mejoras)** is the project
   that is not a repository (`IMPROVE_PROJECT`, `alfred-self`): chosen, each
   turn carries the tool and its rules instead of "checkout this project", and

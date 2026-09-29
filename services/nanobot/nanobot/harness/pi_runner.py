@@ -265,7 +265,9 @@ def _skill_env_file() -> str:
     """
     fd, path = tempfile.mkstemp(prefix="alfred-skill-env-", suffix=".json")
     with os.fdopen(fd, "w") as fh:
-        json.dump(dict(os.environ), fh)
+        # And the conversation the task came from, as the exec tool gives it.
+        from nanobot.agent.tools.shell import with_session_key
+        json.dump(with_session_key(dict(os.environ)), fh)
     os.chmod(path, 0o600)
     return path
 

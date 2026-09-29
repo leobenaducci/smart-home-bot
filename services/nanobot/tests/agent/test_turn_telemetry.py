@@ -166,3 +166,13 @@ async def test_a_cut_with_nothing_spent_reports_nothing(monkeypatch):
     U.report_cut("sub:x", "m", span)
     await _drain()
     assert sent == []
+
+
+def test_a_skill_knows_which_conversation_it_runs_in():
+    """A fix request continues the Programmer session of the conversation it
+    came from, and only the runtime knows which that is: the turn's span."""
+    from nanobot.agent.tools.shell import with_session_key
+    with PROFILER.span("turn", "websocket:homeweb:999000111:2026-09-29:1790700000001"):
+        env = with_session_key({"HOME": "/h"})
+    assert env["NANOBOT_SESSION_KEY"] == "websocket:homeweb:999000111:2026-09-29:1790700000001"
+    assert "NANOBOT_SESSION_KEY" not in with_session_key({"HOME": "/h"})   # no turn, no key

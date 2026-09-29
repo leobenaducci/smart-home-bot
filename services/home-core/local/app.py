@@ -7534,7 +7534,8 @@ def _improve_conn():
         status TEXT NOT NULL DEFAULT 'open'
     )''')
     cols = {r[1] for r in conn.execute('PRAGMA table_info(improve_requests)')}
-    for col, decl in (('day', "TEXT NOT NULL DEFAULT ''"), ('conv', 'INTEGER NOT NULL DEFAULT 0')):
+    for col, decl in (('day', "TEXT NOT NULL DEFAULT ''"), ('conv', 'INTEGER NOT NULL DEFAULT 0'),
+                      ('origin', "TEXT NOT NULL DEFAULT ''")):
         if col not in cols:
             conn.execute(f'ALTER TABLE improve_requests ADD COLUMN {col} {decl}')
     return conn
@@ -7636,31 +7637,80 @@ def improve_request_new():
         return jsonify(ok=False, error='the Programmer does not run on opencode for this '
                        'member, so there is nowhere to hand a fix to. An admin turns it on '
                        'per person on the admin page.'), 409
+    # The conversation the person asked from, as their assistant's session
+    # key (NANOBOT_SESSION_KEY, from the turn's own span). Only ever compared
+    # with this person's own requests, so it needs no more than a shape.
+    origin = re.sub(r'[^\w:.-]', '', str(body.get('origin') or ''))[:200]
     conn = _improve_conn()
     try:
-        # The same person asking again within minutes, while the first is still
-        # open, is the same request: a chat turn that ran out of time hands
-        # the work to a background task, which files it a second time, and two
-        # Programmer runs then investigate one problem (2026-09-29, #3 and #4).
-        dup = conn.execute("SELECT id, day, conv FROM improve_requests WHERE username = ? "
-                           "AND created_at > ? AND status IN ('open', 'investigating') "
-                           "ORDER BY id DESC LIMIT 1",
-                           (username, int(time.time()) - IMPROVE_DEDUP_S)).fetchone()
+        recent = conn.execute(
+            "SELECT id, day, conv, problem, origin FROM improve_requests WHERE username = ? "
+            "AND created_at > ? AND status IN ('open', 'investigating') ORDER BY id DESC",
+            (username, int(time.time()) - IMPROVE_DEDUP_S)).fetchall()
+        # Every request from one conversation shares one Programmer session:
+        # the latest one filed from it that has a conversation of its own.
+        prev = conn.execute(
+            "SELECT day, conv FROM improve_requests WHERE username = ? AND origin = ? "
+            "AND origin != '' AND conv > 0 ORDER BY id DESC LIMIT 1",
+            (username, origin)).fetchone() if origin else None
     finally:
         conn.close()
-    if dup:
-        return jsonify(ok=True, id=dup[0], duplicate=True, investigating=bool(dup[2]),
-                       card=_improve_card(username, dup[0], (dup[1], dup[2]) if dup[2] else None))
+    # The same problem again within minutes, while the first is open, is the
+    # same request: a chat turn that ran out of time hands the work to a
+    # background task, which files it a second time (2026-09-29, #3 and #4).
+    # From the same conversation that is the same *problem*, not the same
+    # request -- two different things asked one after the other are two.
+    for rid_, day_, conv_, problem_, origin_ in recent:
+        if (not origin and not origin_) or (origin and origin_ == origin
+                                            and _improve_similar(problem, problem_)):
+            return jsonify(ok=True, id=rid_, duplicate=True, investigating=bool(conv_),
+                           card=_improve_card(username, rid_, (day_, conv_) if conv_ else None))
     conn = _improve_conn()
     try:
-        rid = conn.execute('INSERT INTO improve_requests (username, created_at, problem, context) '
-                           'VALUES (?,?,?,?)', (username, int(time.time()), problem, context)).lastrowid
+        rid = conn.execute('INSERT INTO improve_requests (username, created_at, problem, context, '
+                           'origin) VALUES (?,?,?,?,?)',
+                           (username, int(time.time()), problem, context, origin)).lastrowid
         conn.commit()
     finally:
         conn.close()
-    started = _improve_start(username, rid, problem, context)
+    started = (_improve_continue(username, rid, problem, context, prev) if prev
+               else _improve_start(username, rid, problem, context))
     return jsonify(ok=True, id=rid, card=_improve_card(username, rid, started),
-                   investigating=bool(started))
+                   investigating=bool(started), continued=bool(prev and started))
+
+
+def _improve_similar(a, b):
+    wa = set(re.findall(r'\w{4,}', (a or '').lower()))
+    wb = set(re.findall(r'\w{4,}', (b or '').lower()))
+    return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= 0.3
+
+
+def _improve_continue(username, rid, problem, context, where):
+    """Put request *rid* into the Programmer conversation *where* (day, conv)
+    -- the one the person's earlier requests from the same chat went to, so
+    they share one opencode session -- behind whatever is running there."""
+    day, conv = where
+    try:
+        prompt = _improve_prompt((rid, problem, context), username)
+        append_user_history(username, {'role': 'user', 'text': prompt,
+                                       'ts': int(time.time() * 1000), 'conv': conv},
+                            day, OPENCODE_SPACE)
+        chat_id = _conv_chat_id(username, day, conv, OPENCODE_SPACE)
+        if not _queue_add(chat_id, _queue_item(username, day, conv, OPENCODE_SPACE, prompt, [], [],
+                                               project=IMPROVE_PROJECT)):
+            raise RuntimeError('that conversation\'s queue is full')
+        _queue_advance(username, chat_id)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning('improve: #%s not continued in %s: %s', rid, where, exc)
+        return None
+    conn = _improve_conn()
+    try:
+        conn.execute("UPDATE improve_requests SET status = 'investigating', day = ?, conv = ? "
+                     'WHERE id = ?', (day, conv, rid))
+        conn.commit()
+    finally:
+        conn.close()
+    return day, conv
 
 
 def _improve_card(username, rid, started):
@@ -7735,14 +7785,22 @@ def improve_request_publish():
     except (TypeError, ValueError):
         rid = 0
     also_deploy = bool(body.get('deploy'))
+    origin = re.sub(r'[^\w:.-]', '', str(body.get('origin') or ''))[:200]
     conn = _improve_conn()
     try:
-        # The one named, or the person's latest that has a conversation --
-        # "the last fix" -- never somebody else's.
-        row = conn.execute(
-            'SELECT id, day, conv, problem FROM improve_requests WHERE username = ? AND conv > 0 '
-            + ('AND id = ? ' if rid else "AND status != 'closed' ")
-            + 'ORDER BY id DESC LIMIT 1', (username, rid) if rid else (username,)).fetchone()
+        # The one named; else the latest from the conversation it is asked in;
+        # else the person's latest -- "the last fix" -- never somebody else's.
+        row = None
+        if not rid and origin:
+            row = conn.execute(
+                "SELECT id, day, conv, problem FROM improve_requests WHERE username = ? "
+                "AND conv > 0 AND origin = ? AND status != 'closed' ORDER BY id DESC LIMIT 1",
+                (username, origin)).fetchone()
+        if row is None:
+            row = conn.execute(
+                'SELECT id, day, conv, problem FROM improve_requests WHERE username = ? AND conv > 0 '
+                + ('AND id = ? ' if rid else "AND status != 'closed' ")
+                + 'ORDER BY id DESC LIMIT 1', (username, rid) if rid else (username,)).fetchone()
     finally:
         conn.close()
     if not row:
