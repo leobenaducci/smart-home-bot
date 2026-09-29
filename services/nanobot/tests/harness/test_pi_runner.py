@@ -48,7 +48,7 @@ for i, step in enumerate(script.get("tools", [])):
            "result": {{"content": [{{"type": "text", "text": step.get("result", "")}}], "details": {{}}}}}})
 if script.get("note"):
     emit({{"type": "message_end", "message": {{"role": "assistant", "content": [{{"type": "text", "text": script["note"]}}, {{"type": "toolCall", "name": "web"}}]}}}})
-emit({{"type": "message_end", "message": {{"role": "assistant", "content": [{{"type": "text", "text": script.get("text", "")}}]}}}})
+emit({{"type": "message_end", "message": {{"role": "assistant", "content": [{{"type": "text", "text": script.get("text", "")}}], "usage": script.get("usage")}}}})
 emit({{"type": "agent_end"}})
 '''
 
@@ -389,3 +389,23 @@ def test_pi_loads_only_the_households_skills(fake_pi, tmp_path, monkeypatch):
     argv = calls(state)[0]["argv"]
     assert "--no-skills" in argv
     assert argv[argv.index("--skill") + 1] == str(tmp_path / "work" / ".pi-skills")
+
+
+def test_what_pi_spent_is_counted_over_every_round(fake_pi, tmp_path):
+    """pi calls its model itself, so nothing else sees the tokens: the usage
+    report has only what pi says, summed over the task and its nudges."""
+    fake_pi({"text": "Listo, aquí está", "usage": {"input": 1000, "cacheRead": 9000,
+                                                  "cacheWrite": 0, "output": 200}},
+            {"tools": [{"name": "make_document", "result": DOC_RESULT}],
+             "text": "Aquí: download:tomi/alfred/documents/guia.pdf",
+             "usage": {"input": 500, "cacheRead": 10000, "output": 300}})
+    res = run(tmp_path)
+    assert res.rounds == 2
+    assert res.usage == {"prompt_tokens": 20500, "cached_tokens": 19000, "completion_tokens": 500}
+
+
+def test_no_usage_from_pi_is_no_usage():
+    total = {}
+    H.add_usage(total, None)
+    H.add_usage(total, {"input": "many"})
+    assert total == {}

@@ -61,6 +61,26 @@ async def _post(payload: dict[str, Any]) -> None:
 _MAX_TOOL_NAMES = 40
 
 
+def report_cut(session_key: str | None, model: str | None, span: Span | None,
+               route: dict[str, Any] | None = None, stop_reason: str = "cancelled",
+               provider: str | None = None) -> None:
+    """Bill what *span* saw and nothing has billed yet: for a run that ends
+    without the runner's own result -- a turn cancelled when the chat's time
+    ran out and a background task took it over, a sub-agent, a pi run.
+
+    Before this they reached nothing. A turn the chat gave up on after five
+    minutes of tool calls, and the background task that finished it, were
+    missing from usage.db together -- the costliest turns of the day, and the
+    ones the self-improvement pass most needs to see."""
+    if span is None:
+        return
+    tokens, tools = span.unbilled()
+    if not tokens and not tools:
+        return
+    report_usage(session_key, model, tokens or {"prompt_tokens": 0}, tools, route=route,
+                 provider=provider, stop_reason=stop_reason, span=span)
+
+
 def report_usage(session_key: str | None, model: str | None,
                  usage: dict[str, int] | None,
                  tools_used: int | list[str] | None = 0,

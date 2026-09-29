@@ -137,6 +137,26 @@ class HarnessResult:
     seconds: float = 0.0
     delivered: bool = False
     error: str = ""
+    # What pi reports it spent, summed over every answer, in the names the
+    # usage report takes. pi calls its model itself, so nothing else counts it.
+    usage: dict[str, int] = field(default_factory=dict)
+
+
+def add_usage(total: dict[str, int], u: Any) -> None:
+    """Fold one pi answer's `usage` into *total*. pi counts uncached input,
+    cache reads and cache writes apart; the report's `prompt_tokens` is all
+    three, as an OpenAI-shaped provider counts it, with the reads as
+    `cached_tokens`."""
+    if not isinstance(u, dict):
+        return
+    def n(k: str) -> int:
+        v = u.get(k)
+        return int(v) if isinstance(v, (int, float)) else 0
+    prompt = n("input") + n("cacheRead") + n("cacheWrite")
+    for key, v in (("prompt_tokens", prompt), ("cached_tokens", n("cacheRead")),
+                   ("completion_tokens", n("output"))):
+        if v:
+            total[key] = total.get(key, 0) + v
 
 
 def _result_text(result: Any) -> str:
@@ -338,6 +358,7 @@ async def _pi(message: str, *, agent: Path, workdir: Path, env: dict[str, str], 
               on_tool: Callable[[ToolCall], Awaitable[None]] | None,
               on_note: Callable[[str], Awaitable[None]] | None = None,
               on_start: Callable[[ToolCall], Awaitable[None]] | None = None,
+              usage: dict[str, int] | None = None,
               ) -> tuple[str, list[ToolCall], int, str]:
     """One pi run. (final text, tool calls, assistant turns, error)."""
     args = [str(PI_BIN), "-p", "--provider", "house", "--model", model,
@@ -407,6 +428,8 @@ async def _pi(message: str, *, agent: Path, workdir: Path, env: dict[str, str], 
             elif kind == "message_end" and (e.get("message") or {}).get("role") == "assistant":
                 msg = e["message"]
                 turns += 1
+                if usage is not None:
+                    add_usage(usage, msg.get("usage"))
                 parts = msg.get("content") or []
                 said = " ".join(c.get("text", "") for c in parts if c.get("type") == "text")
                 if said.strip():
@@ -472,7 +495,7 @@ async def run(task: str, endpoint: Endpoint, workdir: Path, *, context: str | No
                     message, agent=agent, workdir=workdir, env=env, model=endpoint.model,
                     first=attempt == 0 or not any((workdir / ".pi-sessions").glob("*")),
                     thinking=thinking, timeout=left, on_tool=on_tool, on_note=on_note,
-                    on_start=on_start)
+                    on_start=on_start, usage=result.usage)
             except asyncio.TimeoutError:
                 result.error = f"stopped after {timeout:.0f}s"
                 break

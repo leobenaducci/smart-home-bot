@@ -109,3 +109,60 @@ async def test_no_turn_means_no_turn_block(monkeypatch):
     usage_report.report_usage("ev-heartbeat", "m", {"prompt_tokens": 5}, 0)
     await _drain()
     assert "turn" not in sent[0] and sent[0]["stop_reason"] == ""
+
+
+def test_unbilled_is_what_no_report_has_taken_yet():
+    with PROFILER.span("turn", "k") as span:
+        PROFILER.record_call(model="m", served_by="m", api_base=None, duration_s=0.1, request_s=0.1,
+                             attempts=1, finish_reason="stop", stream=False,
+                             usage={"prompt_tokens": 100, "completion_tokens": 10})
+        PROFILER.record_tool(name="exec", duration_s=0.1, status="ok", started_at=0.0)
+        span.take()   # an escalation's first report took these
+        PROFILER.record_call(model="m", served_by="m", api_base=None, duration_s=0.1, request_s=0.1,
+                             attempts=1, finish_reason="stop", stream=False,
+                             usage={"prompt_tokens": 300, "completion_tokens": 30})
+        PROFILER.record_tool(name="exec", duration_s=0.1, status="ok", started_at=0.0)
+        PROFILER.record_tool(name="read_file", duration_s=0.1, status="ok", started_at=0.0)
+        tokens, tools = span.unbilled()
+    assert tokens == {"prompt_tokens": 300, "completion_tokens": 30}
+    assert sorted(tools) == ["exec", "read_file"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_turn_bills_what_it_spent(monkeypatch):
+    """The chat's time limit hands a silent turn to a background task and
+    cancels it; Stop cancels it too. Either way the report at the end of the
+    turn never ran, and the costliest turns of the day went unrecorded."""
+    from nanobot.agent import loop as L
+    sent = _capture(monkeypatch)
+
+    async def turn():
+        with PROFILER.span("turn", "k") as span, L._billed_if_cut(
+                span, lambda: ("websocket:homeweb:999000111:2026-09-29:1", "cheap", {"tier": "everyday"})):
+            PROFILER.record_call(model="cheap", served_by="cheap", api_base=None, duration_s=0.1,
+                                 request_s=0.1, attempts=1, finish_reason="stop", stream=False,
+                                 usage={"prompt_tokens": 5000, "completion_tokens": 40})
+            PROFILER.record_tool(name="exec", duration_s=0.1, status="ok", started_at=0.0)
+            await asyncio.sleep(10)
+
+    task = asyncio.ensure_future(turn())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _drain()
+    (payload,) = sent
+    assert payload["stop_reason"] == "cancelled" and payload["model"] == "cheap"
+    assert payload["usage"] == {"prompt_tokens": 5000, "completion_tokens": 40}
+    assert payload["tool_names"] == ["exec"] and payload["route"]["tier"] == "everyday"
+
+
+@pytest.mark.asyncio
+async def test_a_cut_with_nothing_spent_reports_nothing(monkeypatch):
+    from nanobot.agent import usage_report as U
+    sent = _capture(monkeypatch)
+    with PROFILER.span("task", "k") as span:
+        pass
+    U.report_cut("sub:x", "m", span)
+    await _drain()
+    assert sent == []

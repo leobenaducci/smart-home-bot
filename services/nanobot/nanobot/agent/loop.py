@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import base64
 import dataclasses
 import json
@@ -22,7 +23,7 @@ from nanobot.agent.hook import AgentHook, AgentHookContext, CompositeHook
 from nanobot.utils.debug_log import log_error as _log_error
 from nanobot.utils.homeweb_chat_id import is_space_session
 from nanobot.agent.memory import Consolidator, Dream
-from nanobot.agent.usage_report import report_usage
+from nanobot.agent.usage_report import report_cut, report_usage
 from nanobot.utils.profiling import PROFILER
 from nanobot.agent.classify import (
     TurnClass,
@@ -747,6 +748,25 @@ def tools_for_step(step: str, names: list[str]) -> list[str]:
         if any(rx.search(text) and n.startswith(prefixes) for rx, prefixes in _STEP_TOOL_WORDS):
             chosen.append(n)
     return chosen
+
+
+@contextlib.contextmanager
+def _billed_if_cut(span, current):
+    """Bill what a turn spent when it is cancelled rather than finished.
+
+    The chat's own time limit hands a silent turn to a background task and
+    cancels it (api/server.py), and Stop cancels it too; either way the report
+    at the end of the turn never runs. *current* says, at that moment, which
+    session, model and route the spend belongs to."""
+    try:
+        yield
+    except asyncio.CancelledError:
+        try:
+            key, model, route = current()
+            report_cut(key, model, span, route=route, stop_reason="cancelled")
+        except Exception:  # noqa: BLE001 -- instrumentation never changes a cancel
+            pass
+        raise
 
 class AgentLoop:
     """
@@ -1737,7 +1757,8 @@ class AgentLoop:
             channel=channel,
             chat_id=chat_id,
             model=serving,
-        ) as span:
+        ) as span, _billed_if_cut(span, lambda: (session.key if session else None,
+                                                 serving, route.as_record())):
             # A turn the classifier sent to the cheap tier gets the cheap
             # tier's budget; running out of it is `max_iterations`, which
             # escalates below. Forced and profile turns keep the configured one.

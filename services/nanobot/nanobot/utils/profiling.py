@@ -127,7 +127,7 @@ class Span:
     # so what leaves here is as private as the tool names already are.
     turn_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     events: dict[str, int] = field(default_factory=dict)
-    _taken: dict[str, float] = field(default_factory=dict)
+    _taken: dict[str, Any] = field(default_factory=dict)
 
     def note(self, **fields: Any) -> None:
         """Attach outcome fields known only once the span is done."""
@@ -135,6 +135,17 @@ class Span:
 
     def event(self, code: str, n: int = 1) -> None:
         self.events[code[:80]] = self.events.get(code[:80], 0) + n
+
+    def unbilled(self) -> tuple[dict[str, int], list[str]]:
+        """Tokens and tool calls since the last take: what a report that is
+        not the runner's -- a cancelled turn, a background task -- bills."""
+        seen = self._taken.get("tokens") or {}
+        tokens = {k: v - int(seen.get(k, 0)) for k, v in self.tokens.items()
+                  if v - int(seen.get(k, 0)) > 0}
+        seen_tools = self._taken.get("tool_names") or {}
+        tools = [name for name, n in self.tool_names.items()
+                 for _ in range(max(0, n - int(seen_tools.get(name, 0))))]
+        return tokens, tools
 
     def take(self) -> dict[str, Any]:
         """What happened since the last take (or the start): the part of the
@@ -151,7 +162,8 @@ class Span:
             "events": dict(self.events),
         }
         self._taken = {"t": now, "call_errors": self.call_errors,
-                       "tool_errors": self.tool_errors, "retry_wait_s": self.retry_wait_s}
+                       "tool_errors": self.tool_errors, "retry_wait_s": self.retry_wait_s,
+                       "tokens": dict(self.tokens), "tool_names": dict(self.tool_names)}
         self.events = {}
         return out
 
