@@ -39,6 +39,8 @@ import redact as R  # noqa: E402
 import repos as RP  # noqa: E402
 import work as W  # noqa: E402
 import ship as S  # noqa: E402
+import checks as K  # noqa: E402
+import measure as M  # noqa: E402
 
 TEXT_FIELDS = ("request", "answer", "next", "feedback")
 
@@ -56,6 +58,16 @@ def improve_dir(cfg: dict) -> Path:
         (d / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(d / sub, 0o700)
     W.write_shim(d)
+    # What the Programmer reads first, where it can: the map and the rules,
+    # refreshed from this checkout, and the lessons, seeded once and then the
+    # household's (state -- they may name this house's things).
+    (d / "docs").mkdir(exist_ok=True)
+    for src, name in ((HERE / "MAP.md", "MAP.md"), (HERE.parent.parent / "CLAUDE.md", "CLAUDE.md")):
+        if src.exists():
+            (d / "docs" / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    lessons = d / "lessons.md"
+    if not lessons.exists() and (HERE / "lessons.seed.md").exists():
+        lessons.write_text((HERE / "lessons.seed.md").read_text(encoding="utf-8"), encoding="utf-8")
     return d
 
 
@@ -248,6 +260,73 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _state(cfg: dict) -> Path:
+    return Path((cfg.get("paths") or {}).get("state") or "/var/lib/home-stack/state")
+
+
+def cmd_measure(args) -> int:
+    try:
+        print(M.KINDS[args.what](_state(live_config()), args.days))
+        return 0
+    except FileNotFoundError as exc:
+        print(f"improve: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_test(args) -> int:
+    cfg = live_config()
+    try:
+        rec = K.run_tests(improve_dir(cfg), RP.discover(cfg), args.id, args.repo)
+    except W.WorkError as exc:
+        print(f"improve: {exc}", file=sys.stderr)
+        return 1
+    if not rec["suites"]:
+        print("no test suite covers what changed")
+    for s in rec["suites"]:
+        print(f"{'ok  ' if s['ok'] else 'FAIL'} {s['suite']} ({s['seconds']}s)"
+              + ("" if s["ok"] else "\n      " + "\n      ".join(s["tail"])))
+    print("tests pass" if rec["ok"] else "tests FAIL -- improve commit will refuse this change")
+    return 0 if rec["ok"] else 1
+
+
+def cmd_bench(args) -> int:
+    cfg = live_config()
+    model = args.model or str(((cfg.get("assistant") or {}).get("models") or {}).get("everyday") or "")
+    if not model:
+        print("improve: no everyday model in the config; pass --model", file=sys.stderr)
+        return 1
+    state = _state(cfg)
+    try:
+        rec = K.run_bench(improve_dir(cfg), RP.discover(cfg), args.id, args.repo, args.container,
+                          model, args.roles, args.repeat,
+                          busy=lambda: S.deploy_running() or S.bench_running(state))
+    except W.WorkError as exc:
+        print(f"improve: {exc}", file=sys.stderr)
+        return 1
+    for role, t in rec["table"].items():
+        mark = "  worse" if role in rec["worse"] else ""
+        print(f"  {role:<12} before {t['before']}/{t['total']}  after {t['after']}/{t['total']}{mark}")
+    fails = sorted(set(sum((r["failing"] for r in rec["runs"]["after"]), [])))
+    if fails:
+        print("  failing after: " + ", ".join(fails))
+    print("no role got worse" if rec["ok"] else "a role got worse -- improve commit will refuse this change")
+    return 0 if rec["ok"] else 1
+
+
+def cmd_lesson(args) -> int:
+    import datetime  # noqa: PLC0415
+    d = improve_dir(live_config())
+    text = " ".join(args.text.split())
+    if len(text) < 15:
+        print("improve: a lesson is a sentence: what went wrong, and what to do instead",
+              file=sys.stderr)
+        return 1
+    with (d / "lessons.md").open("a", encoding="utf-8") as fh:
+        fh.write(f"- {text} ({datetime.date.today().isoformat()})\n")
+    print("added to lessons.md")
+    return 0
+
+
 def cmd_publish(args) -> int:
     cfg = live_config()
     return _work(lambda: S.publish(improve_dir(cfg), RP.discover(cfg), args.id, args.repo))
@@ -293,6 +372,26 @@ def main(argv: list[str] | None = None) -> int:
     ls = sub.add_parser("list", help="fix requests and where each stands")
     ls.add_argument("--login", help="only this person's")
     ls.set_defaults(func=cmd_list)
+    ms = sub.add_parser("measure", help="numbers from usage.db")
+    ms.add_argument("what", choices=sorted(M.KINDS))
+    ms.add_argument("--days", type=int, default=7)
+    ms.set_defaults(func=cmd_measure)
+    ts = sub.add_parser("test", help="the test suites of what a worktree changed")
+    ts.add_argument("id")
+    ts.add_argument("repo")
+    ts.set_defaults(func=cmd_test)
+    bn = sub.add_parser("bench", help="the benchmark before and after a change")
+    bn.add_argument("id")
+    bn.add_argument("repo")
+    bn.add_argument("--roles", default=K.DEFAULT_ROLES)
+    bn.add_argument("--repeat", type=int, default=1)
+    bn.add_argument("--container", default="nanobot-user1",
+                    help="the assistant container to run it in")
+    bn.add_argument("--model", default="", help="default: the everyday model")
+    bn.set_defaults(func=cmd_bench)
+    le = sub.add_parser("lesson", help="add a lesson for the next time")
+    le.add_argument("text")
+    le.set_defaults(func=cmd_lesson)
     pb = sub.add_parser("publish", help="put a committed fix on its repository")
     pb.add_argument("id")
     pb.add_argument("repo")

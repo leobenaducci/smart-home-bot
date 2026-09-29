@@ -285,6 +285,19 @@ check("exclude leaves an automatic one out", found == [], [r["name"] for r in fo
 
 print("\na fix is made in a worktree, and committed by code")
 import work as W  # noqa: E402
+import checks as K  # noqa: E402
+
+
+class _Ok:
+    returncode = 0
+    stdout = "1 passed"
+    stderr = ""
+
+
+def tested_commit(d, repos_, rid, name, message):
+    """What the Programmer does: its tests (a stand-in runner here), then commit."""
+    K.run_tests(d, repos_, rid, name, run=lambda *a, **k: _Ok())
+    return W.commit(d, repos_, rid, name, message)
 imp = tmp / "improve-work"
 for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"],
             ["commit", "-q", "--allow-empty", "-m", "base"]):
@@ -308,12 +321,12 @@ for bad in (("x7", "luces"), ("7", "../etc"), ("7", "otro-que-no-esta")):
     except W.WorkError:
         check(f"refuses {bad}", True)
 try:
-    W.commit(imp, repos[:1], "7", "luces", "arreglo con mensaje")
+    tested_commit(imp, repos[:1], "7", "luces", "arreglo con mensaje")
     check("nothing changed is refused", False)
 except W.WorkError as exc:
     check("nothing changed is refused", "nothing changed" in str(exc))
 (wt / "skill.py").write_text("import os\nBASE = os.environ['LUCES_API_URL']\n", encoding="utf-8")
-out = W.commit(imp, repos[:1], "7", "luces", "Lights skill: no fallback to a dead host")
+out = tested_commit(imp, repos[:1], "7", "luces", "Lights skill: no fallback to a dead host")
 log = W._git(wt, "log", "-1", "--format=%ae|%B")
 check("the commit is made, as the repository's owner", "dueno@example.org|" in log
       and "Fix request #7" in log, log)
@@ -339,7 +352,7 @@ check("the benchmark's cases are not in the stack's worktree",
       not (swt / "services" / "nanobot" / "bench" / "cases.json").exists())
 check("and their absence is not a change", W._changed(swt) == [], W._changed(swt))
 (swt / "services" / "x.py").write_text("x = 2\n", encoding="utf-8")
-W.commit(imp, [srepo], "8", "pila", "Change x so the test passes")
+tested_commit(imp, [srepo], "8", "pila", "Change x so the test passes")
 check("so a commit there never deletes them",
       "cases.json" not in W._git(swt, "show", "--stat", "--format=", "HEAD")
       and W._git(stack, "cat-file", "-e", "improve/8:services/nanobot/bench/cases.json", check=False) == "")
@@ -348,7 +361,7 @@ subprocess.run(["git", "-C", str(stack), "commit", "-qam", "broken sanitizer"], 
 swt2 = W.start(imp, [srepo], "9", "pila")
 (swt2 / "services" / "x.py").write_text("x = 3\n", encoding="utf-8")
 try:
-    W.commit(imp, [srepo], "9", "pila", "Change x again for the test")
+    tested_commit(imp, [srepo], "9", "pila", "Change x again for the test")
     check("a sanitizer that cannot run refuses the commit, and says so", False)
 except W.WorkError as exc:
     check("a sanitizer that cannot run refuses the commit, and says so",
@@ -375,7 +388,7 @@ try:
     check("an uncommitted fix is not published", False)
 except W.WorkError as exc:
     check("an uncommitted fix is not published", "uncommitted" in str(exc), str(exc))
-W.commit(imp, [lrepo], "11", "luces2", "Lights skill: no dead fallback")
+tested_commit(imp, [lrepo], "11", "luces2", "Lights skill: no dead fallback")
 (lp / "notes.txt").write_text("somebody's work\n", encoding="utf-8")
 try:
     S.publish(imp, [lrepo], "11", "luces2")
@@ -436,7 +449,7 @@ subprocess.run(["git", "-C", str(stack), "add", "-A"], check=True)
 subprocess.run(["git", "-C", str(stack), "commit", "-qm", "portal"], check=True)
 swt3 = W.start(imp, [srepo], "12", "pila")
 (swt3 / "services" / "portal" / "app.py").write_text("x = 2\n", encoding="utf-8")
-W.commit(imp, [srepo], "12", "pila", "Portal: x is two")
+tested_commit(imp, [srepo], "12", "pila", "Portal: x is two")
 out = S.publish(imp, [srepo], "12", "pila")
 check("this stack is published by fast-forward and never pushed",
       "never pushes" in out and W._git(stack, "log", "-1", "--format=%s") == "Portal: x is two", out)
@@ -466,6 +479,123 @@ check("newest first, and only that person's when asked",
       [q["id"] for q in cli.requests(state, "999000111")] == [3, 1]
       and [q["id"] for q in cli.requests(state)] == [3, 2, 1])
 check("and no database is no requests, not an error", cli.requests(tmp / "nada") == [])
+
+print("\nwhat a commit has to pass: its tests, and the benchmark for behaviour")
+k_wt = W.start(imp, [lrepo], "13", "luces2")
+(k_wt / "skill.py").write_text("x = 'otra cosa'\n", encoding="utf-8")
+try:
+    W.commit(imp, [lrepo], "13", "luces2", "A change nobody tested")
+    check("a change nobody tested is not committed", False)
+except W.WorkError as exc:
+    check("a change nobody tested is not committed", "no test run for this exact change" in str(exc))
+
+
+class _Fail:
+    returncode = 1
+    stdout = "FAILED test_x - NameError: name 'turn_on' is not defined"
+    stderr = ""
+
+
+(k_wt / "test_skill.py").write_text("def test_x(): pass\n", encoding="utf-8")
+rec = K.run_tests(imp, [lrepo], "13", "luces2", run=lambda *a, **k: _Fail())
+check("a failing suite is found beside what changed, and recorded", rec["suites"] and not rec["ok"], rec)
+try:
+    W.commit(imp, [lrepo], "13", "luces2", "A change whose tests fail")
+    check("a change whose tests fail is not committed", False)
+except W.WorkError as exc:
+    check("a change whose tests fail is not committed", "tests fail" in str(exc), str(exc))
+K.run_tests(imp, [lrepo], "13", "luces2", run=lambda *a, **k: _Ok())
+(k_wt / "skill.py").write_text("x = 'y otra más'\n", encoding="utf-8")
+try:
+    W.commit(imp, [lrepo], "13", "luces2", "Changed after it was tested")
+    check("a change edited after its test run needs a new run", False)
+except W.WorkError as exc:
+    check("a change edited after its test run needs a new run", "no test run for this exact change" in str(exc))
+check("the stack's nanobot suite runs for a runner change",
+      [x[0] for x in K._suites("stack", stack, ["services/nanobot/nanobot/agent/runner.py"])] == ["nanobot"])
+check("and only the stack's assistant code and config call for the benchmark",
+      K.touches_behaviour("stack", ["services/nanobot/nanobot/skills/weather/SKILL.md"])
+      and K.touches_behaviour("stack", ["services/nanobot/config/config.json"])
+      and not K.touches_behaviour("stack", ["services/home-core/local/app.py"])
+      and not K.touches_behaviour("plugin", ["services/nanobot/nanobot/x.py"]))
+runs = {"before": [{"summary": {"tools": {"passed": 6, "total": 7}}, "failing": []}],
+        "after": [{"summary": {"tools": {"passed": 4, "total": 7}}, "failing": ["t1"]}]}
+check("a role two cases worse is worse", K.compare(runs, "tools")["worse"] == ["tools"])
+runs["after"][0]["summary"]["tools"]["passed"] = 5
+check("one case is the noise the models make", K.compare(runs, "tools")["ok"])
+calls = []
+
+
+class _Doc:
+    returncode = 0
+    stderr = ""
+    stdout = json.dumps({"summary": {"everyday": {"passed": 5, "total": 6}}, "cases": [
+        {"id": "e1", "passed": True}, {"id": "e2", "passed": False}]})
+
+
+def fake_docker(argv, **kw):
+    calls.append(argv)
+    return _Doc()
+
+
+bwt = W.start(imp, [srepo], "14", "pila")
+(bwt / "services" / "nanobot").mkdir(parents=True, exist_ok=True)
+(bwt / "services" / "nanobot" / "nanobot").mkdir(exist_ok=True)
+(bwt / "services" / "nanobot" / "nanobot" / "x.py").write_text("x = 1\n", encoding="utf-8")
+rec = K.run_bench(imp, [srepo], "14", "pila", "nanobot-prueba", "nanogpt:m", "everyday", 1,
+                  run=fake_docker, busy=lambda: False)
+cps = [c for c in calls if c[:2] == ["docker", "cp"]]
+check("the benchmark's cases come from this checkout, never the worktree",
+      all(str(bwt) not in c[2] for c in cps if c[2].endswith("/bench/."))
+      and any(c[2] == str(K.ROOT / "services" / "nanobot" / "bench") + "/." for c in cps), cps)
+execs = [c for c in calls if c[:2] == ["docker", "exec"] and "model_bench.py" in " ".join(c)]
+check("before runs the container's own code, after the worktree's, first on the path",
+      len(execs) == 2 and "-e" not in execs[0] and any(a.startswith("PYTHONPATH=/tmp/improve-14-")
+                                                       for a in execs[1]), execs)
+check("and what comes back is totals and failing ids, not the cases",
+      rec["table"]["everyday"] == {"before": 5, "after": 5, "total": 6} and rec["ok"]
+      and rec["runs"]["after"][0]["failing"] == ["e2"] and "prompt" not in json.dumps(rec), rec)
+try:
+    K.run_bench(imp, [srepo], "14", "pila", "c", "m", "everyday; rm -rf /", 1, run=fake_docker,
+                busy=lambda: False)
+    check("a role list is only role names", False)
+except W.WorkError:
+    check("a role list is only role names", True)
+try:
+    K.run_bench(imp, [lrepo], "13", "luces2", "c", "m", "everyday", 1, run=fake_docker, busy=lambda: False)
+    check("a plugin has no benchmark: its tests judge it", False)
+except W.WorkError as exc:
+    check("a plugin has no benchmark: its tests judge it", "no benchmark" in str(exc))
+K.run_tests(imp, [srepo], "14", "pila", run=lambda *a, **k: _Ok())
+check("a behaviour change with tests and a benchmark for this exact diff may be committed",
+      K.gate(imp, dict(srepo, branch=srepo["branch"]), "14", bwt) == [],
+      K.gate(imp, srepo, "14", bwt))
+(bwt / "services" / "nanobot" / "nanobot" / "x.py").write_text("x = 2\n", encoding="utf-8")
+check("and edited afterwards, it needs both again",
+      len(K.gate(imp, srepo, "14", bwt)) == 2, K.gate(imp, srepo, "14", bwt))
+
+print("\nnumbers, not the assistant's word")
+import measure as M  # noqa: E402
+_u = sqlite3.connect(data / "usage.db")
+for _col in ("cached_tokens", "completion_tokens"):
+    _u.execute(f"ALTER TABLE token_usage ADD COLUMN {_col} INTEGER DEFAULT 0")
+_u.commit(); _u.close()
+out = M.usage(state, days=10000)
+check("usage by scope and model", "deepseek" not in out and "cheap" in out and "strong" in out, out)
+check("how turns ended", "max_iterations" in M.stops(state, days=10000))
+check("and the runner's codes", "parse:dsml" in M.events(state, days=10000))
+check("which tools", "skill:lights" in M.tools(state, days=10000))
+
+print("\nwhat the Programmer reads first")
+dd = cli.improve_dir({"paths": {"state": str(state)}})
+check("the map and the rules, beside the inbox",
+      (dd / "docs" / "MAP.md").exists() and (dd / "docs" / "CLAUDE.md").exists())
+check("and the lessons, seeded once", "A claim the assistant makes about itself is a lead"
+      in (dd / "lessons.md").read_text(encoding="utf-8"))
+(dd / "lessons.md").write_text("# Lessons\n- una lección de la casa\n", encoding="utf-8")
+cli.improve_dir({"paths": {"state": str(state)}})
+check("and never reseeded over the household's own",
+      (dd / "lessons.md").read_text(encoding="utf-8") == "# Lessons\n- una lección de la casa\n")
 
 shim = W.write_shim(imp)
 check("the Programmer's shim lives in the pipeline's folder and runs this cli",

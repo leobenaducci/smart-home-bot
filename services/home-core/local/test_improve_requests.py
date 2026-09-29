@@ -204,6 +204,11 @@ blk = A._project_block("alfred-self", CODER)
 check("choosing it tells the Programmer how fixes to Alfred are made",
       "not a project of the code broker" in blk and f"/srv/state/improve/bin/improve list --login {CODER}" in blk
       and "improve/bin/improve publish <id> <repo>" in blk and "never by hand" in blk, blk)
+check("and to read the map, the rules and the lessons first, and back every claim",
+      "/srv/state/improve/docs/MAP.md" in blk and "/srv/state/improve/lessons.md" in blk
+      and "never a premise" in blk and "a question is not a yes" in blk
+      and "improve/bin/improve test <id> <repo>" in blk and "improve/bin/improve bench <id> <repo>" in blk
+      and "improve/bin/improve measure" in blk and "improve/bin/improve lesson" in blk, blk)
 check("and any other project is still a checkout", "checkout(\"fracciones\")" in A._project_block("fracciones", CODER))
 
 print("\nthe prompt the Programmer opens with")
@@ -226,6 +231,9 @@ check("the fix goes through the tool, in a worktree, never the deploying checkou
       and "never the checkout that deploys" in p and "Git itself is refused" in p, p)
 check("and nothing broken is an answer", "nothing is broken, say so plainly" in p, p)
 check("a setting is not code", "Never write a household value into code" in p, p)
+check("the fix request says to read the map first, and to test and bench before committing",
+      "/srv/state/improve/docs/MAP.md" in p and "improve test 1 <repo>" in p
+      and "improve bench 1 <repo>" in p, p)
 check("publish and deploy only when told, only through the tool",
       "only when I say so" in p and "/srv/state/improve/bin/improve publish 1 <repo>" in p
       and "improve deploy 1 <repo>" in p and "never by hand" in p

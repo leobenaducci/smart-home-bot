@@ -137,6 +137,10 @@ def commit(d: Path, repos: list[dict], rid: str, name: str, message: str) -> str
     if not changed:
         raise WorkError("nothing changed in the worktree")
     why = refusals(repo["kind"], changed)
+    # Its tests, and for a behaviour change the benchmark, run on exactly this
+    # change (checks.py). Imported here: checks imports this module.
+    import checks  # noqa: PLC0415
+    why += checks.gate(d, repo, rid, path)
     if repo["kind"] == "stack":
         r = subprocess.run([sys.executable, str(path / "deploy" / "sanitize.py"), "--check"],
                            cwd=path, capture_output=True, text=True, timeout=300)

@@ -6127,7 +6127,13 @@ def _improve_block(username):
         '[The project this conversation is about]\n'
         'Alfred himself: this stack and its plugins, not a project of the code broker. '
         'Fixes and improvements to Alfred go through the `improve` tool, never through '
-        '`checkout` or the broker, and never by editing a live checkout:\n'
+        '`checkout` or the broker, and never by editing a live checkout.\n'
+        f'Before proposing anything in this conversation, read `{IMPROVE_DIR}/docs/MAP.md` '
+        f'(how Alfred is built), `{IMPROVE_DIR}/docs/CLAUDE.md` (the rules) and '
+        f'`{IMPROVE_DIR}/lessons.md` (what went wrong before). Every claim in a proposal '
+        'rests on something you read (file and line) or measured (`improve measure`); a '
+        'claim the assistant made about itself is a lead to check, never a premise. '
+        'Propose, then wait for a yes in so many words: a question is not a yes.\n'
         f'- `{tool} list{login}` -- this person\'s fix requests, what each is about, its '
         'worktrees and whether it is committed or published. Start here when they name '
         'one ("the lights fix", "#6") or say "publish" without saying which.\n'
@@ -6135,8 +6141,13 @@ def _improve_block(username):
         'provides, and what deploying it means (`deploys`) -- a plugin or extension is '
         f'deployed by the services its plugin.yml declares; `{IMPROVE_DIR}/inbox/` -- '
         'recent turns, redacted.\n'
-        f'- `{tool} start <id> <repo>` a worktree; `{tool} commit <id> <repo> -m "..."`; '
-        f'`{tool} status <id>`.\n'
+        f'- `{tool} measure usage|stops|events|tools` -- numbers from usage.db.\n'
+        f'- `{tool} start <id> <repo>` a worktree; `{tool} test <id> <repo>` its tests; '
+        f'`{tool} bench <id> <repo>` the benchmark before and after, needed for a change to '
+        f'how the assistant behaves; `{tool} commit <id> <repo> -m "..."` refuses without '
+        f'both passing for the exact change; `{tool} status <id>`.\n'
+        f'- `{tool} lesson "<what went wrong, and what to do instead>"` -- when the person '
+        'tells you that you got something wrong.\n'
         f'- `{tool} publish <id> <repo>` and then `{tool} deploy <id> <repo>` -- only when '
         'the person has said to publish or deploy, in this conversation, and never by '
         'hand. If either refuses, say why; do not work around it.')
@@ -7587,6 +7598,9 @@ def _improve_prompt(row, username=None):
                   "a guess:", "",
                   *[f"> {ln}" for ln in context.splitlines()], ""]
     lines += [where, "",
+              *([f"Read `{IMPROVE_DIR}/docs/MAP.md` (how Alfred is built), "
+                 f"`{IMPROVE_DIR}/docs/CLAUDE.md` (the rules) and `{IMPROVE_DIR}/lessons.md` "
+                 "(what went wrong before) first.", ""] if IMPROVE_DIR else []),
               f"To read a repository's code, run `{tool} start {rid} <repo>` first and read "
               "the worktree it prints: it is the current code and changes nothing. The live "
               "checkouts (the paths in repos.json) are out of your reach on purpose -- a "
@@ -7608,7 +7622,9 @@ def _improve_prompt(row, username=None):
               "it is set. Never write a household value into code.",
               f"4. If it is code: `{tool} start {rid} <repo>` makes a worktree of that "
               f"repository on branch `improve/{rid}` and prints its path. Edit only there -- "
-              "never the checkout that deploys -- add a test, and commit with "
+              "never the checkout that deploys -- add a test, run "
+              f"`{tool} test {rid} <repo>` (and `{tool} bench {rid} <repo>` if it changes how "
+              "the assistant behaves), and commit with "
               f"`{tool} commit {rid} <repo> -m \"<what and why>\"`. Git itself is refused "
               "here; these do it, with the checks.",
               "5. Tell me what changed and how to check it, and stop. Publish and deploy only "

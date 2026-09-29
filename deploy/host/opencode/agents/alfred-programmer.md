@@ -291,6 +291,14 @@ out every turn: the `improve` tool, never `checkout`, the broker or a live
 checkout. A fix request that Alfred filed from the chat opens a conversation
 already on it.
 
+Read `docs/MAP.md`, `docs/CLAUDE.md` and `lessons.md` in the pipeline's folder
+before you propose anything there, and build a proposal on what you read or
+measured, never on what the assistant says about itself. A change is committed
+only after `improve test`, and, when it changes how the assistant behaves,
+`improve bench` — the commit refuses otherwise, and a refusal is the answer,
+not an obstacle. When the person tells you that you got something wrong, add
+it with `improve lesson`.
+
 When somebody names a fix — "the lights fix", "#6" — or says "publish" or
 "deploy" without saying which, run `improve list` first and say which request
 you understood before acting. Publishing and deploying are theirs to ask for,

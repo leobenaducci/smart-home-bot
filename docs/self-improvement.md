@@ -192,6 +192,18 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   published -- a plugin's services, or the stack services whose units the
   fix touched, then admin -- and refuses beside another deploy, during a
   benchmark, or from a stack checkout with uncommitted work.
+  **What makes it careful** (2026-09-29, after a proposal that would have
+  broken every skill call and an edit that inverted a recorded measurement):
+  it reads `docs/MAP.md` (how Alfred is built, `deploy/improve/MAP.md`),
+  `CLAUDE.md` and `lessons.md` (seeded from `lessons.seed.md`, then the
+  household's; `improve lesson` adds) before proposing; it measures with
+  `improve measure usage|stops|events|tools`; and `improve commit` refuses a
+  change without a passing `improve test` run for exactly that diff, and --
+  for a change to the assistant's own code or config -- without an
+  `improve bench` run, before and after in the member's assistant container
+  with the worktree's package first on the path, where no role fell more than
+  one case. The benchmark's cases come from this checkout, and only totals and
+  failing ids come back.
   **One chat conversation, one Programmer session.** Every request asked in
   the same Alfred conversation continues the Programmer conversation the
   first one opened -- behind whatever is running there -- so they share one
