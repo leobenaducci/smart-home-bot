@@ -21651,7 +21651,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_expand', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_review_redraw', 'sb_review_use', 'sb_review_used', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
     'ch_voice_text', 'ch_record', 'ch_stop', 'ch_pictures', 'ch_save', 'ch_pick_studio', 'ch_pick_files', 'ch_pick_none',
@@ -21965,10 +21965,15 @@ _studio_refining = set()
 _studio_refining_lock = threading.Lock()
 
 
-def _studio_call(username, method, path, body=None, timeout=30):
-    """The Studio's API as the person, from the portal's own code. JSON or None."""
+def _studio_call(username, method, path, body=None, timeout=30, via=''):
+    """The Studio's API as the person, from the portal's own code. JSON or
+    None. `via` names the assistant when the change is its doing, for the
+    project's history."""
+    headers = _studio_headers(username)
+    if via:
+        headers['X-Studio-Via'] = via
     try:
-        r = requests.request(method, f'{STUDIO_URL}/api/{path}', headers=_studio_headers(username),
+        r = requests.request(method, f'{STUDIO_URL}/api/{path}', headers=headers,
                              json=body, timeout=(5, timeout))
         return r.json() if r.status_code == 200 else None
     except (requests.RequestException, ValueError) as exc:
@@ -22188,18 +22193,21 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
 
 
 def _studio_refine_step(username, pid, sid, refine, job_id=None):
-    """Review a frame; below the bar with rounds left, redraw it from the
-    reviewer's prompt -- the Studio sends the new frame back here to be
-    reviewed in turn, however long it waits in the queue."""
+    """Review a frame; below the bar with rounds left, take the Designer's
+    prompt up as the shot's description -- the frame, the description and
+    the video made from them then agree, and the history has it under the
+    assistant, to undo -- and redraw it. The Studio sends the new frame back
+    here to be reviewed in turn, however long it waits in the queue."""
     review = _studio_review_board(username, pid, sid, job_id, int(refine.get('round') or 0),
                                   int(refine.get('threshold') or 7))
     if not review:
         return None
     if review['score'] < int(refine.get('threshold') or 7) and int(refine.get('rounds') or 0) > 0 and review['prompt']:
-        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {
-            'items': [sid], 'prompts': {sid: review['prompt']},
-            'refine': {'rounds': int(refine['rounds']) - 1, 'threshold': int(refine.get('threshold') or 7),
-                       'round': int(refine.get('round') or 0) + 1}})
+        if _studio_call(username, 'POST', f'projects/{pid}/items/{sid}/prompt', {'prompt': review['prompt']}, via='Alfred'):
+            _studio_call(username, 'POST', f'projects/{pid}/storyboard', {
+                'items': [sid],
+                'refine': {'rounds': int(refine['rounds']) - 1, 'threshold': int(refine.get('threshold') or 7),
+                           'round': int(refine.get('round') or 0) + 1}})
     return review
 
 
@@ -22283,6 +22291,10 @@ def studio_frame_review():
     sid = re.sub(r'[^a-z0-9]', '', str(d.get('shot') or ''))[:32]
     job = re.sub(r'[^a-z0-9]', '', str(d.get('job') or ''))[:32]
     refine = d.get('refine') if isinstance(d.get('refine'), dict) else {}
+    # Every drawn frame is sent here; a household with no vision model set
+    # simply has its frames left unreviewed, not marked as failed.
+    if not (STUDIO_VISION_URL and STUDIO_VISION_MODEL):
+        return jsonify(ok=True, reviewed=False)
     _studio_background(_studio_refine_step, login, pid, sid, refine, job)
     return jsonify(ok=True)
 

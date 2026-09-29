@@ -193,8 +193,8 @@
       font-size: .8rem; line-height: 1.45; }
     /* The redraw it suggests is a paragraph; three lines of it say what it
        is about, and a tap opens the rest. */
-    .rv-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
-    .rv-text.open { display: block; }
+    .rv-fix label { display: block; margin-bottom: 4px; }
+    .rv-fix textarea { min-height: 84px; font-size: .8rem; line-height: 1.45; background: var(--paper); }
     .hist-body { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
     .hist-change { padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: .86rem; line-height: 1.45; }
     .hist-change ins { background: rgba(126,138,97,.25); text-decoration: none; }
@@ -856,10 +856,14 @@
       var count = function (m) { return cs.filter(function (c) { return c.shown === m; }).length; };
       var tally = cs.length ? '✓ ' + count('yes') + ' · ◐ ' + count('partly') + ' · ✗ ' + count('no') : fmt('sb_review_n', { n: (r.problems || []).length });
       return '<div class="review">' +
-        (r.prompt && !good ? '<div class="rv-fix"><p class="rv-text" data-expand title="' + esc(S.sb_review_expand) + '"><span class="muted">' +
-          S.sb_review_suggests + '</span> ' + esc(r.prompt) + '</p>' +
-          '<div class="row" style="margin-top:6px"><button data-review-redraw="' + s.id + '">🔄 ' + S.sb_review_redraw + '</button>' +
-          '<button data-review-use="' + s.id + '">✍️ ' + S.sb_review_use + '</button></div></div>' : '') +
+        // Weak: the Designer's prompt, to take as it is or edit, and one
+        // action -- it becomes the description and the frame is drawn from
+        // it; the new frame is reviewed when it lands. While that is on its
+        // way the card says so instead.
+        (boardJob(s) ? '<p class="rv-fix">🔄 ' + S.sb_redrawing_review + '</p>'
+          : r.prompt && !good ? '<div class="rv-fix"><label class="muted" for="sg-' + s.id + '">' + S.sb_review_suggests + '</label>' +
+            '<textarea id="sg-' + s.id + '" data-suggest="' + s.id + '" rows="4">' + esc(r.prompt) + '</textarea>' +
+            '<div class="row" style="margin-top:6px"><button class="primary" data-review-apply="' + s.id + '">✍️ ' + S.sb_review_apply + '</button></div></div>' : '') +
         '<details' + (good ? '' : ' open') + '><summary><b>👁 ' + r.score + '/10</b> · ' + tally +
         (r.round ? ' · ' + fmt('sb_review_round', { n: r.round }) : '') + '</summary>' +
         ((r.checks || []).length
@@ -1309,8 +1313,7 @@
     function newItem(fields) { return Object.assign({ id: 'new' + Math.random().toString(36).slice(2, 10), takes: [], chosen: -1 }, fields); }
 
     $('#v-edit').addEventListener('click', async function (ev) {
-      var b = ev.target.closest('button, [data-jump], [data-expand]'); if (!b || !current) return;
-      if (b.hasAttribute('data-expand')) { b.classList.toggle('open'); return; }
+      var b = ev.target.closest('button, [data-jump]'); if (!b || !current) return;
       var p = current, d = b.dataset;
       try {
         if (b.id === 'back') return closeProject();
@@ -1473,18 +1476,14 @@
           toast(fmt('sb_refine_started', { n: rf.started }));
           return;
         }
-        if (d.reviewUse) {
-          var su = itemById(d.reviewUse), rb = chosenBoard(su);
-          if (!rb || !rb.review || !rb.review.prompt) return;
-          su.prompt = rb.review.prompt; await saveNow(); drawTab(); toast(S.sb_review_used); return;
-        }
-        if (d.reviewRedraw) {
-          var sr = itemById(d.reviewRedraw), rr0 = chosenBoard(sr);
-          if (!rr0 || !rr0.review || !rr0.review.prompt) return;
-          await flushSave();
-          var prm = {}; prm[sr.id] = rr0.review.prompt;
-          var rq2 = await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: [sr.id], prompts: prm } });
-          toast(fmt('board_queued', { n: rq2.queued.length }));
+        if (d.reviewApply) {
+          var sa = itemById(d.reviewApply), box = document.querySelector('textarea[data-suggest="' + sa.id + '"]');
+          var text = box ? box.value.trim() : '';
+          if (!text) return;
+          b.disabled = true;
+          sa.prompt = text; await saveNow();
+          await api('projects/' + p.id + '/storyboard', { method: 'POST', body: { items: [sa.id] } });
+          toast(S.sb_review_applied);
           current = await api('projects/' + p.id); loadQueue(); drawTab(); return;
         }
         if (b.id === 'fit-song') return fitToSong(b);

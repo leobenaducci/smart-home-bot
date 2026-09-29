@@ -1019,6 +1019,13 @@ check("  a frame can be drawn from a reviewer's prompt, the person's description
       and bp_["shot_prompt"] == sdoc["shots"][1]["prompt"].strip()
       and bp_["refine"] == {"rounds": 1, "threshold": 8, "round": 0}, bp_)
 A.manager.cancel(rq["queued"][0]["id"])
+rq2 = c.post(f"/api/projects/{sbp['id']}/storyboard", json={"items": [s1id]}, headers=h(JUANA, "Juana")).json()
+check("  a plain redraw is still looked at when it lands", A.store.get(rq2["queued"][0]["id"])["params"].get("refine")
+      == {"rounds": 0, "threshold": 7, "round": 0})
+A.manager.cancel(rq2["queued"][0]["id"])
+rq3 = c.post(f"/api/projects/{sbp['id']}/storyboard", json={"items": [s1id], "review": False}, headers=h(JUANA, "Juana")).json()
+check("  unless asked not to be", "refine" not in A.store.get(rq3["queued"][0]["id"])["params"])
+A.manager.cancel(rq3["queued"][0]["id"])
 hooked = []
 saved_post, saved_url = A.requests.post, A.NOTIFY_URL
 A.requests.post = lambda url, json=None, **kw: hooked.append((url, json))
@@ -1031,6 +1038,14 @@ A.requests.post, A.NOTIFY_URL = saved_post, saved_url
 check("  a frame drawn inside a refine loop goes back to the portal to be looked at -- only that one",
       [u for u, _ in hooked if u.endswith("/frame-review")] == ["https://portal.invalid/studio/api/frame-review"]
       and next(j for u, j in hooked if u.endswith("/frame-review"))["job"] == "jb1", hooked)
+check("  one shot's description can be set on its own",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/prompt", json={"prompt": "un faro al amanecer"},
+             headers=h(JUANA, "Juana")).status_code == 200
+      and next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s1id)["prompt"]
+      == "un faro al amanecer")
+check("  never emptied, and never someone else's",
+      c.post(f"/api/projects/{sbp['id']}/items/{s1id}/prompt", json={"prompt": " "}, headers=h(JUANA, "Juana")).status_code == 400
+      and c.post(f"/api/projects/{sbp['id']}/items/{s1id}/prompt", json={"prompt": "x"}, headers=h(TOMI, "Tomi")).status_code == 404)
 bd = Projects.chosen_board(next(x for x in c.get(f"/api/projects/{sbp['id']}", headers=h(JUANA, "Juana")).json()["shots"] if x["id"] == s1id))
 rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
             json={"review": {"score": 12, "ok": ["luz"], "problems": ["<b>mano</b>"] * 20, "prompt": "p", "round": 1}},

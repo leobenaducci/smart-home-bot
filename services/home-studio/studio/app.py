@@ -632,14 +632,18 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
     # is. `refine`: rounds of review left after this drawing (the portal
     # reviews each frame drawn with some and redraws it while it scores low).
     overrides = {str(k): str(v).strip()[:1200] for k, v in (body.get("prompts") or {}).items() if str(v).strip()}
-    refine = None
+    # Every frame is looked at when it lands -- a first drawing, a redraw,
+    # the planner's, the assistant's -- so a redraw is never a guess nobody
+    # checked: a budget of no further rounds unless one is asked for, and
+    # none at all only when asked (`review: false`).
+    refine = None if body.get("review") is False else {"rounds": 0, "threshold": 7, "round": 0}
     if isinstance(body.get("refine"), dict):
         try:
             refine = {"rounds": max(0, min(3, int(body["refine"].get("rounds", 0)))),
                       "threshold": max(1, min(10, int(body["refine"].get("threshold", 7)))),
                       "round": max(0, min(9, int(body["refine"].get("round", 0))))}
         except (TypeError, ValueError):
-            refine = None
+            pass
     look = str(doc["settings"].get("look") or "").strip()
     size = recipes.BOARD_SIZE.get(doc["settings"].get("resolution", "832x480"), "1344x768")
     busy = {j["target"] for j in store.active() if j["owner"] == me.login and j["kind"] == "board"}
@@ -987,6 +991,25 @@ def board_from(pid: str, item_id: str, body: dict, me: Who = Depends(who)):
         return projects.board_from(me.login, pid, item_id, str(body.get("file") or ""))
     except ProjectError as exc:
         _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/prompt")
+def set_shot_prompt(pid: str, item_id: str, body: dict, me: Who = Depends(who)):
+    """One shot's description, set on its own -- a reviewer's improved prompt
+    taken up -- without sending the whole project (which a page holding an
+    older copy would). In the history under whoever asked."""
+    text = str(body.get("prompt") or "").strip()
+    if not text:
+        _bad(ValueError("a description cannot be empty"))
+    try:
+        found = Projects.find(projects.load(me.login, pid), item_id)
+        if not found or found[0] != "shots":
+            raise ProjectError("no such shot")
+        projects.set_item_field(me.login, pid, item_id, "prompt", text[:1200])
+    except ProjectError as exc:
+        _bad(exc, 404)
+    _remember(me, pid)
+    return {"ok": True}
 
 
 @app.post("/api/projects/{pid}/items/{item_id}/boards/{board_id}/review")

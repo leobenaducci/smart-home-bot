@@ -119,7 +119,7 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "favorite_set", "favorite_clear", "rs_button", "rs_title", "rs_mode_part", "rs_mode_all",
             "rs_pick", "rs_range", "rs_no_lines", "rs_similar", "rs_keep_voice", "rs_go",
             "preview_download", "preview_rendering",
-            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "sb_review_expand", "project_name", "more", "rail_label", "rail_song", "rail_song_none", "rail_song_bpm", "rail_song_unheard", "rail_board", "rail_board_st", "rail_weak", "rail_videos", "rail_videos_st", "rail_making", "rail_stale", "rail_film", "rail_film_st", "rail_film_none", "rail_none", "sb_video_old", "sb_has_video", "sb_review_n", "fit_button", "fit_help", "fit_confirm", "fit_done", "fit_short", "sb_review", "sb_review_help", "sb_review_all", "sb_reviewing", "sb_review_started", "sb_review_failed", "sb_review_round", "sb_review_suggests", "sb_review_redraw", "sb_review_use", "sb_review_used", "sb_refine", "sb_refine_help", "sb_refine_confirm", "sb_refine_started", "sb_refine_busy", "hist_button", "hist_title", "hist_help", "hist_empty", "hist_show", "hist_nothing", "hist_reordered", "hist_revert", "hist_revert_help", "hist_revert_confirm", "hist_restore", "hist_restore_help", "hist_restore_confirm", "hist_tag_now", "hist_tag_prompt", "hist_untag_confirm", "hist_done", "hist_conflicts", "score_make", "score_open", "score_running", "score_retry", "score_confirm", "score_queued", "sb_use", "sb_starts_from", "sb_video_older", "sb_to_video", "sb_to_video_off", "sb_video_stale", "sb_continues", "sb_use_frame", "board_from", "board_from_none", "ref_add", "ref_add_short", "ref_is", "ref_added", "tab_board", "sb_help", "sb_empty", "sb_redraw_changed", "sb_animatic", "sb_changed", "sb_changed_short", "sb_drawing", "sb_music_only", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
+            "new_project_kind", "kind_soon", "pkind_music_video", "pkind_music_video_about", "pkind_short_film", "pkind_short_film_about", "pkind_explainer", "pkind_explainer_about", "pkind_podcast", "pkind_podcast_about", "pkind_recording", "pkind_recording_about", "pkind_free", "pkind_free_about", "storyboard", "board_make", "board_draw", "board_redraw", "board_queued", "sb_review_apply", "sb_review_applied", "sb_redrawing_review", "project_name", "more", "rail_label", "rail_song", "rail_song_none", "rail_song_bpm", "rail_song_unheard", "rail_board", "rail_board_st", "rail_weak", "rail_videos", "rail_videos_st", "rail_making", "rail_stale", "rail_film", "rail_film_st", "rail_film_none", "rail_none", "sb_video_old", "sb_has_video", "sb_review_n", "fit_button", "fit_help", "fit_confirm", "fit_done", "fit_short", "sb_review", "sb_review_help", "sb_review_all", "sb_reviewing", "sb_review_started", "sb_review_failed", "sb_review_round", "sb_review_suggests", "sb_refine", "sb_refine_help", "sb_refine_confirm", "sb_refine_started", "sb_refine_busy", "hist_button", "hist_title", "hist_help", "hist_empty", "hist_show", "hist_nothing", "hist_reordered", "hist_revert", "hist_revert_help", "hist_revert_confirm", "hist_restore", "hist_restore_help", "hist_restore_confirm", "hist_tag_now", "hist_tag_prompt", "hist_untag_confirm", "hist_done", "hist_conflicts", "score_make", "score_open", "score_running", "score_retry", "score_confirm", "score_queued", "sb_use", "sb_starts_from", "sb_video_older", "sb_to_video", "sb_to_video_off", "sb_video_stale", "sb_continues", "sb_use_frame", "board_from", "board_from_none", "ref_add", "ref_add_short", "ref_is", "ref_added", "tab_board", "sb_help", "sb_empty", "sb_redraw_changed", "sb_animatic", "sb_changed", "sb_changed_short", "sb_drawing", "sb_music_only", "mv_then", "mv_then_board", "mv_then_video", "mv_then_none", "mv_board_estimate",
             "tab_cast", "ch_none", "ch_new", "ch_edit", "ch_name", "ch_look", "ch_look_ph", "ch_personality", "ch_personality_ph", "ch_voice", "ch_voice_text", "ch_record", "ch_stop", "ch_pictures", "ch_save", "ch_pick_studio", "ch_pick_files", "ch_pick_none", "ch_portrait", "ch_speak", "ch_speak_what", "ch_speak_ph", "ch_widen_person", "ch_widen_family", "ch_scope_project", "ch_scope_person", "ch_scope_family", "ch_widen_confirm", "ch_delete_confirm", "ch_in_shot",
             "rec_title", "rec_screen", "rec_cam", "rec_mic", "rec_start", "rec_pause", "rec_resume", "rec_stop", "rec_uploading", "rec_saved", "rec_processing", "rec_failed", "rec_no_screen", "rec_need_source", "rec_default_title", "rec_denied", "delete_render_confirm",
             "rec_subs", "rec_subs_running", "rec_subs_failed", "rec_transcript", "rec_trim", "rec_trim_running", "rec_trim_done", "rec_trim_failed", "render_subs",
@@ -437,9 +437,12 @@ deadline = time.time() + 10
 while time.time() < deadline and not any(c[1] == "projects/abc123def456/storyboard" for c in calls):
     time.sleep(0.05)
 redraw = [c for c in calls if c[1] == "projects/abc123def456/storyboard"]
-check("under the bar with a round left, it is redrawn from the review, one round fewer",
-      r.status_code == 200 and redraw and redraw[0][2] == {"items": ["sh1"], "prompts": {"sh1": "brighter lighthouse at dawn"},
-                                                            "refine": {"rounds": 0, "threshold": 7, "round": 2}}, redraw)
+took = [c for c in calls if c[1] == "projects/abc123def456/items/sh1/prompt"]
+check("under the bar with a round left, the Designer's prompt becomes the description -- as Alfred, for the history",
+      took and took[0][2] == {"prompt": "brighter lighthouse at dawn"} and took[0][3].get("X-Studio-Via") == "Alfred", took)
+check("and the frame is redrawn from it, one round fewer",
+      r.status_code == 200 and redraw and redraw[0][2] == {"items": ["sh1"], "refine": {"rounds": 0, "threshold": 7, "round": 2}}
+      and calls.index(took[0]) < calls.index(redraw[0]), redraw)
 calls.clear()
 vision_answers[:] = ['{"items": ["un zorro rojo", "un impermeable amarillo", "la escalera del faro"]}', '{"checks": [{"item": "a", "shown": "partly", "why": "dark"}], "defects": []}']
 plans[:] = ["x"]
@@ -452,6 +455,16 @@ time.sleep(0.2)
 check("with no rounds left it is reviewed and left as it is",
       any(c[1].endswith("/review") and c[2]["review"]["state"] == "done" for c in calls)
       and not any(c[1] == "projects/abc123def456/storyboard" for c in calls))
+
+calls.clear()
+saved_url = A.STUDIO_VISION_URL
+A.STUDIO_VISION_URL = ""
+r = client.post("/studio/api/frame-review", headers={"X-Studio-Secret": A.STUDIO_SECRET}, json={
+    "login": USER1, "project": "abc123def456", "shot": "sh1", "job": "jb1", "refine": {"rounds": 0, "threshold": 7}})
+time.sleep(0.3)
+check("every drawn frame is sent, and a house with no vision model leaves them unreviewed rather than failed",
+      r.status_code == 200 and r.get_json().get("reviewed") is False and not calls, calls)
+A.STUDIO_VISION_URL = saved_url
 
 shutil.rmtree(tmp, ignore_errors=True)
 print()

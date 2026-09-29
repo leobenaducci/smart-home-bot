@@ -126,6 +126,40 @@ the frames are not used. A video remembers the frame it started from
 (`takes[].board`), so a video made before its frame was drawn -- or from
 another frame -- says so, and Regenerate makes it from the frame.
 
+### Reviewing the frames
+
+Every frame drawn is looked at when it lands -- a first drawing, a redraw,
+the planner's, the assistant's (the Studio carries a review budget on each
+frame's job and hands the filed frame to the portal's `/studio/api/frame-review`;
+`review: false` on the request skips it). The looking is the house's own
+vision model (`assistant.models.vision`, called directly on the endpoint the
+deployer resolves for it; the pictures never leave the house), in two steps:
+the shot is first made into a checklist of what a single still must show
+(camera movement, sound and anything over time left out), then each item is
+marked on the frame shown, partly or not, with rendering defects apart. The
+score is counted from the marks -- the model does not choose it: asked to,
+it listed a frame's real problems and still gave it 9/10.
+
+Under 7, the Designer (`assistant.models.designer`, text only) writes the
+prompt to draw it with instead. The card shows it in an editable box with one
+action, "Use and redraw": it becomes the shot's description and the frame is
+drawn from it, and the new frame is reviewed in turn -- description, frame and
+video agree. 🔁 Refine runs that loop on every frame by itself, up to twice
+each; the descriptions it rewrites are in the project's history under the
+assistant, to undo.
+
+### Cutting on the beat
+
+A generated song keeps one tempo, and the beat tracker's beats wander around
+it (0.395-0.557 s apart on a steady 0.492, a tenth of them more than 150 ms
+off), so a song that keeps one tempo gets one: the tempo and phase whose
+beats sit on the most onset strength, within 3 % of the tracker's
+(`analysis.steady_grid`), less the onset envelope's one-hop latency. Section
+changes snap to the bar line within half a beat. "Fit to the song" refits the
+shots a project already has onto the song's bars and section changes -- each
+keeps its place and its words -- and names the shots whose video is now
+shorter than its new length.
+
 ## Characters
 
 Who appears (`studio/characters.py`): a name, how they look (said the same
