@@ -105,6 +105,10 @@ services:
           # Never opened by this container: it is handed to opencode as a
           # session's working directory, and opencode runs on the host.
           OPENCODE_WORKSPACE_ROOT: "{paths.state}/nanobot-code-workspace"
+          # The self-improvement pipeline's folder, as the host sees it
+          # (docs/self-improvement.md). A fix request's prompt names it, so
+          # opencode -- on the host -- can read repos.json and the inbox.
+          IMPROVE_DIR: "{paths.state}/improve"
           # The member the opencode server is configured for -- the same one
           # `services.alfred-mcp.member` names, because the bridge it talks to
           # holds that person's credentials and no others. Anybody else keeps

@@ -3367,7 +3367,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   function parseGotoBlock(body) {
     var fields = {};
     body.split('\n').forEach(function (line) {
-      var m = /^\s*(space|label|why)\s*:\s*(.+?)\s*$/i.exec(line);
+      var m = /^\s*(space|label|why|request)\s*:\s*(.+?)\s*$/i.exec(line);
       if (m) fields[m[1].toLowerCase()] = m[2];
     });
     return fields;
@@ -3382,6 +3382,9 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     if (!prof) return document.createTextNode('');
     var a = document.createElement('a');
     a.className = 'goto-card'; a.href = '/chat/' + prof.url;
+    // A fix request (the self-improve skill): the Programmer opens with it
+    // already asked. Only the number travels; the page fetches the text.
+    if (/^\d{1,9}$/.test(fields.request || '')) a.href += '?improve=' + fields.request;
     var label = document.createElement('div'); label.className = 'gc-label';
     label.textContent = prof.icon + ' ' + (fields.label || ('Abrir Alfred ' + prof.title)) + ' →';
     a.appendChild(label);
@@ -7430,6 +7433,19 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
         inputEl.value = pf;
         autoResize();
         inputEl.setSelectionRange(pf.length, pf.length);
+      }
+      // A fix request, asked of Alfred and handed here: the request's text,
+      // fetched rather than carried in the link, staged for the person to read
+      // and send. Never sent from here -- that is what keeps the Programmer a
+      // person at the keyboard (docs/self-improvement.md).
+      var fix = params.get('improve');
+      if (fix && /^\d{1,9}$/.test(fix) && SPACE === 'programmer') {
+        fetch('/improve/api/requests/' + fix + '/prompt').then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (!d || !d.prompt || inputEl.value) return;
+            inputEl.value = d.prompt; autoResize(); inputEl.focus();
+            inputEl.setSelectionRange(0, 0);
+          }).catch(function() {});
       }
       // Notification deep-link: open the tasks panel (optionally on a task).
       var task = params.get('task');

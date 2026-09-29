@@ -886,6 +886,8 @@
   "chat.feedback.send": "Send",
   "chat.feedback.thanks": "Thanks, noted.",
   "chat.feedback.failed": "Could not save the rating. Try again.",
+  "improve.card_label": "Fix request #{id}",
+  "improve.card_why": "Opens the Programmer with the fix already written out. Read it, then send.",
   "common.accept": "Accept",
   "common.add": "Add",
   "common.back": "Back",

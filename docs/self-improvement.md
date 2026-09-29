@@ -5,9 +5,9 @@ pipeline that reads what went wrong in the assistant's turns, proposes a fix,
 proves the fix is better, and ships it -- and which parts of that are a model's
 judgement and which are code that cannot be talked out of a rule.
 
-**Status:** phase 1 (the evidence) is built, and phase 2's house side --
-collect and redact. The evaluator, the request path, the improver and the gate
-are the plan.
+**Status:** built -- the evidence (phase 1), collect and redact, the list of
+repositories a fix may go to, and asking Alfred to fix something. The
+evaluator, the improver's worktree and the gate are the plan.
 
 ## The shape
 
@@ -136,13 +136,21 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   issues through tools that serve only the redacted inbox. Hard signals
   override its verdict. It groups failures into issues and writes replay
   cases in `bench/cases.json`'s format, kept in state, not git.
-- **A request is an issue too.** "The lights skill points to the wrong
-  server -- fix it", said to Alfred, goes through a `self-improve` skill: it
-  files an issue with the person's words and the episodes around it, and
-  answers with a link that opens the Programmer space with the fix already
-  asked. The person presses send, which is what keeps it interactive. Only a
-  member marked `programmer` may; from WhatsApp or another member's question
-  it is refused like every other acting skill.
+- **Asking Alfred to fix something** (built). "The lights skill points to
+  the wrong server -- fix it", said in the chat, goes through the
+  `self-improve` skill: `request_fix(problem, context)` files the person's
+  words and the facts Alfred had (`POST /improve/api/requests`, the portal's
+  `improve.db`), and Alfred answers with a `:::goto` card carrying only the
+  request's number. The card opens `/chat/programmer?improve=<id>`, and the
+  page fetches the request into the input -- the person's words, what Alfred
+  knew, where a fix may go (`repos.json`, the inbox), and the rules: cause
+  first, a setting is not code, a branch in a worktree, no deploy, no push.
+  **Nothing sends it**: the person reads it and presses send, which is what
+  keeps the Programmer a person at the keyboard. Only somebody whose
+  Programmer runs on opencode may file one (anybody else is told why); only
+  they can read it back; `request_fix` is not a read, so it is refused from
+  WhatsApp and from another member's question like every acting skill, and
+  the room assistant does not have the skill at all.
 - **Where a fix belongs** is part of the issue, because it is not always this
   repository. `./home-stack improve repos` (built) lists where one may go, and
   keeps `{paths.state}/improve/repos.json` current on every collect: this

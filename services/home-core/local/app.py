@@ -7452,6 +7452,129 @@ def code_task_status(task_id):
                    started_at=row[2], finished_at=row[3], result=row[4] or '')
 
 
+# ---------------------------------------------------------------------------
+# Asking Alfred to fix something (docs/self-improvement.md)
+# ---------------------------------------------------------------------------
+# "The lights skill points at the wrong server -- fix it." The `self-improve`
+# skill files what the person said, and Alfred answers with a card that opens
+# the Programmer with the fix already asked, for the person to send. The
+# person sending it is the point: the Programmer runs on opencode, whose Go
+# plan is for somebody at the keyboard (CLAUDE.md), so nothing here starts a
+# model turn on its own.
+IMPROVE_DB_PATH = os.path.join('backup_data', 'improve.db')
+# The pipeline's folder as the *host* sees it -- repos.json and the redacted
+# inbox. Never opened by this container: it is written into the prompt, for
+# opencode, which runs on the host.
+IMPROVE_DIR = os.environ.get('IMPROVE_DIR', '')
+IMPROVE_TEXT_MAX = 2000
+
+
+def _improve_conn():
+    conn = sqlite3.connect(IMPROVE_DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS improve_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        problem TEXT NOT NULL,
+        context TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'open'
+    )''')
+    return conn
+
+
+def init_improve_db():
+    _improve_conn().close()
+
+
+def _improve_prompt(row):
+    """What the Programmer is asked, for the person to read and send.
+
+    The rules are in the request rather than trusted to the agent's prompt,
+    because this is the text the person reviews before sending: what it says
+    it will do is what they are agreeing to."""
+    rid, problem, context = row
+    where = (f"`{IMPROVE_DIR}/repos.json` lists where a fix may go -- this stack "
+             f"and each plugin, with what each provides; recent turns, redacted, "
+             f"are in `{IMPROVE_DIR}/inbox/`." if IMPROVE_DIR else
+             "Find which repository this belongs to: the stack, or one of its plugins.")
+    lines = [f"Fix request #{rid}, asked of Alfred:", "",
+             *[f"> {ln}" for ln in problem.splitlines() or [problem]], ""]
+    if context:
+        lines += ["What Alfred knew when it was asked:", "",
+                  *[f"> {ln}" for ln in context.splitlines()], ""]
+    lines += [where, "",
+              "1. Find the cause first and tell me what it is before changing anything.",
+              "2. If it is a setting (an address, a model, a switch), say which and where "
+              "it is set. Never write a household value into code.",
+              f"3. If it is code: a new branch `improve/{rid}` in a git worktree of the "
+              "repository it belongs to -- never on main, never in the checkout that "
+              "deploys -- with a test, committed.",
+              "4. Do not deploy and do not push. Tell me what changed and how to check it."]
+    return "\n".join(lines)
+
+
+@app.route('/improve/api/requests', methods=['POST'])
+@api_login_required
+def improve_request_new():
+    """File a fix request from the `self-improve` skill, and answer with the
+    card that opens the Programmer on it."""
+    username = session['user']
+    body = request.get_json(silent=True) or {}
+    problem = str(body.get('problem') or '').strip()[:IMPROVE_TEXT_MAX]
+    context = str(body.get('context') or '').strip()[:IMPROVE_TEXT_MAX]
+    if not problem:
+        return jsonify(error='say what is wrong: problem is empty'), 400
+    # Whoever has an opencode of their own: the Programmer is where the fix is
+    # made, and for anybody else it is the assistant, which does not do this.
+    if not _opencode_url(username):
+        return jsonify(ok=False, error='the Programmer does not run on opencode for this '
+                       'member, so there is nowhere to hand a fix to. An admin turns it on '
+                       'per person on the admin page.'), 409
+    conn = _improve_conn()
+    try:
+        rid = conn.execute('INSERT INTO improve_requests (username, created_at, problem, context) '
+                           'VALUES (?,?,?,?)', (username, int(time.time()), problem, context)).lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    # In the language of whoever asked: the card is shown to them. One line
+    # each, since a goto field ends at the line.
+    label = ' '.join(t_for(username, 'improve.card_label', id=rid).split())
+    why = ' '.join(t_for(username, 'improve.card_why').split())
+    card = f':::goto\nspace: programmer\nlabel: {label}\nrequest: {rid}\nwhy: {why}\n:::'
+    return jsonify(ok=True, id=rid, card=card)
+
+
+@app.route('/improve/api/requests', methods=['GET'])
+@api_login_required
+def improve_request_list():
+    conn = _improve_conn()
+    try:
+        rows = conn.execute('SELECT id, created_at, problem, status FROM improve_requests '
+                            'WHERE username = ? ORDER BY id DESC LIMIT 20',
+                            (session['user'],)).fetchall()
+    finally:
+        conn.close()
+    return jsonify(requests=[{'id': r[0], 'created_at': r[1], 'problem': r[2][:300],
+                              'status': r[3]} for r in rows])
+
+
+@app.route('/improve/api/requests/<int:rid>/prompt')
+@api_login_required
+def improve_request_prompt(rid):
+    """The text the Programmer's input is filled with. Only the person who
+    asked may read it: it is their words."""
+    conn = _improve_conn()
+    try:
+        row = conn.execute('SELECT id, problem, context FROM improve_requests '
+                           'WHERE id = ? AND username = ?', (rid, session['user'])).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify(error='no such request'), 404
+    return jsonify(ok=True, id=rid, prompt=_improve_prompt(row))
+
+
 def _turn_attempt_opencode(turn, msg_content):
     """One go at running a Programmer turn against opencode.
 
@@ -13451,6 +13574,8 @@ LOGIN_KEYED_TABLES = (
     # Which phone or tablet is whose (the devices section): a device belongs to
     # whoever is signed in on it.
     ('devices.db', 'app_devices', 'login'),
+    # Fix requests: whose words they are, and so who may read them back.
+    ('improve.db', 'improve_requests', 'username'),
 )
 
 
@@ -22617,6 +22742,7 @@ if __name__ == '__main__':
     init_usage_db()
     start_gpu_sampler()
     init_bgtask_db()
+    init_improve_db()
     init_persona_db()
     init_theme_db()
     init_chat_titles_db()
