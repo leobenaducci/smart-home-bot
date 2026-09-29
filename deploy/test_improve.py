@@ -217,13 +217,30 @@ check("sampling keeps the clean ones too, and says they were sampled",
 check("but never a heartbeat", not any(e["scope"] == "ev-heartbeat" for e in all_eps))
 check("the day before is empty, not an error", C.collect(state, "2026-09-28") == [])
 
+print("\nthe professions' folders, old names included, agree with the portal")
+import re as _re  # noqa: E402
+_portal = (HERE.parent / "services" / "home-core" / "local" / "app.py").read_text(encoding="utf-8")
+_spaces = dict(_re.findall(r"'(\w+)': \{\s*'dir': '\w+', 'scope': '(\w+)'", _portal))
+_aliases = dict(_re.findall(r"'(\w+)': '(\w+)'", _portal[_portal.index("CHAT_SPACE_ALIASES = {"):
+                                                           _portal.index("CHAT_MODE_ALIASES")]))
+check("every profession the portal has maps to its scope", _spaces and all(
+      C.scope_of_folder(space) == scope for space, scope in _spaces.items()), (_spaces, C.SPACE_SCOPES))
+check("and every old folder name to the same one", _aliases and all(
+      C.scope_of_folder(old) == _spaces[new] for old, new in _aliases.items()), _aliases)
+(hist / "programador").mkdir()
+(hist / "programador" / f"{DAY}.json").write_text(json.dumps([
+    msg("user", "revisá el deploy", T0 + 5000), msg("bot", "No pude.", T0 + 5010, interrupted=True)]),
+    encoding="utf-8")
+check("a Programmer turn in the old folder is a `dev` episode",
+      any(e["scope"] == "dev" and e["request"] == "revisá el deploy" for e in C.collect(state, DAY, sample=0.0)))
+
 print("\nthe command, end to end, on the scratch tree")
 os.environ["HOME_STACK_IMPROVE_DIR"] = str(tmp / "improve")
 import cli  # noqa: E402
 cli.live_config = lambda: {**cfg, "paths": {"state": str(state)}, "site": {"timezone": "UTC"}}
 rc = cli.main(["collect", "--day", DAY, "--no-model", "--sample", "0"])
 inbox = (tmp / "improve" / "inbox" / f"{DAY}.jsonl").read_text(encoding="utf-8")
-check("it writes the inbox", rc == 0 and inbox.count("\n") == len(eps), inbox[:200])
+check("it writes the inbox", rc == 0 and inbox.count("\n") == len(C.collect(state, DAY, sample=0.0)), inbox[:200])
 check("with no login and no name in it", LOGIN not in inbox and "Tomi" not in inbox
       and "member-" in inbox, inbox[:300])
 check("readable by this user alone",

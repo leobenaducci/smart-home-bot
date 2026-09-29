@@ -34,6 +34,20 @@ from typing import Iterator
 # read with its own name as the scope.
 SPACE_SCOPES = {"programmer": "dev", "teacher": "edu", "designer": "dsg",
                 "doctor": "sal", "legal": "ley"}
+# The folders from before the professions were renamed, which the portal still
+# writes to when that is what exists (`_space_history_dirname`, and
+# CHAT_SPACE_ALIASES beside CHAT_SPACES). Read as their own name they filed a
+# Programmer turn under scope "programador", joined to no usage row at all.
+# `finanzas` is a profession that no longer exists, billed as `fin`.
+LEGACY_SPACES = {"programador": "programmer", "profesor": "teacher", "disenador": "designer",
+                 "medico": "doctor", "salud": "doctor"}
+RETIRED_SCOPES = {"finanzas": "fin"}
+
+
+def scope_of_folder(name: str) -> str:
+    """The usage scope of a profession's history folder, old names included."""
+    space = LEGACY_SPACES.get(name, name)
+    return SPACE_SCOPES.get(space) or RETIRED_SCOPES.get(name) or name
 # A usage row belongs to the answer filed within this long after it.
 JOIN_BEFORE_S = 30
 JOIN_AFTER_S = 120
@@ -111,7 +125,7 @@ def _history(root: Path, login: str, day: str) -> Iterator[tuple[str, list[dict]
     profession's folder."""
     base = root / login
     for path, scope in [(base / f"{day}.json", "")] + [
-            (d / f"{day}.json", SPACE_SCOPES.get(d.name, d.name))
+            (d / f"{day}.json", scope_of_folder(d.name))
             for d in sorted(base.iterdir()) if d.is_dir()] if base.is_dir() else []:
         try:
             msgs = json.loads(path.read_text(encoding="utf-8"))
