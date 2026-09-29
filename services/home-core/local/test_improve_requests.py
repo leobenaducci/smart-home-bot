@@ -83,6 +83,10 @@ r = other.post("/improve/api/requests", headers=H, json={"problem": "arreglá al
 check("somebody without an opencode Programmer is told why, and gets no card",
       r.status_code == 409 and "card" not in r.get_json() and "Programmer" in r.get_json()["error"],
       r.get_json())
+dup = coder.post("/improve/api/requests", headers=H, json={"problem": "lo mismo otra vez"}).get_json()
+check("asking again within minutes, while the first is open, is the same request",
+      dup.get("duplicate") is True and dup.get("id") == 1, dup)
+A.IMPROVE_DEDUP_S = -60  # the rest of this file files one request after another
 check("an empty problem is refused",
       coder.post("/improve/api/requests", headers=H, json={"problem": "  "}).status_code == 400)
 long = coder.post("/improve/api/requests", headers=H, json={"problem": "x" * 5000}).get_json()
@@ -121,9 +125,11 @@ p = (r.get_json() or {}).get("prompt", "")
 check("the person's words, verbatim", "> La skill de luces apunta al servidor equivocado; arreglala." in p, p)
 check("and what Alfred knew", "> skill lights, flash_light: connection refused." in p, p)
 check("where a fix may go", "/srv/state/improve/repos.json" in p and "/srv/state/improve/inbox/" in p, p)
+check("code is read in a worktree, never the live checkouts",
+      "start 1 <repo>` first and read the worktree" in p and "reaching for them ends this run" in p, p)
 check("it investigates only, and asks before changing anything",
       "investigate only -- change nothing" in p and "ask me whether to apply it" in p
-      and p.index("Only after I say yes") < p.index("start 1"), p)
+      and p.index("Only after I say yes") < p.index("commit 1"), p)
 check("what Alfred knew is a lead to check, not a fact", "leads to check, not facts" in p, p)
 check("the fix goes through the tool, in a worktree, never the deploying checkout",
       "/srv/state/improve/bin/improve start 1 <repo>" in p and "improve commit 1" in p

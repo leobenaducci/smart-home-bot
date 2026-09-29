@@ -7472,6 +7472,7 @@ IMPROVE_DB_PATH = os.path.join('backup_data', 'improve.db')
 # opencode, which runs on the host.
 IMPROVE_DIR = os.environ.get('IMPROVE_DIR', '')
 IMPROVE_TEXT_MAX = 2000
+IMPROVE_DEDUP_S = 15 * 60
 
 
 def _improve_conn():
@@ -7515,6 +7516,10 @@ def _improve_prompt(row):
                   "a guess:", "",
                   *[f"> {ln}" for ln in context.splitlines()], ""]
     lines += [where, "",
+              f"To read a repository's code, run `{tool} start {rid} <repo>` first and read "
+              "the worktree it prints: it is the current code and changes nothing. The live "
+              "checkouts (the paths in repos.json) are out of your reach on purpose -- a "
+              "deploy ships whatever is in them -- and reaching for them ends this run.", "",
               "First, investigate only -- change nothing:",
               "1. Check each claim above against the running system (the container's "
               "environment, the skill's code, the service answering) and say which held.",
@@ -7554,20 +7559,40 @@ def improve_request_new():
                        'per person on the admin page.'), 409
     conn = _improve_conn()
     try:
+        # The same person asking again within minutes, while the first is still
+        # open, is the same request: a chat turn that ran out of time hands
+        # the work to a background task, which files it a second time, and two
+        # Programmer runs then investigate one problem (2026-09-29, #3 and #4).
+        dup = conn.execute("SELECT id, day, conv FROM improve_requests WHERE username = ? "
+                           "AND created_at > ? AND status IN ('open', 'investigating') "
+                           "ORDER BY id DESC LIMIT 1",
+                           (username, int(time.time()) - IMPROVE_DEDUP_S)).fetchone()
+    finally:
+        conn.close()
+    if dup:
+        return jsonify(ok=True, id=dup[0], duplicate=True, investigating=bool(dup[2]),
+                       card=_improve_card(username, dup[0], (dup[1], dup[2]) if dup[2] else None))
+    conn = _improve_conn()
+    try:
         rid = conn.execute('INSERT INTO improve_requests (username, created_at, problem, context) '
                            'VALUES (?,?,?,?)', (username, int(time.time()), problem, context)).lastrowid
         conn.commit()
     finally:
         conn.close()
     started = _improve_start(username, rid, problem, context)
-    # In the language of whoever asked: the card is shown to them. One line
-    # each, since a goto field ends at the line.
+    return jsonify(ok=True, id=rid, card=_improve_card(username, rid, started),
+                   investigating=bool(started))
+
+
+def _improve_card(username, rid, started):
+    """The goto card for request *rid*: opening its running conversation when
+    *started* is (day, conv), filling the Programmer's input otherwise. In the
+    language of whoever asked, one line a field."""
     label = ' '.join(t_for(username, 'improve.card_label', id=rid).split())
     why = ' '.join(t_for(username, 'improve.card_started' if started
                          else 'improve.card_why').split())
     where = (f'date: {started[0]}\nconv: {started[1]}\n' if started else '')
-    card = f':::goto\nspace: programmer\nlabel: {label}\nrequest: {rid}\n{where}why: {why}\n:::'
-    return jsonify(ok=True, id=rid, card=card, investigating=bool(started))
+    return f':::goto\nspace: programmer\nlabel: {label}\nrequest: {rid}\n{where}why: {why}\n:::'
 
 
 def _improve_start(username, rid, problem, context):

@@ -1,6 +1,6 @@
 ---
 name: self-improve
-description: "Invoke with JSON: {\"skill\":\"self-improve\",\"action\":\"...\"}. Ask for a fix to Alfred himself: request_fix(problem, [context]) | list_fix_requests(). Use it when the person says something about how YOU work is broken or wrong and asks for it to be fixed or changed -- a skill that fails or talks to the wrong place, a rule you keep getting wrong, a feature of yours that misbehaves. Not for a device that is off, an answer they just want redone, or their own projects."
+description: "Invoke with JSON: {\"skill\":\"self-improve\",\"action\":\"...\"}. Ask for a fix to Alfred himself: request_fix(problem, [context]) | list_fix_requests(). Call it AT ONCE, before looking into anything yourself -- the Programmer investigates. Use it when the person says something about how YOU work is broken or wrong and asks for it to be fixed or changed -- a skill that fails or talks to the wrong place, a rule you keep getting wrong, a feature of yours that misbehaves. Not for a device that is off, an answer they just want redone, or their own projects."
 # On demand: the description carries the invocation and the API.
 metadata: {"nanobot":{"translatable":true}}
 ---
@@ -49,6 +49,11 @@ Programmer is not on for this person. Say that, in one line, and stop.
 The person's last requests, newest first, with their status.
 
 ## Rules
+
+- **Call it first.** Do not read the skill's code, its config or the logs
+  before filing: you cannot see most of it, and the Programmer can -- it
+  checks everything against the running system. What you already know from
+  the conversation is enough context.
 
 - It is one call, and it is the whole job -- in the chat or in the background
   alike. The person pressing send in the Programmer is the design, not a gap:
