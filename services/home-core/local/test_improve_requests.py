@@ -126,7 +126,10 @@ check("the person's words, verbatim", "> La skill de luces apunta al servidor eq
 check("and what Alfred knew", "> skill lights, flash_light: connection refused." in p, p)
 check("where a fix may go", "/srv/state/improve/repos.json" in p and "/srv/state/improve/inbox/" in p, p)
 check("code is read in a worktree, never the live checkouts",
-      "start 1 <repo>` first and read the worktree" in p and "reaching for them ends this run" in p, p)
+      "start 1 <repo>` first and read the worktree" in p and "reaching for them is refused" in p, p)
+check("where the assistant that was asked actually runs",
+      "docker exec nanobot-user1 printenv <NAME>" in p and "not the assistant's" in p, p)
+check("and settings come from the person, not the admin's files", "ask me for a value" in p, p)
 check("it investigates only, and asks before changing anything",
       "investigate only -- change nothing" in p and "ask me whether to apply it" in p
       and p.index("Only after I say yes") < p.index("commit 1"), p)

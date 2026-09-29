@@ -7496,7 +7496,7 @@ def init_improve_db():
     _improve_conn().close()
 
 
-def _improve_prompt(row):
+def _improve_prompt(row, username=None):
     """What the Programmer is asked, for the person to read and send.
 
     The rules are in the request rather than trusted to the agent's prompt,
@@ -7504,6 +7504,11 @@ def _improve_prompt(row):
     it will do is what they are agreeing to."""
     rid, problem, context = row
     tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
+    user = find_user(username) if username else None
+    # The assistant that was asked, as the deployer names its container: what
+    # it sees is what matters, and the Programmer's own shell is not it -- the
+    # first investigation checked `env` on the host and learned nothing.
+    container = f'nanobot-{_member_of(user)}' if user else ''
     where = (f"`{IMPROVE_DIR}/repos.json` lists where a fix may go -- this stack "
              f"and each plugin, with what each provides; recent turns, redacted, "
              f"are in `{IMPROVE_DIR}/inbox/`." if IMPROVE_DIR else
@@ -7519,7 +7524,13 @@ def _improve_prompt(row):
               f"To read a repository's code, run `{tool} start {rid} <repo>` first and read "
               "the worktree it prints: it is the current code and changes nothing. The live "
               "checkouts (the paths in repos.json) are out of your reach on purpose -- a "
-              "deploy ships whatever is in them -- and reaching for them ends this run.", "",
+              "deploy ships whatever is in them -- and reaching for them is refused.", "",
+              *([f"The assistant that was asked runs in the container `{container}`: "
+                 f"`docker exec {container} printenv <NAME>` shows what it sees, and "
+                 f"`docker logs --since 1h {container}` what it did. Your own shell's "
+                 "environment is not the assistant's.", ""] if container else []),
+              "The house's settings are on the admin page; ask me for a value rather than "
+              "reading its files, which are refused.", "",
               "First, investigate only -- change nothing:",
               "1. Check each claim above against the running system (the container's "
               "environment, the skill's code, the service answering) and say which held.",
@@ -7606,7 +7617,7 @@ def _improve_start(username, rid, problem, context):
             return None
         day = _writing_day(None)
         conv = int(time.time() * 1000)
-        prompt = _improve_prompt((rid, problem, context))
+        prompt = _improve_prompt((rid, problem, context), username)
         # Filed as the person's message: it is their request, it reads as the
         # first line of the conversation, and the reply files after it.
         append_user_history(username, {'role': 'user', 'text': prompt, 'ts': conv, 'conv': conv},
@@ -7653,7 +7664,7 @@ def improve_request_prompt(rid):
         conn.close()
     if not row:
         return jsonify(error='no such request'), 404
-    return jsonify(ok=True, id=rid, prompt=_improve_prompt(row))
+    return jsonify(ok=True, id=rid, prompt=_improve_prompt(row, session['user']))
 
 
 def _turn_attempt_opencode(turn, msg_content):

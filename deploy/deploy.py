@@ -3577,7 +3577,14 @@ def build_opencode_config(member: str, token: str, port: int,
                 "git tag --list": "allow",
                 "git remote -v": "allow",
             },
-            "external_directory": ({
+            # Everything not granted below is *refused*, not asked about. An
+            # ask has nobody to answer it here, so HomeCore can only abort the
+            # turn -- and a self-improvement investigation that had already
+            # made a worktree and read forty files died on one glance at the
+            # live config. A refusal comes back to the agent as a tool error
+            # it can explain or work around, which is at least as loud. First,
+            # because the last matching entry wins.
+            "external_directory": {"*": "deny"} | ({
                 f"{workspace.rstrip('/')}/{member}": "allow",
                 f"{workspace.rstrip('/')}/{member}/*": "allow",
             } if workspace else {}) | ({
@@ -3585,7 +3592,7 @@ def build_opencode_config(member: str, token: str, port: int,
                 # the redacted inbox, repos.json, and `work/`, where a fix
                 # request's worktrees are made by `improve start` -- code, not
                 # the agent's git, which the block above refuses. The live
-                # checkouts it branches from are not here and still ask.
+                # checkouts it branches from are not here, and are refused.
                 f"{improve.rstrip('/')}": "allow",
                 f"{improve.rstrip('/')}/*": "allow",
             } if improve else {}) | {

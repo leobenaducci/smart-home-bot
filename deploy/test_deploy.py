@@ -3755,6 +3755,8 @@ check("  opencode may work in the self-improvement folder, and in no other state
       _oc.get("/srv/state/improve/*") == "allow"
       and not any(k.startswith("/srv/state/") and "improve" not in k and "nanobot-code-workspace/user1" not in k
                   for k in _oc), _oc)
+check("  anything else is refused, not asked about, and the refusal comes first",
+      list(_oc)[0] == "*" and _oc["*"] == "deny", list(_oc)[:2])
 check("  and without a state path it grants nothing for it",
       not any("improve" in k for k in json.loads(D.build_opencode_config(
           "user1", "t", 21999))["permission"]["external_directory"]))
