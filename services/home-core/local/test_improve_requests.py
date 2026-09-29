@@ -114,6 +114,16 @@ conn = A._improve_conn()
 st = conn.execute("SELECT status, day, conv FROM improve_requests WHERE id = ?", (d["id"],)).fetchone()
 conn.close()
 check("and the request remembers it", st == ("investigating", day, conv), st)
+A.PROJECT_SPACES = set(getattr(A, "PROJECT_SPACES", ())) | {"programmer"}
+with A.app.test_request_context():
+    A.session["user"] = CODER
+    check("a project sent in a fix request's conversation is ignored",
+          A._valid_project({"project": "fracciones", "conv": conv}, "programmer") is None)
+    check("and kept in any other conversation",
+          A._valid_project({"project": "fracciones", "conv": conv + 1}, "programmer") == "fracciones")
+    A.session["user"] = OTHER
+    check("and it is that person's request that counts, not anybody's",
+          A._valid_project({"project": "fracciones", "conv": conv}, "programmer") == "fracciones")
 A._turn_launch = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("opencode down"))
 d = coder.post("/improve/api/requests", headers=H, json={"problem": "otra cosa"}).get_json()
 check("when it cannot start, the request is still filed and the card fills the input instead",
@@ -149,6 +159,10 @@ check("and nobody else's", other.get("/improve/api/requests").get_json()["reques
 print("\nthe page")
 page = open(os.path.join(SRC, "templates", "chat.html"), encoding="utf-8").read()
 check("a goto card may carry a request number and a conversation", "(space|label|why|request|date|conv)" in page)
+check("a fix request's conversation shows no project, and sends none",
+      "fixConv = !!(first && /^Fix request #\\d+/.test(first.text || ''));" in page
+      and "if (fixConv) return null;" in page and "markFixConversation(msgs);" in page
+      and "markFixConversation([]);" in page)
 check("which it opens when the investigation started", "a.href += '?date=' + fields.date + '&conv=' + fields.conv" in page)
 check("which becomes ?improve= on the Programmer's link", "a.href += '?improve=' + fields.request" in page)
 check("the Programmer fetches the text into the input",

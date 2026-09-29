@@ -1624,7 +1624,16 @@ def _valid_project(body, space):
     if not isinstance(slug, str):
         return None
     slug = slug.strip().lower()[:40]
-    return slug if re.match(r'^[a-z0-9][a-z0-9-]{1,39}$', slug) else None
+    if not re.match(r'^[a-z0-9][a-z0-9-]{1,39}$', slug):
+        return None
+    # A fix request's conversation belongs to no project. The page's selector
+    # is one remembered choice for the whole space, so answering "yes" to the
+    # investigation sent the person's last project with it -- and pointed the
+    # Programmer at that checkout instead of the repository the fix is for.
+    if has_request_context() and session.get('user') and _improve_conversation(
+            session['user'], body.get('conv')):
+        return None
+    return slug
 
 
 # --- Standing context ---------------------------------------------------------
@@ -7494,6 +7503,23 @@ def _improve_conn():
 
 def init_improve_db():
     _improve_conn().close()
+
+
+def _improve_conversation(username, conv):
+    """Whether *conv* is the Programmer conversation of one of *username*'s
+    fix requests."""
+    try:
+        conv = int(conv or 0)
+    except (TypeError, ValueError):
+        return False
+    if conv <= 0 or not os.path.exists(IMPROVE_DB_PATH):
+        return False
+    conn = _improve_conn()
+    try:
+        return conn.execute('SELECT 1 FROM improve_requests WHERE username = ? AND conv = ?',
+                            (username, conv)).fetchone() is not None
+    finally:
+        conn.close()
 
 
 def _improve_prompt(row, username=None):

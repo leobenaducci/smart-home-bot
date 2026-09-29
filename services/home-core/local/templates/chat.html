@@ -1998,7 +1998,30 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
 
   /* Project selector for the Programador space. */
   function activeProject() {
+    if (fixConv) return null;
     return (projectSel && HAS_PROJECTS) ? (projectSel.value || null) : null;
+  }
+  /* A fix request's conversation (docs/self-improvement.md) belongs to no
+     project: the fix is in the stack or one of its plugins, and the Programmer
+     finds which. The selector is one remembered choice for the whole space, so
+     without this, answering the investigation sent that choice along and
+     pointed the Programmer at the wrong checkout. Shown as none and locked
+     while the conversation is open; the remembered choice is left alone and
+     comes back in the next one. The server refuses a project there as well. */
+  var fixConv = false;
+  function markFixConversation(msgs) {
+    var first = (msgs || []).filter(function(m) { return m.role === 'user'; })[0];
+    fixConv = !!(first && /^Fix request #\d+/.test(first.text || ''));
+    if (!projectSel || !HAS_PROJECTS) return;
+    if (fixConv) {
+      projectSel.dataset.fix = '1';
+      projectSel.value = '';
+      projectSel.disabled = true;
+    } else if (projectSel.dataset.fix) {
+      delete projectSel.dataset.fix;
+      projectSel.value = localStorage.getItem('programador-project') || '';
+      projectSel.disabled = false;
+    }
   }
   async function loadProjects() {
     if (!projectSel || !HAS_PROJECTS) return false;
@@ -2044,7 +2067,8 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
          one bad fetch greyed the selector out until the page was reloaded, and
          nothing on screen said why. */
     }
-    projectSel.disabled = false;
+    projectSel.disabled = fixConv;
+    if (fixConv) projectSel.value = '';
     return loaded;
   }
   if (projectSel) {
@@ -2193,6 +2217,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
       addMessage(m.text || '', m.role, null, m.ts,
                  { interrupted: m.interrupted, fromParent: m.from_parent, feedback: m.feedback });
     });
+    markFixConversation(msgs);
     paintBranchSwitch(msgs);
   }
 
@@ -2672,6 +2697,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     allMsgs = [];
     lastMsgDay = null;
     messagesEl.innerHTML = '';
+    markFixConversation([]);   // a new chat is nobody's fix request
     connectEvents();     // stop listening to the conversation just left
     renderSidebar();
   }
