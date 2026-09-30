@@ -195,7 +195,10 @@ tools), on a small package with a pricing bug and a missing `--json` flag, pass
 11-19 tool calls); `qwen2.5-coder:14b` 0/3 -- it wrote its tool calls as JSON in
 the text instead of making them, so it never touched a file, and at 32k it
 filled the card (11.75 GB). A code-completion leaderboard does not rank models
-for this job; tool calls do. It is far weaker
+for this job; tool calls do. `ornith-1.5:9b` (2026-09-30, the same size and window, plus a
+vision projector the fallback does not load) 3/3 on the same task (64-114 s,
+11-12 tool calls). On the real fix request #10, 1.0 read the same files
+repeatedly and committed nothing, so this house runs 1.5. It is far weaker
 than Kimi K2.7 Code; the pipeline's gates -- tests, the benchmark, the leak
 check, approvals -- are what stop a bad fix from shipping, whichever model
 wrote it.
