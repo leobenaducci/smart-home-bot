@@ -189,7 +189,13 @@ The model must fit the card whole. `ornith:9b` (Ollama library; a 9B trained
 for agentic coding, 5.6 GB) was chosen on 2026-09-30 and measured on one 3060:
 6.6 GB with a 64k window, 3.5 s to load, ~42 tokens/s, and 3 of 3 on a small
 read-edit-test task through opencode-shaped tools with a 12k-token system
-prompt, the prompt served from cache after the first step. It is far weaker
+prompt, the prompt served from cache after the first step. Then, through opencode itself (`opencode run`, its own ~14k-token prompt and
+tools), on a small package with a pricing bug and a missing `--json` flag, pass
+= suite green and tests untouched, three runs each: `ornith:9b` 3/3 (48-89 s,
+11-19 tool calls); `qwen2.5-coder:14b` 0/3 -- it wrote its tool calls as JSON in
+the text instead of making them, so it never touched a file, and at 32k it
+filled the card (11.75 GB). A code-completion leaderboard does not rank models
+for this job; tool calls do. It is far weaker
 than Kimi K2.7 Code; the pipeline's gates -- tests, the benchmark, the leak
 check, approvals -- are what stop a bad fix from shipping, whichever model
 wrote it.
