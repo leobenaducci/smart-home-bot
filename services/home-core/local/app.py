@@ -2106,6 +2106,11 @@ def _offers_fallback(turn):
     """
     if turn.get('backend') != 'opencode' or turn.get('space') not in PROJECT_SPACES:
         return ''
+    # Not on Alfred himself: a fix request's turns end with a question of their
+    # own -- "shall I apply it?", "shall I publish?" -- and «Publicar en master»
+    # under an investigation offered the one step it must not take yet.
+    if turn.get('project') == IMPROVE_PROJECT:
+        return ''
     text = (turn.get('text') or '').rstrip()
     if not text or ':::' in text:
         return ''
@@ -8245,7 +8250,7 @@ def _turn_finish(turn, error=None):
     stop — just a few milliseconds wide instead of forever.
     """
     try:
-        _turn_deliver(turn)
+        _turn_deliver(turn, error)
     except Exception as e:
         app.logger.warning('turn: %s could not be filed for %s: %s',
                            turn['id'], turn['user'], e)
@@ -8662,13 +8667,112 @@ def _queue_sweep():
 threading.Thread(target=_queue_sweep, daemon=True).start()
 
 
-def _turn_deliver(turn):
+# Programmer replies the portal was not there to file. A Programmer turn runs
+# in opencode, which goes on without us: when the portal restarts mid-turn --
+# a deploy, a fix the Programmer is itself deploying -- the answer lands in
+# opencode's session and never in the conversation. On 2026-09-29 a fix request
+# published and deployed the portal, and its "deployed, here is how to check"
+# was nowhere in the chat. So, every couple of minutes, the conversations of
+# the last few days are compared with their sessions, and an answer opencode
+# finished after the last one filed here is filed, marked as recovered.
+OPENCODE_RECOVER_EVERY_S = 120
+OPENCODE_RECOVER_DAYS = 3
+
+
+def _opencode_unfiled(msgs, last_filed_ms):
+    """The text opencode finished after *last_filed_ms*: every assistant text
+    since the last user message, if the turn is complete and ended later than
+    what the conversation already holds. (text, finished_ms) or None."""
+    last_user = max((i for i, m in enumerate(msgs)
+                     if (m.get('info') or {}).get('role') == 'user'), default=-1)
+    answer = [m for m in msgs[last_user + 1:] if (m.get('info') or {}).get('role') == 'assistant']
+    if not answer:
+        return None
+    finished = (answer[-1].get('info') or {}).get('time', {}).get('completed')
+    if not finished or finished <= last_filed_ms + 2000:
+        return None
+    texts = [p.get('text') or '' for m in answer for p in (m.get('parts') or [])
+             if p.get('type') == 'text' and (p.get('text') or '').strip()]
+    text = '\n\n'.join(t.strip() for t in texts)
+    return (text, int(finished)) if text else None
+
+
+def _opencode_recover_once():
+    if OPENCODE_API != 'v1' or not os.path.exists(OPENCODE_DB_PATH):
+        return 0
+    conn = _opencode_conn()
+    try:
+        rows = conn.execute('SELECT chat_id, session_id, directory FROM sessions WHERE created > ?',
+                            (int(time.time()) - OPENCODE_RECOVER_DAYS * 86400,)).fetchall()
+    finally:
+        conn.close()
+    filed = 0
+    for chat_id, sid, directory in rows:
+        parts = chat_id.split(':')
+        if len(parts) < 4 or parts[0] != 'homeweb':
+            continue
+        user, day = parts[1], parts[2]
+        conv, space = _chat_id_conv(parts)
+        base = _opencode_url(user)
+        if not base or space != OPENCODE_SPACE or _queue_running(user, chat_id):
+            continue            # a turn in flight files its own answer
+        try:
+            r = requests.get(f'{base}/session/{sid}/message',
+                             params={'directory': directory} if directory else None, timeout=10)
+            msgs = r.json() if r.ok else []
+        except Exception:                                         # noqa: BLE001
+            continue
+        history = [m for m in load_user_history(user, day, space)
+                   if str(m.get('conv') or '') == str(conv or '')]
+        last_bot = max((m.get('ts') or 0 for m in history if m.get('role') == 'bot'), default=0)
+        last_user = max((m.get('ts') or 0 for m in history if m.get('role') == 'user'), default=0)
+        got = _opencode_unfiled(msgs, max(last_bot, last_user))
+        if not got:
+            continue
+        text, finished = got
+        if append_user_history(user, {'role': 'bot', 'text': text, 'ts': finished, 'recovered': True,
+                                      **({'conv': int(conv)} if conv else {})}, day, space):
+            filed += 1
+            app.logger.info('opencode: filed a reply the portal missed for %s (%s)', user, chat_id)
+    return filed
+
+
+def start_opencode_recovery():
+    def loop():
+        time.sleep(30)
+        while True:
+            try:
+                _opencode_recover_once()
+            except Exception as exc:                              # noqa: BLE001
+                app.logger.warning('opencode: recovery pass failed: %s', exc)
+            time.sleep(OPENCODE_RECOVER_EVERY_S)
+    threading.Thread(target=loop, daemon=True, name='opencode-recover').start()
+
+
+def _turn_failure_text(user, error):
+    """What a failed turn leaves in the conversation: the reason, short --
+    `APIError … "message": "Endpoint is unavailable", "statusCode": 521` comes
+    out as "Endpoint is unavailable (521)"."""
+    err = str(error or '')
+    msg = re.search(r'"message":\s*"([^"]{1,200})"', err)
+    code = re.search(r'"statusCode":\s*(\d{3})', err)
+    reason = (msg.group(1) if msg else err[:200]).strip() + (f' ({code.group(1)})' if code else '')
+    return t_for(user, 'chat.turn_failed', reason=reason)
+
+
+def _turn_deliver(turn, error=None):
     """File the reply where it was asked, and say so if nobody is looking.
 
     Runs whether or not a browser ever read a byte of it. The page persists what
     it received too; `append_user_history` dedups, so the two cannot double up.
     """
     text = _strip_skill_blocks((turn.get('text') or '').strip())
+    if not text and error and turn.get('space') == OPENCODE_SPACE:
+        # A Programmer turn that failed with nothing said: the error, filed.
+        # Otherwise an outage -- OpenCode Go answering 521 for minutes on
+        # 2026-09-29 -- left the request and then silence, and whoever was not
+        # watching live could not tell a failure from a turn still thinking.
+        text = _turn_failure_text(turn['user'], error)
     if not text:
         return
     stored = append_user_history(
@@ -23049,6 +23153,7 @@ if __name__ == '__main__':
     init_wa_db()
     init_usage_db()
     start_gpu_sampler()
+    start_opencode_recovery()
     init_bgtask_db()
     init_improve_db()
     init_persona_db()

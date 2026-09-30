@@ -33,6 +33,11 @@ dst = os.path.join(tmp, "local")
 shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns(
     "__pycache__", "backup_data", "history", "certs"))
 os.makedirs(os.path.join(dst, "backup_data"), exist_ok=True)
+# The catalogue, as the deployer stages it beside the service: the cards and
+# the failure message are read in the asker's language.
+_repo_i18n = os.path.join(SRC, "..", "..", "..", "i18n")
+if not os.path.isdir(os.path.join(dst, "i18n")) and os.path.isdir(_repo_i18n):
+    shutil.copytree(_repo_i18n, os.path.join(dst, "i18n"))
 os.chdir(dst)
 CODER, OTHER = "999000111", "999000222"
 os.environ.update(SECRET_KEY="t" * 32, PROXY_SHARED_SECRET="p" * 32, DEBUG_API_KEY="d" * 32,
@@ -243,6 +248,39 @@ check("nobody else can read it", r.status_code == 404, r.status_code)
 lst = coder.get("/improve/api/requests").get_json()["requests"]
 check("the person's list, newest first", [x["id"] for x in lst][-1] == 1 and lst[0]["id"] > 1, lst)
 check("and nobody else's", other.get("/improve/api/requests").get_json()["requests"] == [])
+
+print("\nwhat the portal was not there to file")
+def om(role, texts, done=None):
+    return {"info": {"role": role, "time": {"completed": done}},
+            "parts": [{"type": "text", "text": t} for t in texts] + [{"type": "tool"}]}
+msgs = [om("user", ["Publicá y desplegá."]), om("assistant", ["Publicando…"], 1000),
+        om("assistant", ["Desplegado: home-core y admin."], 5000)]
+got = A._opencode_unfiled(msgs, 900)
+check("an answer opencode finished after the last one filed is found, whole",
+      got == ("Publicando…\n\nDesplegado: home-core y admin.", 5000), got)
+check("and not when the conversation already has it", A._opencode_unfiled(msgs, 4000) is None)
+check("nor while the answer is unfinished",
+      A._opencode_unfiled(msgs[:-1] + [om("assistant", ["…"], None)], 900) is None)
+check("nor when the last word is the person's", A._opencode_unfiled(msgs + [om("user", ["¿y?"])], 900) is None)
+
+print("\na failed Programmer turn says so")
+err = ('opencode: {"name": "APIError", "data": {"message": "Upstream request failed: Endpoint is '
+       'unavailable.", "statusCode": 521, "isRetryable": true}}')
+txt = A._turn_failure_text(CODER, err)
+check("the reason, short, and what to do", "Endpoint is unavailable." in txt and "(521)" in txt
+      and "{" not in txt, txt)
+filed = []
+A.append_user_history = lambda user, msg, day, space: filed.append((space, msg)) or True
+A._turn_deliver({"user": CODER, "text": "", "space": "programmer", "day": "2026-09-29", "conv": 5,
+                 "id": "x"}, err)
+check("filed in the conversation when nothing else was said",
+      filed and filed[0][0] == "programmer" and "(521)" in filed[0][1]["text"], filed)
+filed.clear()
+A._turn_deliver({"user": CODER, "text": "", "space": "", "day": "2026-09-29", "conv": 5, "id": "x"}, err)
+check("the ordinary chat keeps its own behaviour", filed == [], filed)
+check("no generic «Publicar en master» under a fix request's answer",
+      A._offers_fallback({"backend": "opencode", "space": "programmer", "project": "alfred-self",
+                          "text": "¿Aplico el cambio?"}) == "")
 
 print("\nthe page")
 page = open(os.path.join(SRC, "templates", "chat.html"), encoding="utf-8").read()
