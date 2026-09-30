@@ -1734,6 +1734,7 @@
   "studio.card_busy": "Trabajando: {what} de {who} · {pct}%",
   "studio.card_paused": "Pausada por un padre o madre",
   "studio.card_paused_update": "En pausa por una actualización del Studio, unos minutos",
+  "studio.card_paused_programmer": "Prestada al modelo local del Programador mientras OpenCode Go no está; vuelve cuando quede libre",
   "studio.card_paused_after": "las siguientes esperan ({why})",
   "studio.queue_empty": "No hay nada esperando.",
   "studio.starts_in": "empieza en ~{t}",

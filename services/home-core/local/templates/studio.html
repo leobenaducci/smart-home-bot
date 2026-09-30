@@ -316,7 +316,8 @@
       // Paused means the next job waits, not that the one on the card stops:
       // say both when both are true, and why, so a shot still moving does
       // not sit under a word that says it is not.
-      var why = q.status.pause_reason === 'update' ? S.card_paused_update : S.card_paused;
+      var why = q.status.pause_reason === 'update' ? S.card_paused_update
+        : q.status.pause_reason === 'programmer' ? S.card_paused_programmer : S.card_paused;
       $('#gpu-text').textContent = q.status.paused && run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) }) +
           ' · ' + fmt('card_paused_after', { why: why })

@@ -280,7 +280,11 @@ def admin(action: str, body: dict | None = None, me: Who = Depends(who)):
         raise HTTPException(403, "only a parent")
     if action == "pause":
         manager.paused = True
-        manager.pause_reason = "update" if (body or {}).get("reason") == "update" else ""
+        # Why, for the page to say: a Studio update, the card lent to the
+        # Programmer's local model (deploy/host/programmer-local.sh), or -- with
+        # no reason -- a parent's decision.
+        reason = (body or {}).get("reason")
+        manager.pause_reason = reason if reason in ("update", "programmer") else ""
     elif action == "resume":
         manager.paused = False
         manager.wake()
