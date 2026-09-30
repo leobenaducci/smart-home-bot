@@ -726,6 +726,66 @@ prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
 check("and after the reset, back to Go", prompt and "model" not in prompt[0], prompt)
 A.OPENCODE_FALLBACK = _saved_fb
 
+# --- one issue, one conversation, whatever the clock says ---------------------
+
+print("\nsilence does not split a Programmer conversation")
+H = 3600 * 1000
+T0 = 1790762203631
+day_msgs = [
+    {"role": "user", "text": "Fix request #10", "ts": T0, "conv": T0},
+    {"role": "bot", "text": "design", "ts": T0 + H // 2, "conv": T0},
+    {"role": "user", "text": "Seguimos con el pedido #10", "ts": T0 + 5 * H, "conv": T0},
+    {"role": "bot", "text": "working", "ts": T0 + 5 * H + 60000, "conv": T0},
+]
+prog = A._split_sessions(day_msgs, "programmer")
+check("in the Programmer, four hours of quiet in one conversation leave it one conversation",
+      len(prog) == 1 and prog[0]["start"] == T0, prog)
+check("which the old folder name reaches too", len(A._split_sessions(day_msgs, "programador")) == 1)
+check("elsewhere silence still splits, as it always has",
+      len(A._split_sessions(day_msgs, None)) == 2 and len(A._split_sessions(day_msgs, "teacher")) == 2)
+other = day_msgs[:2] + [{"role": "user", "text": "otra cosa", "ts": T0 + 5 * H, "conv": T0 + 5 * H}]
+check("and in the Programmer a different id is still a different conversation",
+      len(A._split_sessions(other, "programmer")) == 2)
+
+import subprocess as _sp
+_page = open(os.path.join(SRC, "templates", "chat.html"), encoding="utf-8").read()
+_a = _page.index("  function splitConversations(msgs) {")
+_b = _page.index("    return out;\n  }", _a) + len("    return out;\n  }")
+_js = ("const SESSION_GAP = 3 * 60 * 60 * 1000;\n" + _page[_a:_b] +
+       "\nconst msgs = " + json.dumps(day_msgs) + ";\n"
+       "let SPACE = 'programmer'; const p = splitConversations(msgs).length;\n"
+       "SPACE = ''; const o = splitConversations(msgs).length;\n"
+       "console.log(JSON.stringify([p, o]));")
+_js = _js.replace("SESSION_GAP && !sameIssue", "SESSION_GAP && !sameIssue")
+_out = _sp.run(["node", "-e", _js.replace("const SPACE", "let SPACE")], capture_output=True, text=True)
+check("the page agrees: one conversation in the Programmer, two in the ordinary chat",
+      _out.stdout.strip() == "[1,2]", (_out.stdout, _out.stderr[-300:]))
+
+print("\nan issue continued on another day keeps its opencode session")
+_conn = A._opencode_conn()
+_conn.execute("DELETE FROM sessions")
+_conn.execute("INSERT INTO sessions (chat_id, session_id, directory, api, created) VALUES (?,?,?,?,?)",
+              (f"homeweb:{LOGIN}:2026-09-30:dev:{T0}", "ses_ISSUE10", "", "v1", 100))
+_conn.commit()
+A._opencode_carry(_conn, f"homeweb:{LOGIN}:2026-10-01:dev:{T0}")
+_rows = dict(_conn.execute("SELECT chat_id, session_id FROM sessions").fetchall())
+check("the next day's key finds the conversation's session",
+      _rows.get(f"homeweb:{LOGIN}:2026-10-01:dev:{T0}") == "ses_ISSUE10", _rows)
+check("and it moves rather than copies, so a missed reply is filed under one day only",
+      f"homeweb:{LOGIN}:2026-09-30:dev:{T0}" not in _rows, _rows)
+A._opencode_carry(_conn, f"homeweb:{LOGIN}:2026-10-01:dev:{T0 + 1}")
+check("another conversation is not given it",
+      f"homeweb:{LOGIN}:2026-10-01:dev:{T0 + 1}" not in dict(
+          _conn.execute("SELECT chat_id, session_id FROM sessions").fetchall()))
+_conn.execute("INSERT INTO sessions (chat_id, session_id, directory, api, created) VALUES (?,?,?,?,?)",
+              (f"homeweb:{LOGIN}:2026-09-30:edu:{T0}", "ses_TEACHER", "", "v1", 100))
+_conn.commit()
+A._opencode_carry(_conn, f"homeweb:{LOGIN}:2026-10-01:edu:{T0}")
+check("and only the Programmer's conversations carry over",
+      f"homeweb:{LOGIN}:2026-10-01:edu:{T0}" not in dict(
+          _conn.execute("SELECT chat_id, session_id FROM sessions").fetchall()))
+_conn.close()
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

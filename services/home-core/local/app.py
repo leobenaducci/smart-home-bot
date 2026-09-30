@@ -2504,7 +2504,7 @@ def get_chat_history():
     start = request.args.get('start')
     if start:
         try:
-            msgs = _session_read(msgs, int(start))
+            msgs = _session_read(msgs, int(start), _valid_space(request.args.get('space')))
         except (TypeError, ValueError):
             pass
     return jsonify(msgs)
@@ -2695,7 +2695,7 @@ CHAT_SESSION_GAP_MS = 3 * 60 * 60 * 1000
 CHAT_SESSIONS_MAX = 200
 
 
-def _iter_sessions(msgs):
+def _iter_sessions(msgs, space=None):
     """[(segment, its messages)] for one day, in order — the single definition
     of where one conversation ends and the next begins.
 
@@ -2716,7 +2716,15 @@ def _iter_sessions(msgs):
     `_split_sessions` and `_session_slice` are both built on this, because they
     used to carry separate copies of the rule and a rule kept in two places
     only stays consistent until someone changes one of them.
+
+    *space*: in the Programmer one conversation is one issue, and silence does
+    not split a run that keeps its id -- an issue goes quiet for hours (a
+    model's limit, a night) without becoming another. Splitting it there showed
+    the rest as a second conversation under an invented id, whose running turn
+    belonged to the real one and never appeared (fix request #10, 2026-09-30).
+    The page's `splitConversations` says the same.
     """
+    same_issue_space = _valid_space(space) == OPENCODE_SPACE
     out = []
     cur = cur_msgs = cur_conv = None
     seen_starts = set()
@@ -2739,7 +2747,8 @@ def _iter_sessions(msgs):
     for m in msgs:
         ts = m.get('ts') or 0
         conv = m.get('conv') or None
-        by_gap = cur is not None and ts - cur['last'] > CHAT_SESSION_GAP_MS
+        by_gap = (cur is not None and ts - cur['last'] > CHAT_SESSION_GAP_MS
+                  and not (same_issue_space and conv is not None and conv == cur_conv))
         # Compared against the run's id, or — while the run is still unstamped —
         # against where it began. A cron delivery names a brand-new conversation
         # (nanobot's retarget_for_delivery), and the 6 AM greeting lands on a day
@@ -2809,20 +2818,20 @@ def _iter_sessions(msgs):
     return out
 
 
-def _split_sessions(msgs):
+def _split_sessions(msgs, space=None):
     """One day's messages → the separate conversations it holds, in order."""
-    return [seg for seg, _ in _iter_sessions(msgs)]
+    return [seg for seg, _ in _iter_sessions(msgs, space)]
 
 
-def _session_slice(msgs, start_ts):
+def _session_slice(msgs, start_ts, space=None):
     """Just the conversation that began at `start_ts`."""
-    for seg, seg_msgs in _iter_sessions(msgs):
+    for seg, seg_msgs in _iter_sessions(msgs, space):
         if seg['start'] == start_ts:
             return seg_msgs
     return []
 
 
-def _session_read(msgs, start_ts):
+def _session_read(msgs, start_ts, space=None):
     """One conversation as it is *read*: a branch with its inheritance above it.
 
     A branch stores only its own messages — nothing is copied, or the day file
@@ -2832,7 +2841,7 @@ def _session_read(msgs, start_ts):
     ‹1/2› switcher sits on, and the point past which the two threads stop
     being the same conversation.
     """
-    for seg, seg_msgs in _iter_sessions(msgs):
+    for seg, seg_msgs in _iter_sessions(msgs, space):
         if seg['start'] != start_ts:
             continue
         parent = seg.get('branch_of')
@@ -2840,7 +2849,7 @@ def _session_read(msgs, start_ts):
             return seg_msgs
         at = seg.get('branch_at') or 0
         inherited = [dict(m, from_parent=True)
-                     for m in _session_slice(msgs, parent)
+                     for m in _session_slice(msgs, parent, space)
                      if not at or (m.get('ts') or 0) <= at]
         return inherited + seg_msgs
     return []
@@ -2892,7 +2901,7 @@ def _conv_last_ts(msgs):
     return max((m.get('ts') or 0) for m in msgs) if msgs else 0
 
 
-def _derived_conv(msgs):
+def _derived_conv(msgs, space=None):
     """The conversation a turn that names none should join.
 
     The day's last conversation — except a branch, which is never it. A branch
@@ -2901,7 +2910,7 @@ def _derived_conv(msgs):
     reminder, voice reply and family DM that follows into the side thread
     rather than the conversation actually being had.
     """
-    main = [s for s in _split_sessions(msgs) if not s.get('branch_of')]
+    main = [s for s in _split_sessions(msgs, space) if not s.get('branch_of')]
     return main[-1]['start'] if main else 0
 
 
@@ -2927,7 +2936,7 @@ def _conv_resolve(username, day, requested=None, space=None):
         if not last_ts or at_ms - last_ts > CHAT_SESSION_GAP_MS:
             conv, fresh = at_ms, True
         else:
-            derived = _derived_conv(msgs)
+            derived = _derived_conv(msgs, space)
             conv = max(_conv_read(username, day, space), derived) or at_ms
             fresh = conv == at_ms
         _conv_write(username, day, conv, space)
@@ -2943,7 +2952,7 @@ def _conv_peek(username, day, space=None):
         last_ts = _conv_last_ts(msgs)
         if not last_ts or int(time.time() * 1000) - last_ts > CHAT_SESSION_GAP_MS:
             return None
-        return max(_conv_read(username, day, space), _derived_conv(msgs)) or None
+        return max(_conv_read(username, day, space), _derived_conv(msgs, space)) or None
 
 
 def _conv_chat_id(username, day, conv, space=None):
@@ -3183,14 +3192,14 @@ def _title_pending(username, now_ms):
     for space in (None, *CHAT_SPACES):
         for day in _history_day_stems(username, limit=CHAT_TITLE_DAYS, space=space):
             msgs = load_user_history(username, day, space)
-            for s in _split_sessions(msgs):
+            for s in _split_sessions(msgs, space):
                 if now_ms - s['last'] <= CHAT_SESSION_GAP_MS:
                     continue  # still going — titles wait until a chat finishes
                 sid = _title_key(day, s['start'], space)
                 title, attempts = known.get(sid, ('', 0))
                 if title or attempts >= CHAT_TITLE_MAX_ATTEMPTS:
                     continue
-                out.append((sid, s['last'], _session_slice(msgs, s['start'])))
+                out.append((sid, s['last'], _session_slice(msgs, s['start'], space)))
     out.sort(key=lambda x: x[1], reverse=True)
     return out
 
@@ -3232,7 +3241,7 @@ def chat_sessions():
     titles = _chat_titles(username)
     out = []
     for day in _history_day_stems(username, space=space):
-        for s in _split_sessions(load_user_history(username, day, space)):
+        for s in _split_sessions(load_user_history(username, day, space), space):
             s['date'] = day
             s['id'] = f"{day}:{s['start']}"
             # Empty until the conversation is over and Alfred has named it; the
@@ -6522,7 +6531,7 @@ def _fork_start(item):
     """
     username, day, space = item['user'], item['day'], item['space']
     parent = item['conv']
-    msgs = _session_slice(load_user_history(username, day, space), parent) \
+    msgs = _session_slice(load_user_history(username, day, space), parent, space) \
         if parent else []
     branch_at = _conv_last_ts(msgs)
     conv = int(time.time() * 1000)
@@ -6683,7 +6692,7 @@ def chat_fork():
     # anything written before conversations were recorded.
     parent = anchor.get('conv') or 0
     if not parent:
-        for seg, seg_msgs in _iter_sessions(msgs):
+        for seg, seg_msgs in _iter_sessions(msgs, space):
             if any(int(m.get('ts') or 0) == anchor_ts for m in seg_msgs):
                 parent = seg['start']
                 break
@@ -7223,6 +7232,35 @@ def _opencode_directory(username):
     return os.path.join(OPENCODE_WORKSPACE_ROOT, _member_of(user))
 
 
+def _opencode_carry(conn, chat_id):
+    """A Programmer conversation continued on a later day keeps its session.
+
+    The key is the chat_id, and a chat_id carries the day it was written on
+    (`homeweb:<user>:<day>:<scope>:<conv>`, `_writing_day`), so the first
+    message after midnight -- or after a weekend of OpenCode Go being out --
+    found no row and opened a new opencode session: the same issue, and none of
+    what the Programmer had found. One conversation is one issue here, so the
+    conversation's latest session is moved to today's key. Moved, not copied:
+    the recovery sweep files a missed reply under the day its key names, and a
+    row left under the old day would file it there too.
+    """
+    parts = chat_id.split(':')
+    if (len(parts) != 5 or parts[0] != 'homeweb' or not parts[4].isdigit()
+            or parts[3] != CHAT_SPACES[OPENCODE_SPACE]['scope']):
+        return
+    if conn.execute('SELECT 1 FROM sessions WHERE chat_id = ?', (chat_id,)).fetchone():
+        return
+    earlier = conn.execute(
+        'SELECT chat_id FROM sessions WHERE chat_id LIKE ? AND chat_id != ? '
+        'ORDER BY created DESC LIMIT 1',
+        (':'.join([parts[0], parts[1], '%', parts[3], parts[4]]), chat_id)).fetchone()
+    if earlier:
+        conn.execute('UPDATE sessions SET chat_id = ? WHERE chat_id = ?', (chat_id, earlier[0]))
+        conn.commit()
+        app.logger.info('opencode: %s continues on a new day; its session moves to %s',
+                        earlier[0], chat_id)
+
+
 def _opencode_session(base, chat_id, directory):
     """The opencode session for this conversation, making one if needed.
 
@@ -7235,6 +7273,7 @@ def _opencode_session(base, chat_id, directory):
     """
     conn = _opencode_conn()
     try:
+        _opencode_carry(conn, chat_id)
         row = conn.execute(
             'SELECT session_id, directory, api FROM sessions WHERE chat_id = ?',
             (chat_id,)).fetchone()

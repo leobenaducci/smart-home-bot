@@ -2309,7 +2309,14 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     var out = [], cur = null, curConv = null, lastTs = 0, seen = {}, latest = {}, named = {};
     (msgs || []).forEach(function(m) {
       var ts = m.ts || 0, conv = m.conv || null;
-      var byGap = cur !== null && ts - lastTs > SESSION_GAP;
+      // In the Programmer one conversation is one issue, and an issue goes
+      // quiet for hours -- a model's limit, a night, a weekend -- without
+      // becoming another. Silence split it: the rest showed as a second
+      // conversation under an invented id, its running turn belonged to the
+      // real one and never appeared, and a message sent from it opened a new
+      // opencode session (fix request #10, 2026-09-30). The same id continues.
+      var sameIssue = SPACE === 'programmer' && !!conv && conv === curConv;
+      var byGap = cur !== null && ts - lastTs > SESSION_GAP && !sameIssue;
       // While the run is still unstamped, compare against where it began: a
       // scheduled message names a conversation of its own, and it arrives on a
       // day whose earlier entries are often unstamped machine events. A message

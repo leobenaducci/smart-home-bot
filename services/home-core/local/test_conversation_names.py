@@ -73,7 +73,7 @@ for k in range(j, len(src)):
     d += (src[k] == "{") - (src[k] == "}")
     if d == 0:
         break
-js = ("const SESSION_GAP=3*60*60*1000;\n" + src[i:k + 1]
+js = ("const SESSION_GAP=3*60*60*1000;\nconst SPACE = '';\n" + src[i:k + 1]
       + "\nconsole.log(JSON.stringify(splitConversations(" + json.dumps(msgs) + ").map(c => c.msgs.length)));")
 try:
     out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
