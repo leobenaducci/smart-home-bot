@@ -204,6 +204,14 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   with the worktree's package first on the path, where no role fell more than
   one case. The benchmark's cases come from this checkout, and only totals and
   failing ids come back.
+  **The rules** (`deploy/improve/RULES.md`, copied beside the map): what a
+  proposal rests on, testing, approvals and data. The ones code can check are
+  checked (`guard.py`): `improve commit` refuses a change that adds a real
+  credential, a user-store login, e-mail or phone, or a key-shaped string --
+  the publish gate's values, in every repository -- and a code change with no
+  test; `improve publish` and `improve deploy` refuse unless the person asked
+  for it in the fix request's own conversation, after the last commit, in
+  words or as a yes to the Programmer asking about exactly that.
   **One chat conversation, one Programmer session.** Every request asked in
   the same Alfred conversation continues the Programmer conversation the
   first one opened -- behind whatever is running there -- so they share one

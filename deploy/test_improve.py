@@ -295,7 +295,10 @@ class _Ok:
 
 
 def tested_commit(d, repos_, rid, name, message):
-    """What the Programmer does: its tests (a stand-in runner here), then commit."""
+    """What the Programmer does: the test that shows the fix, its test run (a
+    stand-in runner here), then commit."""
+    wt_ = W.worktree(d, rid, name)
+    (wt_ / f"test_fix_{rid}.py").write_text(f"def test_fix_{rid}(): assert True\n", encoding="utf-8")
     K.run_tests(d, repos_, rid, name, run=lambda *a, **k: _Ok())
     return W.commit(d, repos_, rid, name, message)
 imp = tmp / "improve-work"
@@ -321,7 +324,7 @@ for bad in (("x7", "luces"), ("7", "../etc"), ("7", "otro-que-no-esta")):
     except W.WorkError:
         check(f"refuses {bad}", True)
 try:
-    tested_commit(imp, repos[:1], "7", "luces", "arreglo con mensaje")
+    W.commit(imp, repos[:1], "7", "luces", "arreglo con mensaje")
     check("nothing changed is refused", False)
 except W.WorkError as exc:
     check("nothing changed is refused", "nothing changed" in str(exc))
@@ -412,6 +415,68 @@ try:
     check("publishing twice is refused, not repeated", False)
 except W.WorkError as exc:
     check("publishing twice is refused, not repeated", "nothing" in str(exc), str(exc))
+import guard as G  # noqa: E402
+import time as _time  # noqa: E402
+
+
+def say(state_root, rid, *msgs):
+    """A fix request's conversation, as the portal files it: (role, text) pairs,
+    now, in order, under a request row for 999000111."""
+    dbp = state_root / "home-core" / "data"
+    dbp.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(dbp / "improve.db")
+    c.execute("CREATE TABLE IF NOT EXISTS improve_requests (id INTEGER PRIMARY KEY, username TEXT, "
+              "created_at INTEGER, problem TEXT, context TEXT, status TEXT, day TEXT, conv INTEGER, origin TEXT)")
+    c.execute("INSERT OR REPLACE INTO improve_requests (id, username, conv, day, status) VALUES (?,?,?,?,?)",
+              (int(rid), "999000111", 1790000000000 + int(rid), "2026-09-29", "investigating"))
+    c.commit(); c.close()
+    hdir = state_root / "home-core" / "history" / "999000111" / "programmer"
+    hdir.mkdir(parents=True, exist_ok=True)
+    f = hdir / "2026-09-29.json"
+    old = json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
+    now = int(_time.time() * 1000) + 1000
+    for i, (role, text) in enumerate(msgs):
+        old.append({"role": role, "text": text, "ts": now + i, "conv": 1790000000000 + int(rid)})
+    f.write_text(json.dumps(old), encoding="utf-8")
+
+
+print("\napprovals are read from the fix request's conversation")
+say(tmp, "11", ("bot", "Listo, commiteado. ¿Lo publico?"), ("user", "Sí"))
+check("a yes to the Programmer's own question counts",
+      G.approved(tmp, "999000111", 1790000000011, 0, "publish"))
+check("but only for what it asked about", not G.approved(tmp, "999000111", 1790000000011, 0, "deploy"))
+say(tmp, "11", ("user", "Publicá y desplegá"))
+check("words that ask for it count, for both",
+      G.approved(tmp, "999000111", 1790000000011, 0, "publish")
+      and G.approved(tmp, "999000111", 1790000000011, 0, "deploy"))
+check("nothing said since the last commit is no approval",
+      not G.approved(tmp, "999000111", 1790000000011, int(_time.time() * 1000) + 10 ** 6, "publish"))
+say(tmp, "12", ("user", "Publicá"), ("bot", "¿Seguro?"), ("user", "esperá, primero mostrame el diff"))
+check("the latest word decides: 'wait' after 'publish' is not a yes",
+      not G.approved(tmp, "999000111", 1790000000012, 0, "publish"))
+say(tmp, "12", ("user", "Ahora sí, publicá y desplegá"))
+check("the Programmer's own words are never an approval",
+      not G.approved(tmp, "999000111", 1790000000099, 0, "publish"))
+check("code without a test is refused, a test without code is fine",
+      G.needs_test(["services/x/app.py"]) and not G.needs_test(["services/x/app.py", "services/x/test_app.py"])
+      and not G.needs_test(["docs/x.md", "i18n/en.json"]))
+leak_wt = W.start(imp, [lrepo], "17", "luces2")
+(leak_wt / "cfg.py").write_text("TOKEN = 'sk-ant-" + "a" * 30 + "'\n", encoding="utf-8")
+check("a key-shaped string in a new file is a leak, named by kind and file, never by value",
+      G.leaks(leak_wt, {}) and "cfg.py" in G.leaks(leak_wt, {})[0] and "sk-ant" not in " ".join(G.leaks(leak_wt, {})),
+      G.leaks(leak_wt, {}))
+envd = tmp / "cfgdir"
+envd.mkdir(exist_ok=True)
+(envd / "smart-home-bot.env").write_text("NANOGPT_API_KEY=abcdefghij0123456789xyz\n", encoding="utf-8")
+(leak_wt / "cfg.py").write_text("KEY = 'abcdefghij0123456789xyz'\n", encoding="utf-8")
+check("and so is this machine's real credential",
+      any("NANOGPT_API_KEY" in x for x in G.leaks(leak_wt, {"paths": {"config": str(envd)}})))
+try:
+    W.commit(imp, [lrepo], "17", "luces2", "Commit a credential", {"paths": {"config": str(envd)}})
+    check("and the commit refuses it", False)
+except W.WorkError as exc:
+    check("and the commit refuses it", "credential NANOGPT_API_KEY" in str(exc) and "abcdefghij" not in str(exc), str(exc))
+
 ran = []
 
 
@@ -630,7 +695,8 @@ check("which tools", "skill:lights" in M.tools(state, days=10000))
 print("\nwhat the Programmer reads first")
 dd = cli.improve_dir({"paths": {"state": str(state)}})
 check("the map and the rules, beside the inbox",
-      (dd / "docs" / "MAP.md").exists() and (dd / "docs" / "CLAUDE.md").exists())
+      (dd / "docs" / "MAP.md").exists() and (dd / "docs" / "CLAUDE.md").exists()
+      and (dd / "docs" / "RULES.md").exists())
 check("and the lessons, seeded once", "A claim the assistant makes about itself is a lead"
       in (dd / "lessons.md").read_text(encoding="utf-8"))
 (dd / "lessons.md").write_text("# Lessons\n- una lección de la casa\n", encoding="utf-8")

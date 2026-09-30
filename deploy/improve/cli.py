@@ -62,7 +62,8 @@ def improve_dir(cfg: dict) -> Path:
     # refreshed from this checkout, and the lessons, seeded once and then the
     # household's (state -- they may name this house's things).
     (d / "docs").mkdir(exist_ok=True)
-    for src, name in ((HERE / "MAP.md", "MAP.md"), (HERE.parent.parent / "CLAUDE.md", "CLAUDE.md")):
+    for src, name in ((HERE / "MAP.md", "MAP.md"), (HERE / "RULES.md", "RULES.md"),
+                      (HERE.parent.parent / "CLAUDE.md", "CLAUDE.md")):
         if src.exists():
             (d / "docs" / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     lessons = d / "lessons.md"
@@ -205,7 +206,7 @@ def cmd_start(args) -> int:
 def cmd_commit(args) -> int:
     cfg = live_config()
     return _work(lambda: W.commit(improve_dir(cfg), RP.discover(cfg), args.id, args.repo,
-                                  args.message))
+                                  args.message, cfg))
 
 
 def requests(state: Path, login: str | None = None, limit: int = 20) -> list[dict]:
@@ -329,7 +330,8 @@ def cmd_lesson(args) -> int:
 
 def cmd_publish(args) -> int:
     cfg = live_config()
-    return _work(lambda: S.publish(improve_dir(cfg), RP.discover(cfg), args.id, args.repo))
+    return _work(lambda: S.publish(improve_dir(cfg), RP.discover(cfg), args.id, args.repo,
+                                   _state(cfg)))
 
 
 def cmd_deploy(args) -> int:

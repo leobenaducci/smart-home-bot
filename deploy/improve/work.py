@@ -101,11 +101,28 @@ def start(d: Path, repos: list[dict], rid: str, name: str) -> Path:
 
 
 def _changed(path: Path) -> list[tuple[str, str]]:
+    """(status, path) for every change in the worktree.
+
+    Read NUL-separated and never stripped: the status column's first character
+    is a space (" M"), and stripping the output ate it from the first line, so
+    the first changed file lost the first letter of its name -- `skill.py` read
+    as `kill.py`, which a protected path or a test pattern then failed to match.
+    """
+    r = subprocess.run(["git", "-C", str(path), "status", "--porcelain", "-z",
+                        "--untracked-files=all"], capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise WorkError(f"git status: {(r.stderr or r.stdout).strip()[:300]}")
     out = []
-    for line in _git(path, "status", "--porcelain", "--untracked-files=all").splitlines():
-        status, name = line[:2], line[3:].strip().strip('"')
-        if " -> " in name:
-            name = name.split(" -> ", 1)[1]
+    entries = r.stdout.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        status, name = entry[:2], entry[3:]
+        if status[0] in "RC":
+            i += 1          # a rename's source follows its destination; the destination counts
         out.append((status, name))
     return out
 
@@ -123,7 +140,8 @@ def refusals(kind: str, changed: list[tuple[str, str]]) -> list[str]:
     return why
 
 
-def commit(d: Path, repos: list[dict], rid: str, name: str, message: str) -> str:
+def commit(d: Path, repos: list[dict], rid: str, name: str, message: str,
+           cfg: dict | None = None) -> str:
     repo = _repo(repos, name)
     path = worktree(d, rid, name)
     if not path.exists():
@@ -137,6 +155,13 @@ def commit(d: Path, repos: list[dict], rid: str, name: str, message: str) -> str
     if not changed:
         raise WorkError("nothing changed in the worktree")
     why = refusals(repo["kind"], changed)
+    # The rules code can check (guard.py, docs/RULES.md): nothing real leaks,
+    # and a code change brings its test.
+    import guard  # noqa: PLC0415
+    why += [f"it would commit {x}" for x in guard.leaks(path, cfg or {})]
+    missing = guard.needs_test([n for _, n in changed])
+    if missing:
+        why.append(missing)
     # Its tests, and for a behaviour change the benchmark, run on exactly this
     # change (checks.py). Imported here: checks imports this module.
     import checks  # noqa: PLC0415

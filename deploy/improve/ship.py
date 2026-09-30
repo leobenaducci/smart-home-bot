@@ -43,12 +43,15 @@ def _new_commits(path: str, rid: str) -> list[str]:
     return [c for c in out.split() if c]
 
 
-def publish(d: Path, repos: list[dict], rid: str, name: str) -> str:
+def publish(d: Path, repos: list[dict], rid: str, name: str, state: Path | None = None) -> str:
     """Fast-forward *name*'s own checkout to the fix, and push a plugin's."""
     repo = W._repo(repos, name)
     wt = W.worktree(d, rid, name)
     if not wt.exists():
         raise W.WorkError(f"no worktree for #{rid} in {name}")
+    if state is not None:
+        import guard  # noqa: PLC0415
+        guard.require_approval(state, rid, wt, "publish")
     if W._changed(wt):
         raise W.WorkError(f"the worktree has uncommitted changes: commit them first "
                           f"(improve commit {rid} {name} -m ...)")
@@ -150,6 +153,10 @@ def deploy(d: Path, repos: list[dict], rid: str, name: str, state: Path, run=sub
     if not _is_ancestor(live, f"improve/{rid}", "HEAD"):
         raise W.WorkError(f"improve/{rid} is not published in {name} yet: "
                           f"improve publish {rid} {name}")
+    wt = W.worktree(d, rid, name)
+    if wt.exists():
+        import guard  # noqa: PLC0415
+        guard.require_approval(state, rid, wt, "deploy")
     services = services_for(repo, rid)
     if not services:
         raise W.WorkError(f"nothing in {name} to deploy for #{rid}")

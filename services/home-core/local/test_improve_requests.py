@@ -211,6 +211,7 @@ check("choosing it tells the Programmer how fixes to Alfred are made",
       and "improve/bin/improve publish <id> <repo>" in blk and "never by hand" in blk, blk)
 check("and to read the map, the rules and the lessons first, and back every claim",
       "/srv/state/improve/docs/MAP.md" in blk and "/srv/state/improve/lessons.md" in blk
+      and "/srv/state/improve/docs/RULES.md" in blk
       and "never a premise" in blk and "a question is not a yes" in blk
       and "improve/bin/improve test <id> <repo>" in blk and "improve/bin/improve bench <id> <repo>" in blk
       and "improve/bin/improve measure" in blk and "improve/bin/improve lesson" in blk, blk)
@@ -237,7 +238,8 @@ check("the fix goes through the tool, in a worktree, never the deploying checkou
 check("and nothing broken is an answer", "nothing is broken, say so plainly" in p, p)
 check("a setting is not code", "Never write a household value into code" in p, p)
 check("the fix request says to read the map first, and to test and bench before committing",
-      "/srv/state/improve/docs/MAP.md" in p and "improve test 1 <repo>" in p
+      "/srv/state/improve/docs/MAP.md" in p and "/srv/state/improve/docs/RULES.md" in p
+      and "improve test 1 <repo>" in p
       and "improve bench 1 <repo>" in p, p)
 check("publish and deploy only when told, only through the tool",
       "only when I say so" in p and "/srv/state/improve/bin/improve publish 1 <repo>" in p

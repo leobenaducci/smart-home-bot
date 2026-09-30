@@ -1,7 +1,7 @@
 # How Alfred is built — for whoever fixes him
 
-Read this, then `CLAUDE.md` beside it, then `lessons.md`, before you propose
-anything. Everything here is checked against the code; when you find it wrong,
+Read this, then `RULES.md` and `CLAUDE.md` beside it, then `lessons.md`,
+before you propose anything. Everything here is checked against the code; when you find it wrong,
 say so, and it is corrected.
 
 ## Where things are

@@ -6134,7 +6134,8 @@ def _improve_block(username):
         'Fixes and improvements to Alfred go through the `improve` tool, never through '
         '`checkout` or the broker, and never by editing a live checkout.\n'
         f'Before proposing anything in this conversation, read `{IMPROVE_DIR}/docs/MAP.md` '
-        f'(how Alfred is built), `{IMPROVE_DIR}/docs/CLAUDE.md` (the rules) and '
+        f'(how Alfred is built), `{IMPROVE_DIR}/docs/RULES.md` (evaluation, testing, approvals, '
+        f'data), `{IMPROVE_DIR}/docs/CLAUDE.md` (the repository\'s rules) and '
         f'`{IMPROVE_DIR}/lessons.md` (what went wrong before). Every claim in a proposal '
         'rests on something you read (file and line) or measured (`improve measure`); a '
         'claim the assistant made about itself is a lead to check, never a premise. '
@@ -7604,7 +7605,8 @@ def _improve_prompt(row, username=None):
                   *[f"> {ln}" for ln in context.splitlines()], ""]
     lines += [where, "",
               *([f"Read `{IMPROVE_DIR}/docs/MAP.md` (how Alfred is built), "
-                 f"`{IMPROVE_DIR}/docs/CLAUDE.md` (the rules) and `{IMPROVE_DIR}/lessons.md` "
+                 f"`{IMPROVE_DIR}/docs/RULES.md` (evaluation, testing, approvals, data), "
+                 f"`{IMPROVE_DIR}/docs/CLAUDE.md` and `{IMPROVE_DIR}/lessons.md` "
                  "(what went wrong before) first.", ""] if IMPROVE_DIR else []),
               f"To read a repository's code, run `{tool} start {rid} <repo>` first and read "
               "the worktree it prints: it is the current code and changes nothing. The live "

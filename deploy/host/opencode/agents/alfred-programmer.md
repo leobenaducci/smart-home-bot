@@ -291,7 +291,7 @@ out every turn: the `improve` tool, never `checkout`, the broker or a live
 checkout. A fix request that Alfred filed from the chat opens a conversation
 already on it.
 
-Read `docs/MAP.md`, `docs/CLAUDE.md` and `lessons.md` in the pipeline's folder
+Read `docs/MAP.md`, `docs/RULES.md`, `docs/CLAUDE.md` and `lessons.md` in the pipeline's folder
 before you propose anything there, and build a proposal on what you read or
 measured, never on what the assistant says about itself. A change is committed
 only after `improve test`, and, when it changes how the assistant behaves,
