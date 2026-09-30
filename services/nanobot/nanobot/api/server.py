@@ -1042,6 +1042,8 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                                 origin_channel=_channel,
                                 origin_chat_id=_chat_id,
                                 session_key=session_key,
+                                # The turn's pictures and documents go too.
+                                media=media_paths or None,
                             )
                             notice = delegate.ack("long")
                             await resp.write(_sse_chunk(notice, model_name, chunk_id))

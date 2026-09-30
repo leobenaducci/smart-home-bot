@@ -361,8 +361,16 @@ class SubagentManager:
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
+        media: list[str] | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background.
+
+        ``media``: files the person attached to the turn this task comes from
+        (pictures, documents), by path. A turn handed over mid-way -- the chat
+        timed out and escalated -- used to arrive with its words and none of
+        its pictures, and "extract the five characters from that image" ran on
+        a sub-agent that looked everywhere for the image and wrote a report
+        saying it had none (2026-09-30).
 
         ``complex`` is the spawner's word and wins when given. Left unset, the
         task text is classified the way a chat turn is; in ``shadow`` mode the
@@ -391,7 +399,7 @@ class SubagentManager:
 
         bg_task = asyncio.create_task(
             self._gated(status, self._run_subagent(task_id, task, display_label, origin,
-                                                   status, complex, context))
+                                                   status, complex, context, media=media))
         )
         self._running_tasks[task_id] = bg_task
         if session_key:
@@ -458,9 +466,17 @@ class SubagentManager:
         status: SubagentStatus,
         powerful: bool = False,
         context: str | None = None,
+        media: list[str] | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
+        media = [p for p in (media or []) if isinstance(p, str) and os.path.isfile(p)]
+        if media:
+            # Named in the task, with where they are: this runner's tools
+            # (describe_image, read_file, exec) open a path as given.
+            task = (task + "\n\nThe person attached " + ("this file" if len(media) == 1 else "these files")
+                    + " to the request -- this is what it refers to:\n"
+                    + "\n".join(f"- {p}" for p in media))
 
         origin_channel = origin.get("channel") or "cli"
         origin_chat_id = origin.get("chat_id") or "direct"
@@ -491,7 +507,11 @@ class SubagentManager:
         # `unified:default` and says nothing about who wrote it.
         third_party = (is_third_party_session(origin.get("session_key"))
                        or is_third_party_session(f"{origin_channel}:{origin_chat_id}"))
-        endpoint = None if third_party else self._harness_endpoint(powerful)
+        # A task with attachments stays here, off pi: pi has no shell and no
+        # image tool, by design (pi_runner.TOOLS), and the work a picture is
+        # handed over for -- crop it, describe it, cut it into pieces -- needs
+        # both.
+        endpoint = None if (third_party or media) else self._harness_endpoint(powerful)
         if endpoint is not None:
             try:
                 answer, outcome = await self._run_on_harness(
