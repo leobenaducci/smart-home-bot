@@ -882,6 +882,10 @@ assistant:
     classifier: ollama:gemma4:e4b
     doctor: gpt-5.6-luna            # health questions
     legal: gpt-5.6-luna             # contracts and paperwork
+    # A conversation that leaves no record, on this house's own hardware or not
+    # at all: only an `ollama:` / `ollama-<id>:` model is accepted, and blank
+    # means the space refuses to answer rather than send anything out.
+    private: ollama:gemma4:e4b
     # What the assistant hands work to rather than doing in the turn: a
     # background task, a memory consolidation, the morning summary. These were
     # missing from this list for a while, and the gap only showed when a
