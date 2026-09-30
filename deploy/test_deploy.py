@@ -3798,9 +3798,19 @@ check("  and the config file it writes carries no credentials",
 print("\nthe Programmer's local fallback, for when OpenCode Go is out")
 _fb = D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b"}}}})
 check("  a model name is enough: the Studio's card, a 64k window, the home provider",
-      _fb == {"model": "ornith:9b", "gpu": 1, "context": 65536, "provider": "home",
-              "port": 11460, "backend": 11461}, _fb)
+      _fb == {"model": "ornith:9b", "gpu": 1, "context": 65536, "first": False,
+              "provider": "home", "port": 11460, "backend": 11461}, _fb)
 check("  and none is none", D.opencode_fallback({}) == {})
+check("  `first` puts the local model ahead of Go",
+      D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b",
+                                                                "first": True}}}})["first"] is True)
+try:
+    D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b", "first": "no"}}}})
+    check("  and refuses a `first` that is not true or false", False)
+except SystemExit:
+    check("  and refuses a `first` that is not true or false", True)
+check("  the portal is told which goes first",
+      'OPENCODE_LOCAL_FIRST: "{derived.opencode_local_first}"' in _MANIFEST_TEXT)
 for _bad in ("ornith:9b; rm -rf ~", "/etc/shadow", "/var/lib/home-stack/models/../../x.gguf"):
     try:
         D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": _bad}}}})

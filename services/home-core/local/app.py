@@ -1,4 +1,5 @@
 import base64
+import collections
 import errno
 import json
 import logging
@@ -7032,6 +7033,11 @@ OPENCODE_API = (os.environ.get('OPENCODE_API') or 'v1').strip().lower()
 # goes there until the reset Go named; without one, the turn ends saying when
 # Go is back.
 OPENCODE_FALLBACK = (os.environ.get('OPENCODE_FALLBACK') or '').strip()
+# The household may run it the other way round (`cloud.opencode.fallback.first`,
+# 2026-09-30): the local model takes each Programmer turn, and Go takes over
+# when the local one fails -- see `_opencode_engine` for when it does not start
+# at all, and `_LocalWatch` for what counts as failing.
+OPENCODE_LOCAL_FIRST = (os.environ.get('OPENCODE_LOCAL_FIRST') or '').strip().lower() in ('1', 'true', 'yes')
 _go_out = {'until': 0.0, 'reset': ''}
 _GO_LIMIT_RE = re.compile(r'usage limit', re.I)
 _GO_RESET_RE = re.compile(r'reset in\s+((?:\d+\s*(?:day|hour|minute|min)s?[\s,]*(?:and\s+)?)+)',
@@ -7141,15 +7147,14 @@ def _opencode_handover(username, conv, since_ms, engine):
     skipped = len(lines) - 1 - len(kept)
     body = [lines[0], *([f'[... {skipped} earlier messages left out ...]'] if skipped else []), *kept]
     if engine == 'local':
-        head = ("[Handover] OpenCode Go is out, so this house's local model takes this conversation. "
+        head = ("[Handover] This house's local model takes this conversation over from OpenCode Go. "
                 "You do not have the session the work was done in: below is the conversation as the "
                 "person sees it, text only -- tool output is left out. Where it and the files "
                 "disagree, the files are right.")
     else:
-        head = ("[Handover] You are back. While OpenCode Go was out this conversation went on with "
-                "this house's local model; below is what was said since you last took part, text "
-                "only. The local model may have changed files or left work half done: check the "
-                "files before relying on it.")
+        head = ("[Handover] You take this conversation over from this house's local model; below "
+                "is what was said since you last took part, text only. The local model may have "
+                "changed files or left work half done: check the files before relying on it.")
     rid = _improve_request_of(username, conv)
     tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
     tail = (f"This is fix request #{rid}: run `{tool} status {rid}` and read the worktree's diff "
@@ -7159,11 +7164,189 @@ def _opencode_handover(username, conv, since_ms, engine):
 
 
 def _opencode_local_model():
-    """opencode's `model` for a turn that must not go to Go, or None."""
-    if not OPENCODE_FALLBACK or time.time() >= _go_out['until']:
-        return None
+    """opencode's `model` for the local engine, or None when there is none."""
     provider, _, model = OPENCODE_FALLBACK.partition('/')
     return {'providerID': provider, 'modelID': model} if provider and model else None
+
+
+def _go_is_out():
+    return time.time() < _go_out['until']
+
+
+def _opencode_on_go(username, conv, pin=False):
+    """Whether this conversation stays on Go: the local model failed in it, or
+    the person asked for Go. With *pin*, record that it does."""
+    if not conv:
+        return False
+    key = f'{username}:{conv}:stay-go'
+    if pin:
+        _opencode_seen(key, set_ms=time.time() * 1000)
+        return True
+    return _opencode_seen(key) is not None
+
+
+def _opencode_asked_for_go(username, msg_content):
+    """Whether this message is the "Retry on Go" button's."""
+    if isinstance(msg_content, list):
+        msg_content = ' '.join(p.get('text') or '' for p in msg_content if isinstance(p, dict))
+    said = (msg_content or '').strip()
+    return any(said.endswith(label) for label in
+               {t_for(username, 'programmer.retry_go'), t_for('', 'programmer.retry_go')} if label)
+
+
+def _studio_rendering():
+    """Whether the Studio is running a job on the card the local model borrows.
+    Lending it means waiting for that job -- a video shot is ~25 minutes -- which
+    is worth it only when there is nowhere else to go."""
+    if not STUDIO_URL or not STUDIO_SECRET:
+        return False
+    try:
+        r = requests.get(f'{STUDIO_URL}/api/queue', timeout=(3, 10), headers={
+            'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': 'programmer',
+            'X-Studio-Name': 'Programmer', 'X-Studio-Admin': '1'})
+        return bool(r.status_code == 200 and (r.json() or {}).get('running'))
+    except (requests.RequestException, ValueError):
+        return False
+
+
+def _opencode_engine(turn, msg_content=''):
+    """'local' or 'go' for this attempt at a Programmer turn.
+
+    Go out: local, whatever the order (and nothing, when there is no local
+    model -- the refusal says so). Otherwise Go goes first, unless the household
+    runs the local model first; then Go still takes the turn when the local
+    model already failed in it, the conversation is on Go (it failed there
+    before, or the person pressed "Retry on Go"), or the Studio is rendering."""
+    if not OPENCODE_FALLBACK or OPENCODE_API == 'v2' or not _opencode_local_model():
+        return 'go'
+    if _go_is_out():
+        return 'local'
+    if not OPENCODE_LOCAL_FIRST or turn.get('go'):
+        return 'go'
+    username = turn['user']
+    conv = turn.get('conv')
+    if _opencode_asked_for_go(username, msg_content):
+        _opencode_on_go(username, conv, pin=True)
+        return 'go'
+    if _opencode_on_go(username, conv):
+        return 'go'
+    if _studio_rendering():
+        app.logger.info('opencode: the Studio is rendering; this turn goes to Go rather than wait')
+        return 'go'
+    return 'local'
+
+
+# What counts as the local model failing a turn, when Go can take it over. A
+# 9B model in trouble rarely errors: on fix request #10 it read the same files
+# again and again and committed nothing (2026-09-30). So it is watched:
+#
+# - the same call again: a tool with the same input three times, or one file
+#   read four times (a long file is read in pieces, so reads are counted by
+#   path rather than by range);
+# - too long without changing anything: forty tool calls and no edit;
+# - its tests red at the end of a turn in which it changed files.
+#
+# An error opencode reports for the model (its server did not answer, the
+# history did not fit) counts too. A turn that simply ends -- an answer, a
+# question back -- is not a failure; for that there is the "Retry on Go" button.
+LOCAL_REPEAT_LIMIT = 3
+LOCAL_READ_LIMIT = 4
+LOCAL_IDLE_STEPS = 40
+LOCAL_EDIT_TOOLS = frozenset(('edit', 'write', 'patch', 'multiedit', 'apply_patch'))
+_TEST_CMD_RE = re.compile(r'\bpytest\b|\btest_\w+\.py\b|\bunittest\b|\b(?:npm|pnpm|yarn|go|cargo) test\b|'
+                          r'\bimprove test\b')
+_TEST_RED_RE = re.compile(r'\b\d+ (?:failed|errors?)\b|^FAILED\b|\bFAIL:', re.M)
+_TEST_GREEN_RE = re.compile(r'\b\d+ passed\b|^OK\b|\bok\s+\S+', re.M)
+
+
+class _LocalWatch:
+    """The signs of a local turn going nowhere; `why` says which, or ''."""
+
+    def __init__(self):
+        self.calls = collections.Counter()
+        self.counted = set()
+        self.steps = 0
+        self.edits = 0
+        self.tests = None           # 'red' or 'green': the last test run's result
+        self.why = ''               # in English, for the log and for Go
+        self.reason = ('', {})      # the same for the person: an i18n key and its values
+
+    def tool(self, part):
+        """One tool part, as opencode updates it. Counted once, when its input is
+        known; its result read when it completes."""
+        state = part.get('state') or {}
+        status = state.get('status')
+        name = (part.get('tool') or part.get('name') or '').lower()
+        pid = part.get('id')
+        args = state.get('input') or {}
+        if status in ('running', 'completed', 'error') and pid and pid not in self.counted and args:
+            self.counted.add(pid)
+            self.steps += 1
+            if name == 'read':
+                sig, limit = ('read', str(args.get('filePath') or args.get('path') or '')), LOCAL_READ_LIMIT
+            else:
+                sig, limit = (name, json.dumps(args, sort_keys=True)), LOCAL_REPEAT_LIMIT
+            self.calls[sig] += 1
+            if name in LOCAL_EDIT_TOOLS:
+                self.edits += 1
+            if self.calls[sig] >= limit and not self.why:
+                what = f'read {sig[1]}' if name == 'read' else f'made the same {name} call'
+                self.why = f'{what} {self.calls[sig]} times over'
+                self.reason = ('programmer.local_why_repeat', {'n': self.calls[sig]})
+            elif self.steps >= LOCAL_IDLE_STEPS and not self.edits and not self.why:
+                self.why = f'made {self.steps} tool calls without changing a file'
+                self.reason = ('programmer.local_why_idle', {'n': self.steps})
+        if status == 'completed' and name == 'bash' and _TEST_CMD_RE.search(str(args.get('command') or '')):
+            out = str(state.get('output') or '')
+            if _TEST_RED_RE.search(out):
+                self.tests = 'red'
+            elif _TEST_GREEN_RE.search(out):
+                self.tests = 'green'
+        return self.why
+
+    def at_end(self):
+        """Why the finished turn counts as failed, or ''."""
+        if not self.why and self.edits and self.tests == 'red':
+            self.why = 'finished with its tests failing'
+            self.reason = ('programmer.local_why_tests', {})
+        return self.why
+
+
+def _local_failed(turn, base, why, reason):
+    """The local model failed this turn (`_LocalWatch`): stopped, and handed to
+    Go for this turn and the rest of the conversation -- or, with Go out, the
+    turn ends saying so. Same contract as `_turn_attempt_opencode`."""
+    username = turn['user']
+    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
+    app.logger.warning('opencode: the local model failed a turn for %s: %s', username, why)
+    said = t_for(username, reason[0], **reason[1]) if reason[0] else why
+    if _go_is_out():
+        return t_for(username, 'programmer.local_failed', why=said,
+                     reset=_go_out['reset'] or '?'), False
+    turn.update(go=True, escalated=why, escalate=True)
+    _opencode_on_go(username, turn.get('conv'), pin=True)
+    if turn['text']:
+        # Its partial answer stays on the screen; Go's follows it, set apart.
+        with turn['cond']:
+            turn['text'] += '\n\n---\n\n'
+        _turn_emit(turn, {'text': '\n\n---\n\n'})
+    _turn_emit(turn, {'hint': t_for(username, 'programmer.local_to_go', why=said)})
+    return f'the local model {why}; OpenCode Go takes the turn', True
+
+
+def _retry_on_go_offer(turn):
+    """A local turn that finished is offered again on Go, as a button: a model
+    that answers wrongly without erring is the failure no watch catches, and the
+    person reading it is the one who can tell."""
+    if turn.get('engine') != 'local' or turn.get('cancelled') or _go_is_out():
+        return ''
+    username = turn['user']
+    block = '\n'.join(['', '', ':::ask', f"q: {t_for(username, 'programmer.retry_go_q')}",
+                       f"- {t_for(username, 'programmer.retry_go')}", ':::'])
+    with turn['cond']:
+        turn['text'] += block
+    _turn_emit(turn, {'text': block})
+    return block
 
 
 def _oc(path):
@@ -8163,6 +8346,7 @@ def _turn_attempt_opencode(turn, msg_content):
     cancel as not-a-failure.
     """
     username = turn['user']
+    watch = None
     try:
         if turn['cancelled']:
             return None, False
@@ -8176,8 +8360,12 @@ def _turn_attempt_opencode(turn, msg_content):
         directory = _opencode_directory(username)
         # Which engine takes this turn, and so which session (see
         # OPENCODE_LOCAL_PREFIX): Go's, or the local model's own.
-        local = _opencode_local_model() if OPENCODE_API != 'v2' else None
-        engine = 'local' if local else 'go'
+        engine = _opencode_engine(turn, msg_content)
+        local = _opencode_local_model() if engine == 'local' else None
+        turn['engine'] = engine
+        if local:
+            turn['local_tried'] = True
+        asked_go = engine == 'go' and _opencode_asked_for_go(username, msg_content)
         turn['oc_key'] = (OPENCODE_LOCAL_PREFIX if local else '') + turn['chat_id']
         made = []
         session_id = _opencode_session(base, turn['oc_key'], directory, made)
@@ -8198,6 +8386,15 @@ def _turn_attempt_opencode(turn, msg_content):
                     if conv and since is not None else '')
         if handover:
             msg_content = handover + msg_content
+        if engine == 'go' and (turn.get('escalated') or asked_go):
+            note = (f"this house's local model took it first and {turn['escalated']}, so it was "
+                    "stopped" if turn.get('escalated') else
+                    "the person pressed \"Retry on OpenCode Go\": the local model's last answer did "
+                    "not do, so redo their previous request yourself")
+            msg_content = (f"[Note from HomeCore: {note}. It may have changed files -- check the "
+                           "worktree (git status, git diff) before relying on anything.]\n\n"
+                           + msg_content)
+        watch = _LocalWatch() if local else None
 
         # The two surfaces want opposite orders, and this is the one thing
         # about v2 that cannot be guessed from v1.
@@ -8310,7 +8507,9 @@ def _turn_attempt_opencode(turn, msg_content):
                     if not turn.get('local'):
                         turn['local'] = True
                         _turn_emit(turn, {'hint': t_for(username, 'programmer.go_out_local',
-                                                        reset=_go_out['reset'] or '?')})
+                                                        reset=_go_out['reset'] or '?')
+                                          if _go_is_out() else
+                                          t_for(username, 'programmer.on_local')})
                 params = {'directory': directory} if directory else None
                 p = requests.post(f'{base}/session/{session_id}/prompt_async',
                                   params=params, json=body, timeout=30)
@@ -8375,7 +8574,7 @@ def _turn_attempt_opencode(turn, msg_content):
                                        'running on the local model' if OPENCODE_FALLBACK
                                        else 'no local fallback')
                     _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
-                    if OPENCODE_FALLBACK and not turn.get('local'):
+                    if OPENCODE_FALLBACK and not turn.get('local_tried'):
                         return 'OpenCode Go is out; the local model takes the turn', True
                     return t_for(username, 'programmer.go_out', reset=words or '?'), False
                 if kind == 'message.part.updated':
@@ -8391,6 +8590,8 @@ def _turn_attempt_opencode(turn, msg_content):
                     part = props.get('part') or {}
                     if part.get('id'):
                         part_types[part['id']] = part.get('type') or ''
+                    if watch and part.get('type') == 'tool' and watch.tool(part):
+                        return _local_failed(turn, base, watch.why, watch.reason)
                     # What it is doing, as it does it. Without this the person
                     # sees nothing at all for minutes: this model answers with
                     # `reasoning` and `tool` parts and produces no text until
@@ -8437,6 +8638,11 @@ def _turn_attempt_opencode(turn, msg_content):
                 elif kind == 'session.error':
                     detail = (props.get('error') or {}).get('message') \
                         or json.dumps(props.get('error') or {})[:200]
+                    if watch:
+                        # The local model's server did not answer, or the
+                        # history did not fit: Go can take it.
+                        return _local_failed(turn, base, f'failed: {str(detail)[:200]}',
+                                             ('programmer.local_why_error', {}))
                     return f'opencode: {detail}', _turn_retryable()
                 elif kind == 'permission.asked':
                     # opencode wants a person to approve something, and in this
@@ -8493,6 +8699,8 @@ def _turn_attempt_opencode(turn, msg_content):
                            turn['id'], username)
         return ('opencode stopped answering part way through -- its server went '
                 'away mid-turn. Nothing was lost; ask again.'), True
+    if watch and not turn['cancelled'] and watch.at_end():
+        return _local_failed(turn, base, watch.why, watch.reason)
     return None, False
 
 
@@ -8644,6 +8852,11 @@ def _turn_worker(turn, api, nanobot_id, msg_content, powerful, profile):
                 turn, api, nanobot_id, msg_content, powerful, profile)
             if error is None or turn['cancelled']:
                 break
+            # The local model failing hands the turn to Go (`_local_failed`):
+            # at once, and even after it said something -- Go's answer follows
+            # its partial one, set apart, and the hint says why.
+            if turn.pop('escalate', False) and attempt < TURN_RETRIES:
+                continue
             if not retryable or turn['text'] or attempt == TURN_RETRIES:
                 break
             wait = TURN_RETRY_BACKOFF[min(attempt, len(TURN_RETRY_BACKOFF) - 1)]
@@ -8665,6 +8878,7 @@ def _turn_worker(turn, api, nanobot_id, msg_content, powerful, profile):
             # Before filing, so what is stored is what was shown: the buttons
             # the Programmer was asked to end with, when it did not.
             _offers_fallback(turn)
+            _retry_on_go_offer(turn)
             _turn_finish(turn)
     finally:
         # Delivery happens inside `_turn_finish`, which every exit path above

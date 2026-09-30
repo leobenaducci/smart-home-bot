@@ -1347,7 +1347,10 @@ def opencode_fallback(cfg: dict) -> dict:
         raise SystemExit("cloud.opencode.fallback.gpu and .context are numbers")
     if not 0 <= gpu <= 15 or not 4096 <= context <= 262144:
         raise SystemExit("cloud.opencode.fallback: gpu 0-15, context 4096-262144")
-    return {"model": model, "gpu": gpu, "context": context,
+    first = conf.get("first", False)
+    if not isinstance(first, bool):
+        raise SystemExit("cloud.opencode.fallback.first is true or false")
+    return {"model": model, "gpu": gpu, "context": context, "first": first,
             "provider": OPENCODE_FALLBACK_PROVIDER, "port": OPENCODE_FALLBACK_PORT,
             "backend": OPENCODE_FALLBACK_BACKEND}
 
@@ -1872,6 +1875,9 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # `home/<model>`: the Programmer's local fallback, as opencode names it.
         "opencode_fallback": (lambda fb: f"{fb['provider']}/{fb['model']}" if fb else "")(
             opencode_fallback(cfg) if opencode_servers(cfg) else {}),
+        # The local model first and Go when it fails, rather than the other way.
+        "opencode_local_first": "1" if (opencode_servers(cfg) and
+                                        opencode_fallback(cfg).get("first")) else "",
         "opencode_servers": ",".join(
             f"{m}={u}" for m, u in sorted(opencode_url.items())),
         # The bare name of `assistant.models.vision`, for consumers that talk

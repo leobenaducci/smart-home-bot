@@ -203,6 +203,46 @@ than Kimi K2.7 Code; the pipeline's gates -- tests, the benchmark, the leak
 check, approvals -- are what stop a bad fix from shipping, whichever model
 wrote it.
 
+### The other way round: the local model first
+
+`cloud.opencode.fallback.first: true` (the portal's `OPENCODE_LOCAL_FIRST`)
+runs every Programmer turn on the local model and hands it to Go when the local
+one fails -- spending Go's allowance only where the 9B could not cope. Go still
+takes a turn from the start when:
+
+- **the Studio is rendering.** Lending the card means waiting for the running
+  job, up to ~25 minutes; with Go there, that wait buys nothing.
+- **the conversation is already on Go**: the local model failed in it once, or
+  the person tapped *Retry on OpenCode Go*. It stays there, so an issue the 9B
+  could not do is not retried on it every turn.
+
+What counts as failing (`_LocalWatch`), because a 9B in trouble rarely errors --
+on #10 it read the same files again and again and committed nothing:
+
+- the same tool call with the same input three times, or one file read four
+  times (reads are counted by path, since a long file is read in pieces);
+- forty tool calls without an edit;
+- tests run red at the end of a turn in which it changed files (red before any
+  edit is a bug being reproduced, not a failure);
+- an error opencode reports for the model -- its server did not start, the
+  history did not fit.
+
+Then the local session is aborted and the same message goes to Go, at once and
+even after the local model said something: its partial answer stays, a rule
+sets Go's apart, and a hint says why. Go is told the local model went first
+and may have changed files. With Go out there is nowhere to hand it, so the
+turn stops and says that instead of letting the model circle for half an hour.
+
+A turn that simply finishes on the local model ends with a *Retry on OpenCode
+Go* button -- an answer that is wrong without erring is the failure no watch
+catches, and the person reading it is the one who can tell. Tapping it sends
+that label as the message; HomeCore recognises it, pins the conversation to Go
+and tells Go to redo the previous request.
+
+This is still a person driving opencode in a conversation they are watching,
+so Go is used as the flat plan intends (see CLAUDE.md): the hand-over happens
+inside their turn, never from a timer.
+
 ## Where the configuration lives
 
 Not in `~/.config/opencode/opencode.json`. That file belongs to whoever uses

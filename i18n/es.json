@@ -1778,5 +1778,14 @@
   "admin.models.source_studio": "el Estudio de la casa (GPU)",
   "studio.default_project": "Pedidos a Alfred",
   "programmer.go_out_local": "Se alcanzó el límite de OpenCode Go (vuelve en {reset}). Sigo con el modelo propio de la casa: más lento y menos capaz.",
-  "programmer.go_out": "Se alcanzó el límite de uso de OpenCode Go; vuelve en {reset}. No hay un modelo local configurado para seguir mientras tanto."
+  "programmer.go_out": "Se alcanzó el límite de uso de OpenCode Go; vuelve en {reset}. No hay un modelo local configurado para seguir mientras tanto.",
+  "programmer.on_local": "Trabajando con el modelo propio de la casa.",
+  "programmer.local_to_go": "El modelo de la casa se trabó ({why}). OpenCode Go sigue con este turno y con el resto de esta conversación.",
+  "programmer.local_failed": "El modelo de la casa se trabó ({why}) y OpenCode Go no está disponible por {reset}. Me detuve acá: lo que cambió sigue en los archivos.",
+  "programmer.local_why_repeat": "hizo la misma llamada {n} veces",
+  "programmer.local_why_idle": "{n} pasos sin cambiar ningún archivo",
+  "programmer.local_why_tests": "sus tests seguían fallando",
+  "programmer.local_why_error": "su modelo dejó de responder",
+  "programmer.retry_go_q": "Respondió el modelo de la casa.",
+  "programmer.retry_go": "Reintentar con OpenCode Go"
 }

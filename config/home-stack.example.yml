@@ -1260,6 +1260,11 @@ cloud:
     # Needs `./home-stack llamacpp build`. docs/opencode-programmer.md.
     fallback:
       model: ""                 # e.g. ornith-1.5:9b, an agentic-coding 9B, 5.6 GB
+      # true: the local model goes first and Go takes over when it gets stuck
+      # (the same call over and over, forty steps without an edit, its tests
+      # red, its server down) or the person taps "Retry on OpenCode Go". Go
+      # also takes a turn while the Studio is rendering, rather than wait.
+      first: false
       gpu: 1
       # The window. A conversation that began on Go can already be longer than
       # 64k -- give it the model's own maximum when the card holds it

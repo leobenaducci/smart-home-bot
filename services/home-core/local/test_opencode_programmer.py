@@ -851,7 +851,157 @@ text_back = back[0][1]["parts"][0]["text"] if back else ""
 check("Go, back, returns to its own session",
       back and "/session/ses_GO/" in back[0][0] and "model" not in back[0][1], back[:1])
 check("and is told what the local model did while it was away",
-      text_back.startswith("[Handover] You are back") and "LOCAL DID THIS" in text_back, text_back[:300])
+      text_back.startswith("[Handover] You take this conversation over") and "LOCAL DID THIS" in text_back, text_back[:300])
+A.OPENCODE_FALLBACK = _saved_fb
+
+# --- the local model first, Go when it gets stuck ------------------------------
+
+print("\nthe local model first, and Go when it fails")
+A.OPENCODE_FALLBACK = "home/ornith-1.5:9b"
+_saved_first, _saved_render = A.OPENCODE_LOCAL_FIRST, A._studio_rendering
+A._studio_rendering = lambda: False
+A._go_out.update(until=0.0, reset="")
+CONVL = 1790900000777
+
+
+def _lt():
+    return A._turn_new(LOGIN, f"homeweb:{LOGIN}:{DAYH}:dev:{CONVL}", DAYH, CONVL, "programmer")
+
+
+A.OPENCODE_LOCAL_FIRST = False
+check("by default Go goes first", A._opencode_engine(_lt(), "hola") == "go")
+A.OPENCODE_LOCAL_FIRST = True
+check("with `first`, the local model does", A._opencode_engine(_lt(), "hola") == "local")
+check("  but not in a turn it already failed", A._opencode_engine({**_lt(), "go": True}, "hola") == "go")
+A._studio_rendering = lambda: True
+check("  nor while the Studio is rendering: Go rather than wait for the card",
+      A._opencode_engine(_lt(), "hola") == "go")
+A._studio_rendering = lambda: False
+A._go_out.update(until=A.time.time() + 3600, reset="2 days")
+check("  and with Go out, local whatever the order",
+      A._opencode_engine({**_lt(), "go": True}, "hola") == "local")
+A._go_out.update(until=0.0, reset="")
+_label = A.t_for(LOGIN, "programmer.retry_go")
+check("the button's message goes to Go", A._opencode_engine(_lt(), "ctx\n\n" + _label) == "go")
+check("  and keeps the conversation there", A._opencode_engine(_lt(), "otra cosa") == "go")
+_c = A._opencode_conn(); _c.execute("DELETE FROM seen"); _c.commit(); _c.close()
+check("  a conversation with no pin starts on the local model", A._opencode_engine(_lt(), "otra") == "local")
+
+
+def _tool(pid, tool, status="completed", **inp):
+    return {"id": pid, "type": "tool", "tool": tool, "state": {"status": status, "input": inp}}
+
+
+w = A._LocalWatch()
+for i in range(3):
+    w.tool(_tool(f"r{i}", "read", filePath="/w/app.py", offset=i * 100))
+check("three reads of one file, in pieces, are work", not w.why, w.why)
+w.tool(_tool("r3", "read", filePath="/w/app.py"))
+check("  a fourth is going round in circles", "read /w/app.py 4 times" in w.why, w.why)
+w = A._LocalWatch()
+for i in range(3):
+    w.tool(_tool(f"g{i}", "grep", pattern="def main"))
+check("the same call three times is stuck", "same grep call 3 times" in w.why, w.why)
+w = A._LocalWatch()
+w.tool(_tool("p", "read", status="pending"))
+w.tool(_tool("p", "read", status="running", filePath="/w/a"))
+w.tool(_tool("p", "read", status="completed", filePath="/w/a"))
+check("a part is counted once, however many updates it gets", w.steps == 1, w.steps)
+w = A._LocalWatch()
+for i in range(A.LOCAL_IDLE_STEPS):
+    w.tool(_tool(f"s{i}", "read", filePath=f"/w/f{i}"))
+check("forty calls and no edit is stuck", "without changing a file" in w.why, w.why)
+w = A._LocalWatch()
+w.tool(_tool("e", "edit", filePath="/w/a", oldString="x", newString="y"))
+_red = _tool("t", "bash", command="python -m pytest -q")
+_red["state"]["output"] = "2 failed, 3 passed in 0.1s"
+w.tool(_red)
+check("an edit and red tests at the end is a failed turn", "tests failing" in w.at_end(), w.why)
+w = A._LocalWatch()
+w.tool(_red)
+check("  red tests without an edit are not (a bug being reproduced)", not w.at_end())
+w = A._LocalWatch()
+w.tool(_tool("e", "edit", filePath="/w/a", oldString="x", newString="y"))
+w.tool(_red)
+_green = _tool("t2", "bash", command="python -m pytest -q")
+_green["state"]["output"] = "5 passed in 0.1s"
+w.tool(_green)
+check("  nor red then green", not w.at_end())
+
+LSID = "ses_LOCALFIRST"
+looping = [{"type": "message.part.updated", "properties": {
+    "sessionID": LSID, "part": {**_tool(f"x{i}", "read", filePath="/w/app.py"), "sessionID": LSID}}}
+    for i in range(6)]
+posted.clear()
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse(looping))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+emitted = []
+A._turn_emit = lambda t, ev: emitted.append(ev)
+t = _lt()
+err, retry = A._turn_attempt_opencode(t, "arreglá el bug")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("a local-first turn names the local model", prompt and prompt[0].get("model", {}).get("modelID")
+      == "ornith-1.5:9b", prompt)
+check("  stuck, it is stopped and handed on", retry is True and t.get("go") and t.get("escalate")
+      and any("/abort" in u for u, _ in posted), (err, retry, [u for u, _ in posted]))
+check("  and the chat says why, in the person's language",
+      any(A.t_for(LOGIN, "programmer.local_why_repeat", n=4) in str(ev.get("hint", ""))
+          for ev in emitted), emitted)
+posted.clear()
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse([{"type": "session.idle", "properties": {"sessionID": LSID}}]))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+t.pop("escalate", None)
+err, retry = A._turn_attempt_opencode(t, "arreglá el bug")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("the next attempt goes to Go, the agent's own model", prompt and "model" not in prompt[0], prompt)
+check("  told the local model went first and may have changed files",
+      "local model took it first" in prompt[0]["parts"][0]["text"], prompt[0]["parts"][0]["text"][:300])
+check("  and it is the same turn: no button offered after Go", A._retry_on_go_offer(t) == "")
+check("the conversation stays on Go", A._opencode_engine(_lt(), "más") == "go")
+
+_c = A._opencode_conn(); _c.execute("DELETE FROM seen"); _c.commit(); _c.close()
+A._go_out.update(until=A.time.time() + 3600, reset="2 days")
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse(looping))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+err, retry = A._turn_attempt_opencode(_lt(), "arreglá el bug")
+check("stuck with Go out, the turn stops and says so", retry is False and "2 days" in (err or ""), err)
+A._go_out.update(until=0.0, reset="")
+
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse([{"type": "session.idle", "properties": {"sessionID": LSID}}]))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+t = _lt()
+err, _ = A._turn_attempt_opencode(t, "explicame")
+check("a local turn that finishes is not a failure", err is None and not t.get("go"), err)
+_offer = A._retry_on_go_offer(t)
+check("  and ends with a button to try it on Go",
+      ":::ask" in _offer and _label in _offer and _label in t["text"], _offer)
+A._turn_emit = _saved_emit
+
+# The worker: a hand-over is tried again at once, even after the local model
+# said something -- which an ordinary failure with text on screen never is.
+_calls = []
+def _fake_attempt(turn, *a):
+    _calls.append(turn.get("go"))
+    if len(_calls) == 1:
+        turn["text"] = "partial"
+        turn.update(go=True, escalate=True)
+        return "stuck", True
+    return None, False
+_saved_attempt, _saved_finish = A._turn_attempt, A._turn_finish
+A._turn_attempt, A._turn_finish = _fake_attempt, lambda t, e=None: _calls.append(("finish", e))
+A._turn_worker(_lt(), None, None, "x", False, "programmer")
+A._turn_attempt, A._turn_finish = _saved_attempt, _saved_finish
+check("the worker hands a stuck turn to Go at once, text or not",
+      _calls[:2] == [None, True] and _calls[-1] == ("finish", None), _calls)
+A.OPENCODE_LOCAL_FIRST, A._studio_rendering = _saved_first, _saved_render
 A.OPENCODE_FALLBACK = _saved_fb
 
 print()
