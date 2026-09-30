@@ -63,7 +63,30 @@ def publish(d: Path, repos: list[dict], rid: str, name: str) -> str:
     if not _new_commits(live, rid):
         raise W.WorkError(f"improve/{rid} has nothing {name} does not already have")
     if not _is_ancestor(live, "HEAD", f"improve/{rid}"):
-        raise W.WorkError(f"{name} moved on since the fix branched; start the fix again from it")
+        # The checkout moved on while the fix was being made. Put the fix on top
+        # of where it is now -- in the worktree, never the checkout -- and stop:
+        # what would be published is code nobody has tested together. A
+        # conflict is not resolved here; the worktree is left as it was.
+        r = subprocess.run(["git", "-C", str(wt), "rebase", "-q", head], capture_output=True,
+                           text=True, timeout=300)
+        if r.returncode != 0:
+            subprocess.run(["git", "-C", str(wt), "rebase", "--abort"], capture_output=True,
+                           timeout=60)
+            raise W.WorkError(f"{name} moved on since the fix branched, and the fix does not "
+                              f"apply on top of it cleanly; nothing was changed. Start the fix "
+                              f"again from the current code.")
+        raise W.WorkError(f"{name} moved on since the fix branched: the fix is now rebased on "
+                          f"top of it, in the worktree. That combination is untested -- run "
+                          f"improve test {rid} {name} (and improve bench if it changes how the "
+                          f"assistant behaves), then publish again.")
+    import checks  # noqa: PLC0415 -- imports this module's sibling, not a cycle
+    tested = checks._load(d, rid, name, "tests") or {}
+    if tested.get("head") and tested["head"] != W._git(wt, "rev-parse", "HEAD") and \
+            tested.get("head") != W._git(wt, "rev-parse", "HEAD~"):
+        raise W.WorkError(f"the last test run was on other code than what would be published: "
+                          f"improve test {rid} {name}, then publish")
+    if tested.get("head") == W._git(wt, "rev-parse", "HEAD") and not tested.get("ok"):
+        raise W.WorkError(f"the tests of what would be published fail: improve test {rid} {name}")
     W._git(live, "merge", "--ff-only", "-q", f"improve/{rid}")
     out = [f"{name}: {head} is now at {W._git(live, 'log', '-1', '--format=%h %s')}"]
     if repo["kind"] == "stack":

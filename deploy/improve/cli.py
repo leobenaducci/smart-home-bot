@@ -243,7 +243,7 @@ def cmd_list(args) -> int:
     for q in reqs:
         when = datetime.datetime.fromtimestamp(q["created"]).strftime("%Y-%m-%d %H:%M")
         print(f"#{q['id']}  {q['status']:<13} {when}  {' '.join(q['problem'].split())[:110]}")
-        for wt in sorted((d / "work").glob(f"{q['id']}-*")):
+        for wt in sorted(p for p in (d / "work").glob(f"{q['id']}-*") if p.is_dir()):
             name = wt.name.split("-", 1)[1]
             live = (repos.get(name) or {}).get("path")
             n = len([c for c in W._git(live or wt, "rev-list", f"HEAD..improve/{q['id']}",

@@ -173,7 +173,7 @@ def status(d: Path, rid: str) -> str:
     if not _ID.match(str(rid)):
         raise WorkError(f"not a request number: {rid!r}")
     out = []
-    for path in sorted((d / "work").glob(f"{rid}-*")):
+    for path in sorted(p for p in (d / "work").glob(f"{rid}-*") if p.is_dir()):
         log = _git(path, "log", "--format=  %h %s", "HEAD", "--not", "--remotes", "-n", "10",
                    check=False)
         dirty = len(_changed(path))

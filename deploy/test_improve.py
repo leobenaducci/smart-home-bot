@@ -480,6 +480,47 @@ check("newest first, and only that person's when asked",
       and [q["id"] for q in cli.requests(state)] == [3, 2, 1])
 check("and no database is no requests, not an error", cli.requests(tmp / "nada") == [])
 
+print("\nwhen the checkout moved on while the fix was made")
+mv_wt = W.start(imp, [lrepo], "15", "luces2")
+(mv_wt / "nuevo.py").write_text("y = 1\n", encoding="utf-8")
+tested_commit(imp, [lrepo], "15", "luces2", "Add nuevo.py for the moved-on test")
+(lp / "otro.py").write_text("z = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(lp), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(lp), "commit", "-qm", "somebody else's commit"], check=True)
+try:
+    S.publish(imp, [lrepo], "15", "luces2")
+    check("publish rebases the fix on top, and asks for the tests again", False)
+except W.WorkError as exc:
+    check("publish rebases the fix on top, and asks for the tests again",
+          "rebased" in str(exc) and "improve test 15" in str(exc)
+          and W._git(mv_wt, "log", "-2", "--format=%s").splitlines()[1] == "somebody else's commit"
+          and W._git(lp, "log", "-1", "--format=%s") == "somebody else's commit", str(exc))
+try:
+    S.publish(imp, [lrepo], "15", "luces2")
+    check("and will not publish the untested combination", False)
+except W.WorkError as exc:
+    check("and will not publish the untested combination", "other code than what would be published" in str(exc), str(exc))
+K.run_tests(imp, [lrepo], "15", "luces2", run=lambda *a, **k: _Ok())
+out = S.publish(imp, [lrepo], "15", "luces2")
+check("tested again, it publishes on top of the other commit",
+      W._git(lp, "log", "-2", "--format=%s").splitlines() == ["Add nuevo.py for the moved-on test",
+                                                             "somebody else's commit"], out)
+cf_wt = W.start(imp, [lrepo], "16", "luces2")
+(cf_wt / "skill.py").write_text("x = 'del arreglo'\n", encoding="utf-8")
+tested_commit(imp, [lrepo], "16", "luces2", "Change skill.py one way")
+(lp / "skill.py").write_text("x = 'de otra persona'\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(lp), "commit", "-qam", "change skill.py the other way"], check=True)
+before = W._git(cf_wt, "rev-parse", "HEAD")
+try:
+    S.publish(imp, [lrepo], "16", "luces2")
+    check("a fix that conflicts is refused, and nothing changes", False)
+except W.WorkError as exc:
+    check("a fix that conflicts is refused, and nothing changes",
+          "does not apply" in str(exc) and W._git(cf_wt, "rev-parse", "HEAD") == before
+          and not (cf_wt / ".git").is_dir() and W._changed(cf_wt) == []
+          and W._git(lp, "log", "-1", "--format=%s") == "change skill.py the other way", str(exc))
+check("status lists worktrees, not the records beside them", "tests.json" not in W.status(imp, "15"))
+
 print("\nwhat a commit has to pass: its tests, and the benchmark for behaviour")
 k_wt = W.start(imp, [lrepo], "13", "luces2")
 (k_wt / "skill.py").write_text("x = 'otra cosa'\n", encoding="utf-8")

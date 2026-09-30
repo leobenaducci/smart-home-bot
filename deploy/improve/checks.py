@@ -121,7 +121,8 @@ def run_tests(d: Path, repos: list[dict], rid: str, name: str, run=subprocess.ru
                 if ln.strip()][-3:]
         results.append({"suite": label, "ok": r.returncode == 0,
                         "seconds": round(time.time() - t0), "tail": tail})
-    record = {"digest": diff_digest(path), "files": files, "suites": results,
+    record = {"digest": diff_digest(path), "head": W._git(path, "rev-parse", "HEAD"),
+              "files": files, "suites": results,
               "ok": all(x["ok"] for x in results), "at": int(time.time())}
     _save(d, rid, name, "tests", record)
     return record
