@@ -334,6 +334,16 @@ log = W._git(wt, "log", "-1", "--format=%ae|%B")
 check("the commit is made, as the repository's owner", "dueno@example.org|" in log
       and "Fix request #7" in log, log)
 check("and not on the plugin's own branch", "no fallback" not in W._git(plug, "log", "-1", "--format=%s"))
+check("a message's literal \\n, from an agent's shell, becomes a newline",
+      W.commit_message("Weather: sun times\\n\\nBody line one.\\nTwo.")
+      == "Weather: sun times\n\nBody line one.\nTwo.")
+check("but not in a message that already has real newlines",
+      W.commit_message("Split on \\n\n\nbody") == "Split on \\n\n\nbody")
+try:
+    W.commit_message("x" * 101)
+    check("a subject over 100 characters is refused", False)
+except W.WorkError as exc:
+    check("a subject over 100 characters is refused", "blank line" in str(exc))
 check("the stack refuses changes to how it is deployed, judged or guarded",
       W.refusals("stack", [(" M", "deploy/deploy.py"), (" M", "services/nanobot/bench/cases.json"),
                            (" M", "CLAUDE.md"), (" M", "services/home-core/local/app.py")])

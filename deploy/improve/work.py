@@ -140,6 +140,29 @@ def refusals(kind: str, changed: list[tuple[str, str]]) -> list[str]:
     return why
 
 
+SUBJECT_MAX = 100
+
+
+def commit_message(message: str) -> str:
+    """The message as git should record it, or WorkError saying what to fix.
+
+    An agent's shell passes `-m "subject\\n\\nbody"` with the two characters
+    backslash-n rather than a newline, and git records them as they are: #9's
+    commit came out as one 700-character subject line. When the message holds
+    no real newline at all, every literal `\\n` was meant as one.
+    """
+    message = (message or "").strip()
+    if "\n" not in message and "\\n" in message:
+        message = message.replace("\\n", "\n").strip()
+    if len(message) < 10:
+        raise WorkError("say what the commit does: -m with a real message")
+    subject = message.splitlines()[0]
+    if len(subject) > SUBJECT_MAX:
+        raise WorkError(f"the first line is the subject and is {len(subject)} characters; keep it "
+                        f"under {SUBJECT_MAX}, and put the rest after a blank line")
+    return message
+
+
 def commit(d: Path, repos: list[dict], rid: str, name: str, message: str,
            cfg: dict | None = None) -> str:
     repo = _repo(repos, name)
@@ -148,9 +171,7 @@ def commit(d: Path, repos: list[dict], rid: str, name: str, message: str,
         raise WorkError(f"no worktree for #{rid} in {name}: run `improve start {rid} {name}`")
     if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != f"improve/{rid}":
         raise WorkError(f"{path} is not on improve/{rid}")
-    message = (message or "").strip()
-    if len(message) < 10:
-        raise WorkError("say what the commit does: -m with a real message")
+    message = commit_message(message)
     changed = _changed(path)
     if not changed:
         raise WorkError("nothing changed in the worktree")
