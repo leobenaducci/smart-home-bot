@@ -4015,6 +4015,12 @@ def _render_chat(space=None):
                            # covers values *stored* before that rename; a
                            # comparison in a template is not one of those.
                            has_projects=space in PROJECT_SPACES,
+                           # Whether a conversation here can become a fix
+                           # request: only where the Programmer runs on
+                           # opencode for this person, which is where the
+                           # request's work is done (improve_request_convert).
+                           can_convert=bool(space == OPENCODE_SPACE
+                                            and _opencode_url(session['user'])),
                            # Translated here rather than printed raw. The
                            # titles in CHAT_SPACES are English because English
                            # is this stack's source language; what a household
@@ -7579,12 +7585,16 @@ def _improve_conversation(username, conv):
         conn.close()
 
 
-def _improve_prompt(row, username=None):
+def _improve_prompt(row, username=None, converted=False):
     """What the Programmer is asked, for the person to read and send.
 
     The rules are in the request rather than trusted to the agent's prompt,
     because this is the text the person reviews before sending: what it says
-    it will do is what they are agreeing to."""
+    it will do is what they are agreeing to.
+
+    *converted*: the request was made from a Programmer conversation already
+    under way (`improve_request_convert`), so the conversation above is its
+    context and the person, not Alfred, said what it is about."""
     rid, problem, context = row
     tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
     user = find_user(username) if username else None
@@ -7596,8 +7606,14 @@ def _improve_prompt(row, username=None):
              f"and each plugin, with what each provides; recent turns, redacted, "
              f"are in `{IMPROVE_DIR}/inbox/`." if IMPROVE_DIR else
              "Find which repository this belongs to: the stack, or one of its plugins.")
-    lines = [f"Fix request #{rid}, asked of Alfred:", "",
+    lines = [f"Fix request #{rid}, " + ("made from this conversation:" if converted
+                                         else "asked of Alfred:"), "",
              *[f"> {ln}" for ln in problem.splitlines() or [problem]], ""]
+    if converted:
+        lines += ["Everything above in this conversation is its context. From here on it is "
+                  "this fix request, and the rules below apply to it. Anything already changed "
+                  "outside the request's worktree is not part of the fix: make it again there.",
+                  ""]
     if context:
         lines += ["What Alfred had when it was asked -- leads to check, not facts. Alfred "
                   "cannot read a skill's own environment or its code, so part of this may be "
@@ -7618,7 +7634,8 @@ def _improve_prompt(row, username=None):
                  "environment is not the assistant's.", ""] if container else []),
               "The house's settings are on the admin page; ask me for a value rather than "
               "reading its files, which are refused.", "",
-              "First, investigate only -- change nothing:",
+              ("If what we worked out above is not yet a proposal, investigate first -- "
+               "change nothing:" if converted else "First, investigate only -- change nothing:"),
               "1. Check each claim above against the running system (the container's "
               "environment, the skill's code, the service answering) and say which held.",
               "2. Find the cause. Then tell me the cause, where it lives (which repository, "
@@ -7704,6 +7721,91 @@ def _improve_similar(a, b):
     wa = set(re.findall(r'\w{4,}', (a or '').lower()))
     wb = set(re.findall(r'\w{4,}', (b or '').lower()))
     return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= 0.3
+
+
+def _improve_into(username, rid, prompt, day, conv):
+    """Put request *rid*'s opening message into the Programmer conversation
+    (*day*, *conv*) that already exists, behind whatever is running there, and
+    record the conversation as the request's. (day, conv), or None when it
+    could not be queued."""
+    try:
+        append_user_history(username, {'role': 'user', 'text': prompt,
+                                       'ts': int(time.time() * 1000), 'conv': conv},
+                            day, OPENCODE_SPACE)
+        chat_id = _conv_chat_id(username, day, conv, OPENCODE_SPACE)
+        if not _queue_add(chat_id, _queue_item(username, day, conv, OPENCODE_SPACE, prompt, [], [],
+                                               project=IMPROVE_PROJECT)):
+            raise RuntimeError("that conversation's queue is full")
+        _queue_advance(username, chat_id)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning('improve: #%s not started in %s/%s: %s', rid, day, conv, exc)
+        return None
+    conn = _improve_conn()
+    try:
+        conn.execute("UPDATE improve_requests SET status = 'investigating', day = ?, conv = ? "
+                     'WHERE id = ?', (day, conv, rid))
+        conn.commit()
+    finally:
+        conn.close()
+    return day, conv
+
+
+@app.route('/improve/api/requests/convert', methods=['POST'])
+@api_login_required
+def improve_request_convert():
+    """Make the Programmer conversation the person is in a fix request.
+
+    For work that started as an ordinary conversation -- "why is the lights
+    skill slow?" typed straight into the Programmer -- and turned out to be a
+    fix. In place, not a new conversation seeded with a summary: the opencode
+    session keeps what it already found, and one issue stays one chat. From
+    the next turn it carries the request's number, its rules and its gates,
+    like a request Alfred filed.
+    """
+    username = session['user']
+    body = request.get_json(silent=True) or {}
+    problem = str(body.get('problem') or '').strip()[:IMPROVE_TEXT_MAX]
+    if not problem:
+        return jsonify(error='say what the issue is: problem is empty'), 400
+    try:
+        conv = int(body.get('conv') or 0)
+    except (TypeError, ValueError):
+        conv = 0
+    if conv <= 0:
+        return jsonify(error='no conversation'), 400
+    if not _opencode_url(username):
+        return jsonify(ok=False, error='the Programmer does not run on opencode for this '
+                       'member, so there is nowhere to work on a fix.'), 409
+    # One of this person's Programmer conversations, with something in it:
+    # the day the page has open, where its messages are filed.
+    asked = _valid_day(body.get('date'))
+    if not any(m.get('conv') == conv
+               for m in load_user_history(username, asked, OPENCODE_SPACE)):
+        return jsonify(error='no such conversation'), 404
+    conn = _improve_conn()
+    try:
+        row = conn.execute('SELECT id FROM improve_requests WHERE username = ? AND conv = ?',
+                           (username, conv)).fetchone()
+        if row:
+            return jsonify(ok=False, id=row[0],
+                           error=f'this conversation is already fix request #{row[0]}'), 409
+        # Its own origin, so dedupe never takes it for another request made
+        # without one, and "publish the last fix" from an Alfred chat never
+        # reaches it.
+        rid = conn.execute('INSERT INTO improve_requests (username, created_at, problem, context, '
+                           'origin) VALUES (?,?,?,?,?)',
+                           (username, int(time.time()), problem, '',
+                            f'programmer:{conv}')).lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    # Written today, like anything sent now (`_writing_day`): the same day a
+    # message the person typed in this conversation would be filed under.
+    day = _writing_day(body.get('date'))
+    started = _improve_into(username, rid,
+                            _improve_prompt((rid, problem, ''), username, converted=True),
+                            day, conv)
+    return jsonify(ok=True, id=rid, investigating=bool(started))
 
 
 def _improve_card(username, rid, started):

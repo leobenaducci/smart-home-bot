@@ -49,6 +49,7 @@ with open(os.path.join(dst, "users.json"), "w", encoding="utf-8") as f:
 
 sys.path.insert(0, dst)
 import app as A  # noqa: E402
+_REAL_APPEND = A.append_user_history  # a later section stubs it
 
 A.app.config["TESTING"] = True
 failures = []
@@ -282,13 +283,63 @@ check("no generic «Publicar en master» under a fix request's answer",
       A._offers_fallback({"backend": "opencode", "space": "programmer", "project": "alfred-self",
                           "text": "¿Aplico el cambio?"}) == "")
 
+print("\na Programmer conversation made a fix request")
+A.append_user_history = _REAL_APPEND
+conv_q = []
+A._queue_add = lambda chat_id, item, front=False: conv_q.append((chat_id, item)) or True
+A._queue_advance = lambda login, chat_id: None
+DAY = A._tasks_today().isoformat()
+CONV = 1790800000001
+A.append_user_history(CODER, {"role": "user", "text": "¿por qué tarda tanto la skill de luces?",
+                              "ts": CONV, "conv": CONV}, DAY, A.OPENCODE_SPACE)
+d = coder.post("/improve/api/requests/convert", headers=H,
+               json={"problem": "la skill de luces tarda 20 s", "conv": CONV, "date": DAY}).get_json()
+conn = A._improve_conn()
+row = conn.execute("SELECT day, conv, status, origin, problem FROM improve_requests WHERE id = ?",
+                   (d.get("id"),)).fetchone()
+conn.close()
+check("the conversation the person is in becomes the request's, in place",
+      d.get("ok") and d.get("investigating") and row and row[1] == CONV and row[2] == "investigating",
+      (d, row))
+check("with an origin of its own, so dedupe and 'publish the last fix' never take it for another",
+      row and row[3] == f"programmer:{CONV}", row)
+opening = conv_q[-1][1] if conv_q else {}
+check("its opening message is queued there, on Alfred himself, behind whatever is running",
+      opening.get("conv") == CONV and opening.get("project") == A.IMPROVE_PROJECT
+      and opening.get("content", "").startswith(f"Fix request #{d.get('id')}, made from this conversation:")
+      and "Everything above in this conversation is its context" in opening.get("content", ""),
+      opening)
+check("and filed, so it reads in the conversation where it was asked",
+      any(m.get("conv") == CONV and m.get("text", "").startswith(f"Fix request #{d.get('id')}")
+          for m in A.load_user_history(CODER, DAY, A.OPENCODE_SPACE)))
+check("from then on every turn there is on Alfred himself, whatever the page sends",
+      A._improve_conversation(CODER, CONV))
+again = coder.post("/improve/api/requests/convert", headers=H,
+                   json={"problem": "otra vez", "conv": CONV, "date": DAY})
+check("a conversation that already is one says which, and makes no second",
+      again.status_code == 409 and again.get_json().get("id") == d.get("id"), again.get_json())
+missing = coder.post("/improve/api/requests/convert", headers=H,
+                     json={"problem": "algo", "conv": CONV + 5, "date": DAY})
+check("a conversation that is not there is refused", missing.status_code == 404)
+check("and so is one with no issue named",
+      coder.post("/improve/api/requests/convert", headers=H,
+                 json={"problem": " ", "conv": CONV, "date": DAY}).status_code == 400)
+theirs = client(OTHER).post("/improve/api/requests/convert", headers=H,
+                            json={"problem": "algo", "conv": CONV, "date": DAY})
+check("nor is anybody else's: another member's history has no such conversation",
+      theirs.status_code in (404, 409), theirs.status_code)
+
 print("\nthe page")
 page = open(os.path.join(SRC, "templates", "chat.html"), encoding="utf-8").read()
 check("a goto card may carry a request number and a conversation", "(space|label|why|request|date|conv)" in page)
 check("a fix request's conversation shows the special project, locked, and sends it",
-      "fixConv = !!(first && /^Fix request #\\d+/.test(first.text || ''));" in page
+      "return m.role === 'user' && /^Fix request #\\d+/.test(m.text || '');" in page
       and "if (fixConv) return IMPROVE_PROJECT;" in page and "markFixConversation(msgs);" in page
       and "markFixConversation([]);" in page and "var IMPROVE_PROJECT = 'alfred-self';" in page)
+check("a conversation made one partway through counts too, and the button to do it hides",
+      "fixConv = (msgs || []).some(" in page
+      and "convertBtn.hidden = fixConv || !(msgs || []).length;" in page
+      and "'/improve/api/requests/convert'" in page)
 check("the page and the server name the special project the same", A.IMPROVE_PROJECT == "alfred-self")
 check("which it opens when the investigation started", "a.href += '?date=' + fields.date + '&conv=' + fields.conv" in page)
 check("which becomes ?improve= on the Programmer's link", "a.href += '?improve=' + fields.request" in page)

@@ -1317,6 +1317,9 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
         <select id="project-sel" aria-label="Active project" title="Active project" disabled>
           <option value="">— Project —</option>
         </select>
+        {% if can_convert %}
+        <button id="convert-btn" title="{{ t('improve.convert_hint') }}" hidden>🛠 {{ t('improve.convert_btn') }}</button>
+        {% endif %}
         {% if is_admin %}
         <button id="project-btn" title="Manage projects">📁 Projects</button>
         <button id="credential-btn" title="Manage credentials">🔑 Credentials</button>
@@ -2010,9 +2013,43 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
      alone and comes back in the next one. The server applies it there too. */
   var IMPROVE_PROJECT = 'alfred-self';
   var fixConv = false;
+  /* "Make this a fix request": the conversation the person is in becomes one,
+     in place, so the opencode session keeps what it already found. The server
+     queues the request's opening message here; the queue shows it. */
+  var convertBtn = document.getElementById('convert-btn');
+  if (convertBtn) convertBtn.addEventListener('click', async function() {
+    var problem = (window.prompt({{ t('improve.convert_ask')|tojson }}) || '').trim();
+    if (!problem) return;
+    convertBtn.disabled = true;
+    try {
+      var r = await fetch('/improve/api/requests/convert', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({problem: problem, conv: convStart(), date: curDay})});
+      var d = await r.json().catch(function() { return {}; });
+      if (!r.ok || !d.ok) {
+        alert({{ t('improve.convert_failed')|tojson }} + (d.error ? '\n' + d.error : ''));
+        return;
+      }
+      fixConv = true;
+      convertBtn.hidden = true;
+      if (projectSel && HAS_PROJECTS) {
+        projectSel.dataset.fix = '1';
+        projectSel.value = IMPROVE_PROJECT;
+        projectSel.disabled = true;
+      }
+      await catchUp();
+      pumpQueue();
+    } finally {
+      convertBtn.disabled = false;
+    }
+  });
   function markFixConversation(msgs) {
-    var first = (msgs || []).filter(function(m) { return m.role === 'user'; })[0];
-    fixConv = !!(first && /^Fix request #\d+/.test(first.text || ''));
+    // Any of the person's messages, not only the first: a conversation made a
+    // fix request partway through carries the request's opening further down.
+    fixConv = (msgs || []).some(function(m) {
+      return m.role === 'user' && /^Fix request #\d+/.test(m.text || '');
+    });
+    if (convertBtn) convertBtn.hidden = fixConv || !(msgs || []).length;
     if (!projectSel || !HAS_PROJECTS) return;
     if (fixConv) {
       projectSel.dataset.fix = '1';
