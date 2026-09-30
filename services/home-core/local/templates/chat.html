@@ -3071,6 +3071,22 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   fileInput.addEventListener('change', async function(){await addFiles(fileInput.files);fileInput.value='';});
   cameraBtn.addEventListener('click', function(){cameraInput.click();});
   cameraInput.addEventListener('change', async function(){await addFiles(cameraInput.files);cameraInput.value='';});
+  // A picture pasted into the message box is an attachment, as if chosen with
+  // 📎: a text box takes only text from the clipboard, so a pasted screenshot
+  // went nowhere and said nothing (2026-09-30). Text still pastes as text.
+  inputEl.addEventListener('paste', async function(ev) {
+    var items = (ev.clipboardData && ev.clipboardData.items) || [];
+    var pasted = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' && /^image\//.test(items[i].type || '')) {
+        var f = items[i].getAsFile();
+        if (f) pasted.push(f);
+      }
+    }
+    if (!pasted.length) return;
+    ev.preventDefault();
+    await addFiles(pasted);
+  });
 
   /* ── Mic — hold-to-record → Faster-Whisper ── */
   var WHISPER_URL = '/chat/transcribe';
