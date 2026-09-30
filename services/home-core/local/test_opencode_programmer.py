@@ -789,6 +789,71 @@ check("and only the Programmer's conversations carry over",
           _conn.execute("SELECT chat_id, session_id FROM sessions").fetchall()))
 _conn.close()
 
+# --- a handover between engines ----------------------------------------------
+
+print("\nGo out, then back: each engine is told what the other did")
+CONV = 1790900000001
+DAYH = "2026-10-02"
+CHAT = f"homeweb:{LOGIN}:{DAYH}:dev:{CONV}"
+A.OPENCODE_FALLBACK = "home/ornith:9b"
+for i, (role, text) in enumerate([("user", "Fix request #77, asked of Alfred: lights are slow"),
+                                  ("bot", "Found it: the skill polls every light. Proposal: cache the state."),
+                                  ("user", "Sí, hacelo"),
+                                  ("bot", "EARLY WORK"),
+                                  ("user", "sigue")]):
+    A.append_user_history(LOGIN, {"role": role, "text": text, "ts": CONV + i * 60000, "conv": CONV},
+                          DAYH, "programmer")
+_conn = A._opencode_conn(); _conn.execute("DELETE FROM sessions"); _conn.execute("DELETE FROM seen")
+_conn.execute("INSERT INTO sessions (chat_id, session_id, directory, api, created) VALUES (?,?,?,?,?)",
+              (CHAT, "ses_GO", "/state/nanobot-code-workspace/user1", "v1", 100))
+_conn.commit(); _conn.close()
+made_sessions = []
+def _post(u, kw):
+    posted.append((u, kw))
+    if u.endswith("/session"):
+        made_sessions.append(u); return FakeResp(payload={"id": "ses_LOCAL"})
+    return FakeResp(payload={"id": "ses_LOCAL"})
+idle_stream = sse([{"type": "session.idle", "properties": {"sessionID": "ses_LOCAL"}},
+                   {"type": "session.idle", "properties": {"sessionID": "ses_GO"}}])
+A.requests = Recorder(get=lambda u, kw: (FakeResp(ok=True, payload={"id": "x"})
+                                         if "/session/" in u and "/event" not in u
+                                         else FakeResp(lines=idle_stream)), post=_post)
+A._go_out.update(until=A.time.time() + 3600, reset="4 days")
+posted.clear()
+def _turn_on(chat):
+    return A._turn_new(LOGIN, chat, DAYH, None, "programmer")
+t1 = _turn_on(CHAT)
+A._turn_attempt_opencode(t1, "sigue")
+prompts = [(u, kw.get("json")) for u, kw in posted if u.endswith("/prompt_async")]
+check("the local model gets a session of its own, not Go's",
+      made_sessions and prompts and "/session/ses_LOCAL/" in prompts[0][0]
+      and t1.get("oc_key") == "local:" + CHAT, (made_sessions, prompts[:1]))
+first = prompts[0][1]["parts"][0]["text"] if prompts else ""
+check("and starts from a handover: the request, what was said, text only",
+      first.startswith("[Handover]") and "lights are slow" in first and "EARLY WORK" in first
+      and first.rstrip().endswith("sigue"), first[:400])
+check("not the turn's own message twice", first.count("sigue") == 1, first[-200:])
+posted.clear()
+A.append_user_history(LOGIN, {"role": "bot", "text": "LOCAL DID THIS", "ts": CONV + 10 * 60000,
+                              "conv": CONV}, DAYH, "programmer")
+A.append_user_history(LOGIN, {"role": "user", "text": "y ahora?", "ts": CONV + 11 * 60000,
+                              "conv": CONV}, DAYH, "programmer")
+A._opencode_seen(f"{LOGIN}:{CONV}:local", set_ms=CONV + 10 * 60000 + 1)
+A._turn_attempt_opencode(_turn_on(CHAT), "y ahora?")
+second = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")][0]["parts"][0]["text"]
+check("its next turn in the same session is not handed the same things again",
+      not second.startswith("[Handover]"), second[:200])
+A._go_out.update(until=0.0, reset="")
+posted.clear()
+A._turn_attempt_opencode(_turn_on(CHAT), "y ahora?")
+back = [(u, kw.get("json")) for u, kw in posted if u.endswith("/prompt_async")]
+text_back = back[0][1]["parts"][0]["text"] if back else ""
+check("Go, back, returns to its own session",
+      back and "/session/ses_GO/" in back[0][0] and "model" not in back[0][1], back[:1])
+check("and is told what the local model did while it was away",
+      text_back.startswith("[Handover] You are back") and "LOCAL DID THIS" in text_back, text_back[:300])
+A.OPENCODE_FALLBACK = _saved_fb
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

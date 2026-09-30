@@ -7060,6 +7060,104 @@ def _go_reset(message):
     return max(seconds, 60), words
 
 
+# A local turn works in an opencode session of its own, keyed `local:<chat_id>`.
+# Go's session is where the issue was worked on, and it is long -- fix request
+# #10's was ~180k tokens of tool output when Go ran out -- and a 9B model handed
+# all of it lost its thread: ten steps reading one file, nothing committed
+# (2026-09-30). So each engine keeps its own session, and whichever one takes a
+# turn is first told what the other did since it last took part: the
+# conversation as the person sees it, text only (`_opencode_handover`). One
+# conversation and one worktree still; only the model's working memory is two.
+OPENCODE_LOCAL_PREFIX = 'local:'
+OPENCODE_HANDOVER_CHARS = 24000
+OPENCODE_HANDOVER_MSG_CHARS = 2000
+
+
+def _opencode_seen(key, set_ms=None):
+    """When engine key `<login>:<conv>:<engine>` last took part, or None; with
+    *set_ms*, record it."""
+    conn = _opencode_conn()
+    try:
+        if set_ms is not None:
+            conn.execute('INSERT INTO seen (key, seen_ms) VALUES (?, ?) ON CONFLICT(key) '
+                         'DO UPDATE SET seen_ms = excluded.seen_ms', (key, int(set_ms)))
+            conn.commit()
+            return set_ms
+        row = conn.execute('SELECT seen_ms FROM seen WHERE key = ?', (key,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _improve_request_of(username, conv):
+    """The fix request whose conversation *conv* is, or None."""
+    if not conv or not os.path.exists(IMPROVE_DB_PATH):
+        return None
+    conn = _improve_conn()
+    try:
+        row = conn.execute('SELECT id FROM improve_requests WHERE username = ? AND conv = ? '
+                           'ORDER BY id DESC LIMIT 1', (username, int(conv))).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _opencode_conv_msgs(username, conv):
+    """A Programmer conversation's messages across the days it spans, in order."""
+    msgs = []
+    for day in reversed(_history_day_stems(username, limit=14, space=OPENCODE_SPACE)):
+        msgs += [m for m in load_user_history(username, day, OPENCODE_SPACE)
+                 if str(m.get('conv') or '') == str(conv)]
+    msgs.sort(key=lambda m: m.get('ts') or 0)
+    return msgs
+
+
+def _opencode_handover(username, conv, since_ms, engine):
+    """What *engine* ('local' or 'go') is told before this turn: the
+    conversation as the person sees it since *since_ms*, text only, capped --
+    or '' when there is nothing it has not seen. The person's newest message
+    is the turn itself and is left out."""
+    msgs = _opencode_conv_msgs(username, conv)
+    last_user = max((m.get('ts') or 0 for m in msgs if m.get('role') == 'user'), default=0)
+    new = [m for m in msgs if since_ms < (m.get('ts') or 0) < last_user
+           and m.get('role') in ('user', 'bot') and (m.get('text') or '').strip()]
+    if not new:
+        return ''
+
+    def line(m):
+        text = m['text'].strip()
+        if len(text) > OPENCODE_HANDOVER_MSG_CHARS:
+            text = text[:OPENCODE_HANDOVER_MSG_CHARS] + ' [...]'
+        return ('Person: ' if m['role'] == 'user' else 'Programmer: ') + text
+
+    # The opening (the request) and as much of the end as fits.
+    lines = [line(m) for m in new]
+    kept, size = [], len(lines[0])
+    for ln in reversed(lines[1:]):
+        if size + len(ln) > OPENCODE_HANDOVER_CHARS:
+            break
+        kept.insert(0, ln)
+        size += len(ln)
+    skipped = len(lines) - 1 - len(kept)
+    body = [lines[0], *([f'[... {skipped} earlier messages left out ...]'] if skipped else []), *kept]
+    if engine == 'local':
+        head = ("[Handover] OpenCode Go is out, so this house's local model takes this conversation. "
+                "You do not have the session the work was done in: below is the conversation as the "
+                "person sees it, text only -- tool output is left out. Where it and the files "
+                "disagree, the files are right.")
+    else:
+        head = ("[Handover] You are back. While OpenCode Go was out this conversation went on with "
+                "this house's local model; below is what was said since you last took part, text "
+                "only. The local model may have changed files or left work half done: check the "
+                "files before relying on it.")
+    rid = _improve_request_of(username, conv)
+    tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
+    tail = (f"This is fix request #{rid}: run `{tool} status {rid}` and read the worktree's diff "
+            "before anything else." if rid else "")
+    return "\n\n".join([head, "---", "\n\n".join(body), "---", *([tail] if tail else []),
+                         "The person's new message:", ""])
+
+
 def _opencode_local_model():
     """opencode's `model` for a turn that must not go to Go, or None."""
     if not OPENCODE_FALLBACK or time.time() >= _go_out['until']:
@@ -7199,6 +7297,11 @@ def _opencode_url(username):
 
 def _opencode_conn():
     conn = sqlite3.connect(OPENCODE_DB_PATH)
+    # When each engine -- `go`, or `local` -- last took part in a Programmer
+    # conversation (`<login>:<conv>:<engine>`), so the other one's turns can be
+    # handed over (`_opencode_handover`). No day in the key: an issue outlives
+    # one.
+    conn.execute('CREATE TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY, seen_ms INTEGER NOT NULL)')
     conn.execute('CREATE TABLE IF NOT EXISTS sessions ('
                  'chat_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, '
                  'directory TEXT NOT NULL DEFAULT "", '
@@ -7244,7 +7347,9 @@ def _opencode_carry(conn, chat_id):
     the recovery sweep files a missed reply under the day its key names, and a
     row left under the old day would file it there too.
     """
-    parts = chat_id.split(':')
+    key = chat_id
+    prefix = OPENCODE_LOCAL_PREFIX if key.startswith(OPENCODE_LOCAL_PREFIX) else ''
+    parts = key[len(prefix):].split(':')
     if (len(parts) != 5 or parts[0] != 'homeweb' or not parts[4].isdigit()
             or parts[3] != CHAT_SPACES[OPENCODE_SPACE]['scope']):
         return
@@ -7253,7 +7358,7 @@ def _opencode_carry(conn, chat_id):
     earlier = conn.execute(
         'SELECT chat_id FROM sessions WHERE chat_id LIKE ? AND chat_id != ? '
         'ORDER BY created DESC LIMIT 1',
-        (':'.join([parts[0], parts[1], '%', parts[3], parts[4]]), chat_id)).fetchone()
+        (prefix + ':'.join([parts[0], parts[1], '%', parts[3], parts[4]]), chat_id)).fetchone()
     if earlier:
         conn.execute('UPDATE sessions SET chat_id = ? WHERE chat_id = ?', (chat_id, earlier[0]))
         conn.commit()
@@ -7261,7 +7366,7 @@ def _opencode_carry(conn, chat_id):
                         earlier[0], chat_id)
 
 
-def _opencode_session(base, chat_id, directory):
+def _opencode_session(base, chat_id, directory, made=None):
     """The opencode session for this conversation, making one if needed.
 
     Stored rather than derived: opencode allocates the id, and the mapping is
@@ -7329,6 +7434,8 @@ def _opencode_session(base, chat_id, directory):
         sid = (_oc_data(r.json()) or {}).get('id')
         if not sid:
             raise RuntimeError('opencode created a session with no id')
+        if made is not None:
+            made.append(sid)
         conn.execute(
             'INSERT INTO sessions (chat_id, session_id, directory, api, '
             'created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id) DO UPDATE '
@@ -8067,7 +8174,30 @@ def _turn_attempt_opencode(turn, msg_content):
             # string, which would be a request to this container.
             return 'no opencode server for this member', False
         directory = _opencode_directory(username)
-        session_id = _opencode_session(base, turn['chat_id'], directory)
+        # Which engine takes this turn, and so which session (see
+        # OPENCODE_LOCAL_PREFIX): Go's, or the local model's own.
+        local = _opencode_local_model() if OPENCODE_API != 'v2' else None
+        engine = 'local' if local else 'go'
+        turn['oc_key'] = (OPENCODE_LOCAL_PREFIX if local else '') + turn['chat_id']
+        made = []
+        session_id = _opencode_session(base, turn['oc_key'], directory, made)
+        conv, _space = _chat_id_conv(turn['chat_id'].split(':'))
+        seen_key = f'{username}:{conv}:{engine}'
+        seen = _opencode_seen(seen_key) if conv else None
+        # A session this engine is new to reads the whole conversation; one it
+        # has taken part in, what came since. Go's session from before there
+        # were two engines saw everything already.
+        since = 0 if (made or (seen is None and local)) else seen
+        if local and conv and _opencode_seen(f'{username}:{conv}:go') is None:
+            # Go took part up to the message this turn answers; what comes from
+            # here is the local model's, and Go is handed it when it is back.
+            asked = max((m.get('ts') or 0 for m in _opencode_conv_msgs(username, conv)
+                         if m.get('role') == 'user'), default=0)
+            _opencode_seen(f'{username}:{conv}:go', set_ms=max(asked - 1, 0))
+        handover = (_opencode_handover(username, conv, since, engine)
+                    if conv and since is not None else '')
+        if handover:
+            msg_content = handover + msg_content
 
         # The two surfaces want opposite orders, and this is the one thing
         # about v2 that cannot be guessed from v1.
@@ -8164,7 +8294,7 @@ def _turn_attempt_opencode(turn, msg_content):
                     # stop and opencode is now working on an answer nobody will
                     # read, holding the session busy against the next question.
                     # Interrupting twice is free; missing it is not.
-                    _opencode_abort(base, turn['chat_id'])
+                    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
                 return None, False
             if not r.ok:
                 return (f'opencode said HTTP {r.status_code}',
@@ -8175,7 +8305,6 @@ def _turn_attempt_opencode(turn, msg_content):
                         'parts': [{'type': 'text', 'text': msg_content}]}
                 # Go is out: name the local model on this message. The agent's
                 # own model (Go) stays its default for when Go is back.
-                local = _opencode_local_model()
                 if local:
                     body['model'] = local
                     if not turn.get('local'):
@@ -8188,6 +8317,9 @@ def _turn_attempt_opencode(turn, msg_content):
                 if not p.ok:
                     return (f'opencode refused the prompt: HTTP {p.status_code}',
                             _turn_retryable(status=p.status_code))
+                # This engine has now been told everything up to here.
+                if conv:
+                    _opencode_seen(seen_key, set_ms=time.time() * 1000)
 
             for raw in r.iter_lines():
                 if not raw:
@@ -8242,7 +8374,7 @@ def _turn_attempt_opencode(turn, msg_content):
                                        words or 'an unknown time',
                                        'running on the local model' if OPENCODE_FALLBACK
                                        else 'no local fallback')
-                    _opencode_abort(base, turn['chat_id'])
+                    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
                     if OPENCODE_FALLBACK and not turn.get('local'):
                         return 'OpenCode Go is out; the local model takes the turn', True
                     return t_for(username, 'programmer.go_out', reset=words or '?'), False
@@ -8331,7 +8463,7 @@ def _turn_attempt_opencode(turn, msg_content):
                     _turn_emit(turn, {'step': {'type': 'tool',
                                                'name': 'permiso',
                                                'detail': str(where)[:80]}})
-                    _opencode_abort(base, turn['chat_id'])
+                    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
                     detail = f'{what}{" for " + str(where)[:200] if where else ""}'
                     return (f'opencode stopped to ask permission for {detail}, '
                             f'and this space has no way to ask you. Nothing was '
@@ -8395,7 +8527,7 @@ def _turn_cancel(turn):
     # side reading, and the turns worth stopping are the ones that are not
     # writing anything -- two minutes inside a tool call.
     if turn.get('backend') == 'opencode':
-        _opencode_abort(_opencode_url(turn['user']), turn['chat_id'])
+        _opencode_abort(_opencode_url(turn['user']), turn.get('oc_key') or turn['chat_id'])
         api = None
     else:
         api, nanobot_id = _nanobot_for(turn['user'])
@@ -8892,7 +9024,9 @@ def _opencode_recover_once():
     finally:
         conn.close()
     filed = 0
-    for chat_id, sid, directory in rows:
+    for key, sid, directory in rows:
+        # A local turn's session files its missed reply in the same place.
+        chat_id = key[len(OPENCODE_LOCAL_PREFIX):] if key.startswith(OPENCODE_LOCAL_PREFIX) else key
         parts = chat_id.split(':')
         if len(parts) < 4 or parts[0] != 'homeweb':
             continue

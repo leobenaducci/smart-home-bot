@@ -172,6 +172,19 @@ natively, and its cache is small (mostly linear-attention layers): at 262144 it
 takes 10.7 GB of the 12 GB card. Reading a 180k history the first time runs at
 ~1,600 tokens/s, a couple of minutes, and then it is cached.
 
+**Each engine has its own session, and a handover.** A bigger window let
+#10's history fit; it did not make it usable. Handed Kimi's ~180k tokens of tool
+output, `ornith:9b` spent ten steps reading one file and committed nothing. So a
+local turn works in an opencode session of its own (`local:<chat_id>` in the
+session store), and whichever engine takes a turn is first told what the other
+did since it last took part: the conversation as the person sees it, text only,
+capped at ~24k characters (the opening request and as much of the end as
+fits), and for a fix request the command that shows its worktree
+(`_opencode_handover`). When Go is back it returns to its own session and is
+handed what the local model did. One conversation, one worktree; only the
+model's working memory is two. `seen` in the session store records when each
+engine last took part, per conversation and not per day.
+
 The model must fit the card whole. `ornith:9b` (Ollama library; a 9B trained
 for agentic coding, 5.6 GB) was chosen on 2026-09-30 and measured on one 3060:
 6.6 GB with a 64k window, 3.5 s to load, ~42 tokens/s, and 3 of 3 on a small
