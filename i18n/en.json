@@ -888,7 +888,7 @@
   "chat.feedback.failed": "Could not save the rating. Try again.",
   "chat.interrupted": "Interrupted",
   "chat.turn_cut": "The answer was cut off: the server restarted while it was being written. Send your message again.",
-  "chat.turn_failed": "⚠️ The Programmer could not answer: {reason}. Send it again when it is back.",
+  "chat.turn_failed": "⚠️ The Programmer could not answer: {reason}. It may be OpenCode Go's usage limit (a 5-hour window, and weekly and monthly caps) or an outage; send it again later.",
   "improve.card_label": "Fix request #{id}",
   "improve.card_why": "Opens the Programmer with the fix already written out. Read it, then send.",
   "improve.card_started": "Alfred's Programmer is already looking into it. Open it to watch; it asks before changing anything.",
