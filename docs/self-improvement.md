@@ -212,6 +212,15 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   test; `improve publish` and `improve deploy` refuse unless the person asked
   for it in the fix request's own conversation, after the last commit, in
   words or as a yes to the Programmer asking about exactly that.
+  The same leak check guards the other way a model commits: the code
+  broker's `commit`, which the Programmer's `commit_changes` and Alfred's
+  `commit` both go through for a project. The broker is not given the values:
+  the deployer writes salted hashes of them each deploy
+  (`build_leak_guard`, into `{paths.config}/leak-guard`, mounted read-only),
+  and the broker hashes the words of what is staged against them, plus the
+  key shapes, and resets the index on a refusal (`code_broker/leaks.py`).
+  A plain `git commit` is refused in the Programmer's shell, and Alfred's own
+  containers do not mount the projects.
   **One chat conversation, one Programmer session.** Every request asked in
   the same Alfred conversation continues the Programmer conversation the
   first one opened -- behind whatever is running there -- so they share one

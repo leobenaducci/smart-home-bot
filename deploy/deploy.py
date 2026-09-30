@@ -3608,6 +3608,37 @@ def build_opencode_config(member: str, token: str, port: int,
     }, indent=2) + "\n"
 
 
+def build_leak_guard(cfg: dict) -> str:
+    """hashes.json for the code broker's leak check (code_broker/leaks.py).
+
+    What no commit an assistant makes may carry: every credential in the env
+    files and every login, e-mail and phone in the portal's user store -- the
+    publish gate's own values (publish_check.py) -- as salted SHA-256 hashes, so
+    the broker can recognise them without being given them. A phone is also
+    hashed as its digits alone, the way the broker reads one out of a line. The
+    salt is new every deploy.
+    """
+    import hashlib as _h  # noqa: PLC0415
+    import secrets as _s  # noqa: PLC0415
+    import publish_check  # noqa: PLC0415
+    paths = base_paths(cfg) or {}
+    envs = [ROOT / "secrets" / "smart-home-bot.env"]
+    if paths.get("config"):
+        envs.append(Path(paths["config"]) / "smart-home-bot.env")
+    values = {**publish_check.env_values(envs),
+              **publish_check.user_values(str(paths.get("state") or ""))}
+    salt = _s.token_hex(16)
+    items: dict[str, str] = {}
+    for value, label in values.items():
+        forms = {value}
+        digits = re.sub(r"\D", "", value)
+        if "phone" in label and len(digits) >= 7:
+            forms.add(digits)
+        for form in forms:
+            items[_h.sha256((salt + form).encode("utf-8")).hexdigest()[:32]] = label
+    return json.dumps({"salt": salt, "items": items}) + "\n"
+
+
 def build_portal_dashboard(cfg: dict, plugins: list | None = None) -> str:
     """The portal's own dashboard, as JSON the portal reads at runtime.
 
@@ -5960,6 +5991,24 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
         # read-only is deliberate -- the deployer owns this file, and a portal
         # that could edit it would be editing something the next deploy
         # overwrites.
+        # What the code broker checks a commit against (build_leak_guard), in a
+        # directory of its own mounted read-only: a directory, so rewriting the
+        # file each deploy is seen by a running container, where a single-file
+        # mount would keep the inode it started with.
+        if unit.get("leak_guard"):
+            gdir = interpolate(unit["leak_guard"], cfg)
+            target.run(f"mkdir -p {shlex.quote(gdir)} && chmod 700 {shlex.quote(gdir)}")
+            rendered = build_leak_guard(cfg)
+            tmp = Path(tempfile.mkstemp(suffix=".json")[1])
+            tmp.write_text(rendered, encoding="utf-8")
+            try:
+                target.push_file(tmp, f"{gdir}/hashes.json")
+                target.run(f"chmod 600 {shlex.quote(gdir)}/hashes.json")
+            finally:
+                tmp.unlink(missing_ok=True)
+            out.ok(f"{len(json.loads(rendered)['items'])} value(s) a commit may not "
+                   f"carry, hashed for the code broker")
+
         if unit.get("family_directory"):
             dest = interpolate(unit["family_directory"], cfg)
             target.run(f"mkdir -p {shlex.quote(str(Path(dest).parent))}")

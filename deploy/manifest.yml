@@ -809,10 +809,17 @@ services:
         # checks its access list against. The per-member tokens derived beside it
         # are the assistants' half and are exported there; this needs the map.
         code_broker_tokens: true
+        # Hashes of what no commit may carry -- this house's credentials, and the
+        # user store's logins, e-mails and phones -- rewritten every deploy
+        # (build_leak_guard in deploy.py) and checked by the broker before any
+        # commit an assistant makes (code_broker/leaks.py).
+        leak_guard: "{paths.config}/leak-guard"
         env:
           # The portal, as the broker dials it from inside the compose network.
           HOMECORE_CONTAINER_URL: "https://{dns.portal}:{services.home-core.port}"
           CODE_COMMIT_NAME: "{site.assistant_name} (nanobot)"
+          # The directory `leak_guard:` above writes, mounted read-only.
+          LEAK_GUARD_DIR: "{paths.config}/leak-guard"
           # Where the house's Ollama is, if it has one. The broker receives one
           # API key and no others, because a provider it cannot authenticate is
           # a 401 it reports by name -- but `ollama:` is the choice that fails

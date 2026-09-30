@@ -41,7 +41,8 @@ work around it. The rest are yours to keep, and the person reviews them.
 ## Data
 
 13. Nothing real leaves in a commit: no credential, no key, no login, e-mail or
-    phone from the user store **[enforced: every repository]**, and for this
+    phone from the user store **[enforced on every commit an assistant makes:
+    `improve commit`, and the code broker's commit for projects]**, and for this
     stack no household name, address or host **[enforced: the sanitizer]**.
     The check names the kind of value and the file, never the value; keep it so
     in anything you write.
