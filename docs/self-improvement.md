@@ -221,15 +221,19 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   key shapes, and resets the index on a refusal (`code_broker/leaks.py`).
   A plain `git commit` is refused in the Programmer's shell, and Alfred's own
   containers do not mount the projects.
-  **One chat conversation, one Programmer session.** Every request asked in
-  the same Alfred conversation continues the Programmer conversation the
-  first one opened -- behind whatever is running there -- so they share one
-  opencode session and its context. The conversation comes from the runtime,
-  never the model: the exec tool gives a skill `NANOBOT_SESSION_KEY` from the
-  turn's own span (pi's skills get it too), and the skill sends it as the
-  request's `origin`. A second request from the same conversation is a
-  duplicate only when it is the same problem again; `publish_fix` without a
-  number means the latest request from the conversation it is asked in.
+  **One task, one Programmer conversation.** Every fix request opens a
+  Programmer conversation of its own -- its own opencode session, worktree
+  and history -- even when the same Alfred chat asked for another a minute
+  ago, because that is the only way to follow which change belongs to which
+  request. (From 2026-09-29 to 09-30 requests from one chat continued one
+  conversation; two fixes then shared one session and one scroll.) What the
+  person types inside a request's conversation stays in its session. The chat
+  a request came from is still recorded, from the runtime and never the model:
+  the exec tool gives a skill `NANOBOT_SESSION_KEY` from the turn's own span
+  (pi's skills get it too), and the skill sends it as the request's `origin`.
+  A request from the same conversation is a duplicate only when it is the
+  same problem again; `publish_fix` without a number means the latest request
+  from the conversation it is asked in.
   In the Programmer's project selector, **🛠 Alfred (mejoras)** is the project
   that is not a repository (`IMPROVE_PROJECT`, `alfred-self`): chosen, each
   turn carries the tool and its rules instead of "checkout this project", and

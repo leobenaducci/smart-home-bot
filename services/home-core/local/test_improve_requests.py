@@ -135,7 +135,7 @@ d = coder.post("/improve/api/requests", headers=H, json={"problem": "otra cosa"}
 check("when it cannot start, the request is still filed and the card fills the input instead",
       d.get("ok") and d.get("investigating") is False and "conv:" not in d["card"], d)
 
-print("\none chat conversation, one Programmer session")
+print("\none task, one Programmer conversation")
 A.IMPROVE_DEDUP_S = 15 * 60
 launched.clear(); queued_c = []
 A._turn_launch = lambda *a, **kw: launched.append(a) or {"id": "t"}
@@ -144,25 +144,23 @@ A._queue_advance = lambda login, chat_id: None
 ORIG = "websocket:homeweb:999000111:2026-09-29:1790700000001"
 first = coder.post("/improve/api/requests", headers=H, json={
     "problem": "la skill del clima contesta en inglés", "origin": ORIG}).get_json()
+A.time.sleep(0.002)  # conv is the start time in ms; two starts in one ms would collide here only
 second = coder.post("/improve/api/requests", headers=H, json={
     "problem": "el recordatorio de tareas llega dos veces", "origin": ORIG}).get_json()
 conn = A._improve_conn()
 rows = {r[0]: r[1:] for r in conn.execute("SELECT id, day, conv, origin FROM improve_requests "
                                           "WHERE id IN (?, ?)", (first["id"], second["id"]))}
 conn.close()
-check("the first request from a conversation opens a Programmer conversation",
-      len(launched) == 1 and rows[first["id"]][1] > 0, rows)
-check("a second, different one from the same chat continues it -- same session",
-      second.get("continued") and rows[second["id"]][:2] == rows[first["id"]][:2]
-      and queued_c and queued_c[-1][1]["conv"] == rows[first["id"]][1]
-      and queued_c[-1][1]["content"].startswith(f"Fix request #{second['id']}"), (second, rows))
+check("the first request opens a Programmer conversation",
+      rows[first["id"]][1] > 0 and first.get("investigating"), rows)
+check("a second, different one from the same chat opens its own -- never continues the first",
+      len(launched) == 2 and not queued_c and second.get("investigating")
+      and rows[second["id"]][1] > 0 and rows[second["id"]][1] != rows[first["id"]][1]
+      and "continued" not in second, (second, rows))
 dup = coder.post("/improve/api/requests", headers=H, json={
     "problem": "la skill del clima sigue contestando en inglés", "origin": ORIG}).get_json()
-check("the same problem again from it is the same request", dup.get("duplicate") and dup["id"] == first["id"], dup)
-other_chat = coder.post("/improve/api/requests", headers=H, json={
-    "problem": "la cámara del patio no graba", "origin": ORIG[:-1] + "9"}).get_json()
-check("another conversation gets a session of its own",
-      not other_chat.get("continued") and not other_chat.get("duplicate") and len(launched) == 2, other_chat)
+check("the same problem again from it is still the same request",
+      dup.get("duplicate") and dup["id"] == first["id"] and len(launched) == 2, dup)
 A.IMPROVE_DEDUP_S = -60
 
 print("\npublishing a fix, asked for in the chat")

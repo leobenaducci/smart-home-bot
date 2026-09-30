@@ -7670,12 +7670,6 @@ def improve_request_new():
             "SELECT id, day, conv, problem, origin FROM improve_requests WHERE username = ? "
             "AND created_at > ? AND status IN ('open', 'investigating') ORDER BY id DESC",
             (username, int(time.time()) - IMPROVE_DEDUP_S)).fetchall()
-        # Every request from one conversation shares one Programmer session:
-        # the latest one filed from it that has a conversation of its own.
-        prev = conn.execute(
-            "SELECT day, conv FROM improve_requests WHERE username = ? AND origin = ? "
-            "AND origin != '' AND conv > 0 ORDER BY id DESC LIMIT 1",
-            (username, origin)).fetchone() if origin else None
     finally:
         conn.close()
     # The same problem again within minutes, while the first is open, is the
@@ -7696,44 +7690,20 @@ def improve_request_new():
         conn.commit()
     finally:
         conn.close()
-    started = (_improve_continue(username, rid, problem, context, prev) if prev
-               else _improve_start(username, rid, problem, context))
+    # Every request opens a Programmer conversation of its own, even when the
+    # same chat asked for another a minute ago: one task, one conversation,
+    # one worktree, one history -- the only way to follow what changed for
+    # which request. Requests from one chat sharing a conversation (from
+    # 2026-09-29) mixed two fixes into one session and one scroll.
+    started = _improve_start(username, rid, problem, context)
     return jsonify(ok=True, id=rid, card=_improve_card(username, rid, started),
-                   investigating=bool(started), continued=bool(prev and started))
+                   investigating=bool(started))
 
 
 def _improve_similar(a, b):
     wa = set(re.findall(r'\w{4,}', (a or '').lower()))
     wb = set(re.findall(r'\w{4,}', (b or '').lower()))
     return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= 0.3
-
-
-def _improve_continue(username, rid, problem, context, where):
-    """Put request *rid* into the Programmer conversation *where* (day, conv)
-    -- the one the person's earlier requests from the same chat went to, so
-    they share one opencode session -- behind whatever is running there."""
-    day, conv = where
-    try:
-        prompt = _improve_prompt((rid, problem, context), username)
-        append_user_history(username, {'role': 'user', 'text': prompt,
-                                       'ts': int(time.time() * 1000), 'conv': conv},
-                            day, OPENCODE_SPACE)
-        chat_id = _conv_chat_id(username, day, conv, OPENCODE_SPACE)
-        if not _queue_add(chat_id, _queue_item(username, day, conv, OPENCODE_SPACE, prompt, [], [],
-                                               project=IMPROVE_PROJECT)):
-            raise RuntimeError('that conversation\'s queue is full')
-        _queue_advance(username, chat_id)
-    except Exception as exc:  # noqa: BLE001
-        app.logger.warning('improve: #%s not continued in %s: %s', rid, where, exc)
-        return None
-    conn = _improve_conn()
-    try:
-        conn.execute("UPDATE improve_requests SET status = 'investigating', day = ?, conv = ? "
-                     'WHERE id = ?', (day, conv, rid))
-        conn.commit()
-    finally:
-        conn.close()
-    return day, conv
 
 
 def _improve_card(username, rid, started):

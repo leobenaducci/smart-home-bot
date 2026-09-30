@@ -26,8 +26,9 @@ def _call(method, path, body=None, timeout=30):
 
 def request_fix(problem, context="", **kw):
     """File a fix to Alfred himself; returns the card that opens the Programmer on it."""
-    # Which conversation this is, from the runtime: every request asked in
-    # one conversation shares one Programmer session.
+    # Which conversation this is, from the runtime: it tells the same problem
+    # asked twice from a new one, and which fix "publish the last fix" means.
+    # Each request still gets a Programmer conversation of its own.
     return _call("POST", "/improve/api/requests",
                  {"problem": str(problem), "context": str(context or ""),
                   "origin": os.environ.get("NANOBOT_SESSION_KEY", "")})
