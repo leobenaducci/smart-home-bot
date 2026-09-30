@@ -7011,6 +7011,53 @@ OPENCODE_SPACE = 'programmer'
 # rewrite: `cloud.opencode.api` picks one, and v1 is still there.
 OPENCODE_API = (os.environ.get('OPENCODE_API') or 'v1').strip().lower()
 
+# The Programmer's local model when OpenCode Go is out -- `<provider>/<model>`
+# from `cloud.opencode.fallback` (deploy.py `opencode_fallback`), or "".
+#
+# Go does not *fail* a turn when its allowance is spent. opencode retries, and
+# says so only as a `session.status` of type "retry" whose message is Go's own:
+# "weekly usage limit reached. It will reset in 4 days 9 hours." Nothing read
+# that, so a Programmer turn sat "working" for as long as the reset was away --
+# fix request #10 for most of a day (2026-09-30). Now the refusal is read: with
+# a fallback the turn runs again on the local model, and every turn after it
+# goes there until the reset Go named; without one, the turn ends saying when
+# Go is back.
+OPENCODE_FALLBACK = (os.environ.get('OPENCODE_FALLBACK') or '').strip()
+_go_out = {'until': 0.0, 'reset': ''}
+_GO_LIMIT_RE = re.compile(r'usage limit', re.I)
+_GO_RESET_RE = re.compile(r'reset in\s+((?:\d+\s*(?:day|hour|minute|min)s?[\s,]*(?:and\s+)?)+)',
+                          re.I)
+_GO_UNIT_S = {'day': 86400, 'hour': 3600, 'minute': 60, 'min': 60}
+
+
+def _go_refused(props):
+    """Go's words when this status is a retry on its usage limit, else None."""
+    status = props.get('status') or {}
+    message = str(status.get('message') or '')
+    if status.get('type') == 'retry' and _GO_LIMIT_RE.search(message):
+        return message
+    return None
+
+
+def _go_reset(message):
+    """(seconds until Go is back, how Go put it) from its refusal. An hour when
+    it did not say: trying Go again then costs one refused call."""
+    m = _GO_RESET_RE.search(message or '')
+    if not m:
+        return 3600, ''
+    words = m.group(1).strip(' ,')
+    seconds = sum(int(n) * _GO_UNIT_S[u.lower()]
+                  for n, u in re.findall(r'(\d+)\s*(day|hour|minute|min)', words, re.I))
+    return max(seconds, 60), words
+
+
+def _opencode_local_model():
+    """opencode's `model` for a turn that must not go to Go, or None."""
+    if not OPENCODE_FALLBACK or time.time() >= _go_out['until']:
+        return None
+    provider, _, model = OPENCODE_FALLBACK.partition('/')
+    return {'providerID': provider, 'modelID': model} if provider and model else None
+
 
 def _oc(path):
     """The right prefix for the surface in use.
@@ -8087,6 +8134,15 @@ def _turn_attempt_opencode(turn, msg_content):
             if OPENCODE_API != 'v2':
                 body = {'agent': OPENCODE_AGENT,
                         'parts': [{'type': 'text', 'text': msg_content}]}
+                # Go is out: name the local model on this message. The agent's
+                # own model (Go) stays its default for when Go is back.
+                local = _opencode_local_model()
+                if local:
+                    body['model'] = local
+                    if not turn.get('local'):
+                        turn['local'] = True
+                        _turn_emit(turn, {'hint': t_for(username, 'programmer.go_out_local',
+                                                        reset=_go_out['reset'] or '?')})
                 params = {'directory': directory} if directory else None
                 p = requests.post(f'{base}/session/{session_id}/prompt_async',
                                   params=params, json=body, timeout=30)
@@ -8135,6 +8191,22 @@ def _turn_attempt_opencode(turn, msg_content):
                         idle = True
                         break
                     continue
+                if kind == 'session.status':
+                    refusal = _go_refused(props)
+                    if not refusal:
+                        continue
+                    seconds, words = _go_reset(refusal)
+                    _go_out.update(until=time.time() + seconds, reset=words)
+                    # Its words only: the rest of Go's message names the
+                    # account's workspace.
+                    app.logger.warning('opencode: Go refused on its usage limit (back in %s); %s',
+                                       words or 'an unknown time',
+                                       'running on the local model' if OPENCODE_FALLBACK
+                                       else 'no local fallback')
+                    _opencode_abort(base, turn['chat_id'])
+                    if OPENCODE_FALLBACK and not turn.get('local'):
+                        return 'OpenCode Go is out; the local model takes the turn', True
+                    return t_for(username, 'programmer.go_out', reset=words or '?'), False
                 if kind == 'message.part.updated':
                     # Only for the type. A part is announced here -- with its
                     # type -- before any of its deltas arrive, and the delta

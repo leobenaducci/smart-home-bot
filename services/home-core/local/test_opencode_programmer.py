@@ -43,6 +43,11 @@ dst = os.path.join(tmp, "local")
 shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns(
     "__pycache__", "backup_data", "history", "certs"))
 os.makedirs(os.path.join(dst, "backup_data"), exist_ok=True)
+# The catalogue the image ships beside the app: without it `t_for` answers with
+# the key, and a message that should name when Go is back names nothing.
+_repo_i18n = os.path.join(SRC, "..", "..", "..", "i18n")
+if not os.path.isdir(os.path.join(dst, "i18n")) and os.path.isdir(_repo_i18n):
+    shutil.copytree(_repo_i18n, os.path.join(dst, "i18n"))
 os.chdir(dst)
 
 # Before `import app`: OPENCODE_URL and friends are read at module level, and
@@ -642,6 +647,84 @@ check("  nor does tool output", "glob(" not in _got, _got)
 _src = pathlib.Path(__file__).with_name("app.py").read_text(encoding="utf-8")
 check("  and app.py filters on the part type, not only the field",
       "part_types.get(props.get('partID')) != 'text'" in _src)
+
+# --- OpenCode Go out: its refusal is read ------------------------------------
+
+print("\nOpenCode Go's usage limit")
+# Go's own words, as opencode relayed them on 2026-09-30 (the workspace id in
+# the real message is left out).
+REFUSAL = ("weekly usage limit reached. It will reset in 4 days 9 hours. To continue "
+           "using this model now, enable usage from your available balance")
+check("the reset is read from Go's words",
+      A._go_reset(REFUSAL) == (4 * 86400 + 9 * 3600, "4 days 9 hours"), A._go_reset(REFUSAL))
+check("and an hour when it names none", A._go_reset("usage limit reached")[0] == 3600)
+check("a retry on the limit is a refusal; any other retry, or status, is not",
+      A._go_refused({"status": {"type": "retry", "message": REFUSAL}}) == REFUSAL
+      and A._go_refused({"status": {"type": "retry", "message": "Endpoint is unavailable"}}) is None
+      and A._go_refused({"status": {"type": "busy"}}) is None)
+
+limited = [
+    {"type": "session.status", "properties": {"sessionID": SID, "status": {"type": "busy"}}},
+    {"type": "session.status", "properties": {"sessionID": SID, "status": {
+        "type": "retry", "attempt": 1, "message": REFUSAL}}},
+    {"type": "message.part.delta", "properties": {
+        "sessionID": SID, "partID": "p", "field": "text", "delta": "NEVER READ"}},
+]
+posted = []
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": SID})
+                       if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse(limited))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": SID}))
+
+_saved_fb = A.OPENCODE_FALLBACK
+A.OPENCODE_FALLBACK = ""
+A._go_out.update(until=0.0, reset="")
+turn = a_turn()
+err, retry = A._turn_attempt_opencode(turn, "hello")
+check("with no fallback the turn ends at once, saying when Go is back, instead of "
+      "sitting 'working' until the reset", err and "4 days 9 hours" in err and retry is False,
+      (err, retry))
+check("and opencode's retry loop is stopped", any("/abort" in u for u, _ in posted),
+      [u for u, _ in posted])
+
+A.OPENCODE_FALLBACK = "home/ornith:9b"
+A._go_out.update(until=0.0, reset="")
+posted.clear()
+turn = a_turn()
+err, retry = A._turn_attempt_opencode(turn, "hello")
+check("with a fallback the refused attempt is retried", err and retry is True, (err, retry))
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("its first attempt went to Go, as the agent's own model", prompt and "model" not in prompt[0],
+      prompt)
+posted.clear()
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": SID})
+                       if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse([{"type": "session.idle",
+                                                 "properties": {"sessionID": SID}}]))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": SID}))
+emitted = []
+_saved_emit = A._turn_emit
+A._turn_emit = lambda t, ev: emitted.append(ev)
+err, retry = A._turn_attempt_opencode(turn, "hello")
+A._turn_emit = _saved_emit
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("the retry names the local model on the message",
+      prompt and prompt[0].get("model") == {"providerID": "home", "modelID": "ornith:9b"}, prompt)
+check("and says so in the chat, with when Go is back",
+      any("4 days 9 hours" in str(ev.get("hint", "")) for ev in emitted), emitted)
+posted.clear()
+err, retry = A._turn_attempt_opencode(a_turn(), "next question")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("every turn after it goes straight to the local model until the reset",
+      prompt and prompt[0].get("model", {}).get("modelID") == "ornith:9b", prompt)
+A._go_out.update(until=0.0, reset="")
+posted.clear()
+err, retry = A._turn_attempt_opencode(a_turn(), "after the reset")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("and after the reset, back to Go", prompt and "model" not in prompt[0], prompt)
+A.OPENCODE_FALLBACK = _saved_fb
 
 print()
 if failures:

@@ -132,6 +132,47 @@ the default. OpenCode's own documentation says collected data may be used to
 improve the model, and what the Programmer reads is this house's code and
 infrastructure. The default is a Go model for that reason, not for quality.
 
+## When Go is out: a local model on the Studio's card
+
+Go's allowance runs out -- the 5-hour window, the week, the month -- and when it
+does Go does not fail a turn: opencode retries, and says why only as a
+`session.status` of type `retry` carrying Go's own words ("weekly usage limit
+reached. It will reset in 4 days 9 hours."). The portal reads that now.
+
+With `cloud.opencode.fallback.model` set, the refused turn runs again on that
+model, and every turn after it goes there until the reset Go named; the chat
+says so each time ("OpenCode Go's limit is reached (back in 4 days 9 hours).
+Continuing on this house's own model"). Without one, the turn ends at once with
+when Go is back, instead of sitting "working" for days -- which is what fix
+request #10 did on 2026-09-30.
+
+The model runs on the host, on demand, on the Studio's card:
+
+- opencode knows it as the `home` provider at `127.0.0.1:11460`
+  (`build_opencode_config`), an address on this machine and no key.
+- `programmer-local.socket` holds that port. The first request starts
+  `programmer-local.service`, which pauses the Studio (reason `programmer`, so
+  its page says the card is lent, not that a parent stopped it), **waits for the
+  running job to finish** -- a video shot can take ~25 minutes, and waiting is
+  what the household chose over refusing -- then serves the model with the
+  house's llama.cpp build and waits until it answers.
+- `programmer-local-proxy.service` forwards to it and exits after fifteen idle
+  minutes; the model's unit is `StopWhenUnneeded`, so it stops too, and its
+  stop resumes the Studio.
+- `deploy/host/programmer-local.sh` does the pausing and serving from
+  `~/.config/home-stack/programmer-local.env`, which the deployer writes
+  (mode 600: it carries the Studio's derived secret). Removing the setting
+  disables the socket on the next deploy.
+
+The model must fit the card whole. `ornith:9b` (Ollama library; a 9B trained
+for agentic coding, 5.6 GB) was chosen on 2026-09-30 and measured on one 3060:
+6.6 GB with a 64k window, 3.5 s to load, ~42 tokens/s, and 3 of 3 on a small
+read-edit-test task through opencode-shaped tools with a 12k-token system
+prompt, the prompt served from cache after the first step. It is far weaker
+than Kimi K2.7 Code; the pipeline's gates -- tests, the benchmark, the leak
+check, approvals -- are what stop a bad fix from shipping, whichever model
+wrote it.
+
 ## Where the configuration lives
 
 Not in `~/.config/opencode/opencode.json`. That file belongs to whoever uses

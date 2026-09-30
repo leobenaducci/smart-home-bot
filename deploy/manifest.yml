@@ -125,6 +125,9 @@ services:
           CODE_NAME: "{dns.code}"
           # Which of opencode's two HTTP surfaces to drive.
           OPENCODE_API: "{derived.opencode_api}"
+          # The Programmer's local model when OpenCode Go is out, as opencode
+          # names it (`home/<model>`), or empty (cloud.opencode.fallback).
+          OPENCODE_FALLBACK: "{derived.opencode_fallback}"
           # The host side of the dashboard mount, and the same path
           # `portal_dashboard:` above writes. The compose file carried a
           # default for it and nothing exported it, so the two agreed only on

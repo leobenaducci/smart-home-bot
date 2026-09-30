@@ -1767,5 +1767,7 @@
   "nav.app_lights_help": "Cada luz y cada botón de la casa",
   "nav.lan_only_note": "solo en la red de la casa",
   "admin.models.source_studio": "el Estudio de la casa (GPU)",
-  "studio.default_project": "Pedidos a Alfred"
+  "studio.default_project": "Pedidos a Alfred",
+  "programmer.go_out_local": "Se alcanzó el límite de OpenCode Go (vuelve en {reset}). Sigo con el modelo propio de la casa: más lento y menos capaz.",
+  "programmer.go_out": "Se alcanzó el límite de uso de OpenCode Go; vuelve en {reset}. No hay un modelo local configurado para seguir mientras tanto."
 }

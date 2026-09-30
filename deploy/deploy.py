@@ -1312,6 +1312,104 @@ def opencode_model(cfg: dict) -> str:
     return str(conf.get("model") or "").strip()
 
 
+# The Programmer's local model when OpenCode Go is out (2026-09-30: the weekly
+# limit left the Programmer with nothing for four days). opencode reaches it as
+# the `home` provider at a loopback socket; the socket starts it on the Studio's
+# card, pausing the Studio first, and stops it when idle
+# (deploy/host/programmer-local.*). Ports fixed, as the socket unit spells them.
+OPENCODE_FALLBACK_PROVIDER = "home"
+OPENCODE_FALLBACK_PORT = 11460
+OPENCODE_FALLBACK_BACKEND = 11461
+_FALLBACK_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(:[A-Za-z0-9._-]{1,63})?"
+                                r"|/var/lib/home-stack/models/[\w./-]{1,300}\.gguf")
+
+
+def opencode_fallback(cfg: dict) -> dict:
+    """`cloud.opencode.fallback`, checked, or {} when there is none.
+
+    `model` is an Ollama model name (read from Ollama's store) or a .gguf under
+    the models directory -- checked by shape, because it ends up on a command
+    line. It must fit the card whole: a model that spills onto the CPU is what
+    the household turned down. `gpu` is the card it borrows (the Studio's), and
+    `context` the window, one slot.
+    """
+    conf = ((cfg.get("cloud") or {}).get("opencode") or {}).get("fallback") or {}
+    model = str(conf.get("model") or "").strip()
+    if not model:
+        return {}
+    if not _FALLBACK_MODEL_RE.fullmatch(model) or ".." in model:
+        raise SystemExit(f"cloud.opencode.fallback.model is {model!r}: an Ollama model name "
+                         "or a .gguf under /var/lib/home-stack/models")
+    try:
+        gpu = int(conf.get("gpu", 1))
+        context = int(conf.get("context", 65536))
+    except (TypeError, ValueError):
+        raise SystemExit("cloud.opencode.fallback.gpu and .context are numbers")
+    if not 0 <= gpu <= 15 or not 4096 <= context <= 262144:
+        raise SystemExit("cloud.opencode.fallback: gpu 0-15, context 4096-262144")
+    return {"model": model, "gpu": gpu, "context": context,
+            "provider": OPENCODE_FALLBACK_PROVIDER, "port": OPENCODE_FALLBACK_PORT,
+            "backend": OPENCODE_FALLBACK_BACKEND}
+
+
+PROGRAMMER_LOCAL_UNITS = ("programmer-local.socket", "programmer-local-proxy.service",
+                          "programmer-local.service")
+
+
+def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
+                           secrets: dict, out) -> None:
+    """The host side of the Programmer's local fallback: its settings, its
+    script and its three units, with the socket on exactly when a fallback is
+    configured. Off, the socket is stopped and disabled and the model with it,
+    so a household that removes the setting gets its card back at once."""
+    user_units = f"{cfgroot}/systemd/user"
+    if not fallback:
+        target.run("systemctl --user disable --now programmer-local.socket "
+                   "programmer-local-proxy.service programmer-local.service "
+                   ">/dev/null 2>&1 || true", check=False)
+        return
+    import llamacpp  # noqa: PLC0415 -- only the Programmer's fallback needs it
+    build = llamacpp.build_dir("vanilla")
+    if not (build / "bin" / "llama-server").is_file():
+        out.warn("cloud.opencode.fallback is set but llama.cpp is not built; run "
+                 "./home-stack llamacpp build -- the Programmer has no local model until then")
+        return
+    studio = studio_url(cfg)
+    shared = (secrets.get("PROXY_SHARED_SECRET") or "").strip()
+    env_text = "\n".join([
+        "# Written by ./home-stack deploy from cloud.opencode.fallback.",
+        f"MODEL={fallback['model']}",
+        f"GPU={fallback['gpu']}",
+        f"CONTEXT={fallback['context']}",
+        f"BACKEND_PORT={fallback['backend']}",
+        f"LLAMA_BIN={build / 'bin'}",
+        # The Studio owns the card this borrows; empty when there is no Studio.
+        f"STUDIO_URL={studio}",
+        f"STUDIO_SECRET={derive_studio_secret(shared) if studio and shared else ''}",
+    ]) + "\n"
+    target.run(f"mkdir -p {shlex.quote(user_units)} {shlex.quote(cfgroot)}/home-stack")
+    tmp = Path(tempfile.mkstemp(suffix=".env")[1])
+    tmp.write_text(env_text, encoding="utf-8")
+    try:
+        dest = f"{cfgroot}/home-stack/programmer-local.env"
+        target.push_file(tmp, dest)
+        target.run(f"chmod 600 {shlex.quote(dest)}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    target.push_file(ROOT / "deploy/host/programmer-local.sh",
+                     f"{cfgroot}/home-stack/programmer-local.sh")
+    target.run(f"chmod 700 {shlex.quote(cfgroot)}/home-stack/programmer-local.sh")
+    for unit_file in PROGRAMMER_LOCAL_UNITS:
+        target.push_file(ROOT / "deploy/host" / unit_file, f"{user_units}/{unit_file}")
+    target.run("systemctl --user daemon-reload", check=False)
+    enabled = target.run("systemctl --user enable --now programmer-local.socket", check=False)
+    if getattr(enabled, "returncode", 1) == 0:
+        out.ok(f"the Programmer falls back to {fallback['model']} on card {fallback['gpu']} "
+               f"when OpenCode Go is out (started on demand, pausing the Studio)")
+    else:
+        out.warn("programmer-local.socket did not start; the Programmer has no local fallback")
+
+
 def enabled_providers(cfg: dict, secrets: dict, endpoints: dict) -> set[str]:
     """Which providers a model may actually name.
 
@@ -1771,6 +1869,9 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # would silently mean v1, and the difference is visible to whoever
         # is typing -- v2 answers in one piece where v1 streams.
         "opencode_api": opencode_api(cfg),
+        # `home/<model>`: the Programmer's local fallback, as opencode names it.
+        "opencode_fallback": (lambda fb: f"{fb['provider']}/{fb['model']}" if fb else "")(
+            opencode_fallback(cfg) if opencode_servers(cfg) else {}),
         "opencode_servers": ",".join(
             f"{m}={u}" for m, u in sorted(opencode_url.items())),
         # The bare name of `assistant.models.vision`, for consumers that talk
@@ -3414,7 +3515,8 @@ def tile_icon(value) -> str:
 
 
 def build_opencode_config(member: str, token: str, port: int,
-                          workspace: str = "", improve: str = "") -> str:
+                          workspace: str = "", improve: str = "",
+                          fallback: dict | None = None) -> str:
     """`opencode.json` for one member's `opencode serve`.
 
     Deliberately a file of this stack's own, pointed at by OPENCODE_CONFIG,
@@ -3444,7 +3546,7 @@ def build_opencode_config(member: str, token: str, port: int,
     session's working directory, and what guards it is the agent's tools map
     and the broker -- never a prompt nobody can see.
     """
-    return json.dumps({
+    conf = {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
             "alfred": {
@@ -3605,7 +3707,23 @@ def build_opencode_config(member: str, token: str, port: int,
                 "/tmp/*": "allow",
             },
         },
-    }, indent=2) + "\n"
+    }
+    # The local model the Programmer falls back to when OpenCode Go is out
+    # (opencode_fallback). A provider block of this stack's own, the one kind
+    # this file writes: it carries an address on this machine and no key.
+    # The portal names `home/<model>` on a turn only when Go refused.
+    if fallback:
+        conf["provider"] = {fallback["provider"]: {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "This house (local)",
+            "options": {"baseURL": f"http://127.0.0.1:{fallback['port']}/v1"},
+            "models": {fallback["model"]: {
+                "name": f"{fallback['model']} (local)",
+                "tool_call": True,
+                "limit": {"context": fallback["context"], "output": 16384},
+            }},
+        }}
+    return json.dumps(conf, indent=2) + "\n"
 
 
 def build_leak_guard(cfg: dict) -> str:
@@ -6107,6 +6225,9 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 finally:
                     tmp.unlink(missing_ok=True)
 
+            fallback = opencode_fallback(cfg)
+            write_programmer_local(target, cfg, cfgroot, fallback, secrets, out)
+
             started, failed, unchanged = [], [], []
             for index, member in enumerate(gen.members(cfg)):
                 mroot = f"{root}/{member}"
@@ -6137,7 +6258,8 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                         if (base_paths(cfg) or {}).get("state") else ""),
                     improve=(
                         f"{(base_paths(cfg) or {}).get('state', '').rstrip('/')}/improve"
-                        if (base_paths(cfg) or {}).get("state") else ""))
+                        if (base_paths(cfg) or {}).get("state") else ""),
+                    fallback=fallback)
                 digest.update(rendered.encode("utf-8"))
                 tmp = Path(tempfile.mkstemp(suffix=".json")[1])
                 tmp.write_text(rendered, encoding="utf-8")

@@ -1252,6 +1252,16 @@ cloud:
     # says collected data may be used to improve it -- worth knowing, since
     # what the Programmer reads is this house's code.
     model: opencode-go/kimi-k3
+    # What the Programmer runs on while OpenCode Go is out (its 5-hour, weekly
+    # or monthly allowance spent). A local model on one card -- the Studio's,
+    # which is paused while it runs (a running job finishes first) and resumed
+    # after fifteen idle minutes. It must fit the card whole. Leave `model`
+    # empty for none: then a turn Go refuses says when Go is back, and stops.
+    # Needs `./home-stack llamacpp build`. docs/opencode-programmer.md.
+    fallback:
+      model: ""                 # e.g. ornith:9b, an agentic-coding 9B, 5.6 GB
+      gpu: 1
+      context: 65536
     # Which of opencode's two HTTP surfaces HomeCore drives. One process
     # serves both; they are not a rename of each other.
     #

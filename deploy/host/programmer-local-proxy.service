@@ -1,0 +1,10 @@
+# Forwards the socket to the model, and exits after fifteen idle minutes --
+# which, through StopWhenUnneeded on the model's unit, unloads the model and
+# gives the card back to the Studio.
+[Unit]
+Description=The Programmer's local model (proxy; stops it when idle)
+Requires=programmer-local.service
+After=programmer-local.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=15min 127.0.0.1:11461
