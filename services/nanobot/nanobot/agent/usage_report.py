@@ -23,6 +23,8 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from nanobot.utils.profiling import Span, current_span
+
 _TIMEOUT_S = 10.0
 
 # Strong refs to in-flight posts. A bare create_task can be garbage-collected
@@ -59,11 +61,34 @@ async def _post(payload: dict[str, Any]) -> None:
 _MAX_TOOL_NAMES = 40
 
 
+def report_cut(session_key: str | None, model: str | None, span: Span | None,
+               route: dict[str, Any] | None = None, stop_reason: str = "cancelled",
+               provider: str | None = None) -> None:
+    """Bill what *span* saw and nothing has billed yet: for a run that ends
+    without the runner's own result -- a turn cancelled when the chat's time
+    ran out and a background task took it over, a sub-agent, a pi run.
+
+    Before this they reached nothing. A turn the chat gave up on after five
+    minutes of tool calls, and the background task that finished it, were
+    missing from usage.db together -- the costliest turns of the day, and the
+    ones the self-improvement pass most needs to see."""
+    if span is None:
+        return
+    tokens, tools = span.unbilled()
+    if not tokens and not tools:
+        return
+    report_usage(session_key, model, tokens or {"prompt_tokens": 0}, tools, route=route,
+                 provider=provider, stop_reason=stop_reason, span=span)
+
+
 def report_usage(session_key: str | None, model: str | None,
                  usage: dict[str, int] | None,
                  tools_used: int | list[str] | None = 0,
                  route: dict[str, Any] | None = None,
-                 provider: str | None = None) -> None:
+                 provider: str | None = None,
+                 stop_reason: str | None = None,
+                 span: Span | None = None,
+                 latency_ms: int | None = None) -> None:
     """Record one completed run. Safe to call from anywhere in the loop.
 
     `tools_used` takes the runner's list of tool names. The count alone was
@@ -71,6 +96,15 @@ def report_usage(session_key: str | None, model: str | None,
     answering "busy doing what" — which is the question actually worth the
     storage. An int is still accepted, because a caller that only has a count
     should not have to invent names to report it.
+
+    `stop_reason` and the turn block are how a week of turns can be read back
+    for what went wrong in them (docs/self-improvement.md): how long this part
+    took, which calls and tools failed, and the runner's event codes, all
+    joined by one `turn_id` across the rows a single turn bills. The span is
+    the turn's profiler span -- the current one unless a caller that has
+    already left it passes it. A caller that runs beside others on the same
+    span (a plan step) passes its own `latency_ms` and leaves the span's
+    counters to the turn's own report.
     """
     if not usage:
         return
@@ -91,7 +125,14 @@ def report_usage(session_key: str | None, model: str | None,
         # `ollama_text`...), so the usage page can count by provider. Blank
         # from a caller that does not know, and on every row before 2026-09-27.
         "provider": provider or "",
+        "stop_reason": stop_reason or "",
     }
+    span = span or current_span()
+    if span is not None:
+        payload["turn"] = (span.take() if latency_ms is None
+                           else {"turn_id": span.turn_id, "latency_ms": int(latency_ms)})
+    elif latency_ms is not None:
+        payload["turn"] = {"latency_ms": int(latency_ms)}
     if route:
         # Which tier answered and who decided -- see agent/classify.py. The
         # number worth watching is escalations per label: an escalation from

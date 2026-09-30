@@ -105,6 +105,10 @@ services:
           # Never opened by this container: it is handed to opencode as a
           # session's working directory, and opencode runs on the host.
           OPENCODE_WORKSPACE_ROOT: "{paths.state}/nanobot-code-workspace"
+          # The self-improvement pipeline's folder, as the host sees it
+          # (docs/self-improvement.md). A fix request's prompt names it, so
+          # opencode -- on the host -- can read repos.json and the inbox.
+          IMPROVE_DIR: "{paths.state}/improve"
           # The member the opencode server is configured for -- the same one
           # `services.alfred-mcp.member` names, because the bridge it talks to
           # holds that person's credentials and no others. Anybody else keeps
@@ -493,6 +497,13 @@ services:
           # which table it is documented in, so the two disagreed quietly.
           - { path: "{paths.state}/admin", mount: /cache,
               env: HOME_STACK_ADMIN_CACHE_DIR, backup: skip }
+          # The self-improvement pipeline's house side (docs/self-improvement.md):
+          # the redacted inbox `./home-stack improve collect` writes, and the
+          # key its tokens are hashed with. Written on the host, not by this
+          # container -- listed here because the Improvements page will read it,
+          # and the state mount already reaches it at the same path. 0700: the
+          # inbox is redacted, the key is what keeps it that way.
+          - { path: "{paths.state}/improve", mode: "0700" }
         verify:
           - http: "http://127.0.0.1:{services.admin.port}/healthz"
             expect_json: {status: ok}
@@ -798,10 +809,17 @@ services:
         # checks its access list against. The per-member tokens derived beside it
         # are the assistants' half and are exported there; this needs the map.
         code_broker_tokens: true
+        # Hashes of what no commit may carry -- this house's credentials, and the
+        # user store's logins, e-mails and phones -- rewritten every deploy
+        # (build_leak_guard in deploy.py) and checked by the broker before any
+        # commit an assistant makes (code_broker/leaks.py).
+        leak_guard: "{paths.config}/leak-guard"
         env:
           # The portal, as the broker dials it from inside the compose network.
           HOMECORE_CONTAINER_URL: "https://{dns.portal}:{services.home-core.port}"
           CODE_COMMIT_NAME: "{site.assistant_name} (nanobot)"
+          # The directory `leak_guard:` above writes, mounted read-only.
+          LEAK_GUARD_DIR: "{paths.config}/leak-guard"
           # Where the house's Ollama is, if it has one. The broker receives one
           # API key and no others, because a provider it cannot authenticate is
           # a 401 it reports by name -- but `ollama:` is the choice that fails

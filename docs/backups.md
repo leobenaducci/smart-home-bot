@@ -168,6 +168,7 @@ that matter at run time — are included.
 | `{config}/mosquitto` | The broker's `mosquitto.conf`. Seeded from the example on the first deploy and never touched again, so the moment anybody edits it the file is theirs and nothing regenerates it. This used to be listed as not worth keeping, on the grounds that you would only need it "if you edited it" — which is advice to a person, not something a backup can know. |
 | `{config}/ntfy` | ntfy's own config directory. Empty unless a household puts a `server.yml` in it — the deploy passes ntfy its settings as environment and writes nothing here, so anything present is authored. This was listed as "written from config on deploy", which is simply not true of it. |
 | `{state}/cloud-proxy` | Enrolled device public keys, if you run the optional proxy. |
+| `{state}/improve` | The self-improvement pipeline's house side (`docs/self-improvement.md`): the redacted episodes `./home-stack improve collect` writes, and `private/salt`, the key its tokens are hashed with. The inbox can be collected again from `usage.db` and the history; the salt cannot, and a new one renames every token, so anything already labelled stops lining up with what comes next. |
 
 `{plugins}` is in every archive and is not any service's state -- it is what
 *declares* services, so nothing in the manifest could carry it. A plugin lives

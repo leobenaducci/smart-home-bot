@@ -3576,7 +3576,7 @@ _UNIT_KEYS = {
     # is a deliberate act: a typo is then a failing test instead of a setting
     # that silently does nothing.
     "alfred_mcp_identity", "assistant_name_in", "code_broker_tokens",
-    "compose_project", "contributions_env_file", "family_directory",
+    "compose_project", "contributions_env_file", "family_directory", "leak_guard",
     "generated_compose", "image_models", "member_ntfy_topics",
     "member_profiles", "member_profiles_gate", "member_stagger_index",
     "opencode_config", "portal_dashboard", "pull", "self_urls", "skill_floors",
@@ -3587,6 +3587,32 @@ _seen = set()
 for _svc, _spec in ((_manifest.get("services") or {}).items()):
     for _unit in (_spec.get("units") or []):
         _seen |= set(_unit)
+# The code broker's leak guard: this house's values, hashed -- never the values.
+import hashlib as _hl  # noqa: E402
+from pathlib import Path  # noqa: E402
+import tempfile  # noqa: E402
+_lg = Path(tempfile.mkdtemp(prefix="leak-guard-"))
+(_lg / "config").mkdir()
+(_lg / "config" / "smart-home-bot.env").write_text("NANOGPT_API_KEY=nano-0123456789abcdefghij\n",
+                                                   encoding="utf-8")
+(_lg / "state" / "home-core").mkdir(parents=True)
+(_lg / "state" / "home-core" / "users.json").write_text(json.dumps(
+    [{"username": "999000111", "email": "tomi@ejemplo.org", "phone": "+54 9 11 5555 0101"}]),
+    encoding="utf-8")
+_orig_bp = D.base_paths
+D.base_paths = lambda cfg: {"config": str(_lg / "config"), "state": str(_lg / "state")}
+try:
+    _g = json.loads(D.build_leak_guard({}))
+finally:
+    D.base_paths = _orig_bp
+_h = lambda v: _hl.sha256((_g["salt"] + v).encode()).hexdigest()[:32]  # noqa: E731
+check("  the leak guard holds the credentials and the user store, hashed",
+      _g["items"].get(_h("nano-0123456789abcdefghij")) == "credential NANOGPT_API_KEY"
+      and _h("999000111") in _g["items"] and _h("tomi@ejemplo.org") in _g["items"]
+      and _h("5491155550101") in _g["items"], _g["items"])
+_raw = json.dumps(_g)
+check("  and none of the values themselves",
+      not any(v in _raw for v in ("0123456789abcdefghij", "999000111", "tomi@", "5555")))
 _unknown = sorted(_seen - _UNIT_KEYS)
 check("  no unit declares a key the deployer ignores", not _unknown, _unknown)
 
@@ -3603,6 +3629,8 @@ check("  no unit declares a key the deployer ignores", not _unknown, _unknown)
 # Flask app to check one line costs more than it proves.
 print("\nthe proxy token is the same hash wherever it is spelled")
 import hashlib as _hl  # noqa: E402
+from pathlib import Path  # noqa: E402
+import tempfile  # noqa: E402
 _want = _hl.sha256(b"s3cr3t:999000111").hexdigest()
 check("  the deployer derives it from the login id",
       D.derive_proxy_token("s3cr3t", "999000111") == _want)
@@ -3746,6 +3774,23 @@ check("  the unit reads them, optionally",
 # No `provider` block is written, and that is deliberate: opencode discovers
 # providers from the environment, so its config file carries no secrets.
 _DEPLOY_SRC = (D.ROOT / "deploy/deploy.py").read_text(encoding="utf-8")
+# The self-improvement pipeline's folder is the Programmer's to work in -- the
+# inbox, repos.json and the worktrees `improve start` makes -- and nothing
+# else of the state or the checkouts is.
+_oc = json.loads(D.build_opencode_config("user1", "t", 21999, workspace="/srv/state/nanobot-code-workspace",
+                                         improve="/srv/state/improve"))["permission"]["external_directory"]
+check("  opencode may work in the self-improvement folder, and in no other state",
+      _oc.get("/srv/state/improve/*") == "allow"
+      and not any(k.startswith("/srv/state/") and "improve" not in k and "nanobot-code-workspace/user1" not in k
+                  for k in _oc), _oc)
+check("  anything else is refused, not asked about, and the refusal comes first",
+      list(_oc)[0] == "*" and _oc["*"] == "deny", list(_oc)[:2])
+_bash = json.loads(D.build_opencode_config("user1", "t", 21999))["permission"]["bash"]
+check("  and the Programmer's shell refuses the benchmark's answer key",
+      _bash.get("*bench/cases.json*") == "deny" and list(_bash).index("*bench/cases.json*") > 0)
+check("  and without a state path it grants nothing for it",
+      not any("improve" in k for k in json.loads(D.build_opencode_config(
+          "user1", "t", 21999))["permission"]["external_directory"]))
 check("  and the config file it writes carries no credentials",
       '"provider"' not in _DEPLOY_SRC.split("def build_opencode_config")[1][:1200],
       "opencode reads keys from the environment; the config stays secret-free")

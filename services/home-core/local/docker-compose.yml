@@ -185,6 +185,9 @@ services:
       # shipped.
       - OPENCODE_API=${OPENCODE_API:-}
       - OPENCODE_WORKSPACE_ROOT=${OPENCODE_WORKSPACE_ROOT:-}
+      # The self-improvement pipeline's folder, as the host sees it: written
+      # into a fix request's prompt for opencode, never opened in here.
+      - IMPROVE_DIR=${IMPROVE_DIR:-}
     volumes:
       # All four are state, so all four come from an absolute path the
       # deployer supplies. They used to be relative, which put them inside

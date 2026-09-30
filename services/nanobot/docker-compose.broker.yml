@@ -58,7 +58,11 @@ services:
       # The name on the co-author line. Defaulted rather than required: a bare
       # `docker compose up` still produces a sensible commit.
       - CODE_COMMIT_NAME=${CODE_COMMIT_NAME:-Alfred (nanobot)}
+      # Hashes of what no commit may carry (code_broker/leaks.py).
+      - LEAK_GUARD_FILE=/leak-guard/hashes.json
     volumes:
+      # Read-only, and a directory: the deployer rewrites the file each deploy.
+      - ${LEAK_GUARD_DIR:-/var/lib/home-stack/config/leak-guard}:/leak-guard:ro
       # The whole workspace, because it serves every member; each agent below
       # mounts only its own subdirectory.
       - ${CODE_WORKSPACE_DIR:-/var/lib/home-stack/state/nanobot-code-workspace}:/nanobot-code-workspace

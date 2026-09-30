@@ -12,7 +12,8 @@ things for each of us. It grew from there, one real need at a time, and is
 published in case it is useful to another household.
 
 **Everything runs on one PC by default.** The only things that leave your
-network are the assistant's model API key (one hosted provider), and an optional
+network are the requests to the hosted model providers you choose (OpenCode Zen
+by default; NanoGPT, OpenRouter or Together if you add them), and an optional
 reverse proxy on a VPS you own, which forwards traffic home and stores nothing.
 
 > [!IMPORTANT]
@@ -33,6 +34,29 @@ reverse proxy on a VPS you own, which forwards traffic home and stores nothing.
   cameras, documents, Home Assistant), scheduled reminders, geofenced
   reminders, documents it writes for you (PDF, spreadsheets), and long tasks
   run in the background.
+- **Professions** — spaces of their own for the Programmer, the Teacher (a
+  tutor for whoever is studying, an assistant for whoever teaches), the
+  Designer, Health and Legal, each with its own model and persona. The
+  Programmer can run on [OpenCode](https://opencode.ai)'s own server, one per
+  person, as a real coding agent on your projects.
+- **Alfred fixes himself** — tell him in the chat that something is wrong
+  (*"the lights skill points at the wrong server"*) and he files a fix
+  request. The Programmer opens on it in a conversation of its own, reads the
+  evidence — what each turn cost, how it ended, what the runtime noticed, the
+  👍/👎 on his answers, all redacted first — proposes a fix, and changes
+  nothing until you say yes. It works in a git worktree, and code, not the
+  model, decides whether a commit goes in: a test for the change that passes
+  on exactly that change, the benchmark no worse when it changes how he
+  behaves, no credential or household value in it. It publishes and deploys
+  only when you ask for it in that conversation. See [docs/self-improvement.md](docs/self-improvement.md).
+- **A studio on your own GPU** — video with sound, pictures, songs with
+  vocals and cloned voices, from the portal or by asking Alfred, on one card
+  with [WanGP](https://github.com/deepbeepmeep/Wan2GP): one queue for the
+  family and projects per person. See [docs/home-studio.md](docs/home-studio.md).
+- **A family chat** — messages and groups between the household's phones,
+  with alerts that get through Do Not Disturb and SMS when there is no data.
+- **Devices** — name a phone or tablet, and a parent can turn it down or open
+  an app on it from Alfred.
 - **Plans for multi-step requests** — a strong hosted model writes the steps,
   a small local model carries them out, and the runtime (not the model)
   decides which steps may change anything. See [docs/plans.md](docs/plans.md).
@@ -74,6 +98,7 @@ you ask for them.
 | `local-proxy` | The public name, answered from inside the house | on |
 | `audio-cpp` | One C++ runtime for speech in and out, CPU or GPU | off |
 | `home-search` | SearXNG metasearch for the assistants | off |
+| `home-studio` | Video, pictures, songs and voices on a GPU of its own (WanGP) | off |
 | `homeassistant`, `nodered`, `n8n` | Devices, flows, workflow automation | off |
 | `browser-use` | An agent that drives a real browser | off |
 | `alfred-mcp` | The assistant's capabilities offered to a coding agent | off |
@@ -96,11 +121,15 @@ role moves.
   camera image is ~13 GB even with the GPU off).
 - An NVIDIA GPU is optional. Without one, speech runs on the CPU and the
   assistants use a hosted model. With one or two 12 GB cards you can run the
-  small local models (vision, notifications, plan steps) on your own hardware.
-- One API key for the hosted model. The stack is written for
-  [OpenCode Zen](https://opencode.ai) (pay per token); read the note on Zen vs
-  the Go plan in [docs/optional-cloud.md](docs/optional-cloud.md) before you
-  point anything at the flat plan.
+  small local models (vision, notifications, plan steps) on your own hardware,
+  and a card of its own gives the Studio somewhere to work.
+- An API key for a hosted model. The stack is written for
+  [OpenCode Zen](https://opencode.ai) (pay per token) and also takes NanoGPT,
+  OpenRouter and Together ([docs/nanogpt.md](docs/nanogpt.md)). The flat
+  OpenCode Go plan is only for the Programmer's own coding agent, driven by a
+  person: read the note on Zen vs Go in
+  [docs/optional-cloud.md](docs/optional-cloud.md) before you point anything
+  else at it.
 
 `./home-stack install --check` verifies the prerequisites and changes nothing.
 
@@ -239,6 +268,7 @@ docs/       the conventions that span more than one service
 | [docs/plugins.md](docs/plugins.md) | Bringing your own services |
 | [docs/mqtt-conventions.md](docs/mqtt-conventions.md) | Topic grammar across the stack |
 | [docs/opencode-programmer.md](docs/opencode-programmer.md) | The coding assistant space |
+| [docs/self-improvement.md](docs/self-improvement.md) | Alfred fixing himself: the evidence, fix requests, the Programmer's rules, and the gates a commit passes |
 | [docs/migration.md](docs/migration.md) | Moving an existing install |
 | [docs/roadmap.md](docs/roadmap.md) | Work that is intended and not started |
 

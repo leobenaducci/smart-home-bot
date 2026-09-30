@@ -34,6 +34,8 @@ from pathlib import Path, PurePosixPath
 
 from loguru import logger
 
+from nanobot.code_broker import leaks
+
 # Written by build-multiuser.sh at the root of the workspace. Its absence means
 # CODE_WORKSPACE_DIR points somewhere nobody intended — a home directory, or a
 # mount that did not appear — and cloning into that is worse than refusing.
@@ -474,6 +476,21 @@ async def commit(workspace: Workspace, user: str, slug: str, message: str,
         raise BrokerError(
             "this project refuses these paths, so the commit was not made: "
             + ", ".join(refused[:10]), status=403)
+
+    # Nothing real leaves in a commit: this house's credentials, logins,
+    # e-mails and phones (as the deployer's hashes), or anything shaped like a
+    # key. Checked on what is staged -- exactly what would go in -- and the
+    # index reset on a refusal, like the floor above.
+    diff = await _git(["diff", "--cached", "--no-color", "--text", "-U0"], cwd=path)
+    guard = leaks.load()
+    leaks.warn_if_blind(guard)
+    found = leaks.findings(diff.stdout, guard)
+    if found:
+        await _git(["reset"], cwd=path)
+        raise BrokerError(
+            "the commit would include " + "; ".join(found[:6]) + ". Nothing was committed: "
+            "take the value out -- a setting goes in the project's configuration, a "
+            "credential in its secrets -- and commit again", status=403)
 
     # The person owns it, the agent is named beside them. Falling back to the
     # agent as author when the registry sent no name keeps the commit honest:

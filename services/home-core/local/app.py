@@ -1620,11 +1620,21 @@ def _valid_project(body, space):
     """
     if space not in PROJECT_SPACES:
         return None
+    # A fix request's conversation is always on Alfred himself, whatever the
+    # page sends. The selector is one remembered choice for the whole space,
+    # so answering "yes" to the investigation sent the person's last project
+    # with it -- and pointed the Programmer at that checkout instead of the
+    # repository the fix is for.
+    if has_request_context() and session.get('user') and _improve_conversation(
+            session['user'], body.get('conv')):
+        return IMPROVE_PROJECT
     slug = body.get('project')
     if not isinstance(slug, str):
         return None
     slug = slug.strip().lower()[:40]
-    return slug if re.match(r'^[a-z0-9][a-z0-9-]{1,39}$', slug) else None
+    if not re.match(r'^[a-z0-9][a-z0-9-]{1,39}$', slug):
+        return None
+    return slug
 
 
 # --- Standing context ---------------------------------------------------------
@@ -2096,6 +2106,11 @@ def _offers_fallback(turn):
     """
     if turn.get('backend') != 'opencode' or turn.get('space') not in PROJECT_SPACES:
         return ''
+    # Not on Alfred himself: a fix request's turns end with a question of their
+    # own -- "shall I apply it?", "shall I publish?" -- and «Publicar en master»
+    # under an investigation offered the one step it must not take yet.
+    if turn.get('project') == IMPROVE_PROJECT:
+        return ''
     text = (turn.get('text') or '').rstrip()
     if not text or ':::' in text:
         return ''
@@ -2529,6 +2544,81 @@ def append_chat_history():
         pass
     append_user_history(session['user'], entry, body.get('date'), body.get('space'))
     return jsonify(ok=True)
+
+
+# How far from the time the page saw an answer the stored copy may be. The
+# page and the server each file a reply, with their own clocks and a stream in
+# between, so the page's `ts` is near the stored one rather than equal to it.
+FEEDBACK_MATCH_MS = 15 * 60 * 1000
+FEEDBACK_NOTE_MAX = 500
+
+
+def _feedback_target(msgs, ts, text):
+    """The bot message a rating is about: the same text nearest *ts*, or --
+    for a page that could not say the text -- the nearest answer at all, if
+    it is within two minutes."""
+    key = _dedup_key(text) if text else ''
+    best, best_d = None, None
+    for m in msgs:
+        if m.get('role') != 'bot':
+            continue
+        d = abs((m.get('ts') or 0) - ts)
+        if key:
+            if _dedup_key(m.get('text')) != key or d > FEEDBACK_MATCH_MS:
+                continue
+        elif d > 2 * 60 * 1000:
+            continue
+        if best_d is None or d < best_d:
+            best, best_d = m, d
+    return best
+
+
+@app.route('/chat/feedback', methods=['POST'])
+@api_login_required
+def chat_feedback():
+    """A person's 👍 or 👎 on one of Alfred's answers, and what was wrong.
+
+    Kept on the answer itself, in the history file, because that is where the
+    question, the answer and the rest of the conversation already are; the
+    self-improvement pass reads it from there (docs/self-improvement.md).
+    `rating` '' takes a rating back.
+    """
+    body = request.get_json(silent=True) or {}
+    rating = body.get('rating') or ''
+    if rating not in ('', 'up', 'down'):
+        return jsonify(error='invalid rating'), 400
+    try:
+        ts = int(body.get('ts') or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return jsonify(error='invalid ts'), 400
+    text = str(body.get('text') or '')
+    note = re.sub(r'\s+', ' ', str(body.get('note') or '')).strip()[:FEEDBACK_NOTE_MAX]
+    user = session['user']
+    space = _valid_space(body.get('space'))
+    first = _valid_day(body.get('date'))
+    # An answer given just before midnight is filed under the day it was
+    # asked; a page left open past it asks about "today".
+    days = [first]
+    try:
+        days.append((date.fromisoformat(first) - timedelta(days=1)).isoformat())
+    except ValueError:
+        pass
+    for day in days:
+        with _history_lock((user, day, space)):
+            msgs = load_user_history(user, day, space)
+            target = _feedback_target(msgs, ts, text)
+            if target is None:
+                continue
+            if rating:
+                target['feedback'] = {'rating': rating, 'at': int(time.time() * 1000),
+                                      **({'note': note} if note and rating == 'down' else {})}
+            else:
+                target.pop('feedback', None)
+            save_user_history(user, msgs, day, space)
+        return jsonify(ok=True, ts=target.get('ts'))
+    return jsonify(ok=False, error='not found'), 404
 
 
 @app.route('/chat/history', methods=['PUT'])
@@ -4200,8 +4290,14 @@ def chat_projects():
     space = _valid_space(request.args.get('space'))
     if space not in PROJECT_SPACES:
         return jsonify(projects=[])
-    return jsonify(projects=[{'slug': p['slug'], 'name': p['name']}
-                             for p in _projects_visible_to(session['user'])])
+    projects = [{'slug': p['slug'], 'name': p['name']}
+                for p in _projects_visible_to(session['user'])]
+    # First, and only for whoever has an opencode Programmer -- the one that
+    # can reach the improve tool -- in a house that has the pipeline at all.
+    if IMPROVE_DIR and _opencode_url(session['user']):
+        projects.insert(0, {'slug': IMPROVE_PROJECT, 'name': t('improve.project_name'),
+                            'special': True})
+    return jsonify(projects=projects)
 
 
 def init_theme_db():
@@ -6021,7 +6117,49 @@ def _nanobot_for(username):
     return nanobot_url(nanobot_id), nanobot_id
 
 
-def _project_block(project):
+# The project that is not a repository: Alfred himself (docs/self-improvement.md).
+# Chosen in the Programmer's selector, the conversation is about fixing and
+# improving the stack and its plugins -- through the `improve` tool, in
+# worktrees -- rather than one of the code broker's projects. A fix request's
+# conversation is always on it.
+IMPROVE_PROJECT = 'alfred-self'
+
+
+def _improve_block(username):
+    tool = f'{IMPROVE_DIR}/bin/improve'
+    login = f' --login {username}' if username else ''
+    return (
+        '[The project this conversation is about]\n'
+        'Alfred himself: this stack and its plugins, not a project of the code broker. '
+        'Fixes and improvements to Alfred go through the `improve` tool, never through '
+        '`checkout` or the broker, and never by editing a live checkout.\n'
+        f'Before proposing anything in this conversation, read `{IMPROVE_DIR}/docs/MAP.md` '
+        f'(how Alfred is built), `{IMPROVE_DIR}/docs/RULES.md` (evaluation, testing, approvals, '
+        f'data), `{IMPROVE_DIR}/docs/CLAUDE.md` (the repository\'s rules) and '
+        f'`{IMPROVE_DIR}/lessons.md` (what went wrong before). Every claim in a proposal '
+        'rests on something you read (file and line) or measured (`improve measure`); a '
+        'claim the assistant made about itself is a lead to check, never a premise. '
+        'Propose, then wait for a yes in so many words: a question is not a yes.\n'
+        f'- `{tool} list{login}` -- this person\'s fix requests, what each is about, its '
+        'worktrees and whether it is committed or published. Start here when they name '
+        'one ("the lights fix", "#6") or say "publish" without saying which.\n'
+        f'- `{IMPROVE_DIR}/repos.json` -- where a fix may go: each repository, what it '
+        'provides, and what deploying it means (`deploys`) -- a plugin or extension is '
+        f'deployed by the services its plugin.yml declares; `{IMPROVE_DIR}/inbox/` -- '
+        'recent turns, redacted.\n'
+        f'- `{tool} measure usage|stops|events|tools` -- numbers from usage.db.\n'
+        f'- `{tool} start <id> <repo>` a worktree; `{tool} test <id> <repo>` its tests; '
+        f'`{tool} bench <id> <repo>` the benchmark before and after, needed for a change to '
+        f'how the assistant behaves; `{tool} commit <id> <repo> -m "..."` refuses without '
+        f'both passing for the exact change; `{tool} status <id>`.\n'
+        f'- `{tool} lesson "<what went wrong, and what to do instead>"` -- when the person '
+        'tells you that you got something wrong.\n'
+        f'- `{tool} publish <id> <repo>` and then `{tool} deploy <id> <repo>` -- only when '
+        'the person has said to publish or deploy, in this conversation, and never by '
+        'hand. If either refuses, say why; do not work around it.')
+
+
+def _project_block(project, username=None):
     """Which project this turn is about, for the spaces that have a selector.
 
     The selector has always sent its choice and nothing has ever read it: the
@@ -6048,6 +6186,8 @@ def _project_block(project):
     """
     if not project:
         return ''
+    if project == IMPROVE_PROJECT:
+        return _improve_block(username) if IMPROVE_DIR else ''
     return (f'[The project this conversation is about]\n'
             f'It is `{project}`. When you are asked to change "this app" or '
             f'"the project", that is the one: `checkout("{project}")` before '
@@ -6212,7 +6352,7 @@ def _compose_turn_content(username, content, images, docs, space, seed=None,
     # The project goes with the space's own rules rather than above the
     # question: it says *what about*, and the two are read together.
     space_block = '\n\n'.join(filter(
-        None, [space_block, _project_block(project), _ask_block(),
+        None, [space_block, _project_block(project, username), _ask_block(),
                # Last on purpose; see _OFFERS_BLOCK.
                _offers_block(space)]))
     if space_block:
@@ -7377,6 +7517,349 @@ def code_task_status(task_id):
                    started_at=row[2], finished_at=row[3], result=row[4] or '')
 
 
+# ---------------------------------------------------------------------------
+# Asking Alfred to fix something (docs/self-improvement.md)
+# ---------------------------------------------------------------------------
+# "The lights skill points at the wrong server -- fix it." The `self-improve`
+# skill files what the person said and starts the investigation at once, as a
+# new conversation in their Programmer -- on opencode, on the Go plan -- and
+# Alfred answers with a card that opens it.
+#
+# Why that is still "a person at the keyboard" (CLAUDE.md): it is started by
+# the person's own request, in the chat, one run, at their pace, in a space
+# they are watching -- the same as typing it into the Programmer themselves.
+# What must never start one is anything else: a timer, the nightly collect, an
+# evaluator pass. And it only investigates: the fix is applied when the person
+# answers yes in that conversation.
+IMPROVE_DB_PATH = os.path.join('backup_data', 'improve.db')
+# The pipeline's folder as the *host* sees it -- repos.json and the redacted
+# inbox. Never opened by this container: it is written into the prompt, for
+# opencode, which runs on the host.
+IMPROVE_DIR = os.environ.get('IMPROVE_DIR', '')
+IMPROVE_TEXT_MAX = 2000
+IMPROVE_DEDUP_S = 15 * 60
+
+
+def _improve_conn():
+    conn = sqlite3.connect(IMPROVE_DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS improve_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        problem TEXT NOT NULL,
+        context TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'open'
+    )''')
+    cols = {r[1] for r in conn.execute('PRAGMA table_info(improve_requests)')}
+    for col, decl in (('day', "TEXT NOT NULL DEFAULT ''"), ('conv', 'INTEGER NOT NULL DEFAULT 0'),
+                      ('origin', "TEXT NOT NULL DEFAULT ''")):
+        if col not in cols:
+            conn.execute(f'ALTER TABLE improve_requests ADD COLUMN {col} {decl}')
+    return conn
+
+
+def init_improve_db():
+    _improve_conn().close()
+
+
+def _improve_conversation(username, conv):
+    """Whether *conv* is the Programmer conversation of one of *username*'s
+    fix requests."""
+    try:
+        conv = int(conv or 0)
+    except (TypeError, ValueError):
+        return False
+    if conv <= 0 or not os.path.exists(IMPROVE_DB_PATH):
+        return False
+    conn = _improve_conn()
+    try:
+        return conn.execute('SELECT 1 FROM improve_requests WHERE username = ? AND conv = ?',
+                            (username, conv)).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _improve_prompt(row, username=None):
+    """What the Programmer is asked, for the person to read and send.
+
+    The rules are in the request rather than trusted to the agent's prompt,
+    because this is the text the person reviews before sending: what it says
+    it will do is what they are agreeing to."""
+    rid, problem, context = row
+    tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
+    user = find_user(username) if username else None
+    # The assistant that was asked, as the deployer names its container: what
+    # it sees is what matters, and the Programmer's own shell is not it -- the
+    # first investigation checked `env` on the host and learned nothing.
+    container = f'nanobot-{_member_of(user)}' if user else ''
+    where = (f"`{IMPROVE_DIR}/repos.json` lists where a fix may go -- this stack "
+             f"and each plugin, with what each provides; recent turns, redacted, "
+             f"are in `{IMPROVE_DIR}/inbox/`." if IMPROVE_DIR else
+             "Find which repository this belongs to: the stack, or one of its plugins.")
+    lines = [f"Fix request #{rid}, asked of Alfred:", "",
+             *[f"> {ln}" for ln in problem.splitlines() or [problem]], ""]
+    if context:
+        lines += ["What Alfred had when it was asked -- leads to check, not facts. Alfred "
+                  "cannot read a skill's own environment or its code, so part of this may be "
+                  "a guess:", "",
+                  *[f"> {ln}" for ln in context.splitlines()], ""]
+    lines += [where, "",
+              *([f"Read `{IMPROVE_DIR}/docs/MAP.md` (how Alfred is built), "
+                 f"`{IMPROVE_DIR}/docs/RULES.md` (evaluation, testing, approvals, data), "
+                 f"`{IMPROVE_DIR}/docs/CLAUDE.md` and `{IMPROVE_DIR}/lessons.md` "
+                 "(what went wrong before) first.", ""] if IMPROVE_DIR else []),
+              f"To read a repository's code, run `{tool} start {rid} <repo>` first and read "
+              "the worktree it prints: it is the current code and changes nothing. The live "
+              "checkouts (the paths in repos.json) are out of your reach on purpose -- a "
+              "deploy ships whatever is in them -- and reaching for them is refused.", "",
+              *([f"The assistant that was asked runs in the container `{container}`: "
+                 f"`docker exec {container} printenv <NAME>` shows what it sees, and "
+                 f"`docker logs --since 1h {container}` what it did. Your own shell's "
+                 "environment is not the assistant's.", ""] if container else []),
+              "The house's settings are on the admin page; ask me for a value rather than "
+              "reading its files, which are refused.", "",
+              "First, investigate only -- change nothing:",
+              "1. Check each claim above against the running system (the container's "
+              "environment, the skill's code, the service answering) and say which held.",
+              "2. Find the cause. Then tell me the cause, where it lives (which repository, "
+              "or which setting), and the fix you propose -- and ask me whether to apply it.",
+              "",
+              "Only after I say yes:",
+              "3. If it is a setting (an address, a model, a switch), say which and where "
+              "it is set. Never write a household value into code.",
+              f"4. If it is code: `{tool} start {rid} <repo>` makes a worktree of that "
+              f"repository on branch `improve/{rid}` and prints its path. Edit only there -- "
+              "never the checkout that deploys -- add a test, run "
+              f"`{tool} test {rid} <repo>` (and `{tool} bench {rid} <repo>` if it changes how "
+              "the assistant behaves), and commit with "
+              f"`{tool} commit {rid} <repo> -m \"<what and why>\"`. Git itself is refused "
+              "here; these do it, with the checks.",
+              "5. Tell me what changed and how to check it, and stop. Publish and deploy only "
+              f"when I say so, and only with `{tool} publish {rid} <repo>` (puts the fix on the "
+              f"repository, and pushes a plugin's) and then `{tool} deploy {rid} <repo>` -- "
+              "never by hand. If either refuses, tell me why; do not work around it.",
+              "",
+              "If it turns out nothing is broken, say so plainly: that is an answer too."]
+    return "\n".join(lines)
+
+
+@app.route('/improve/api/requests', methods=['POST'])
+@api_login_required
+def improve_request_new():
+    """File a fix request from the `self-improve` skill, and answer with the
+    card that opens the Programmer on it."""
+    username = session['user']
+    body = request.get_json(silent=True) or {}
+    problem = str(body.get('problem') or '').strip()[:IMPROVE_TEXT_MAX]
+    context = str(body.get('context') or '').strip()[:IMPROVE_TEXT_MAX]
+    if not problem:
+        return jsonify(error='say what is wrong: problem is empty'), 400
+    # Whoever has an opencode of their own: the Programmer is where the fix is
+    # made, and for anybody else it is the assistant, which does not do this.
+    if not _opencode_url(username):
+        return jsonify(ok=False, error='the Programmer does not run on opencode for this '
+                       'member, so there is nowhere to hand a fix to. An admin turns it on '
+                       'per person on the admin page.'), 409
+    # The conversation the person asked from, as their assistant's session
+    # key (NANOBOT_SESSION_KEY, from the turn's own span). Only ever compared
+    # with this person's own requests, so it needs no more than a shape.
+    origin = re.sub(r'[^\w:.-]', '', str(body.get('origin') or ''))[:200]
+    conn = _improve_conn()
+    try:
+        recent = conn.execute(
+            "SELECT id, day, conv, problem, origin FROM improve_requests WHERE username = ? "
+            "AND created_at > ? AND status IN ('open', 'investigating') ORDER BY id DESC",
+            (username, int(time.time()) - IMPROVE_DEDUP_S)).fetchall()
+    finally:
+        conn.close()
+    # The same problem again within minutes, while the first is open, is the
+    # same request: a chat turn that ran out of time hands the work to a
+    # background task, which files it a second time (2026-09-29, #3 and #4).
+    # From the same conversation that is the same *problem*, not the same
+    # request -- two different things asked one after the other are two.
+    for rid_, day_, conv_, problem_, origin_ in recent:
+        if (not origin and not origin_) or (origin and origin_ == origin
+                                            and _improve_similar(problem, problem_)):
+            return jsonify(ok=True, id=rid_, duplicate=True, investigating=bool(conv_),
+                           card=_improve_card(username, rid_, (day_, conv_) if conv_ else None))
+    conn = _improve_conn()
+    try:
+        rid = conn.execute('INSERT INTO improve_requests (username, created_at, problem, context, '
+                           'origin) VALUES (?,?,?,?,?)',
+                           (username, int(time.time()), problem, context, origin)).lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    # Every request opens a Programmer conversation of its own, even when the
+    # same chat asked for another a minute ago: one task, one conversation,
+    # one worktree, one history -- the only way to follow what changed for
+    # which request. Requests from one chat sharing a conversation (from
+    # 2026-09-29) mixed two fixes into one session and one scroll.
+    started = _improve_start(username, rid, problem, context)
+    return jsonify(ok=True, id=rid, card=_improve_card(username, rid, started),
+                   investigating=bool(started))
+
+
+def _improve_similar(a, b):
+    wa = set(re.findall(r'\w{4,}', (a or '').lower()))
+    wb = set(re.findall(r'\w{4,}', (b or '').lower()))
+    return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= 0.3
+
+
+def _improve_card(username, rid, started):
+    """The goto card for request *rid*: opening its running conversation when
+    *started* is (day, conv), filling the Programmer's input otherwise. In the
+    language of whoever asked, one line a field."""
+    label = ' '.join(t_for(username, 'improve.card_label', id=rid).split())
+    why = ' '.join(t_for(username, 'improve.card_started' if started
+                         else 'improve.card_why').split())
+    where = (f'date: {started[0]}\nconv: {started[1]}\n' if started else '')
+    return f':::goto\nspace: programmer\nlabel: {label}\nrequest: {rid}\n{where}why: {why}\n:::'
+
+
+def _improve_start(username, rid, problem, context):
+    """Open a Programmer conversation for request *rid* and start the
+    investigation in it. (day, conv) of that conversation, or None when it
+    could not be started -- then the card only fills the Programmer's input,
+    as it did before, and the person sends it themselves."""
+    try:
+        api, nanobot_id = _nanobot_for(username)
+        if not api:
+            return None
+        day = _writing_day(None)
+        conv = int(time.time() * 1000)
+        prompt = _improve_prompt((rid, problem, context), username)
+        # Filed as the person's message: it is their request, it reads as the
+        # first line of the conversation, and the reply files after it.
+        append_user_history(username, {'role': 'user', 'text': prompt, 'ts': conv, 'conv': conv},
+                            day, OPENCODE_SPACE)
+        _improve_turn(username, day, conv, prompt, api, nanobot_id)
+    except Exception as exc:  # noqa: BLE001 -- a request filed is still worth the card
+        app.logger.warning('improve: investigation for #%s not started: %s', rid, exc)
+        return None
+    conn = _improve_conn()
+    try:
+        conn.execute("UPDATE improve_requests SET status = 'investigating', day = ?, conv = ? "
+                     'WHERE id = ?', (day, conv, rid))
+        conn.commit()
+    finally:
+        conn.close()
+    return day, conv
+
+
+def _improve_turn(username, day, conv, text, api, nanobot_id):
+    """One turn of a fix request's Programmer conversation, as the person's own
+    message, on the project that is Alfred himself."""
+    msg_content = _compose_turn_content(username, text, [], [], OPENCODE_SPACE,
+                                        project=IMPROVE_PROJECT)
+    _turn_launch(username, day, conv, OPENCODE_SPACE, msg_content, api, nanobot_id,
+                 project=IMPROVE_PROJECT)
+
+
+@app.route('/improve/api/requests/publish', methods=['POST'])
+@api_login_required
+def improve_request_publish():
+    """"Publish the lights fix", said in the chat: that request's own Programmer
+    conversation is told to publish it -- and deploy it, if asked -- as the
+    person's message, and the card opens it.
+
+    The Programmer does the work with `improve publish` / `improve deploy`,
+    whose checks are code (deploy/improve/ship.py). This only carries the
+    person's word to the conversation that has the fix in it: without it,
+    "publish the last fix" in the chat had nowhere to go, and a background
+    task filed a new request instead (#7, 2026-09-29)."""
+    username = session['user']
+    body = request.get_json(silent=True) or {}
+    if not _opencode_url(username):
+        return jsonify(ok=False, error='the Programmer does not run on opencode for this '
+                       'member, so there is nothing to publish with.'), 409
+    try:
+        rid = int(body.get('id') or 0)
+    except (TypeError, ValueError):
+        rid = 0
+    also_deploy = bool(body.get('deploy'))
+    origin = re.sub(r'[^\w:.-]', '', str(body.get('origin') or ''))[:200]
+    conn = _improve_conn()
+    try:
+        # The one named; else the latest from the conversation it is asked in;
+        # else the person's latest -- "the last fix" -- never somebody else's.
+        row = None
+        if not rid and origin:
+            row = conn.execute(
+                "SELECT id, day, conv, problem FROM improve_requests WHERE username = ? "
+                "AND conv > 0 AND origin = ? AND status != 'closed' ORDER BY id DESC LIMIT 1",
+                (username, origin)).fetchone()
+        if row is None:
+            row = conn.execute(
+                'SELECT id, day, conv, problem FROM improve_requests WHERE username = ? AND conv > 0 '
+                + ('AND id = ? ' if rid else "AND status != 'closed' ")
+                + 'ORDER BY id DESC LIMIT 1', (username, rid) if rid else (username,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify(ok=False, error=(f'no fix request #{rid} of yours' if rid else
+                                        'no open fix request of yours to publish')), 404
+    rid, day, conv, problem = row
+    tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
+    text = (f'Publish{" and deploy" if also_deploy else ""} fix request #{rid} now -- I asked '
+            f'for it in the chat. Run `{tool} list` to see which repository holds its commit, '
+            f'then `{tool} publish {rid} <repo>`'
+            + (f' and, if that worked, `{tool} deploy {rid} <repo>`' if also_deploy else '')
+            + '. Tell me what each said. If there is nothing committed, or either refuses, '
+            'tell me why and stop.')
+    try:
+        api, nanobot_id = _nanobot_for(username)
+        if not api:
+            raise RuntimeError('no assistant for this member')
+        ts = int(time.time() * 1000)
+        append_user_history(username, {'role': 'user', 'text': text, 'ts': ts, 'conv': conv},
+                            day, OPENCODE_SPACE)
+        # Through the conversation's queue, as a typed message goes: if the
+        # Programmer is still answering there, this waits its turn instead of
+        # talking over it on the same session.
+        chat_id = _conv_chat_id(username, day, conv, OPENCODE_SPACE)
+        item = _queue_item(username, day, conv, OPENCODE_SPACE, text, [], [],
+                           project=IMPROVE_PROJECT)
+        if not _queue_add(chat_id, item):
+            raise RuntimeError('that conversation\'s queue is full')
+        _queue_advance(username, chat_id)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning('improve: publish of #%s not started: %s', rid, exc)
+        return jsonify(ok=False, error=f'could not start it: {exc}'), 503
+    return jsonify(ok=True, id=rid, problem=problem[:200], deploy=also_deploy,
+                   card=_improve_card(username, rid, (day, conv)))
+
+
+@app.route('/improve/api/requests', methods=['GET'])
+@api_login_required
+def improve_request_list():
+    conn = _improve_conn()
+    try:
+        rows = conn.execute('SELECT id, created_at, problem, status FROM improve_requests '
+                            'WHERE username = ? ORDER BY id DESC LIMIT 20',
+                            (session['user'],)).fetchall()
+    finally:
+        conn.close()
+    return jsonify(requests=[{'id': r[0], 'created_at': r[1], 'problem': r[2][:300],
+                              'status': r[3]} for r in rows])
+
+
+@app.route('/improve/api/requests/<int:rid>/prompt')
+@api_login_required
+def improve_request_prompt(rid):
+    """The text the Programmer's input is filled with. Only the person who
+    asked may read it: it is their words."""
+    conn = _improve_conn()
+    try:
+        row = conn.execute('SELECT id, problem, context FROM improve_requests '
+                           'WHERE id = ? AND username = ?', (rid, session['user'])).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify(error='no such request'), 404
+    return jsonify(ok=True, id=rid, prompt=_improve_prompt(row, session['user']))
+
+
 def _turn_attempt_opencode(turn, msg_content):
     """One go at running a Programmer turn against opencode.
 
@@ -7739,7 +8222,7 @@ def _turn_finish(turn, error=None):
     stop — just a few milliseconds wide instead of forever.
     """
     try:
-        _turn_deliver(turn)
+        _turn_deliver(turn, error)
     except Exception as e:
         app.logger.warning('turn: %s could not be filed for %s: %s',
                            turn['id'], turn['user'], e)
@@ -8156,13 +8639,112 @@ def _queue_sweep():
 threading.Thread(target=_queue_sweep, daemon=True).start()
 
 
-def _turn_deliver(turn):
+# Programmer replies the portal was not there to file. A Programmer turn runs
+# in opencode, which goes on without us: when the portal restarts mid-turn --
+# a deploy, a fix the Programmer is itself deploying -- the answer lands in
+# opencode's session and never in the conversation. On 2026-09-29 a fix request
+# published and deployed the portal, and its "deployed, here is how to check"
+# was nowhere in the chat. So, every couple of minutes, the conversations of
+# the last few days are compared with their sessions, and an answer opencode
+# finished after the last one filed here is filed, marked as recovered.
+OPENCODE_RECOVER_EVERY_S = 120
+OPENCODE_RECOVER_DAYS = 3
+
+
+def _opencode_unfiled(msgs, last_filed_ms):
+    """The text opencode finished after *last_filed_ms*: every assistant text
+    since the last user message, if the turn is complete and ended later than
+    what the conversation already holds. (text, finished_ms) or None."""
+    last_user = max((i for i, m in enumerate(msgs)
+                     if (m.get('info') or {}).get('role') == 'user'), default=-1)
+    answer = [m for m in msgs[last_user + 1:] if (m.get('info') or {}).get('role') == 'assistant']
+    if not answer:
+        return None
+    finished = (answer[-1].get('info') or {}).get('time', {}).get('completed')
+    if not finished or finished <= last_filed_ms + 2000:
+        return None
+    texts = [p.get('text') or '' for m in answer for p in (m.get('parts') or [])
+             if p.get('type') == 'text' and (p.get('text') or '').strip()]
+    text = '\n\n'.join(t.strip() for t in texts)
+    return (text, int(finished)) if text else None
+
+
+def _opencode_recover_once():
+    if OPENCODE_API != 'v1' or not os.path.exists(OPENCODE_DB_PATH):
+        return 0
+    conn = _opencode_conn()
+    try:
+        rows = conn.execute('SELECT chat_id, session_id, directory FROM sessions WHERE created > ?',
+                            (int(time.time()) - OPENCODE_RECOVER_DAYS * 86400,)).fetchall()
+    finally:
+        conn.close()
+    filed = 0
+    for chat_id, sid, directory in rows:
+        parts = chat_id.split(':')
+        if len(parts) < 4 or parts[0] != 'homeweb':
+            continue
+        user, day = parts[1], parts[2]
+        conv, space = _chat_id_conv(parts)
+        base = _opencode_url(user)
+        if not base or space != OPENCODE_SPACE or _queue_running(user, chat_id):
+            continue            # a turn in flight files its own answer
+        try:
+            r = requests.get(f'{base}/session/{sid}/message',
+                             params={'directory': directory} if directory else None, timeout=10)
+            msgs = r.json() if r.ok else []
+        except Exception:                                         # noqa: BLE001
+            continue
+        history = [m for m in load_user_history(user, day, space)
+                   if str(m.get('conv') or '') == str(conv or '')]
+        last_bot = max((m.get('ts') or 0 for m in history if m.get('role') == 'bot'), default=0)
+        last_user = max((m.get('ts') or 0 for m in history if m.get('role') == 'user'), default=0)
+        got = _opencode_unfiled(msgs, max(last_bot, last_user))
+        if not got:
+            continue
+        text, finished = got
+        if append_user_history(user, {'role': 'bot', 'text': text, 'ts': finished, 'recovered': True,
+                                      **({'conv': int(conv)} if conv else {})}, day, space):
+            filed += 1
+            app.logger.info('opencode: filed a reply the portal missed for %s (%s)', user, chat_id)
+    return filed
+
+
+def start_opencode_recovery():
+    def loop():
+        time.sleep(30)
+        while True:
+            try:
+                _opencode_recover_once()
+            except Exception as exc:                              # noqa: BLE001
+                app.logger.warning('opencode: recovery pass failed: %s', exc)
+            time.sleep(OPENCODE_RECOVER_EVERY_S)
+    threading.Thread(target=loop, daemon=True, name='opencode-recover').start()
+
+
+def _turn_failure_text(user, error):
+    """What a failed turn leaves in the conversation: the reason, short --
+    `APIError … "message": "Endpoint is unavailable", "statusCode": 521` comes
+    out as "Endpoint is unavailable (521)"."""
+    err = str(error or '')
+    msg = re.search(r'"message":\s*"([^"]{1,200})"', err)
+    code = re.search(r'"statusCode":\s*(\d{3})', err)
+    reason = (msg.group(1) if msg else err[:200]).strip() + (f' ({code.group(1)})' if code else '')
+    return t_for(user, 'chat.turn_failed', reason=reason)
+
+
+def _turn_deliver(turn, error=None):
     """File the reply where it was asked, and say so if nobody is looking.
 
     Runs whether or not a browser ever read a byte of it. The page persists what
     it received too; `append_user_history` dedups, so the two cannot double up.
     """
     text = _strip_skill_blocks((turn.get('text') or '').strip())
+    if not text and error and turn.get('space') == OPENCODE_SPACE:
+        # A Programmer turn that failed with nothing said: the error, filed.
+        # Otherwise an outage -- OpenCode Go answering 521 for minutes on
+        # 2026-09-29 -- left the request and then silence, and whoever was not
+        # watching live could not tell a failure from a turn still thinking.
+        text = _turn_failure_text(turn['user'], error)
     if not text:
         return
     stored = append_user_history(
@@ -13376,6 +13958,8 @@ LOGIN_KEYED_TABLES = (
     # Which phone or tablet is whose (the devices section): a device belongs to
     # whoever is signed in on it.
     ('devices.db', 'app_devices', 'login'),
+    # Fix requests: whose words they are, and so who may read them back.
+    ('improve.db', 'improve_requests', 'username'),
 )
 
 
@@ -17847,8 +18431,76 @@ def init_usage_db():
     # every row before this, shown as "not recorded" rather than guessed.
     if 'provider' not in cols:
         conn.execute("ALTER TABLE token_usage ADD COLUMN provider TEXT NOT NULL DEFAULT ''")
+    # How the turn went, 2026-09-29, for reading a week of turns back to find
+    # what goes wrong (docs/self-improvement.md). Until now latency, failed
+    # calls and the runner's stop reason lived in the assistant's memory and
+    # its container log, and both are gone within days. `turn_id` joins the
+    # rows one turn bills in parts (an escalation reports the cheap attempt,
+    # then the one that answered). NULL latency is "not reported" -- every row
+    # before this, and a heartbeat, which has no turn -- not "instant".
+    for _col, _decl in (('stop_reason', "TEXT NOT NULL DEFAULT ''"),
+                        ('turn_id', "TEXT NOT NULL DEFAULT ''"),
+                        ('latency_ms', 'INTEGER'),
+                        ('call_errors', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('tool_errors', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('retry_wait_ms', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('classifier_ms', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('escalated', 'INTEGER NOT NULL DEFAULT 0'),
+                        ('escalated_from', "TEXT NOT NULL DEFAULT ''")):
+        if _col not in cols:
+            conn.execute(f'ALTER TABLE token_usage ADD COLUMN {_col} {_decl}')
+    # What the runner noticed during a turn, as codes and counts: DSML written
+    # as text, a skill block that resolved to nothing, an empty answer retried,
+    # a refused action, a tool that failed. Never message text: the codes are
+    # as private as the tool names beside them, which is what lets this table
+    # be read by something outside the house after the fact.
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS turn_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            turn_id TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL,
+            ts INTEGER NOT NULL,
+            day TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT '',
+            code TEXT NOT NULL,
+            n INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_turn_events_day ON turn_events(day);
+        CREATE INDEX IF NOT EXISTS idx_turn_events_turn ON turn_events(turn_id);
+    ''')
     conn.commit()
     conn.close()
+
+
+# An event code as the runner writes it (`parse:dsml`, `tool_error:exec`,
+# `skill:no_code:lights`), and how many one row may carry: a runaway turn is
+# interesting for having failed forty times, not for the fortieth code.
+_TURN_EVENT_RE = re.compile(r'[^A-Za-z0-9_:.\-]')
+_TURN_EVENTS_MAX = 40
+
+
+def _turn_block(data):
+    """The `turn` block of a usage report, cleaned: (columns, events)."""
+    turn = data.get('turn') if isinstance(data.get('turn'), dict) else {}
+
+    def _int(v, cap=10 ** 9):
+        return max(0, min(int(v), cap)) if isinstance(v, (int, float)) else 0
+
+    latency = turn.get('latency_ms')
+    cols = (
+        re.sub(r'[^a-z_]', '', str(data.get('stop_reason') or '').lower())[:32],
+        re.sub(r'[^a-f0-9]', '', str(turn.get('turn_id') or '').lower())[:32],
+        _int(latency) if isinstance(latency, (int, float)) else None,
+        _int(turn.get('call_errors'), 10000), _int(turn.get('tool_errors'), 10000),
+        _int(turn.get('retry_wait_ms')),
+    )
+    events = []
+    raw = turn.get('events') if isinstance(turn.get('events'), dict) else {}
+    for code, n in list(raw.items())[:_TURN_EVENTS_MAX]:
+        code = _TURN_EVENT_RE.sub('', str(code))[:80]
+        if code and isinstance(n, (int, float)) and n > 0:
+            events.append((code, min(int(n), 10000)))
+    return cols, events
 
 
 # Tool names as the household should read them. nanobot reports what the model
@@ -18078,18 +18730,33 @@ def usage_ingest():
     row = row + (str(route.get('tier') or '')[:16], str(route.get('label') or '')[:16],
                  str(route.get('source') or '')[:24])
     row = row + (re.sub(r'[^a-z0-9_]', '', str(data.get('provider') or '').lower())[:32],)
+    turn_cols, events = _turn_block(data)
+    classifier_ms = route.get('classifier_ms')
+    row = row + turn_cols + (
+        max(0, min(int(classifier_ms), 10 ** 7)) if isinstance(classifier_ms, (int, float)) else 0,
+        1 if route.get('escalated') else 0,
+        re.sub(r'[^a-z_]', '', str(route.get('escalated_from') or '').lower())[:32],
+    )
     conn = _usage_conn()
     try:
         conn.execute(
             'INSERT INTO token_usage (username, ts, day, scope, model, prompt_tokens, '
             'cached_tokens, completion_tokens, reasoning_tokens, tools, tool_names, '
-            'cost_usd, tier, label, route_source, provider) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
+            'cost_usd, tier, label, route_source, provider, stop_reason, turn_id, '
+            'latency_ms, call_errors, tool_errors, retry_wait_ms, classifier_ms, '
+            'escalated, escalated_from) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
+        if events:
+            conn.executemany(
+                'INSERT INTO turn_events (turn_id, username, ts, day, scope, code, n) '
+                'VALUES (?,?,?,?,?,?,?)',
+                [(turn_cols[1], username, now, row[2], row[3], code, n) for code, n in events])
         # Cheap enough to do inline and it keeps the file from being a surprise
         # in a year; the index makes it a range delete.
         if row[1] % 200 == 0:
             cutoff = (_tasks_today() - timedelta(days=USAGE_KEEP_DAYS)).isoformat()
             conn.execute('DELETE FROM token_usage WHERE day < ?', (cutoff,))
+            conn.execute('DELETE FROM turn_events WHERE day < ?', (cutoff,))
     finally:
         conn.close()
     return jsonify(ok=True)
@@ -22458,7 +23125,9 @@ if __name__ == '__main__':
     init_wa_db()
     init_usage_db()
     start_gpu_sampler()
+    start_opencode_recovery()
     init_bgtask_db()
+    init_improve_db()
     init_persona_db()
     init_theme_db()
     init_chat_titles_db()

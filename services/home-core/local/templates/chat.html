@@ -439,6 +439,22 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
     /* A stopped answer keeps what it managed to say. The mark is what stops it
        being read as a complete one that simply trailed off. */
     .msg-stopped { float:left; color:var(--clay); font-style:italic; }
+    /* Rating an answer. Quiet until wanted: faint beside the time, clearer on
+       hover or once chosen, never on an answer still being written. */
+    .fb { display:inline-flex; gap:2px; margin-left:8px; vertical-align:middle; }
+    .fb button { background:none; border:0; padding:2px 4px; cursor:pointer; font-size:.8rem;
+      line-height:1; border-radius:6px; opacity:.35; filter:grayscale(1); transition:opacity .15s; }
+    .msg.bot:hover .fb button, .fb button:focus-visible { opacity:.75; }
+    .fb button[aria-pressed="true"] { opacity:1; filter:none; background:rgba(87,99,63,.12); }
+    .fb button:focus-visible { outline:2px solid var(--olive); outline-offset:1px; }
+    .msg.streaming .fb, .msg.from-parent .fb { display:none; }
+    @media (hover:none) { .fb button { opacity:.6; } }
+    .fb-note { display:flex; gap:6px; margin-top:6px; }
+    .fb-note input { flex:1; min-width:0; font:inherit; font-size:.8rem; padding:6px 8px;
+      border:1px solid var(--line); border-radius:8px; background:var(--paper, #fff); color:var(--ink); }
+    .fb-note button { font:inherit; font-size:.78rem; font-weight:600; padding:6px 10px; border-radius:8px;
+      border:1px solid var(--olive); background:var(--olive); color:#fff; cursor:pointer; }
+    .fb-thanks { font-size:.72rem; color:var(--ink-soft); margin-top:4px; font-style:italic; }
     .msg.interrupted { border-style:dashed; }
     /* The messages a branch inherited from the conversation it came out of:
        shown, because a branch without them is unreadable, but not pretending
@@ -1982,7 +1998,31 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
 
   /* Project selector for the Programador space. */
   function activeProject() {
+    if (fixConv) return IMPROVE_PROJECT;
     return (projectSel && HAS_PROJECTS) ? (projectSel.value || null) : null;
+  }
+  /* A fix request's conversation (docs/self-improvement.md) is on the special
+     project, Alfred himself: the fix is in the stack or one of its plugins,
+     through the improve tool. The selector is one remembered choice for the
+     whole space, so without this, answering the investigation sent that
+     choice along and pointed the Programmer at the wrong checkout. Shown and
+     locked while the conversation is open; the remembered choice is left
+     alone and comes back in the next one. The server applies it there too. */
+  var IMPROVE_PROJECT = 'alfred-self';
+  var fixConv = false;
+  function markFixConversation(msgs) {
+    var first = (msgs || []).filter(function(m) { return m.role === 'user'; })[0];
+    fixConv = !!(first && /^Fix request #\d+/.test(first.text || ''));
+    if (!projectSel || !HAS_PROJECTS) return;
+    if (fixConv) {
+      projectSel.dataset.fix = '1';
+      projectSel.value = IMPROVE_PROJECT;
+      projectSel.disabled = true;
+    } else if (projectSel.dataset.fix) {
+      delete projectSel.dataset.fix;
+      projectSel.value = localStorage.getItem('programador-project') || '';
+      projectSel.disabled = false;
+    }
   }
   async function loadProjects() {
     if (!projectSel || !HAS_PROJECTS) return false;
@@ -2028,7 +2068,8 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
          one bad fetch greyed the selector out until the page was reloaded, and
          nothing on screen said why. */
     }
-    projectSel.disabled = false;
+    projectSel.disabled = fixConv;
+    if (fixConv) projectSel.value = IMPROVE_PROJECT;
     return loaded;
   }
   if (projectSel) {
@@ -2175,8 +2216,9 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     (msgs || []).forEach(function(m) {
       if (m.role === 'bot' && m.plan) paintPlan(planCard(null), m.plan);
       addMessage(m.text || '', m.role, null, m.ts,
-                 { interrupted: m.interrupted, fromParent: m.from_parent });
+                 { interrupted: m.interrupted, fromParent: m.from_parent, feedback: m.feedback });
     });
+    markFixConversation(msgs);
     paintBranchSwitch(msgs);
   }
 
@@ -2433,7 +2475,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     pumpQueue();      // and whatever is waiting behind it, from before this load
     try {
       var wp = new URLSearchParams(window.location.search).get('welcome');
-      if (wp) addMessage(wp, 'bot');  // greeting from a notification tap (ephemeral, not persisted)
+      if (wp) addMessage(wp, 'bot', null, null, { noFeedback: true });  // greeting from a notification tap (ephemeral, not persisted)
     } catch (e) {}
   }
 
@@ -2656,6 +2698,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     allMsgs = [];
     lastMsgDay = null;
     messagesEl.innerHTML = '';
+    markFixConversation([]);   // a new chat is nobody's fix request
     connectEvents();     // stop listening to the conversation just left
     renderSidebar();
   }
@@ -3351,7 +3394,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   function parseGotoBlock(body) {
     var fields = {};
     body.split('\n').forEach(function (line) {
-      var m = /^\s*(space|label|why)\s*:\s*(.+?)\s*$/i.exec(line);
+      var m = /^\s*(space|label|why|request|date|conv)\s*:\s*(.+?)\s*$/i.exec(line);
       if (m) fields[m[1].toLowerCase()] = m[2];
     });
     return fields;
@@ -3366,6 +3409,16 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     if (!prof) return document.createTextNode('');
     var a = document.createElement('a');
     a.className = 'goto-card'; a.href = '/chat/' + prof.url;
+    // A fix request (the self-improve skill): the Programmer opens with it
+    // already asked. Only the number travels; the page fetches the text.
+    // With `date` and `conv` the investigation has already started, in its own
+    // conversation there, and the card opens that; without, the page fills the
+    // Programmer's input with the request for the person to send.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(fields.date || '') && /^\d{10,16}$/.test(fields.conv || '')) {
+      a.href += '?date=' + fields.date + '&conv=' + fields.conv;
+    } else if (/^\d{1,9}$/.test(fields.request || '')) {
+      a.href += '?improve=' + fields.request;
+    }
     var label = document.createElement('div'); label.className = 'gc-label';
     label.textContent = prof.icon + ' ' + (fields.label || ('Abrir Alfred ' + prof.title)) + ' →';
     a.appendChild(label);
@@ -3782,6 +3835,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   }
 
   function renderMessageContent(textSpan, text) {
+    textSpan._raw = text; textSpan._at = Date.now();
     text = text.replace(
       /\[([^\]]+)\]\(file:\/\/\/home\/nanobot\/\.nanobot\/workspace\/([^)]+)\)/g,
       '[$1](download:$2)'
@@ -3831,6 +3885,8 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     return true;
   }
 
+  var CHAT_INTERRUPTED_T = {{ t('chat.interrupted') | tojson }};
+
   // `ts` is the message's own timestamp — history has to render with the time
   // it was actually said, not the time the page happened to paint it.
   function addMessage(textContent, role, images, ts, opts) {
@@ -3856,7 +3912,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     if (opts.interrupted) {
       div.classList.add('interrupted');
       var mark = document.createElement('span'); mark.className = 'msg-stopped';
-      mark.textContent = 'interrumpido';
+      mark.textContent = CHAT_INTERRUPTED_T;
       timeSpan.insertBefore(mark, timeSpan.firstChild);
     }
     // Inherited from the conversation this branch came out of: shown, because
@@ -3864,8 +3920,72 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     // the thread you are in.
     if (opts.fromParent) div.classList.add('from-parent');
     div.appendChild(timeSpan);
+    if (role === 'bot' && !opts.noFeedback) feedbackBar(div, timeSpan, textSpan, ts, opts.feedback);
     messagesEl.appendChild(div); scrollBottom();
     return { div:div, textSpan:textSpan };
+  }
+
+  /* ── Rating an answer ──
+     👍 or 👎 on each of Alfred's answers, and for a 👎 an optional line on
+     what was wrong. Filed on the answer in the history (/chat/feedback), where
+     the self-improvement pass reads it with the question beside it. The
+     answer is named by its text and its time rather than an id: the page and
+     the server each file a reply, and only those two travel with both. */
+  var FB_T = { up: {{ t('chat.feedback.up') | tojson }}, down: {{ t('chat.feedback.down') | tojson }},
+               ask: {{ t('chat.feedback.ask') | tojson }}, send: {{ t('chat.feedback.send') | tojson }},
+               thanks: {{ t('chat.feedback.thanks') | tojson }}, failed: {{ t('chat.feedback.failed') | tojson }} };
+  function feedbackBar(div, timeSpan, textSpan, ts, saved) {
+    var bar = document.createElement('span'); bar.className = 'fb';
+    var state = { rating: (saved && saved.rating) || '' };
+    function btn(kind, glyph) {
+      var b = document.createElement('button'); b.type = 'button'; b.textContent = glyph;
+      b.title = FB_T[kind]; b.setAttribute('aria-label', FB_T[kind]);
+      b.setAttribute('aria-pressed', state.rating === kind ? 'true' : 'false');
+      b.addEventListener('click', function(e) { e.stopPropagation(); choose(kind); });
+      bar.appendChild(b); return b;
+    }
+    var up = btn('up', '👍'), down = btn('down', '👎');
+    function paint() {
+      up.setAttribute('aria-pressed', state.rating === 'up' ? 'true' : 'false');
+      down.setAttribute('aria-pressed', state.rating === 'down' ? 'true' : 'false');
+    }
+    function note(text) {
+      var old = div.querySelector('.fb-thanks'); if (old) old.remove();
+      var n = document.createElement('div'); n.className = 'fb-thanks'; n.textContent = text;
+      div.appendChild(n); setTimeout(function() { n.remove(); }, 4000);
+    }
+    function send(rating, extra) {
+      var body = { rating: rating, ts: ts || textSpan._at || Date.now(), text: textSpan._raw || '',
+                   date: curDay, space: SPACE };
+      if (extra) body.note = extra;
+      return fetch('/chat/feedback', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+        body: JSON.stringify(body) }).then(function(r) { if (!r.ok) throw new Error(r.status); });
+    }
+    function closeAsk() { var f = div.querySelector('.fb-note'); if (f) f.remove(); }
+    function choose(kind) {
+      var before = state.rating;
+      state.rating = before === kind ? '' : kind; paint(); closeAsk();
+      send(state.rating).then(function() {
+        if (state.rating === 'down') ask(); else if (state.rating === 'up') note(FB_T.thanks);
+      }).catch(function() { state.rating = before; paint(); note(FB_T.failed); });
+    }
+    function ask() {
+      var f = document.createElement('form'); f.className = 'fb-note';
+      var i = document.createElement('input'); i.type = 'text'; i.maxLength = 500;
+      i.placeholder = FB_T.ask; i.setAttribute('aria-label', FB_T.ask);
+      var s = document.createElement('button'); s.type = 'submit'; s.textContent = FB_T.send;
+      f.appendChild(i); f.appendChild(s); div.appendChild(f); i.focus();
+      i.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeAsk(); });
+      f.addEventListener('submit', function(e) {
+        e.preventDefault(); var v = i.value.trim(); closeAsk();
+        if (!v) return;
+        send('down', v).then(function() { note(FB_T.thanks); })
+                       .catch(function() { note(FB_T.failed); });
+      });
+    }
+    paint();
+    timeSpan.appendChild(bar);
   }
 
   /* ── Branches ──
@@ -4168,6 +4288,8 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
      What is left for the page is picking a running turn back up: reading the
      stream from where it is, into the conversation it belongs to. */
   var attachedTurns = {};
+  var TURN_QUIET_MS = 20000;
+  var TURN_CUT_TEXT = {{ t('chat.turn_cut') | tojson }};
 
   async function consumeTurn(resp, ref, turnConv, turnDay) {
     var reader = resp.body.getReader(), decoder = new TextDecoder(), buffer = '';
@@ -4175,9 +4297,33 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
        frame and the backend in the event after it, so reconnecting to a turn
        that is already running rebuilds the bubble out of the replay. */
     var turnId = '', turnBackend = '', failed = false;
+    /* A stream that is still open but no longer fed. When the portal restarts
+       mid-answer, something between here and it can keep this connection open,
+       and `reader.read()` then waits for ever: the page showed Alfred working
+       on a turn the server had forgotten. So, after a quiet spell, ask the
+       server whether this conversation still has a turn running -- the same
+       question pumpQueue asks -- and stop waiting when it does not. A silent
+       turn that is alive (minutes inside a tool) is still listed, so it is
+       left alone. */
+    var lastChunk = Date.now(), cutOff = false;
+    var watchdog = setInterval(async function() {
+      if (Date.now() - lastChunk < TURN_QUIET_MS) return;
+      try {
+        var r = await fetch('/chat/queue?date=' + encodeURIComponent(turnDay || curDay)
+                            + '&conv=' + ((turnConv || convStart()) || '') + spaceQ('&'));
+        if (!r.ok) return;
+        var d = await r.json();
+        if (!d.running || (turnId && d.running.id !== turnId)) {
+          cutOff = true;
+          try { reader.cancel(); } catch (e) {}
+        }
+      } catch (e) {}
+    }, 10000);
+    try {
     while (true) {
       var chunk = await reader.read();
       if (chunk.done) break;
+      lastChunk = Date.now();
       buffer += decoder.decode(chunk.value, { stream: true });
       var lines = buffer.split('\n'); buffer = lines.pop();
       for (var i = 0; i < lines.length; i++) {
@@ -4219,6 +4365,13 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
           }
         } catch (e) {}
       }
+    }
+    } finally {
+      clearInterval(watchdog);
+    }
+    if (cutOff) {
+      ref.div.classList.add('interrupted');
+      if (turnConv === convStart() && turnDay === curDay) addHint(TURN_CUT_TEXT);
     }
     /* However the loop ended -- finished, errored, stopped, or the socket
        simply closing. The bubble owns a running clock and a ticking icon, so
@@ -7349,6 +7502,19 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
         inputEl.value = pf;
         autoResize();
         inputEl.setSelectionRange(pf.length, pf.length);
+      }
+      // A fix request, asked of Alfred and handed here: the request's text,
+      // fetched rather than carried in the link, staged for the person to read
+      // and send. Never sent from here -- that is what keeps the Programmer a
+      // person at the keyboard (docs/self-improvement.md).
+      var fix = params.get('improve');
+      if (fix && /^\d{1,9}$/.test(fix) && SPACE === 'programmer') {
+        fetch('/improve/api/requests/' + fix + '/prompt').then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (!d || !d.prompt || inputEl.value) return;
+            inputEl.value = d.prompt; autoResize(); inputEl.focus();
+            inputEl.setSelectionRange(0, 0);
+          }).catch(function() {});
       }
       // Notification deep-link: open the tasks panel (optionally on a task).
       var task = params.get('task');

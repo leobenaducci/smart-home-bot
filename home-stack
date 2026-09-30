@@ -75,6 +75,8 @@ usage() {
     ./home-stack llamacpp build [flavor] compile vanilla or prism (or both) for these cards
     sudo ./home-stack ollama --install-trigger   once: let the admin page apply it
 
+    ./home-stack improve collect         yesterday's turns, redacted, for the evaluator
+    ./home-stack improve inbox           what the self-improvement inbox holds
     ./home-stack backup                  one archive of everything that matters
     ./home-stack backup --with-media     include recordings and documents
     ./home-stack backup --export         refresh the mirror, write no archive
@@ -302,6 +304,7 @@ case "$verb" in
     models)            exec ./.venv/bin/python ./deploy/models.py "$@" ;;
     ollama)            exec ./.venv/bin/python ./deploy/ollama_host.py "$@" ;;
     llamacpp)          exec ./.venv/bin/python ./deploy/llamacpp.py "$@" ;;
+    improve)           exec ./.venv/bin/python ./deploy/improve/cli.py "$@" ;;
     check)             exec ./deploy/deploy.py all --check-contract ;;
     logs)
         [ -f "$LOG" ] || die "no log at $LOG yet"

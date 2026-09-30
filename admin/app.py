@@ -1290,6 +1290,9 @@ SECRET_IMPACT = {
     "NANOGPT_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "OPENAI_COMPATIBLE_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "FREETOKEN_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
+    # alfred-mcp is the unit that writes opencode's provider file
+    # (OPENCODE_PROVIDER_KEYS in deploy.py).
+    "ANTHROPIC_API_KEY": ["alfred-mcp"],
     # Read by ./home-stack backup on the host, not by any container.
     # Listed so the secrets page shows it and can generate it.
     "BACKUP_ENCRYPTION_KEY": [],
@@ -6034,8 +6037,13 @@ def secrets_page():
         # around the clock. That is the shape a flat plan flags, and the account
         # can be blocked for it. None of the rest is required, and a local
         # Ollama needs no key at all.
+        # Anthropic's key is not an assistant role's: nothing in assistant.models
+        # names an `anthropic:` provider. opencode reads it when the Programmer
+        # picks a Claude model -- here because it is a model provider's key all
+        # the same, and it had nowhere else to be entered.
         "models": ["OPENCODE_API_KEY", "OPENROUTER_API_KEY",
-                   "OLLAMA_API_KEY", "TOGETHER_API_KEY", "NANOGPT_API_KEY"],
+                   "OLLAMA_API_KEY", "TOGETHER_API_KEY", "NANOGPT_API_KEY",
+                   "ANTHROPIC_API_KEY"],
         "required": [],
         "generated": [
             "HOMECORE_SECRET_KEY", "HOMECORE_DEBUG_API_KEY", "ADMIN_SECRET_KEY",

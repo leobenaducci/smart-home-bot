@@ -19,6 +19,19 @@ from nanobot.agent.skill_invocation import (
     is_skill_invocation_json,
 )
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.utils.profiling import current_span
+
+
+def with_session_key(env: dict[str, str]) -> dict[str, str]:
+    """*env* plus `NANOBOT_SESSION_KEY`: which conversation the running turn
+    belongs to, for a skill that has to say so -- a fix request continues the
+    Programmer session of the conversation it came from. From the turn's own
+    span, never from the model: a chat id the model had to pass along was the
+    thing that did not work (docs/roadmap.md, the coding harness)."""
+    span = current_span()
+    if span is not None and span.session_key:
+        env["NANOBOT_SESSION_KEY"] = span.session_key
+    return env
 from nanobot.agent.tools.sandbox import wrap_command
 from nanobot.agent.tools.schema import IntegerSchema, StringSchema, tool_parameters_schema
 from nanobot.config.paths import get_media_dir
@@ -582,7 +595,7 @@ class ExecTool(Tool):
                 val = os.environ.get(key)
                 if val is not None:
                     env[key] = val
-            return env
+            return with_session_key(env)
         home = os.environ.get("HOME", "/tmp")
         env = {
             "HOME": home,
@@ -593,7 +606,7 @@ class ExecTool(Tool):
             val = os.environ.get(key)
             if val is not None:
                 env[key] = val
-        return env
+        return with_session_key(env)
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""

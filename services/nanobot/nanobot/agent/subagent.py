@@ -17,6 +17,7 @@ from nanobot.utils.prompt_templates import render_template
 from nanobot.agent.classify import TurnClass, TurnClassifier, continuation_messages
 from nanobot.agent.runner import AgentRunResult, AgentRunSpec, AgentRunner
 from nanobot.utils.profiling import PROFILER
+from nanobot.agent.usage_report import report_cut, report_usage
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -332,6 +333,13 @@ class SubagentManager:
                 on_tool=on_tool, on_note=on_note, on_start=on_start, on_nudge=on_nudge)
             span.note(task_id=task_id, harness="pi", rounds=res.rounds,
                       delivered=res.delivered, error=res.error or None)
+        # pi calls its model itself, so the profiler saw none of it: what it
+        # spent comes from pi's own count, one per answer.
+        if res.usage:
+            report_usage(f"sub:{origin_chat_id}", endpoint.model, res.usage,
+                         [c.name for c in res.tools],
+                         route={"tier": "subagent", "label": "pi", "source": "harness"},
+                         stop_reason="completed" if res.text else "error", span=span)
         pi_runner.prune_workdirs(root, keep=self.harness.keep_workdirs)
         logger.info("Subagent [{}] on pi: {} round(s), {} turn(s), {}s, delivered={}", task_id,
                     res.rounds, res.turns, res.seconds, res.delivered)
@@ -561,6 +569,7 @@ class SubagentManager:
             # Long/open-ended background work (house/product searches, multi-site
             # research) needs room; complex tasks get a much bigger tool budget.
             max_iters = self.routing.complex_iterations if powerful else 40
+            escalated = False
             try:
                 # Filed against the chat that asked for it, so a session's cost
                 # includes the hours of background work it set off and not only
@@ -606,6 +615,7 @@ class SubagentManager:
                         logger.info("Subagent [{}] ended with {} on the fast model; "
                                     "continuing on {}", task_id, reason, self.powerful_model)
                         span.note(escalated_from=reason)
+                        escalated = True
                         result = await asyncio.wait_for(
                             AgentRunner(self.powerful_provider or self.provider).run(AgentRunSpec(
                                 initial_messages=continuation_messages(
@@ -628,6 +638,8 @@ class SubagentManager:
                     "Subagent [{}] exceeded {}s — stopping with partial progress",
                     task_id, SUBAGENT_MAX_RUNTIME_S,
                 )
+                report_cut(f"sub:{origin_chat_id}", model, span, stop_reason="timeout",
+                           route={"tier": "subagent", "label": "nanobot", "source": "subagent"})
                 status.phase = "timeout"
                 await self._announce_result(
                     task_id, label, task,
@@ -637,6 +649,12 @@ class SubagentManager:
                 return
             status.phase = "done"
             status.stop_reason = result.stop_reason
+            # The whole task, both attempts if it escalated: the span counted
+            # every call, the runner's result only the last one.
+            report_cut(f"sub:{origin_chat_id}", result.served_by_model or model, span,
+                       stop_reason=result.stop_reason,
+                       route={"tier": "subagent", "label": "nanobot", "source": "subagent",
+                              "escalated": escalated})
 
             # A subagent runs with fail_on_tool_error=False on purpose: one bad
             # tool call should not end a task that may have hours of work behind
