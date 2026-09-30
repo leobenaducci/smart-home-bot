@@ -1261,6 +1261,9 @@ cloud:
     fallback:
       model: ""                 # e.g. ornith:9b, an agentic-coding 9B, 5.6 GB
       gpu: 1
+      # The window. A conversation that began on Go can already be longer than
+      # 64k -- give it the model's own maximum when the card holds it
+      # (ornith:9b: 262144 fits a 12 GB card, 10.7 GB).
       context: 65536
     # Which of opencode's two HTTP surfaces HomeCore drives. One process
     # serves both; they are not a rename of each other.

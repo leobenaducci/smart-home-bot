@@ -164,6 +164,14 @@ The model runs on the host, on demand, on the Studio's card:
   (mode 600: it carries the Studio's derived secret). Removing the setting
   disables the socket on the next deploy.
 
+**Give it the model's whole window when it fits.** A conversation that began
+on Go carries Go's history: #10's opencode session was 90k-183k tokens when Go
+ran out, and at a 64k window every request was refused ("exceeds the available
+context size") -- the turn moved and then failed anyway. `ornith:9b` is 262k
+natively, and its cache is small (mostly linear-attention layers): at 262144 it
+takes 10.7 GB of the 12 GB card. Reading a 180k history the first time runs at
+~1,600 tokens/s, a couple of minutes, and then it is cached.
+
 The model must fit the card whole. `ornith:9b` (Ollama library; a 9B trained
 for agentic coding, 5.6 GB) was chosen on 2026-09-30 and measured on one 3060:
 6.6 GB with a 64k window, 3.5 s to load, ~42 tokens/s, and 3 of 3 on a small
