@@ -22665,7 +22665,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_none', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
     'ch_voice_text', 'ch_record', 'ch_stop', 'ch_pictures', 'ch_save', 'ch_pick_studio', 'ch_pick_files', 'ch_pick_none',
@@ -23288,6 +23288,88 @@ def studio_board_refine():
                 _studio_refining.discard(key)
     _studio_background(run)
     return jsonify(started=len(shots))
+
+
+def _studio_correct_shots(username, doc, shots, feedback):
+    """Every shot's description rewritten by the Designer from one piece of
+    feedback, or None. One call for the whole storyboard, so the correction is
+    applied consistently -- "she wears red" in every shot she is in, not in the
+    ones a per-shot pass happened to read that way. Exactly one description per
+    shot, in order; a shot the feedback does not concern comes back as it was."""
+    chars = (_studio_call(username, 'GET', f"projects/{doc['id']}/characters") or {}).get('characters') or []
+    by_id = {c.get('id'): c for c in chars}
+    cast_text = "\n".join(f"- {str(c.get('name'))[:60]}: {str(c.get('look') or '')[:300]}"
+                          for c in chars if c.get('name'))[:3000]
+    look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    listed = "\n".join(
+        f"Shot {i + 1}" + (" (continues the shot before)" if s.get('continuity') else '')
+        + (f" [on screen: {', '.join(str(by_id[c].get('name')) for c in s.get('cast') or [] if c in by_id)}]"
+           if s.get('cast') else '') + f": {str(s.get('prompt') or '').strip()[:1200]}"
+        for i, s in enumerate(shots))
+    n = len(shots)
+    prompt = (
+        "Here is a storyboard, one description per shot for a text-to-image and text-to-video model, "
+        "and a correction the person wants applied to it.\n"
+        + (f"The look of the whole piece: {look}\n" if look else "")
+        + (f"The characters, as they must be described:\n{cast_text}\n" if cast_text else "")
+        + f"The shots, in order:\n{listed}\n\n"
+        + f"The person's correction, for the whole storyboard:\n{feedback}\n\n"
+        "Rewrite the descriptions so the correction holds in every shot it concerns. Change only what the "
+        "correction asks for, and keep everything else as it is: a shot the correction does not concern comes "
+        "back exactly as written. Keep each description 1 to 3 sentences, in English, concrete and visual -- "
+        "who and what is on screen, the setting, the action, the camera, the light and the mood -- with no "
+        "sounds, no quotes of lyrics and no text on screen. Keep the characters described the same way in "
+        "every shot. Do not merge, split or reorder shots.\n"
+        f'Answer with only a JSON array of exactly {n} objects, in the same order, with no code fence and no '
+        f'other text: [{{"prompt": "..."}}, ...]')
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-board'
+    out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S,
+                                               profile='designer'), n)
+    if out is None:
+        again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only the JSON "
+                 f"array, exactly {n} entries in the same order, no code fence.")
+        out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
+                                                   profile='designer'), n)
+    return [o['prompt'] for o in out] if out is not None else None
+
+
+@app.route('/studio/api/board-correct', methods=['POST'])
+@api_login_required
+def studio_board_correct():
+    """✏️ One correction for the whole storyboard: the person writes what is
+    wrong ("it is night in every shot", "Mora wears the red coat"), the
+    Designer (`assistant.models.designer`, the storyboard's writer) rewrites
+    every description it concerns, and the ones that changed are saved under
+    the assistant's name in the project's history -- to undo in one step --
+    and, unless asked not to, redrawn. A frame drawn from the old description
+    is marked changed either way, as any edited shot is."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    feedback = str(d.get('feedback') or '').strip()[:2000]
+    if not feedback:
+        return jsonify(error=t('studio.sb_correct_empty')), 400
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    shots = [x for x in doc.get('shots') or [] if not x.get('recorded') and str(x.get('prompt') or '').strip()]
+    if not shots:
+        return jsonify(error=t('studio.sb_empty')), 400
+    new = _studio_correct_shots(username, doc, shots, feedback)
+    if new is None:
+        return jsonify(error=t('studio.sb_correct_failed')), 502
+    changed = []
+    for shot, text in zip(shots, new):
+        if text and text != str(shot.get('prompt') or '').strip():
+            if _studio_call(username, 'POST', f"projects/{pid}/items/{shot['id']}/prompt",
+                            {'prompt': text}, via='Alfred'):
+                changed.append(shot['id'])
+    redraw = bool(changed) and d.get('redraw', True) is not False
+    if redraw:
+        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {'items': changed})
+    return jsonify(changed=len(changed), total=len(shots), redrawn=redraw)
 
 
 @app.route('/studio/api/frame-review', methods=['POST'])
