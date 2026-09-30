@@ -756,10 +756,13 @@ _js = ("const SESSION_GAP = 3 * 60 * 60 * 1000;\n" + _page[_a:_b] +
        "let SPACE = 'programmer'; const p = splitConversations(msgs).length;\n"
        "SPACE = ''; const o = splitConversations(msgs).length;\n"
        "console.log(JSON.stringify([p, o]));")
-_js = _js.replace("SESSION_GAP && !sameIssue", "SESSION_GAP && !sameIssue")
-_out = _sp.run(["node", "-e", _js.replace("const SPACE", "let SPACE")], capture_output=True, text=True)
-check("the page agrees: one conversation in the Programmer, two in the ordinary chat",
-      _out.stdout.strip() == "[1,2]", (_out.stdout, _out.stderr[-300:]))
+if shutil.which("node"):
+    _out = _sp.run(["node", "-e", _js.replace("const SPACE", "let SPACE")], capture_output=True, text=True)
+    check("the page agrees: one conversation in the Programmer, two in the ordinary chat",
+          _out.stdout.strip() == "[1,2]", (_out.stdout, _out.stderr[-300:]))
+else:
+    # The image the deployer tests in has no node; the checkout's run has it.
+    print("  SKIP  node is not installed here: the page's half is checked where it is")
 
 print("\nan issue continued on another day keeps its opencode session")
 _conn = A._opencode_conn()
