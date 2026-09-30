@@ -138,3 +138,38 @@ async def test_an_empty_message_is_not_relayed():
     await ch.send(_message(content="   "))
 
     assert posts == []
+
+
+def test_files_sent_to_a_homecore_chat_arrive_as_pictures_in_the_text(tmp_path, monkeypatch):
+    """30 Sep 2026: the Designer cut five characters out of a picture and sent
+    them with `message(media=...)` -- twice -- and the person got two captions
+    and no pictures: the relay carried only text, and the socket carried paths
+    inside the container. Each file now lands in the workspace's media/ folder
+    and is written into the message, which HomeCore draws and keeps."""
+    import asyncio
+    from nanobot.channels import websocket as W
+    ws = tmp_path / "workspace"
+    (ws / "media").mkdir(parents=True)
+    crop = ws / "personaje_1_hombre.png"
+    crop.write_bytes(b"\x89PNG not really")
+    kept = ws / "media" / "already.jpg"
+    kept.write_bytes(b"\xff\xd8 jpeg")
+    notes = tmp_path / "elsewhere" / "notas.pdf"
+    notes.parent.mkdir()
+    notes.write_bytes(b"%PDF")
+    monkeypatch.setattr(W, "get_workspace_path", lambda *a, **k: ws)
+    posts: list = []
+    ch = _channel(posts)
+    conn = _attach(ch)
+    asyncio.run(ch.send(OutboundMessage(channel="websocket", chat_id=CHAT, content="Acá están:",
+                                        media=[str(crop), str(kept), str(notes), str(ws / "gone.png")])))
+    text = posts[-1]["text"]
+    copied = [p for p in (ws / "media").iterdir() if p.name.endswith("personaje_1_hombre.png")]
+    assert len(copied) == 1, "a file outside media/ is copied into it"
+    assert f"](media/{copied[0].name})" in text and text.startswith("Acá están:")
+    assert "![personaje 1 hombre](" in text, "a picture is an image"
+    assert "](media/already.jpg)" in text, "one already in media/ is linked where it is"
+    assert "[notas.pdf](download:media/" in text, "any other file is a link"
+    assert "gone.png" not in text
+    live = json.loads(conn.send.call_args.args[0])
+    assert live["text"] == text and "media" not in live, "the page gets the same text, no container paths"
