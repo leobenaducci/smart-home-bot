@@ -222,7 +222,7 @@ PERSONA_GROUPS = ("conversation", "profession", "unattended", "special")
 ZERO_COST_BARRED = frozenset({
     "everyday", "powerful", "notifications", "events", "subagent", "planner", "plan_steps",
     "vision", "fallback", "heartbeat", "classifier",
-    "programmer", "teacher", "designer", "doctor", "legal",
+    "programmer", "teacher", "designer", "doctor", "legal", "private",
     "titles", "documents",
 })
 
@@ -558,6 +558,28 @@ PERSONA_NEEDS = {
         "requires": {"context": 200_000, "max_output": 32_000},
         "prefer": "input",
     },
+    # The one role that may not leave the house at all. A private conversation
+    # is never written anywhere, and that promise means nothing if its words
+    # go to a provider: every turn runs on this house's own hardware or not
+    # at all. `local_only` makes the picker offer the Ollama card's setups and
+    # nothing else, and the save refuse anything else (`_not_local_for` in
+    # app.py) -- `ollama-cloud:` included, which reads local and is ollama.com.
+    # Blank is a real answer: the space then refuses to answer, and nanobot
+    # refuses a private turn on anything that is not local either way.
+    "private": {
+        "label": "Private",
+        "model_type": "fast",
+        "group": "profession",
+        "placement": "local",
+        "prefer_local": True,
+        "local_only": True,
+        "why": "A profession that leaves no record: nothing of the conversation "
+               "is written anywhere, and it runs only on this house's own "
+               "hardware. Only a local model can be chosen; with none, the "
+               "space says it cannot answer rather than send anything out.",
+        "requires": {},
+        "prefer": "input",
+    },
     "fallback": {
         "label": "Outage fallback",
         "model_type": "different",
@@ -575,6 +597,13 @@ PERSONA_NEEDS = {
         "prefer": "cache_read",
     },
 }
+
+# Roles that run on this house's own hardware or not at all (see `private`).
+LOCAL_ONLY = frozenset(r for r, spec in PERSONA_NEEDS.items() if spec.get("local_only"))
+# The sources a local-only role is offered: the house's Ollama servers and
+# setups. Not `openai_compatible`, which is any URL somebody typed in and may
+# be anywhere.
+OWN_HARDWARE_SOURCES = ("ollama", "ollama_vision")
 
 
 # --------------------------------------------------------------------------
@@ -1990,8 +2019,10 @@ def recommend(persona: str, catalogue: dict, limit: int = 3) -> dict:
         return [m for m in (catalogue.get(source) or [])
                 if m.get("kind", "") in CHAT_KINDS and meets(m, requires) and not m.get("dedicated")]
 
-    hosted = [m for source in HOSTED_SOURCES for m in usable(source)]
-    local = [m for source in LOCAL_SOURCES for m in usable(source)]
+    local_only = bool(spec.get("local_only"))
+    hosted = [] if local_only else [m for source in HOSTED_SOURCES for m in usable(source)]
+    local = [m for source in (OWN_HARDWARE_SOURCES if local_only else LOCAL_SOURCES)
+             for m in usable(source)]
 
     # The same models again, grouped by where they come from, best two each.
     #
@@ -2022,7 +2053,8 @@ def recommend(persona: str, catalogue: dict, limit: int = 3) -> dict:
     # `prefer_local` decides the order rather than the membership: a hosted
     # model is still a legitimate choice for a local-preferring role, it is
     # simply not the one to read first.
-    order = ((*LOCAL_SOURCES, *HOSTED_SOURCES) if spec.get("prefer_local")
+    order = (OWN_HARDWARE_SOURCES if local_only
+             else (*LOCAL_SOURCES, *HOSTED_SOURCES) if spec.get("prefer_local")
              else (*HOSTED_SOURCES, *LOCAL_SOURCES))
     by_provider = {}
     for source in order:

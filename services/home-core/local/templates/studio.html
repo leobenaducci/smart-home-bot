@@ -166,6 +166,10 @@
     /* Storyboard: a toolbar, one quiet line of help, then the frames. */
     .sb-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .sb-note { font-size: .8rem; line-height: 1.45; color: var(--ink-soft); margin: 8px 0 14px; max-width: 78ch; }
+    .sb-correct { margin-top: 12px; max-width: 78ch; }
+    .sb-correct textarea { width: 100%; box-sizing: border-box; font: inherit; }
+    .sb-correct-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-top: 6px; }
+    .sb-correct-row label { font-size: .85rem; color: var(--ink-soft); }
     .sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
     .sb-card { padding: 10px; }
     .sb-frame { position: relative; aspect-ratio: 16 / 9; border-radius: var(--r-sm); background: var(--line); display: flex;
@@ -316,7 +320,8 @@
       // Paused means the next job waits, not that the one on the card stops:
       // say both when both are true, and why, so a shot still moving does
       // not sit under a word that says it is not.
-      var why = q.status.pause_reason === 'update' ? S.card_paused_update : S.card_paused;
+      var why = q.status.pause_reason === 'update' ? S.card_paused_update
+        : q.status.pause_reason === 'programmer' ? S.card_paused_programmer : S.card_paused;
       $('#gpu-text').textContent = q.status.paused && run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) }) +
           ' · ' + fmt('card_paused_after', { why: why })
@@ -417,6 +422,10 @@
     // them and what they bring back is written into a copy nobody sees -- the
     // lyrics Alfred wrote vanished exactly that way (2026-09-28).
     var current = null, tab = 'video', saveTimer = null, dirty = false, saving = false, busy = 0;
+    // The storyboard's global correction, as it is being written: kept here
+    // because the tab is redrawn while the queue moves, and a redraw would
+    // otherwise empty the box under the person's hands.
+    var correctDraft = '', correctRedraw = true;
     // What a song is about is only an input for Alfred, not part of the
     // project; kept here so a redraw does not empty the box.
     var themes = {};
@@ -921,6 +930,10 @@
         (withFrames.length ? '<button id="sb-review-all" title="' + esc(S.sb_review_help) + '">👁 ' + fmt('sb_review_all', { n: withFrames.length }) + '</button>' +
           '<button id="sb-refine" title="' + esc(S.sb_refine_help) + '">🔁 ' + S.sb_refine + '</button>' : '') +
         '<span class="grow"></span><button id="preview">▶ ' + S.sb_animatic + '</button></div>' +
+        '<div class="sb-correct"><textarea id="sb-correct-text" rows="2" placeholder="' + esc(S.sb_correct_placeholder) + '">' +
+          esc(correctDraft) + '</textarea><div class="sb-correct-row"><label><input type="checkbox" id="sb-correct-redraw"' +
+          (correctRedraw ? ' checked' : '') + '> ' + S.sb_correct_redraw + '</label><button id="sb-correct" title="' +
+          esc(S.sb_correct_help) + '">✏️ ' + S.sb_correct + '</button></div></div>' +
         '<p class="sb-note">' + S.sb_help + ' ' + (useBoards() ? S.sb_to_video : S.sb_to_video_off) + '</p><div class="sb-grid">';
       (p.shots || []).forEach(function (s, i) {
         if (s.recorded) return;
@@ -1286,6 +1299,8 @@
       var el = ev.target;
       if (!current) return;
       if (el.id === 'pname') { current.name = el.value; markDirty(); return; }
+      if (el.id === 'sb-correct-text') { correctDraft = el.value; return; }
+      if (el.id === 'sb-correct-redraw') { correctRedraw = el.checked; return; }
       if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
       if (!el.dataset.f) return;
       var item = itemById(el.dataset.id); if (!item) return;
@@ -1467,6 +1482,22 @@
           b.disabled = true;
           var ra = await api('board-refine', { method: 'POST', body: { project: p.id, rounds: 0, threshold: 7 } });
           toast(fmt('sb_review_started', { n: ra.started }));
+          return;
+        }
+        if (b.id === 'sb-correct') {
+          // One correction for every shot: the Designer rewrites the
+          // descriptions it concerns, on the server; the changed ones are
+          // saved under Alfred's name in the history, to undo in one step.
+          var fb = correctDraft.trim();
+          if (!fb) { toast(S.sb_correct_empty, true); return; }
+          await flushSave();
+          b.disabled = true; b.textContent = '✏️ ' + S.sb_correct_working;
+          try {
+            var rc = await api('board-correct', { method: 'POST', body: { project: p.id, feedback: fb, redraw: correctRedraw } });
+            correctDraft = '';
+            toast(rc.changed ? fmt('sb_correct_done', { n: rc.changed, total: rc.total }) : S.sb_correct_none);
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          finally { current = await api('projects/' + p.id); loadQueue(); drawTab(); }
           return;
         }
         if (b.id === 'sb-refine') {

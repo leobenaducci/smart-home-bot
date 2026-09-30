@@ -839,6 +839,9 @@ check("  a parent can", c.delete(f"/api/jobs/{jid}", headers=h(MORA, "Mora", adm
 c.post("/api/admin/pause", json={"reason": "update"}, headers=h(MORA, "Mora", admin=True))
 st_q = c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]
 check("  a pause says why: an update is not a parent's decision", st_q["paused"] and st_q["pause_reason"] == "update", st_q)
+c.post("/api/admin/pause", json={"reason": "programmer"}, headers=h(MORA, "Mora", admin=True))
+check("  and a card lent to the Programmer says so",
+      c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]["pause_reason"] == "programmer")
 c.post("/api/admin/pause", json={}, headers=h(MORA, "Mora", admin=True))
 check("  and a parent's pause has no reason to show",
       c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]["pause_reason"] == "")

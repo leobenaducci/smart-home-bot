@@ -13,6 +13,7 @@ import json
 import mimetypes
 import re
 import secrets
+import shutil
 import ssl
 import time
 import uuid
@@ -32,7 +33,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.homeweb_relay import HomeCoreRelay
-from nanobot.config.paths import get_media_dir
+from nanobot.config.paths import get_media_dir, get_workspace_path
 from nanobot.config.schema import Base
 from nanobot.utils.media_decode import (
     FileSizeExceeded,
@@ -354,6 +355,48 @@ def _issue_route_secret_matches(headers: Any, configured_secret: str) -> bool:
     if not header_token:
         return False
     return hmac.compare_digest(header_token.strip(), configured_secret)
+
+
+_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+def homeweb_media_links(paths: list[str] | None, workspace: Path | None = None) -> str:
+    """Markdown for files Alfred sends to a HomeCore chat, or "".
+
+    The relay that files a message into HomeCore's history carried its text
+    and nothing else, and the live socket carried the files as paths inside
+    this container, which no browser can open: the Designer cut five
+    characters out of a picture, sent them twice with `message(media=...)`,
+    and the person received two captions and no pictures (2026-09-30).
+
+    HomeCore serves the workspace's `media/` folder (`/chat/download/media/…`)
+    and draws a markdown image in a message, live and from the history alike.
+    So each file is put there -- copied under a fresh name when it lives
+    anywhere else -- and written into the message: a picture as an image, any
+    other file as a link. The text then carries the files wherever it goes.
+    """
+    ws = (workspace or get_workspace_path()).resolve()
+    out = []
+    for raw in paths or []:
+        src = Path(str(raw))
+        if not src.is_file():
+            continue
+        try:
+            rel = src.resolve().relative_to(ws)
+        except ValueError:
+            rel = None
+        if rel is None or not rel.parts or rel.parts[0] != "media":
+            media = ws / "media"
+            media.mkdir(parents=True, exist_ok=True)
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", src.name)[:80] or "file"
+            dest = media / f"{uuid.uuid4().hex[:8]}-{safe}"
+            shutil.copy2(src, dest)
+            rel = dest.relative_to(ws)
+        path = rel.as_posix()
+        label = src.stem.replace("_", " ")[:60]
+        out.append(f"![{label}]({path})" if src.suffix.lower() in _IMAGE_EXT
+                   else f"[{src.name}](download:{path})")
+    return "\n\n".join(out)
 
 
 class WebSocketChannel(BaseChannel):
@@ -1163,6 +1206,10 @@ class WebSocketChannel(BaseChannel):
         # not conversation, and nothing about them is worth keeping or waking
         # anyone for.
         content = (msg.content or "").strip()
+        if is_homeweb and msg.media:
+            links = homeweb_media_links(msg.media)
+            if links:
+                content = f"{content}\n\n{links}" if content else links
         durable = (is_homeweb and content
                    and not msg.metadata.get("_tool_hint")
                    and not msg.metadata.get("_progress"))
@@ -1190,9 +1237,10 @@ class WebSocketChannel(BaseChannel):
         payload: dict[str, Any] = {
             "event": "message",
             "chat_id": msg.chat_id,
-            "text": msg.content,
+            # For a HomeCore chat, the text with its files written in (above).
+            "text": content if is_homeweb else msg.content,
         }
-        if msg.media:
+        if msg.media and not is_homeweb:
             payload["media"] = msg.media
         if msg.reply_to:
             payload["reply_to"] = msg.reply_to

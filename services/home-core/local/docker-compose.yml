@@ -184,6 +184,10 @@ services:
       # `bash` -- git without the broker. Empty means v1, which is what
       # shipped.
       - OPENCODE_API=${OPENCODE_API:-}
+      # The local model a Programmer turn moves to when OpenCode Go refuses on
+      # its usage limit (`home/<model>`); empty, the turn says when Go is back.
+      - OPENCODE_FALLBACK=${OPENCODE_FALLBACK:-}
+      - OPENCODE_LOCAL_FIRST=${OPENCODE_LOCAL_FIRST:-}
       - OPENCODE_WORKSPACE_ROOT=${OPENCODE_WORKSPACE_ROOT:-}
       # The self-improvement pipeline's folder, as the host sees it: written
       # into a fix request's prompt for opencode, never opened in here.

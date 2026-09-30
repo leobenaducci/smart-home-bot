@@ -126,6 +126,20 @@ the frames are not used. A video remembers the frame it started from
 (`takes[].board`), so a video made before its frame was drawn -- or from
 another frame -- says so, and Regenerate makes it from the frame.
 
+### One correction for every shot
+
+A note that is true of the whole storyboard -- "it is night in every shot",
+"Mora always wears the red coat", "closer shots" -- is written once, in the box
+under the tab's toolbar. The portal (`/studio/api/board-correct`) hands the
+Designer (`assistant.models.designer`, the storyboard's writer) every shot's
+description in order, the project's look, the characters and the note, in one
+call, so the correction is applied the same way everywhere, and asks for exactly
+as many descriptions back, a shot the note does not concern unchanged. The ones
+that changed are saved under the assistant's name in the project's history --
+one step to undo -- and redrawn, unless the box's "redraw" is unticked; a frame
+left undrawn is marked changed like any edited shot. Recorded shots are not
+descriptions and are left out.
+
 ### Reviewing the frames
 
 Every frame drawn is looked at when it lands -- a first drawing, a redraw,

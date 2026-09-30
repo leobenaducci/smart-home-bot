@@ -1,0 +1,20 @@
+# The model itself: ornith (or whatever `cloud.opencode.fallback.model` names)
+# on the Studio's card, for the Programmer while OpenCode Go is out.
+#
+# Start: pause the Studio and wait for its running job to finish (a video shot
+# can take ~25 minutes -- the household chose waiting over refusing), then
+# serve, then wait until it answers. Stop: give the card back.
+# StopWhenUnneeded: the proxy is the only thing that needs this, so the proxy
+# exiting on idle is what stops it.
+[Unit]
+Description=The Programmer's local model (llama-server on the Studio's card)
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/home-stack/programmer-local.env
+ExecStartPre=%h/.config/home-stack/programmer-local.sh pause
+ExecStart=%h/.config/home-stack/programmer-local.sh run
+ExecStartPost=%h/.config/home-stack/programmer-local.sh ready
+ExecStopPost=%h/.config/home-stack/programmer-local.sh resume
+TimeoutStartSec=infinity

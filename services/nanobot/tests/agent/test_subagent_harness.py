@@ -170,3 +170,43 @@ def test_the_panel_sees_a_call_when_it_starts_and_each_nudge(monkeypatch, tmp_pa
               if c.args[0].metadata.get("_subagent_event") == "progress"]
     assert events == [("tool", "web"), ("tool_result", "web"),
                       ("phase", "asked to continue (1/3): no file")]
+
+
+def test_a_task_with_a_picture_stays_off_pi_and_names_the_picture(tmp_path, pi_installed):
+    """A turn handed over with a picture: the picture goes along, named in the
+    task, and the task runs where there is a shell and an image tool -- pi has
+    neither. On 2026-09-30 "extract the five characters from that image" went
+    to pi without the image and came back as a report that there was none."""
+    pic = tmp_path / "media" / "251a6afb1a45.jpg"
+    pic.parent.mkdir()
+    pic.write_bytes(b"\xff\xd8 not really a jpeg")
+    m = manager(tmp_path)
+    seen = {}
+
+    async def loop_run(spec, *a, **kw):
+        seen["task"] = spec.initial_messages[-1]["content"]
+        raise RuntimeError("the loop ran")
+    m.runner.run = loop_run
+    status = SubagentStatus(task_id="t1", label="l", task_description="t", started_at=0.0)
+    origin = {"channel": "websocket", "chat_id": "homeweb:999000111:2026-09-30:dsg:1",
+              "session_key": "websocket:homeweb:999000111:2026-09-30:dsg:1"}
+    asyncio.run(m._run_subagent("t1", "extract the five characters from that image", "l", origin,
+                                status, media=[str(pic), str(tmp_path / "gone.jpg")]))
+    assert pi_installed == []
+    assert str(pic) in seen.get("task", "") and "gone.jpg" not in seen.get("task", "")
+
+
+def test_spawn_hands_the_pictures_on(tmp_path, monkeypatch):
+    m = manager(tmp_path)
+    got = {}
+
+    async def fake_run(self, task_id, task, label, origin, status, powerful=False, context=None, media=None):
+        got["media"] = media
+    monkeypatch.setattr(SubagentManager, "_run_subagent", fake_run)
+
+    async def go_spawn():
+        await m.spawn("crop it", complex=False, media=["/x/a.jpg"])
+        await asyncio.sleep(0)
+        await asyncio.gather(*m._running_tasks.values(), return_exceptions=True)
+    asyncio.run(go_spawn())
+    assert got.get("media") == ["/x/a.jpg"]

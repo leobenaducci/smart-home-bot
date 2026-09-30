@@ -1,4 +1,5 @@
 import base64
+import collections
 import errno
 import json
 import logging
@@ -2504,7 +2505,7 @@ def get_chat_history():
     start = request.args.get('start')
     if start:
         try:
-            msgs = _session_read(msgs, int(start))
+            msgs = _session_read(msgs, int(start), _valid_space(request.args.get('space')))
         except (TypeError, ValueError):
             pass
     return jsonify(msgs)
@@ -2695,7 +2696,7 @@ CHAT_SESSION_GAP_MS = 3 * 60 * 60 * 1000
 CHAT_SESSIONS_MAX = 200
 
 
-def _iter_sessions(msgs):
+def _iter_sessions(msgs, space=None):
     """[(segment, its messages)] for one day, in order — the single definition
     of where one conversation ends and the next begins.
 
@@ -2716,7 +2717,15 @@ def _iter_sessions(msgs):
     `_split_sessions` and `_session_slice` are both built on this, because they
     used to carry separate copies of the rule and a rule kept in two places
     only stays consistent until someone changes one of them.
+
+    *space*: in the Programmer one conversation is one issue, and silence does
+    not split a run that keeps its id -- an issue goes quiet for hours (a
+    model's limit, a night) without becoming another. Splitting it there showed
+    the rest as a second conversation under an invented id, whose running turn
+    belonged to the real one and never appeared (fix request #10, 2026-09-30).
+    The page's `splitConversations` says the same.
     """
+    same_issue_space = _valid_space(space) == OPENCODE_SPACE
     out = []
     cur = cur_msgs = cur_conv = None
     seen_starts = set()
@@ -2739,7 +2748,8 @@ def _iter_sessions(msgs):
     for m in msgs:
         ts = m.get('ts') or 0
         conv = m.get('conv') or None
-        by_gap = cur is not None and ts - cur['last'] > CHAT_SESSION_GAP_MS
+        by_gap = (cur is not None and ts - cur['last'] > CHAT_SESSION_GAP_MS
+                  and not (same_issue_space and conv is not None and conv == cur_conv))
         # Compared against the run's id, or — while the run is still unstamped —
         # against where it began. A cron delivery names a brand-new conversation
         # (nanobot's retarget_for_delivery), and the 6 AM greeting lands on a day
@@ -2809,20 +2819,20 @@ def _iter_sessions(msgs):
     return out
 
 
-def _split_sessions(msgs):
+def _split_sessions(msgs, space=None):
     """One day's messages → the separate conversations it holds, in order."""
-    return [seg for seg, _ in _iter_sessions(msgs)]
+    return [seg for seg, _ in _iter_sessions(msgs, space)]
 
 
-def _session_slice(msgs, start_ts):
+def _session_slice(msgs, start_ts, space=None):
     """Just the conversation that began at `start_ts`."""
-    for seg, seg_msgs in _iter_sessions(msgs):
+    for seg, seg_msgs in _iter_sessions(msgs, space):
         if seg['start'] == start_ts:
             return seg_msgs
     return []
 
 
-def _session_read(msgs, start_ts):
+def _session_read(msgs, start_ts, space=None):
     """One conversation as it is *read*: a branch with its inheritance above it.
 
     A branch stores only its own messages — nothing is copied, or the day file
@@ -2832,7 +2842,7 @@ def _session_read(msgs, start_ts):
     ‹1/2› switcher sits on, and the point past which the two threads stop
     being the same conversation.
     """
-    for seg, seg_msgs in _iter_sessions(msgs):
+    for seg, seg_msgs in _iter_sessions(msgs, space):
         if seg['start'] != start_ts:
             continue
         parent = seg.get('branch_of')
@@ -2840,7 +2850,7 @@ def _session_read(msgs, start_ts):
             return seg_msgs
         at = seg.get('branch_at') or 0
         inherited = [dict(m, from_parent=True)
-                     for m in _session_slice(msgs, parent)
+                     for m in _session_slice(msgs, parent, space)
                      if not at or (m.get('ts') or 0) <= at]
         return inherited + seg_msgs
     return []
@@ -2892,7 +2902,7 @@ def _conv_last_ts(msgs):
     return max((m.get('ts') or 0) for m in msgs) if msgs else 0
 
 
-def _derived_conv(msgs):
+def _derived_conv(msgs, space=None):
     """The conversation a turn that names none should join.
 
     The day's last conversation — except a branch, which is never it. A branch
@@ -2901,7 +2911,7 @@ def _derived_conv(msgs):
     reminder, voice reply and family DM that follows into the side thread
     rather than the conversation actually being had.
     """
-    main = [s for s in _split_sessions(msgs) if not s.get('branch_of')]
+    main = [s for s in _split_sessions(msgs, space) if not s.get('branch_of')]
     return main[-1]['start'] if main else 0
 
 
@@ -2927,7 +2937,7 @@ def _conv_resolve(username, day, requested=None, space=None):
         if not last_ts or at_ms - last_ts > CHAT_SESSION_GAP_MS:
             conv, fresh = at_ms, True
         else:
-            derived = _derived_conv(msgs)
+            derived = _derived_conv(msgs, space)
             conv = max(_conv_read(username, day, space), derived) or at_ms
             fresh = conv == at_ms
         _conv_write(username, day, conv, space)
@@ -2943,7 +2953,7 @@ def _conv_peek(username, day, space=None):
         last_ts = _conv_last_ts(msgs)
         if not last_ts or int(time.time() * 1000) - last_ts > CHAT_SESSION_GAP_MS:
             return None
-        return max(_conv_read(username, day, space), _derived_conv(msgs)) or None
+        return max(_conv_read(username, day, space), _derived_conv(msgs, space)) or None
 
 
 def _conv_chat_id(username, day, conv, space=None):
@@ -3183,14 +3193,14 @@ def _title_pending(username, now_ms):
     for space in (None, *CHAT_SPACES):
         for day in _history_day_stems(username, limit=CHAT_TITLE_DAYS, space=space):
             msgs = load_user_history(username, day, space)
-            for s in _split_sessions(msgs):
+            for s in _split_sessions(msgs, space):
                 if now_ms - s['last'] <= CHAT_SESSION_GAP_MS:
                     continue  # still going — titles wait until a chat finishes
                 sid = _title_key(day, s['start'], space)
                 title, attempts = known.get(sid, ('', 0))
                 if title or attempts >= CHAT_TITLE_MAX_ATTEMPTS:
                     continue
-                out.append((sid, s['last'], _session_slice(msgs, s['start'])))
+                out.append((sid, s['last'], _session_slice(msgs, s['start'], space)))
     out.sort(key=lambda x: x[1], reverse=True)
     return out
 
@@ -3232,7 +3242,7 @@ def chat_sessions():
     titles = _chat_titles(username)
     out = []
     for day in _history_day_stems(username, space=space):
-        for s in _split_sessions(load_user_history(username, day, space)):
+        for s in _split_sessions(load_user_history(username, day, space), space):
             s['date'] = day
             s['id'] = f"{day}:{s['start']}"
             # Empty until the conversation is over and Alfred has named it; the
@@ -4015,6 +4025,12 @@ def _render_chat(space=None):
                            # covers values *stored* before that rename; a
                            # comparison in a template is not one of those.
                            has_projects=space in PROJECT_SPACES,
+                           # Whether a conversation here can become a fix
+                           # request: only where the Programmer runs on
+                           # opencode for this person, which is where the
+                           # request's work is done (improve_request_convert).
+                           can_convert=bool(space == OPENCODE_SPACE
+                                            and _opencode_url(session['user'])),
                            # Translated here rather than printed raw. The
                            # titles in CHAT_SPACES are English because English
                            # is this stack's source language; what a household
@@ -6516,7 +6532,7 @@ def _fork_start(item):
     """
     username, day, space = item['user'], item['day'], item['space']
     parent = item['conv']
-    msgs = _session_slice(load_user_history(username, day, space), parent) \
+    msgs = _session_slice(load_user_history(username, day, space), parent, space) \
         if parent else []
     branch_at = _conv_last_ts(msgs)
     conv = int(time.time() * 1000)
@@ -6677,7 +6693,7 @@ def chat_fork():
     # anything written before conversations were recorded.
     parent = anchor.get('conv') or 0
     if not parent:
-        for seg, seg_msgs in _iter_sessions(msgs):
+        for seg, seg_msgs in _iter_sessions(msgs, space):
             if any(int(m.get('ts') or 0) == anchor_ts for m in seg_msgs):
                 parent = seg['start']
                 break
@@ -7005,6 +7021,333 @@ OPENCODE_SPACE = 'programmer'
 # rewrite: `cloud.opencode.api` picks one, and v1 is still there.
 OPENCODE_API = (os.environ.get('OPENCODE_API') or 'v1').strip().lower()
 
+# The Programmer's local model when OpenCode Go is out -- `<provider>/<model>`
+# from `cloud.opencode.fallback` (deploy.py `opencode_fallback`), or "".
+#
+# Go does not *fail* a turn when its allowance is spent. opencode retries, and
+# says so only as a `session.status` of type "retry" whose message is Go's own:
+# "weekly usage limit reached. It will reset in 4 days 9 hours." Nothing read
+# that, so a Programmer turn sat "working" for as long as the reset was away --
+# fix request #10 for most of a day (2026-09-30). Now the refusal is read: with
+# a fallback the turn runs again on the local model, and every turn after it
+# goes there until the reset Go named; without one, the turn ends saying when
+# Go is back.
+OPENCODE_FALLBACK = (os.environ.get('OPENCODE_FALLBACK') or '').strip()
+# The household may run it the other way round (`cloud.opencode.fallback.first`,
+# 2026-09-30): the local model takes each Programmer turn, and Go takes over
+# when the local one fails -- see `_opencode_engine` for when it does not start
+# at all, and `_LocalWatch` for what counts as failing.
+OPENCODE_LOCAL_FIRST = (os.environ.get('OPENCODE_LOCAL_FIRST') or '').strip().lower() in ('1', 'true', 'yes')
+_go_out = {'until': 0.0, 'reset': ''}
+_GO_LIMIT_RE = re.compile(r'usage limit', re.I)
+_GO_RESET_RE = re.compile(r'reset in\s+((?:\d+\s*(?:day|hour|minute|min)s?[\s,]*(?:and\s+)?)+)',
+                          re.I)
+_GO_UNIT_S = {'day': 86400, 'hour': 3600, 'minute': 60, 'min': 60}
+
+
+def _go_refused(props):
+    """Go's words when this status is a retry on its usage limit, else None."""
+    status = props.get('status') or {}
+    message = str(status.get('message') or '')
+    if status.get('type') == 'retry' and _GO_LIMIT_RE.search(message):
+        return message
+    return None
+
+
+def _go_reset(message):
+    """(seconds until Go is back, how Go put it) from its refusal. An hour when
+    it did not say: trying Go again then costs one refused call."""
+    m = _GO_RESET_RE.search(message or '')
+    if not m:
+        return 3600, ''
+    words = m.group(1).strip(' ,')
+    seconds = sum(int(n) * _GO_UNIT_S[u.lower()]
+                  for n, u in re.findall(r'(\d+)\s*(day|hour|minute|min)', words, re.I))
+    return max(seconds, 60), words
+
+
+# A local turn works in an opencode session of its own, keyed `local:<chat_id>`.
+# Go's session is where the issue was worked on, and it is long -- fix request
+# #10's was ~180k tokens of tool output when Go ran out -- and a 9B model handed
+# all of it lost its thread: ten steps reading one file, nothing committed
+# (2026-09-30). So each engine keeps its own session, and whichever one takes a
+# turn is first told what the other did since it last took part: the
+# conversation as the person sees it, text only (`_opencode_handover`). One
+# conversation and one worktree still; only the model's working memory is two.
+OPENCODE_LOCAL_PREFIX = 'local:'
+OPENCODE_HANDOVER_CHARS = 24000
+OPENCODE_HANDOVER_MSG_CHARS = 2000
+
+
+def _opencode_seen(key, set_ms=None):
+    """When engine key `<login>:<conv>:<engine>` last took part, or None; with
+    *set_ms*, record it."""
+    conn = _opencode_conn()
+    try:
+        if set_ms is not None:
+            conn.execute('INSERT INTO seen (key, seen_ms) VALUES (?, ?) ON CONFLICT(key) '
+                         'DO UPDATE SET seen_ms = excluded.seen_ms', (key, int(set_ms)))
+            conn.commit()
+            return set_ms
+        row = conn.execute('SELECT seen_ms FROM seen WHERE key = ?', (key,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _improve_request_of(username, conv):
+    """The fix request whose conversation *conv* is, or None."""
+    if not conv or not os.path.exists(IMPROVE_DB_PATH):
+        return None
+    conn = _improve_conn()
+    try:
+        row = conn.execute('SELECT id FROM improve_requests WHERE username = ? AND conv = ? '
+                           'ORDER BY id DESC LIMIT 1', (username, int(conv))).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _opencode_conv_msgs(username, conv):
+    """A Programmer conversation's messages across the days it spans, in order."""
+    msgs = []
+    for day in reversed(_history_day_stems(username, limit=14, space=OPENCODE_SPACE)):
+        msgs += [m for m in load_user_history(username, day, OPENCODE_SPACE)
+                 if str(m.get('conv') or '') == str(conv)]
+    msgs.sort(key=lambda m: m.get('ts') or 0)
+    return msgs
+
+
+def _opencode_handover(username, conv, since_ms, engine):
+    """What *engine* ('local' or 'go') is told before this turn: the
+    conversation as the person sees it since *since_ms*, text only, capped --
+    or '' when there is nothing it has not seen. The person's newest message
+    is the turn itself and is left out."""
+    msgs = _opencode_conv_msgs(username, conv)
+    last_user = max((m.get('ts') or 0 for m in msgs if m.get('role') == 'user'), default=0)
+    new = [m for m in msgs if since_ms < (m.get('ts') or 0) < last_user
+           and m.get('role') in ('user', 'bot') and (m.get('text') or '').strip()]
+    if not new:
+        return ''
+
+    def line(m):
+        text = m['text'].strip()
+        if len(text) > OPENCODE_HANDOVER_MSG_CHARS:
+            text = text[:OPENCODE_HANDOVER_MSG_CHARS] + ' [...]'
+        return ('Person: ' if m['role'] == 'user' else 'Programmer: ') + text
+
+    # The opening (the request) and as much of the end as fits.
+    lines = [line(m) for m in new]
+    kept, size = [], len(lines[0])
+    for ln in reversed(lines[1:]):
+        if size + len(ln) > OPENCODE_HANDOVER_CHARS:
+            break
+        kept.insert(0, ln)
+        size += len(ln)
+    skipped = len(lines) - 1 - len(kept)
+    body = [lines[0], *([f'[... {skipped} earlier messages left out ...]'] if skipped else []), *kept]
+    if engine == 'local':
+        head = ("[Handover] This house's local model takes this conversation over from OpenCode Go. "
+                "You do not have the session the work was done in: below is the conversation as the "
+                "person sees it, text only -- tool output is left out. Where it and the files "
+                "disagree, the files are right.")
+    else:
+        head = ("[Handover] You take this conversation over from this house's local model; below "
+                "is what was said since you last took part, text only. The local model may have "
+                "changed files or left work half done: check the files before relying on it.")
+    rid = _improve_request_of(username, conv)
+    tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
+    tail = (f"This is fix request #{rid}: run `{tool} status {rid}` and read the worktree's diff "
+            "before anything else." if rid else "")
+    return "\n\n".join([head, "---", "\n\n".join(body), "---", *([tail] if tail else []),
+                         "The person's new message:", ""])
+
+
+def _opencode_local_model():
+    """opencode's `model` for the local engine, or None when there is none."""
+    provider, _, model = OPENCODE_FALLBACK.partition('/')
+    return {'providerID': provider, 'modelID': model} if provider and model else None
+
+
+def _go_is_out():
+    return time.time() < _go_out['until']
+
+
+def _opencode_on_go(username, conv, pin=False):
+    """Whether this conversation stays on Go: the local model failed in it, or
+    the person asked for Go. With *pin*, record that it does."""
+    if not conv:
+        return False
+    key = f'{username}:{conv}:stay-go'
+    if pin:
+        _opencode_seen(key, set_ms=time.time() * 1000)
+        return True
+    return _opencode_seen(key) is not None
+
+
+def _opencode_asked_for_go(username, msg_content):
+    """Whether this message is the "Retry on Go" button's."""
+    if isinstance(msg_content, list):
+        msg_content = ' '.join(p.get('text') or '' for p in msg_content if isinstance(p, dict))
+    said = (msg_content or '').strip()
+    return any(said.endswith(label) for label in
+               {t_for(username, 'programmer.retry_go'), t_for('', 'programmer.retry_go')} if label)
+
+
+def _studio_rendering():
+    """Whether the Studio is running a job on the card the local model borrows.
+    Lending it means waiting for that job -- a video shot is ~25 minutes -- which
+    is worth it only when there is nowhere else to go."""
+    if not STUDIO_URL or not STUDIO_SECRET:
+        return False
+    try:
+        r = requests.get(f'{STUDIO_URL}/api/queue', timeout=(3, 10), headers={
+            'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': 'programmer',
+            'X-Studio-Name': 'Programmer', 'X-Studio-Admin': '1'})
+        return bool(r.status_code == 200 and (r.json() or {}).get('running'))
+    except (requests.RequestException, ValueError):
+        return False
+
+
+def _opencode_engine(turn, msg_content=''):
+    """'local' or 'go' for this attempt at a Programmer turn.
+
+    Go out: local, whatever the order (and nothing, when there is no local
+    model -- the refusal says so). Otherwise Go goes first, unless the household
+    runs the local model first; then Go still takes the turn when the local
+    model already failed in it, the conversation is on Go (it failed there
+    before, or the person pressed "Retry on Go"), or the Studio is rendering."""
+    if not OPENCODE_FALLBACK or OPENCODE_API == 'v2' or not _opencode_local_model():
+        return 'go'
+    if _go_is_out():
+        return 'local'
+    if not OPENCODE_LOCAL_FIRST or turn.get('go'):
+        return 'go'
+    username = turn['user']
+    conv = turn.get('conv')
+    if _opencode_asked_for_go(username, msg_content):
+        _opencode_on_go(username, conv, pin=True)
+        return 'go'
+    if _opencode_on_go(username, conv):
+        return 'go'
+    if _studio_rendering():
+        app.logger.info('opencode: the Studio is rendering; this turn goes to Go rather than wait')
+        return 'go'
+    return 'local'
+
+
+# What counts as the local model failing a turn, when Go can take it over. A
+# 9B model in trouble rarely errors: on fix request #10 it read the same files
+# again and again and committed nothing (2026-09-30). So it is watched:
+#
+# - the same call again: a tool with the same input three times, or one file
+#   read four times (a long file is read in pieces, so reads are counted by
+#   path rather than by range);
+# - too long without changing anything: forty tool calls and no edit;
+# - its tests red at the end of a turn in which it changed files.
+#
+# An error opencode reports for the model (its server did not answer, the
+# history did not fit) counts too. A turn that simply ends -- an answer, a
+# question back -- is not a failure; for that there is the "Retry on Go" button.
+LOCAL_REPEAT_LIMIT = 3
+LOCAL_READ_LIMIT = 4
+LOCAL_IDLE_STEPS = 40
+LOCAL_EDIT_TOOLS = frozenset(('edit', 'write', 'patch', 'multiedit', 'apply_patch'))
+_TEST_CMD_RE = re.compile(r'\bpytest\b|\btest_\w+\.py\b|\bunittest\b|\b(?:npm|pnpm|yarn|go|cargo) test\b|'
+                          r'\bimprove test\b')
+_TEST_RED_RE = re.compile(r'\b\d+ (?:failed|errors?)\b|^FAILED\b|\bFAIL:', re.M)
+_TEST_GREEN_RE = re.compile(r'\b\d+ passed\b|^OK\b|\bok\s+\S+', re.M)
+
+
+class _LocalWatch:
+    """The signs of a local turn going nowhere; `why` says which, or ''."""
+
+    def __init__(self):
+        self.calls = collections.Counter()
+        self.counted = set()
+        self.steps = 0
+        self.edits = 0
+        self.tests = None           # 'red' or 'green': the last test run's result
+        self.why = ''               # in English, for the log and for Go
+        self.reason = ('', {})      # the same for the person: an i18n key and its values
+
+    def tool(self, part):
+        """One tool part, as opencode updates it. Counted once, when its input is
+        known; its result read when it completes."""
+        state = part.get('state') or {}
+        status = state.get('status')
+        name = (part.get('tool') or part.get('name') or '').lower()
+        pid = part.get('id')
+        args = state.get('input') or {}
+        if status in ('running', 'completed', 'error') and pid and pid not in self.counted and args:
+            self.counted.add(pid)
+            self.steps += 1
+            if name == 'read':
+                sig, limit = ('read', str(args.get('filePath') or args.get('path') or '')), LOCAL_READ_LIMIT
+            else:
+                sig, limit = (name, json.dumps(args, sort_keys=True)), LOCAL_REPEAT_LIMIT
+            self.calls[sig] += 1
+            if name in LOCAL_EDIT_TOOLS:
+                self.edits += 1
+            if self.calls[sig] >= limit and not self.why:
+                what = f'read {sig[1]}' if name == 'read' else f'made the same {name} call'
+                self.why = f'{what} {self.calls[sig]} times over'
+                self.reason = ('programmer.local_why_repeat', {'n': self.calls[sig]})
+            elif self.steps >= LOCAL_IDLE_STEPS and not self.edits and not self.why:
+                self.why = f'made {self.steps} tool calls without changing a file'
+                self.reason = ('programmer.local_why_idle', {'n': self.steps})
+        if status == 'completed' and name == 'bash' and _TEST_CMD_RE.search(str(args.get('command') or '')):
+            out = str(state.get('output') or '')
+            if _TEST_RED_RE.search(out):
+                self.tests = 'red'
+            elif _TEST_GREEN_RE.search(out):
+                self.tests = 'green'
+        return self.why
+
+    def at_end(self):
+        """Why the finished turn counts as failed, or ''."""
+        if not self.why and self.edits and self.tests == 'red':
+            self.why = 'finished with its tests failing'
+            self.reason = ('programmer.local_why_tests', {})
+        return self.why
+
+
+def _local_failed(turn, base, why, reason):
+    """The local model failed this turn (`_LocalWatch`): stopped, and handed to
+    Go for this turn and the rest of the conversation -- or, with Go out, the
+    turn ends saying so. Same contract as `_turn_attempt_opencode`."""
+    username = turn['user']
+    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
+    app.logger.warning('opencode: the local model failed a turn for %s: %s', username, why)
+    said = t_for(username, reason[0], **reason[1]) if reason[0] else why
+    if _go_is_out():
+        return t_for(username, 'programmer.local_failed', why=said,
+                     reset=_go_out['reset'] or '?'), False
+    turn.update(go=True, escalated=why, escalate=True)
+    _opencode_on_go(username, turn.get('conv'), pin=True)
+    if turn['text']:
+        # Its partial answer stays on the screen; Go's follows it, set apart.
+        with turn['cond']:
+            turn['text'] += '\n\n---\n\n'
+        _turn_emit(turn, {'text': '\n\n---\n\n'})
+    _turn_emit(turn, {'hint': t_for(username, 'programmer.local_to_go', why=said)})
+    return f'the local model {why}; OpenCode Go takes the turn', True
+
+
+def _retry_on_go_offer(turn):
+    """A local turn that finished is offered again on Go, as a button: a model
+    that answers wrongly without erring is the failure no watch catches, and the
+    person reading it is the one who can tell."""
+    if turn.get('engine') != 'local' or turn.get('cancelled') or _go_is_out():
+        return ''
+    username = turn['user']
+    block = '\n'.join(['', '', ':::ask', f"q: {t_for(username, 'programmer.retry_go_q')}",
+                       f"- {t_for(username, 'programmer.retry_go')}", ':::'])
+    with turn['cond']:
+        turn['text'] += block
+    _turn_emit(turn, {'text': block})
+    return block
+
 
 def _oc(path):
     """The right prefix for the surface in use.
@@ -7137,6 +7480,11 @@ def _opencode_url(username):
 
 def _opencode_conn():
     conn = sqlite3.connect(OPENCODE_DB_PATH)
+    # When each engine -- `go`, or `local` -- last took part in a Programmer
+    # conversation (`<login>:<conv>:<engine>`), so the other one's turns can be
+    # handed over (`_opencode_handover`). No day in the key: an issue outlives
+    # one.
+    conn.execute('CREATE TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY, seen_ms INTEGER NOT NULL)')
     conn.execute('CREATE TABLE IF NOT EXISTS sessions ('
                  'chat_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, '
                  'directory TEXT NOT NULL DEFAULT "", '
@@ -7170,7 +7518,38 @@ def _opencode_directory(username):
     return os.path.join(OPENCODE_WORKSPACE_ROOT, _member_of(user))
 
 
-def _opencode_session(base, chat_id, directory):
+def _opencode_carry(conn, chat_id):
+    """A Programmer conversation continued on a later day keeps its session.
+
+    The key is the chat_id, and a chat_id carries the day it was written on
+    (`homeweb:<user>:<day>:<scope>:<conv>`, `_writing_day`), so the first
+    message after midnight -- or after a weekend of OpenCode Go being out --
+    found no row and opened a new opencode session: the same issue, and none of
+    what the Programmer had found. One conversation is one issue here, so the
+    conversation's latest session is moved to today's key. Moved, not copied:
+    the recovery sweep files a missed reply under the day its key names, and a
+    row left under the old day would file it there too.
+    """
+    key = chat_id
+    prefix = OPENCODE_LOCAL_PREFIX if key.startswith(OPENCODE_LOCAL_PREFIX) else ''
+    parts = key[len(prefix):].split(':')
+    if (len(parts) != 5 or parts[0] != 'homeweb' or not parts[4].isdigit()
+            or parts[3] != CHAT_SPACES[OPENCODE_SPACE]['scope']):
+        return
+    if conn.execute('SELECT 1 FROM sessions WHERE chat_id = ?', (chat_id,)).fetchone():
+        return
+    earlier = conn.execute(
+        'SELECT chat_id FROM sessions WHERE chat_id LIKE ? AND chat_id != ? '
+        'ORDER BY created DESC LIMIT 1',
+        (prefix + ':'.join([parts[0], parts[1], '%', parts[3], parts[4]]), chat_id)).fetchone()
+    if earlier:
+        conn.execute('UPDATE sessions SET chat_id = ? WHERE chat_id = ?', (chat_id, earlier[0]))
+        conn.commit()
+        app.logger.info('opencode: %s continues on a new day; its session moves to %s',
+                        earlier[0], chat_id)
+
+
+def _opencode_session(base, chat_id, directory, made=None):
     """The opencode session for this conversation, making one if needed.
 
     Stored rather than derived: opencode allocates the id, and the mapping is
@@ -7182,6 +7561,7 @@ def _opencode_session(base, chat_id, directory):
     """
     conn = _opencode_conn()
     try:
+        _opencode_carry(conn, chat_id)
         row = conn.execute(
             'SELECT session_id, directory, api FROM sessions WHERE chat_id = ?',
             (chat_id,)).fetchone()
@@ -7237,6 +7617,8 @@ def _opencode_session(base, chat_id, directory):
         sid = (_oc_data(r.json()) or {}).get('id')
         if not sid:
             raise RuntimeError('opencode created a session with no id')
+        if made is not None:
+            made.append(sid)
         conn.execute(
             'INSERT INTO sessions (chat_id, session_id, directory, api, '
             'created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id) DO UPDATE '
@@ -7579,12 +7961,16 @@ def _improve_conversation(username, conv):
         conn.close()
 
 
-def _improve_prompt(row, username=None):
+def _improve_prompt(row, username=None, converted=False):
     """What the Programmer is asked, for the person to read and send.
 
     The rules are in the request rather than trusted to the agent's prompt,
     because this is the text the person reviews before sending: what it says
-    it will do is what they are agreeing to."""
+    it will do is what they are agreeing to.
+
+    *converted*: the request was made from a Programmer conversation already
+    under way (`improve_request_convert`), so the conversation above is its
+    context and the person, not Alfred, said what it is about."""
     rid, problem, context = row
     tool = f'{IMPROVE_DIR}/bin/improve' if IMPROVE_DIR else './home-stack improve'
     user = find_user(username) if username else None
@@ -7596,8 +7982,14 @@ def _improve_prompt(row, username=None):
              f"and each plugin, with what each provides; recent turns, redacted, "
              f"are in `{IMPROVE_DIR}/inbox/`." if IMPROVE_DIR else
              "Find which repository this belongs to: the stack, or one of its plugins.")
-    lines = [f"Fix request #{rid}, asked of Alfred:", "",
+    lines = [f"Fix request #{rid}, " + ("made from this conversation:" if converted
+                                         else "asked of Alfred:"), "",
              *[f"> {ln}" for ln in problem.splitlines() or [problem]], ""]
+    if converted:
+        lines += ["Everything above in this conversation is its context. From here on it is "
+                  "this fix request, and the rules below apply to it. Anything already changed "
+                  "outside the request's worktree is not part of the fix: make it again there.",
+                  ""]
     if context:
         lines += ["What Alfred had when it was asked -- leads to check, not facts. Alfred "
                   "cannot read a skill's own environment or its code, so part of this may be "
@@ -7618,7 +8010,8 @@ def _improve_prompt(row, username=None):
                  "environment is not the assistant's.", ""] if container else []),
               "The house's settings are on the admin page; ask me for a value rather than "
               "reading its files, which are refused.", "",
-              "First, investigate only -- change nothing:",
+              ("If what we worked out above is not yet a proposal, investigate first -- "
+               "change nothing:" if converted else "First, investigate only -- change nothing:"),
               "1. Check each claim above against the running system (the container's "
               "environment, the skill's code, the service answering) and say which held.",
               "2. Find the cause. Then tell me the cause, where it lives (which repository, "
@@ -7704,6 +8097,91 @@ def _improve_similar(a, b):
     wa = set(re.findall(r'\w{4,}', (a or '').lower()))
     wb = set(re.findall(r'\w{4,}', (b or '').lower()))
     return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= 0.3
+
+
+def _improve_into(username, rid, prompt, day, conv):
+    """Put request *rid*'s opening message into the Programmer conversation
+    (*day*, *conv*) that already exists, behind whatever is running there, and
+    record the conversation as the request's. (day, conv), or None when it
+    could not be queued."""
+    try:
+        append_user_history(username, {'role': 'user', 'text': prompt,
+                                       'ts': int(time.time() * 1000), 'conv': conv},
+                            day, OPENCODE_SPACE)
+        chat_id = _conv_chat_id(username, day, conv, OPENCODE_SPACE)
+        if not _queue_add(chat_id, _queue_item(username, day, conv, OPENCODE_SPACE, prompt, [], [],
+                                               project=IMPROVE_PROJECT)):
+            raise RuntimeError("that conversation's queue is full")
+        _queue_advance(username, chat_id)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning('improve: #%s not started in %s/%s: %s', rid, day, conv, exc)
+        return None
+    conn = _improve_conn()
+    try:
+        conn.execute("UPDATE improve_requests SET status = 'investigating', day = ?, conv = ? "
+                     'WHERE id = ?', (day, conv, rid))
+        conn.commit()
+    finally:
+        conn.close()
+    return day, conv
+
+
+@app.route('/improve/api/requests/convert', methods=['POST'])
+@api_login_required
+def improve_request_convert():
+    """Make the Programmer conversation the person is in a fix request.
+
+    For work that started as an ordinary conversation -- "why is the lights
+    skill slow?" typed straight into the Programmer -- and turned out to be a
+    fix. In place, not a new conversation seeded with a summary: the opencode
+    session keeps what it already found, and one issue stays one chat. From
+    the next turn it carries the request's number, its rules and its gates,
+    like a request Alfred filed.
+    """
+    username = session['user']
+    body = request.get_json(silent=True) or {}
+    problem = str(body.get('problem') or '').strip()[:IMPROVE_TEXT_MAX]
+    if not problem:
+        return jsonify(error='say what the issue is: problem is empty'), 400
+    try:
+        conv = int(body.get('conv') or 0)
+    except (TypeError, ValueError):
+        conv = 0
+    if conv <= 0:
+        return jsonify(error='no conversation'), 400
+    if not _opencode_url(username):
+        return jsonify(ok=False, error='the Programmer does not run on opencode for this '
+                       'member, so there is nowhere to work on a fix.'), 409
+    # One of this person's Programmer conversations, with something in it:
+    # the day the page has open, where its messages are filed.
+    asked = _valid_day(body.get('date'))
+    if not any(m.get('conv') == conv
+               for m in load_user_history(username, asked, OPENCODE_SPACE)):
+        return jsonify(error='no such conversation'), 404
+    conn = _improve_conn()
+    try:
+        row = conn.execute('SELECT id FROM improve_requests WHERE username = ? AND conv = ?',
+                           (username, conv)).fetchone()
+        if row:
+            return jsonify(ok=False, id=row[0],
+                           error=f'this conversation is already fix request #{row[0]}'), 409
+        # Its own origin, so dedupe never takes it for another request made
+        # without one, and "publish the last fix" from an Alfred chat never
+        # reaches it.
+        rid = conn.execute('INSERT INTO improve_requests (username, created_at, problem, context, '
+                           'origin) VALUES (?,?,?,?,?)',
+                           (username, int(time.time()), problem, '',
+                            f'programmer:{conv}')).lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    # Written today, like anything sent now (`_writing_day`): the same day a
+    # message the person typed in this conversation would be filed under.
+    day = _writing_day(body.get('date'))
+    started = _improve_into(username, rid,
+                            _improve_prompt((rid, problem, ''), username, converted=True),
+                            day, conv)
+    return jsonify(ok=True, id=rid, investigating=bool(started))
 
 
 def _improve_card(username, rid, started):
@@ -7868,6 +8346,7 @@ def _turn_attempt_opencode(turn, msg_content):
     cancel as not-a-failure.
     """
     username = turn['user']
+    watch = None
     try:
         if turn['cancelled']:
             return None, False
@@ -7879,7 +8358,43 @@ def _turn_attempt_opencode(turn, msg_content):
             # string, which would be a request to this container.
             return 'no opencode server for this member', False
         directory = _opencode_directory(username)
-        session_id = _opencode_session(base, turn['chat_id'], directory)
+        # Which engine takes this turn, and so which session (see
+        # OPENCODE_LOCAL_PREFIX): Go's, or the local model's own.
+        engine = _opencode_engine(turn, msg_content)
+        local = _opencode_local_model() if engine == 'local' else None
+        turn['engine'] = engine
+        if local:
+            turn['local_tried'] = True
+        asked_go = engine == 'go' and _opencode_asked_for_go(username, msg_content)
+        turn['oc_key'] = (OPENCODE_LOCAL_PREFIX if local else '') + turn['chat_id']
+        made = []
+        session_id = _opencode_session(base, turn['oc_key'], directory, made)
+        conv, _space = _chat_id_conv(turn['chat_id'].split(':'))
+        seen_key = f'{username}:{conv}:{engine}'
+        seen = _opencode_seen(seen_key) if conv else None
+        # A session this engine is new to reads the whole conversation; one it
+        # has taken part in, what came since. Go's session from before there
+        # were two engines saw everything already.
+        since = 0 if (made or (seen is None and local)) else seen
+        if local and conv and _opencode_seen(f'{username}:{conv}:go') is None:
+            # Go took part up to the message this turn answers; what comes from
+            # here is the local model's, and Go is handed it when it is back.
+            asked = max((m.get('ts') or 0 for m in _opencode_conv_msgs(username, conv)
+                         if m.get('role') == 'user'), default=0)
+            _opencode_seen(f'{username}:{conv}:go', set_ms=max(asked - 1, 0))
+        handover = (_opencode_handover(username, conv, since, engine)
+                    if conv and since is not None else '')
+        if handover:
+            msg_content = handover + msg_content
+        if engine == 'go' and (turn.get('escalated') or asked_go):
+            note = (f"this house's local model took it first and {turn['escalated']}, so it was "
+                    "stopped" if turn.get('escalated') else
+                    "the person pressed \"Retry on OpenCode Go\": the local model's last answer did "
+                    "not do, so redo their previous request yourself")
+            msg_content = (f"[Note from HomeCore: {note}. It may have changed files -- check the "
+                           "worktree (git status, git diff) before relying on anything.]\n\n"
+                           + msg_content)
+        watch = _LocalWatch() if local else None
 
         # The two surfaces want opposite orders, and this is the one thing
         # about v2 that cannot be guessed from v1.
@@ -7976,7 +8491,7 @@ def _turn_attempt_opencode(turn, msg_content):
                     # stop and opencode is now working on an answer nobody will
                     # read, holding the session busy against the next question.
                     # Interrupting twice is free; missing it is not.
-                    _opencode_abort(base, turn['chat_id'])
+                    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
                 return None, False
             if not r.ok:
                 return (f'opencode said HTTP {r.status_code}',
@@ -7985,12 +8500,25 @@ def _turn_attempt_opencode(turn, msg_content):
             if OPENCODE_API != 'v2':
                 body = {'agent': OPENCODE_AGENT,
                         'parts': [{'type': 'text', 'text': msg_content}]}
+                # Go is out: name the local model on this message. The agent's
+                # own model (Go) stays its default for when Go is back.
+                if local:
+                    body['model'] = local
+                    if not turn.get('local'):
+                        turn['local'] = True
+                        _turn_emit(turn, {'hint': t_for(username, 'programmer.go_out_local',
+                                                        reset=_go_out['reset'] or '?')
+                                          if _go_is_out() else
+                                          t_for(username, 'programmer.on_local')})
                 params = {'directory': directory} if directory else None
                 p = requests.post(f'{base}/session/{session_id}/prompt_async',
                                   params=params, json=body, timeout=30)
                 if not p.ok:
                     return (f'opencode refused the prompt: HTTP {p.status_code}',
                             _turn_retryable(status=p.status_code))
+                # This engine has now been told everything up to here.
+                if conv:
+                    _opencode_seen(seen_key, set_ms=time.time() * 1000)
 
             for raw in r.iter_lines():
                 if not raw:
@@ -8033,6 +8561,22 @@ def _turn_attempt_opencode(turn, msg_content):
                         idle = True
                         break
                     continue
+                if kind == 'session.status':
+                    refusal = _go_refused(props)
+                    if not refusal:
+                        continue
+                    seconds, words = _go_reset(refusal)
+                    _go_out.update(until=time.time() + seconds, reset=words)
+                    # Its words only: the rest of Go's message names the
+                    # account's workspace.
+                    app.logger.warning('opencode: Go refused on its usage limit (back in %s); %s',
+                                       words or 'an unknown time',
+                                       'running on the local model' if OPENCODE_FALLBACK
+                                       else 'no local fallback')
+                    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
+                    if OPENCODE_FALLBACK and not turn.get('local_tried'):
+                        return 'OpenCode Go is out; the local model takes the turn', True
+                    return t_for(username, 'programmer.go_out', reset=words or '?'), False
                 if kind == 'message.part.updated':
                     # Only for the type. A part is announced here -- with its
                     # type -- before any of its deltas arrive, and the delta
@@ -8046,6 +8590,8 @@ def _turn_attempt_opencode(turn, msg_content):
                     part = props.get('part') or {}
                     if part.get('id'):
                         part_types[part['id']] = part.get('type') or ''
+                    if watch and part.get('type') == 'tool' and watch.tool(part):
+                        return _local_failed(turn, base, watch.why, watch.reason)
                     # What it is doing, as it does it. Without this the person
                     # sees nothing at all for minutes: this model answers with
                     # `reasoning` and `tool` parts and produces no text until
@@ -8092,6 +8638,11 @@ def _turn_attempt_opencode(turn, msg_content):
                 elif kind == 'session.error':
                     detail = (props.get('error') or {}).get('message') \
                         or json.dumps(props.get('error') or {})[:200]
+                    if watch:
+                        # The local model's server did not answer, or the
+                        # history did not fit: Go can take it.
+                        return _local_failed(turn, base, f'failed: {str(detail)[:200]}',
+                                             ('programmer.local_why_error', {}))
                     return f'opencode: {detail}', _turn_retryable()
                 elif kind == 'permission.asked':
                     # opencode wants a person to approve something, and in this
@@ -8118,7 +8669,7 @@ def _turn_attempt_opencode(turn, msg_content):
                     _turn_emit(turn, {'step': {'type': 'tool',
                                                'name': 'permiso',
                                                'detail': str(where)[:80]}})
-                    _opencode_abort(base, turn['chat_id'])
+                    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
                     detail = f'{what}{" for " + str(where)[:200] if where else ""}'
                     return (f'opencode stopped to ask permission for {detail}, '
                             f'and this space has no way to ask you. Nothing was '
@@ -8148,6 +8699,8 @@ def _turn_attempt_opencode(turn, msg_content):
                            turn['id'], username)
         return ('opencode stopped answering part way through -- its server went '
                 'away mid-turn. Nothing was lost; ask again.'), True
+    if watch and not turn['cancelled'] and watch.at_end():
+        return _local_failed(turn, base, watch.why, watch.reason)
     return None, False
 
 
@@ -8182,7 +8735,7 @@ def _turn_cancel(turn):
     # side reading, and the turns worth stopping are the ones that are not
     # writing anything -- two minutes inside a tool call.
     if turn.get('backend') == 'opencode':
-        _opencode_abort(_opencode_url(turn['user']), turn['chat_id'])
+        _opencode_abort(_opencode_url(turn['user']), turn.get('oc_key') or turn['chat_id'])
         api = None
     else:
         api, nanobot_id = _nanobot_for(turn['user'])
@@ -8299,6 +8852,11 @@ def _turn_worker(turn, api, nanobot_id, msg_content, powerful, profile):
                 turn, api, nanobot_id, msg_content, powerful, profile)
             if error is None or turn['cancelled']:
                 break
+            # The local model failing hands the turn to Go (`_local_failed`):
+            # at once, and even after it said something -- Go's answer follows
+            # its partial one, set apart, and the hint says why.
+            if turn.pop('escalate', False) and attempt < TURN_RETRIES:
+                continue
             if not retryable or turn['text'] or attempt == TURN_RETRIES:
                 break
             wait = TURN_RETRY_BACKOFF[min(attempt, len(TURN_RETRY_BACKOFF) - 1)]
@@ -8320,6 +8878,7 @@ def _turn_worker(turn, api, nanobot_id, msg_content, powerful, profile):
             # Before filing, so what is stored is what was shown: the buttons
             # the Programmer was asked to end with, when it did not.
             _offers_fallback(turn)
+            _retry_on_go_offer(turn)
             _turn_finish(turn)
     finally:
         # Delivery happens inside `_turn_finish`, which every exit path above
@@ -8679,7 +9238,9 @@ def _opencode_recover_once():
     finally:
         conn.close()
     filed = 0
-    for chat_id, sid, directory in rows:
+    for key, sid, directory in rows:
+        # A local turn's session files its missed reply in the same place.
+        chat_id = key[len(OPENCODE_LOCAL_PREFIX):] if key.startswith(OPENCODE_LOCAL_PREFIX) else key
         parts = chat_id.split(':')
         if len(parts) < 4 or parts[0] != 'homeweb':
             continue
@@ -22318,7 +22879,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_none', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
     'ch_voice_text', 'ch_record', 'ch_stop', 'ch_pictures', 'ch_save', 'ch_pick_studio', 'ch_pick_files', 'ch_pick_none',
@@ -22337,7 +22898,7 @@ STUDIO_UI_KEYS = (
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
-    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_after', 'rec_retry',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_paused_after', 'rec_retry',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
@@ -22941,6 +23502,88 @@ def studio_board_refine():
                 _studio_refining.discard(key)
     _studio_background(run)
     return jsonify(started=len(shots))
+
+
+def _studio_correct_shots(username, doc, shots, feedback):
+    """Every shot's description rewritten by the Designer from one piece of
+    feedback, or None. One call for the whole storyboard, so the correction is
+    applied consistently -- "she wears red" in every shot she is in, not in the
+    ones a per-shot pass happened to read that way. Exactly one description per
+    shot, in order; a shot the feedback does not concern comes back as it was."""
+    chars = (_studio_call(username, 'GET', f"projects/{doc['id']}/characters") or {}).get('characters') or []
+    by_id = {c.get('id'): c for c in chars}
+    cast_text = "\n".join(f"- {str(c.get('name'))[:60]}: {str(c.get('look') or '')[:300]}"
+                          for c in chars if c.get('name'))[:3000]
+    look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    listed = "\n".join(
+        f"Shot {i + 1}" + (" (continues the shot before)" if s.get('continuity') else '')
+        + (f" [on screen: {', '.join(str(by_id[c].get('name')) for c in s.get('cast') or [] if c in by_id)}]"
+           if s.get('cast') else '') + f": {str(s.get('prompt') or '').strip()[:1200]}"
+        for i, s in enumerate(shots))
+    n = len(shots)
+    prompt = (
+        "Here is a storyboard, one description per shot for a text-to-image and text-to-video model, "
+        "and a correction the person wants applied to it.\n"
+        + (f"The look of the whole piece: {look}\n" if look else "")
+        + (f"The characters, as they must be described:\n{cast_text}\n" if cast_text else "")
+        + f"The shots, in order:\n{listed}\n\n"
+        + f"The person's correction, for the whole storyboard:\n{feedback}\n\n"
+        "Rewrite the descriptions so the correction holds in every shot it concerns. Change only what the "
+        "correction asks for, and keep everything else as it is: a shot the correction does not concern comes "
+        "back exactly as written. Keep each description 1 to 3 sentences, in English, concrete and visual -- "
+        "who and what is on screen, the setting, the action, the camera, the light and the mood -- with no "
+        "sounds, no quotes of lyrics and no text on screen. Keep the characters described the same way in "
+        "every shot. Do not merge, split or reorder shots.\n"
+        f'Answer with only a JSON array of exactly {n} objects, in the same order, with no code fence and no '
+        f'other text: [{{"prompt": "..."}}, ...]')
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-board'
+    out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S,
+                                               profile='designer'), n)
+    if out is None:
+        again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only the JSON "
+                 f"array, exactly {n} entries in the same order, no code fence.")
+        out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
+                                                   profile='designer'), n)
+    return [o['prompt'] for o in out] if out is not None else None
+
+
+@app.route('/studio/api/board-correct', methods=['POST'])
+@api_login_required
+def studio_board_correct():
+    """✏️ One correction for the whole storyboard: the person writes what is
+    wrong ("it is night in every shot", "Mora wears the red coat"), the
+    Designer (`assistant.models.designer`, the storyboard's writer) rewrites
+    every description it concerns, and the ones that changed are saved under
+    the assistant's name in the project's history -- to undo in one step --
+    and, unless asked not to, redrawn. A frame drawn from the old description
+    is marked changed either way, as any edited shot is."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    feedback = str(d.get('feedback') or '').strip()[:2000]
+    if not feedback:
+        return jsonify(error=t('studio.sb_correct_empty')), 400
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    shots = [x for x in doc.get('shots') or [] if not x.get('recorded') and str(x.get('prompt') or '').strip()]
+    if not shots:
+        return jsonify(error=t('studio.sb_empty')), 400
+    new = _studio_correct_shots(username, doc, shots, feedback)
+    if new is None:
+        return jsonify(error=t('studio.sb_correct_failed')), 502
+    changed = []
+    for shot, text in zip(shots, new):
+        if text and text != str(shot.get('prompt') or '').strip():
+            if _studio_call(username, 'POST', f"projects/{pid}/items/{shot['id']}/prompt",
+                            {'prompt': text}, via='Alfred'):
+                changed.append(shot['id'])
+    redraw = bool(changed) and d.get('redraw', True) is not False
+    if redraw:
+        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {'items': changed})
+    return jsonify(changed=len(changed), total=len(shots), redrawn=redraw)
 
 
 @app.route('/studio/api/frame-review', methods=['POST'])

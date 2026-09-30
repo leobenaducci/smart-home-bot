@@ -268,7 +268,7 @@ async def test_an_unmarked_task_is_classified(tmp_path, monkeypatch):
     m = _manager(tmp_path, "complex")
     started = {}
 
-    async def fake_run(task_id, task, label, origin, status, powerful, context):
+    async def fake_run(task_id, task, label, origin, status, powerful, context, media=None):
         started.update(task_id=task_id, powerful=powerful)
 
     monkeypatch.setattr(m, "_run_subagent", fake_run)
@@ -283,7 +283,7 @@ async def test_the_spawners_word_wins(tmp_path, monkeypatch):
     m = _manager(tmp_path, "complex")
     started = {}
 
-    async def fake_run(task_id, task, label, origin, status, powerful, context):
+    async def fake_run(task_id, task, label, origin, status, powerful, context, media=None):
         started.update(powerful=powerful)
 
     monkeypatch.setattr(m, "_run_subagent", fake_run)
@@ -297,7 +297,7 @@ async def test_shadow_mode_labels_a_task_but_runs_it_cheap(tmp_path, monkeypatch
     m = _manager(tmp_path, "complex", mode="shadow")
     started = {}
 
-    async def fake_run(task_id, task, label, origin, status, powerful, context):
+    async def fake_run(task_id, task, label, origin, status, powerful, context, media=None):
         started.update(task_id=task_id, powerful=powerful)
 
     monkeypatch.setattr(m, "_run_subagent", fake_run)

@@ -23,7 +23,10 @@ def load_iter_sessions():
     tree = ast.parse(APP.read_text(encoding="utf-8"))
     fn = next(n for n in tree.body
               if isinstance(n, ast.FunctionDef) and n.name == "_iter_sessions")
-    ns = {"CHAT_SESSION_GAP_MS": GAP}
+    # The splitter asks which space it is splitting (the Programmer keeps a
+    # conversation whole across silence); these run as the ordinary chat.
+    ns = {"CHAT_SESSION_GAP_MS": GAP, "OPENCODE_SPACE": "programmer",
+          "_valid_space": lambda s: s}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), "app.py", "exec"), ns)
     return ns["_iter_sessions"]
 

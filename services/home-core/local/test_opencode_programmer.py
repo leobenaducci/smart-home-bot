@@ -43,6 +43,11 @@ dst = os.path.join(tmp, "local")
 shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns(
     "__pycache__", "backup_data", "history", "certs"))
 os.makedirs(os.path.join(dst, "backup_data"), exist_ok=True)
+# The catalogue the image ships beside the app: without it `t_for` answers with
+# the key, and a message that should name when Go is back names nothing.
+_repo_i18n = os.path.join(SRC, "..", "..", "..", "i18n")
+if not os.path.isdir(os.path.join(dst, "i18n")) and os.path.isdir(_repo_i18n):
+    shutil.copytree(_repo_i18n, os.path.join(dst, "i18n"))
 os.chdir(dst)
 
 # Before `import app`: OPENCODE_URL and friends are read at module level, and
@@ -642,6 +647,362 @@ check("  nor does tool output", "glob(" not in _got, _got)
 _src = pathlib.Path(__file__).with_name("app.py").read_text(encoding="utf-8")
 check("  and app.py filters on the part type, not only the field",
       "part_types.get(props.get('partID')) != 'text'" in _src)
+
+# --- OpenCode Go out: its refusal is read ------------------------------------
+
+print("\nOpenCode Go's usage limit")
+# Go's own words, as opencode relayed them on 2026-09-30 (the workspace id in
+# the real message is left out).
+REFUSAL = ("weekly usage limit reached. It will reset in 4 days 9 hours. To continue "
+           "using this model now, enable usage from your available balance")
+check("the reset is read from Go's words",
+      A._go_reset(REFUSAL) == (4 * 86400 + 9 * 3600, "4 days 9 hours"), A._go_reset(REFUSAL))
+check("and an hour when it names none", A._go_reset("usage limit reached")[0] == 3600)
+check("a retry on the limit is a refusal; any other retry, or status, is not",
+      A._go_refused({"status": {"type": "retry", "message": REFUSAL}}) == REFUSAL
+      and A._go_refused({"status": {"type": "retry", "message": "Endpoint is unavailable"}}) is None
+      and A._go_refused({"status": {"type": "busy"}}) is None)
+
+limited = [
+    {"type": "session.status", "properties": {"sessionID": SID, "status": {"type": "busy"}}},
+    {"type": "session.status", "properties": {"sessionID": SID, "status": {
+        "type": "retry", "attempt": 1, "message": REFUSAL}}},
+    {"type": "message.part.delta", "properties": {
+        "sessionID": SID, "partID": "p", "field": "text", "delta": "NEVER READ"}},
+]
+posted = []
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": SID})
+                       if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse(limited))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": SID}))
+
+_saved_fb = A.OPENCODE_FALLBACK
+A.OPENCODE_FALLBACK = ""
+A._go_out.update(until=0.0, reset="")
+turn = a_turn()
+err, retry = A._turn_attempt_opencode(turn, "hello")
+check("with no fallback the turn ends at once, saying when Go is back, instead of "
+      "sitting 'working' until the reset", err and "4 days 9 hours" in err and retry is False,
+      (err, retry))
+check("and opencode's retry loop is stopped", any("/abort" in u for u, _ in posted),
+      [u for u, _ in posted])
+
+A.OPENCODE_FALLBACK = "home/ornith:9b"
+A._go_out.update(until=0.0, reset="")
+posted.clear()
+turn = a_turn()
+err, retry = A._turn_attempt_opencode(turn, "hello")
+check("with a fallback the refused attempt is retried", err and retry is True, (err, retry))
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("its first attempt went to Go, as the agent's own model", prompt and "model" not in prompt[0],
+      prompt)
+posted.clear()
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": SID})
+                       if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse([{"type": "session.idle",
+                                                 "properties": {"sessionID": SID}}]))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": SID}))
+emitted = []
+_saved_emit = A._turn_emit
+A._turn_emit = lambda t, ev: emitted.append(ev)
+err, retry = A._turn_attempt_opencode(turn, "hello")
+A._turn_emit = _saved_emit
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("the retry names the local model on the message",
+      prompt and prompt[0].get("model") == {"providerID": "home", "modelID": "ornith:9b"}, prompt)
+check("and says so in the chat, with when Go is back",
+      any("4 days 9 hours" in str(ev.get("hint", "")) for ev in emitted), emitted)
+posted.clear()
+err, retry = A._turn_attempt_opencode(a_turn(), "next question")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("every turn after it goes straight to the local model until the reset",
+      prompt and prompt[0].get("model", {}).get("modelID") == "ornith:9b", prompt)
+A._go_out.update(until=0.0, reset="")
+posted.clear()
+err, retry = A._turn_attempt_opencode(a_turn(), "after the reset")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("and after the reset, back to Go", prompt and "model" not in prompt[0], prompt)
+A.OPENCODE_FALLBACK = _saved_fb
+
+# --- one issue, one conversation, whatever the clock says ---------------------
+
+print("\nsilence does not split a Programmer conversation")
+H = 3600 * 1000
+T0 = 1790762203631
+day_msgs = [
+    {"role": "user", "text": "Fix request #10", "ts": T0, "conv": T0},
+    {"role": "bot", "text": "design", "ts": T0 + H // 2, "conv": T0},
+    {"role": "user", "text": "Seguimos con el pedido #10", "ts": T0 + 5 * H, "conv": T0},
+    {"role": "bot", "text": "working", "ts": T0 + 5 * H + 60000, "conv": T0},
+]
+prog = A._split_sessions(day_msgs, "programmer")
+check("in the Programmer, four hours of quiet in one conversation leave it one conversation",
+      len(prog) == 1 and prog[0]["start"] == T0, prog)
+check("which the old folder name reaches too", len(A._split_sessions(day_msgs, "programador")) == 1)
+check("elsewhere silence still splits, as it always has",
+      len(A._split_sessions(day_msgs, None)) == 2 and len(A._split_sessions(day_msgs, "teacher")) == 2)
+other = day_msgs[:2] + [{"role": "user", "text": "otra cosa", "ts": T0 + 5 * H, "conv": T0 + 5 * H}]
+check("and in the Programmer a different id is still a different conversation",
+      len(A._split_sessions(other, "programmer")) == 2)
+
+import subprocess as _sp
+_page = open(os.path.join(SRC, "templates", "chat.html"), encoding="utf-8").read()
+_a = _page.index("  function splitConversations(msgs) {")
+_b = _page.index("    return out;\n  }", _a) + len("    return out;\n  }")
+_js = ("const SESSION_GAP = 3 * 60 * 60 * 1000;\n" + _page[_a:_b] +
+       "\nconst msgs = " + json.dumps(day_msgs) + ";\n"
+       "let SPACE = 'programmer'; const p = splitConversations(msgs).length;\n"
+       "SPACE = ''; const o = splitConversations(msgs).length;\n"
+       "console.log(JSON.stringify([p, o]));")
+if shutil.which("node"):
+    _out = _sp.run(["node", "-e", _js.replace("const SPACE", "let SPACE")], capture_output=True, text=True)
+    check("the page agrees: one conversation in the Programmer, two in the ordinary chat",
+          _out.stdout.strip() == "[1,2]", (_out.stdout, _out.stderr[-300:]))
+else:
+    # The image the deployer tests in has no node; the checkout's run has it.
+    print("  SKIP  node is not installed here: the page's half is checked where it is")
+
+print("\nan issue continued on another day keeps its opencode session")
+_conn = A._opencode_conn()
+_conn.execute("DELETE FROM sessions")
+_conn.execute("INSERT INTO sessions (chat_id, session_id, directory, api, created) VALUES (?,?,?,?,?)",
+              (f"homeweb:{LOGIN}:2026-09-30:dev:{T0}", "ses_ISSUE10", "", "v1", 100))
+_conn.commit()
+A._opencode_carry(_conn, f"homeweb:{LOGIN}:2026-10-01:dev:{T0}")
+_rows = dict(_conn.execute("SELECT chat_id, session_id FROM sessions").fetchall())
+check("the next day's key finds the conversation's session",
+      _rows.get(f"homeweb:{LOGIN}:2026-10-01:dev:{T0}") == "ses_ISSUE10", _rows)
+check("and it moves rather than copies, so a missed reply is filed under one day only",
+      f"homeweb:{LOGIN}:2026-09-30:dev:{T0}" not in _rows, _rows)
+A._opencode_carry(_conn, f"homeweb:{LOGIN}:2026-10-01:dev:{T0 + 1}")
+check("another conversation is not given it",
+      f"homeweb:{LOGIN}:2026-10-01:dev:{T0 + 1}" not in dict(
+          _conn.execute("SELECT chat_id, session_id FROM sessions").fetchall()))
+_conn.execute("INSERT INTO sessions (chat_id, session_id, directory, api, created) VALUES (?,?,?,?,?)",
+              (f"homeweb:{LOGIN}:2026-09-30:edu:{T0}", "ses_TEACHER", "", "v1", 100))
+_conn.commit()
+A._opencode_carry(_conn, f"homeweb:{LOGIN}:2026-10-01:edu:{T0}")
+check("and only the Programmer's conversations carry over",
+      f"homeweb:{LOGIN}:2026-10-01:edu:{T0}" not in dict(
+          _conn.execute("SELECT chat_id, session_id FROM sessions").fetchall()))
+_conn.close()
+
+# --- a handover between engines ----------------------------------------------
+
+print("\nGo out, then back: each engine is told what the other did")
+CONV = 1790900000001
+DAYH = "2026-10-02"
+CHAT = f"homeweb:{LOGIN}:{DAYH}:dev:{CONV}"
+A.OPENCODE_FALLBACK = "home/ornith:9b"
+for i, (role, text) in enumerate([("user", "Fix request #77, asked of Alfred: lights are slow"),
+                                  ("bot", "Found it: the skill polls every light. Proposal: cache the state."),
+                                  ("user", "Sí, hacelo"),
+                                  ("bot", "EARLY WORK"),
+                                  ("user", "sigue")]):
+    A.append_user_history(LOGIN, {"role": role, "text": text, "ts": CONV + i * 60000, "conv": CONV},
+                          DAYH, "programmer")
+_conn = A._opencode_conn(); _conn.execute("DELETE FROM sessions"); _conn.execute("DELETE FROM seen")
+_conn.execute("INSERT INTO sessions (chat_id, session_id, directory, api, created) VALUES (?,?,?,?,?)",
+              (CHAT, "ses_GO", "/state/nanobot-code-workspace/user1", "v1", 100))
+_conn.commit(); _conn.close()
+made_sessions = []
+def _post(u, kw):
+    posted.append((u, kw))
+    if u.endswith("/session"):
+        made_sessions.append(u); return FakeResp(payload={"id": "ses_LOCAL"})
+    return FakeResp(payload={"id": "ses_LOCAL"})
+idle_stream = sse([{"type": "session.idle", "properties": {"sessionID": "ses_LOCAL"}},
+                   {"type": "session.idle", "properties": {"sessionID": "ses_GO"}}])
+A.requests = Recorder(get=lambda u, kw: (FakeResp(ok=True, payload={"id": "x"})
+                                         if "/session/" in u and "/event" not in u
+                                         else FakeResp(lines=idle_stream)), post=_post)
+A._go_out.update(until=A.time.time() + 3600, reset="4 days")
+posted.clear()
+def _turn_on(chat):
+    return A._turn_new(LOGIN, chat, DAYH, None, "programmer")
+t1 = _turn_on(CHAT)
+A._turn_attempt_opencode(t1, "sigue")
+prompts = [(u, kw.get("json")) for u, kw in posted if u.endswith("/prompt_async")]
+check("the local model gets a session of its own, not Go's",
+      made_sessions and prompts and "/session/ses_LOCAL/" in prompts[0][0]
+      and t1.get("oc_key") == "local:" + CHAT, (made_sessions, prompts[:1]))
+first = prompts[0][1]["parts"][0]["text"] if prompts else ""
+check("and starts from a handover: the request, what was said, text only",
+      first.startswith("[Handover]") and "lights are slow" in first and "EARLY WORK" in first
+      and first.rstrip().endswith("sigue"), first[:400])
+check("not the turn's own message twice", first.count("sigue") == 1, first[-200:])
+posted.clear()
+A.append_user_history(LOGIN, {"role": "bot", "text": "LOCAL DID THIS", "ts": CONV + 10 * 60000,
+                              "conv": CONV}, DAYH, "programmer")
+A.append_user_history(LOGIN, {"role": "user", "text": "y ahora?", "ts": CONV + 11 * 60000,
+                              "conv": CONV}, DAYH, "programmer")
+A._opencode_seen(f"{LOGIN}:{CONV}:local", set_ms=CONV + 10 * 60000 + 1)
+A._turn_attempt_opencode(_turn_on(CHAT), "y ahora?")
+second = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")][0]["parts"][0]["text"]
+check("its next turn in the same session is not handed the same things again",
+      not second.startswith("[Handover]"), second[:200])
+A._go_out.update(until=0.0, reset="")
+posted.clear()
+A._turn_attempt_opencode(_turn_on(CHAT), "y ahora?")
+back = [(u, kw.get("json")) for u, kw in posted if u.endswith("/prompt_async")]
+text_back = back[0][1]["parts"][0]["text"] if back else ""
+check("Go, back, returns to its own session",
+      back and "/session/ses_GO/" in back[0][0] and "model" not in back[0][1], back[:1])
+check("and is told what the local model did while it was away",
+      text_back.startswith("[Handover] You take this conversation over") and "LOCAL DID THIS" in text_back, text_back[:300])
+A.OPENCODE_FALLBACK = _saved_fb
+
+# --- the local model first, Go when it gets stuck ------------------------------
+
+print("\nthe local model first, and Go when it fails")
+A.OPENCODE_FALLBACK = "home/ornith-1.5:9b"
+_saved_first, _saved_render = A.OPENCODE_LOCAL_FIRST, A._studio_rendering
+A._studio_rendering = lambda: False
+A._go_out.update(until=0.0, reset="")
+CONVL = 1790900000777
+
+
+def _lt():
+    return A._turn_new(LOGIN, f"homeweb:{LOGIN}:{DAYH}:dev:{CONVL}", DAYH, CONVL, "programmer")
+
+
+A.OPENCODE_LOCAL_FIRST = False
+check("by default Go goes first", A._opencode_engine(_lt(), "hola") == "go")
+A.OPENCODE_LOCAL_FIRST = True
+check("with `first`, the local model does", A._opencode_engine(_lt(), "hola") == "local")
+check("  but not in a turn it already failed", A._opencode_engine({**_lt(), "go": True}, "hola") == "go")
+A._studio_rendering = lambda: True
+check("  nor while the Studio is rendering: Go rather than wait for the card",
+      A._opencode_engine(_lt(), "hola") == "go")
+A._studio_rendering = lambda: False
+A._go_out.update(until=A.time.time() + 3600, reset="2 days")
+check("  and with Go out, local whatever the order",
+      A._opencode_engine({**_lt(), "go": True}, "hola") == "local")
+A._go_out.update(until=0.0, reset="")
+_label = A.t_for(LOGIN, "programmer.retry_go")
+check("the button's message goes to Go", A._opencode_engine(_lt(), "ctx\n\n" + _label) == "go")
+check("  and keeps the conversation there", A._opencode_engine(_lt(), "otra cosa") == "go")
+_c = A._opencode_conn(); _c.execute("DELETE FROM seen"); _c.commit(); _c.close()
+check("  a conversation with no pin starts on the local model", A._opencode_engine(_lt(), "otra") == "local")
+
+
+def _tool(pid, tool, status="completed", **inp):
+    return {"id": pid, "type": "tool", "tool": tool, "state": {"status": status, "input": inp}}
+
+
+w = A._LocalWatch()
+for i in range(3):
+    w.tool(_tool(f"r{i}", "read", filePath="/w/app.py", offset=i * 100))
+check("three reads of one file, in pieces, are work", not w.why, w.why)
+w.tool(_tool("r3", "read", filePath="/w/app.py"))
+check("  a fourth is going round in circles", "read /w/app.py 4 times" in w.why, w.why)
+w = A._LocalWatch()
+for i in range(3):
+    w.tool(_tool(f"g{i}", "grep", pattern="def main"))
+check("the same call three times is stuck", "same grep call 3 times" in w.why, w.why)
+w = A._LocalWatch()
+w.tool(_tool("p", "read", status="pending"))
+w.tool(_tool("p", "read", status="running", filePath="/w/a"))
+w.tool(_tool("p", "read", status="completed", filePath="/w/a"))
+check("a part is counted once, however many updates it gets", w.steps == 1, w.steps)
+w = A._LocalWatch()
+for i in range(A.LOCAL_IDLE_STEPS):
+    w.tool(_tool(f"s{i}", "read", filePath=f"/w/f{i}"))
+check("forty calls and no edit is stuck", "without changing a file" in w.why, w.why)
+w = A._LocalWatch()
+w.tool(_tool("e", "edit", filePath="/w/a", oldString="x", newString="y"))
+_red = _tool("t", "bash", command="python -m pytest -q")
+_red["state"]["output"] = "2 failed, 3 passed in 0.1s"
+w.tool(_red)
+check("an edit and red tests at the end is a failed turn", "tests failing" in w.at_end(), w.why)
+w = A._LocalWatch()
+w.tool(_red)
+check("  red tests without an edit are not (a bug being reproduced)", not w.at_end())
+w = A._LocalWatch()
+w.tool(_tool("e", "edit", filePath="/w/a", oldString="x", newString="y"))
+w.tool(_red)
+_green = _tool("t2", "bash", command="python -m pytest -q")
+_green["state"]["output"] = "5 passed in 0.1s"
+w.tool(_green)
+check("  nor red then green", not w.at_end())
+
+LSID = "ses_LOCALFIRST"
+looping = [{"type": "message.part.updated", "properties": {
+    "sessionID": LSID, "part": {**_tool(f"x{i}", "read", filePath="/w/app.py"), "sessionID": LSID}}}
+    for i in range(6)]
+posted.clear()
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse(looping))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+emitted = []
+A._turn_emit = lambda t, ev: emitted.append(ev)
+t = _lt()
+err, retry = A._turn_attempt_opencode(t, "arreglá el bug")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("a local-first turn names the local model", prompt and prompt[0].get("model", {}).get("modelID")
+      == "ornith-1.5:9b", prompt)
+check("  stuck, it is stopped and handed on", retry is True and t.get("go") and t.get("escalate")
+      and any("/abort" in u for u, _ in posted), (err, retry, [u for u, _ in posted]))
+check("  and the chat says why, in the person's language",
+      any(A.t_for(LOGIN, "programmer.local_why_repeat", n=4) in str(ev.get("hint", ""))
+          for ev in emitted), emitted)
+posted.clear()
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse([{"type": "session.idle", "properties": {"sessionID": LSID}}]))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+t.pop("escalate", None)
+err, retry = A._turn_attempt_opencode(t, "arreglá el bug")
+prompt = [kw.get("json") for u, kw in posted if u.endswith("/prompt_async")]
+check("the next attempt goes to Go, the agent's own model", prompt and "model" not in prompt[0], prompt)
+check("  told the local model went first and may have changed files",
+      "local model took it first" in prompt[0]["parts"][0]["text"], prompt[0]["parts"][0]["text"][:300])
+check("  and it is the same turn: no button offered after Go", A._retry_on_go_offer(t) == "")
+check("the conversation stays on Go", A._opencode_engine(_lt(), "más") == "go")
+
+_c = A._opencode_conn(); _c.execute("DELETE FROM seen"); _c.commit(); _c.close()
+A._go_out.update(until=A.time.time() + 3600, reset="2 days")
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse(looping))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+err, retry = A._turn_attempt_opencode(_lt(), "arreglá el bug")
+check("stuck with Go out, the turn stops and says so", retry is False and "2 days" in (err or ""), err)
+A._go_out.update(until=0.0, reset="")
+
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(ok=True, payload={"id": LSID}) if "/session/" in u and "/event" not in u
+                       else FakeResp(lines=sse([{"type": "session.idle", "properties": {"sessionID": LSID}}]))),
+    post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
+t = _lt()
+err, _ = A._turn_attempt_opencode(t, "explicame")
+check("a local turn that finishes is not a failure", err is None and not t.get("go"), err)
+_offer = A._retry_on_go_offer(t)
+check("  and ends with a button to try it on Go",
+      ":::ask" in _offer and _label in _offer and _label in t["text"], _offer)
+A._turn_emit = _saved_emit
+
+# The worker: a hand-over is tried again at once, even after the local model
+# said something -- which an ordinary failure with text on screen never is.
+_calls = []
+def _fake_attempt(turn, *a):
+    _calls.append(turn.get("go"))
+    if len(_calls) == 1:
+        turn["text"] = "partial"
+        turn.update(go=True, escalate=True)
+        return "stuck", True
+    return None, False
+_saved_attempt, _saved_finish = A._turn_attempt, A._turn_finish
+A._turn_attempt, A._turn_finish = _fake_attempt, lambda t, e=None: _calls.append(("finish", e))
+A._turn_worker(_lt(), None, None, "x", False, "programmer")
+A._turn_attempt, A._turn_finish = _saved_attempt, _saved_finish
+check("the worker hands a stuck turn to Go at once, text or not",
+      _calls[:2] == [None, True] and _calls[-1] == ("finish", None), _calls)
+A.OPENCODE_LOCAL_FIRST, A._studio_rendering = _saved_first, _saved_render
+A.OPENCODE_FALLBACK = _saved_fb
 
 print()
 if failures:

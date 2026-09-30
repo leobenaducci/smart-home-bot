@@ -466,6 +466,64 @@ check("every drawn frame is sent, and a house with no vision model leaves them u
       r.status_code == 200 and r.get_json().get("reviewed") is False and not calls, calls)
 A.STUDIO_VISION_URL = saved_url
 
+
+print("\none correction for the whole storyboard")
+_saved = (A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable)
+A._studio_configured = A._studio_reachable = lambda: True
+BOARD = {"id": "p1", "settings": {"look": "watercolour, warm"},
+         "shots": [{"id": "s1", "prompt": "Mora walks in a sunny park.", "cast": ["c1"]},
+                   {"id": "s2", "prompt": "A dog runs on the beach.", "continuity": True},
+                   {"id": "s3", "prompt": "Real footage.", "recorded": True},
+                   {"id": "s4", "prompt": "Mora waves from a window.", "cast": ["c1"]}]}
+calls, asked = [], []
+def _sc(username, method, path, body=None, timeout=30, via=""):
+    calls.append((method, path, body, via))
+    if path == "projects/p1":
+        return BOARD
+    if path == "projects/p1/characters":
+        return {"characters": [{"id": "c1", "name": "Mora", "look": "short dark hair"}]}
+    return {"ok": True}
+A._studio_call = _sc
+answer = json.dumps([{"prompt": "Mora walks in a park at night."}, {"prompt": "A dog runs on the beach."},
+                     {"prompt": "Mora waves from a window at night."}])
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked.append((text, profile)) or answer
+r = client.post("/studio/api/board-correct", headers=HOME,
+                json={"project": "p1", "feedback": "it is night in every shot"})
+d = r.get_json() or {}
+check("the Designer is asked once, for the whole storyboard", len(asked) == 1 and asked[0][1] == "designer", asked)
+text = asked[0][0] if asked else ""
+check("with every shot in order, the look, the characters and the person's correction",
+      "Shot 1 [on screen: Mora]: Mora walks" in text and "Shot 3 [on screen: Mora]: Mora waves" in text and "watercolour" in text
+      and "Mora: short dark hair" in text and "it is night in every shot" in text, text[:600])
+check("a recorded shot is not a description to rewrite", "Real footage" not in text)
+check("the shot that continues the one before says so", "Shot 2 (continues the shot before)" in text)
+saved = [(p, b, v) for m, p, b, v in calls if p.endswith("/prompt")]
+check("only the shots that changed are saved, under the assistant's name",
+      [p for p, _, _ in saved] == ["projects/p1/items/s1/prompt", "projects/p1/items/s4/prompt"]
+      and all(v == "Alfred" for _, _, v in saved) and saved[0][1] == {"prompt": "Mora walks in a park at night."},
+      saved)
+redrawn = [b for m, p, b, v in calls if p == "projects/p1/storyboard"]
+check("and those, and only those, are redrawn", redrawn == [{"items": ["s1", "s4"]}], redrawn)
+check("the page is told how many of how many", d == {"changed": 2, "total": 3, "redrawn": True}, d)
+calls.clear(); asked.clear()
+r = client.post("/studio/api/board-correct", headers=HOME,
+                json={"project": "p1", "feedback": "night", "redraw": False})
+check("asked not to redraw, it only rewrites",
+      not any(p == "projects/p1/storyboard" for _, p, _, _ in calls) and r.get_json().get("redrawn") is False)
+check("no correction written is refused before any model is asked",
+      client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1", "feedback": "  "}).status_code == 400)
+asked.clear(); calls.clear()
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked.append(text) or "[{\"prompt\": \"only one\"}]"
+r = client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1", "feedback": "night"})
+check("an answer with the wrong number of shots is asked for once more, then refused, and nothing is saved",
+      len(asked) == 2 and r.status_code == 502 and not any(p.endswith("/prompt") for _, p, _, _ in calls),
+      (len(asked), r.status_code))
+A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable = _saved
+page = open(os.path.join(os.path.dirname(os.path.abspath(A.__file__)), "templates", "studio.html"), encoding="utf-8").read()
+check("the page has the box, keeps what is typed across redraws, and sends it",
+      'id="sb-correct-text"' in page and "correctDraft = el.value" in page
+      and "api('board-correct'" in page and "esc(correctDraft)" in page)
+
 shutil.rmtree(tmp, ignore_errors=True)
 print()
 if failures:

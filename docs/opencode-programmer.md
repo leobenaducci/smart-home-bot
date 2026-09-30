@@ -132,6 +132,117 @@ the default. OpenCode's own documentation says collected data may be used to
 improve the model, and what the Programmer reads is this house's code and
 infrastructure. The default is a Go model for that reason, not for quality.
 
+## When Go is out: a local model on the Studio's card
+
+Go's allowance runs out -- the 5-hour window, the week, the month -- and when it
+does Go does not fail a turn: opencode retries, and says why only as a
+`session.status` of type `retry` carrying Go's own words ("weekly usage limit
+reached. It will reset in 4 days 9 hours."). The portal reads that now.
+
+With `cloud.opencode.fallback.model` set, the refused turn runs again on that
+model, and every turn after it goes there until the reset Go named; the chat
+says so each time ("OpenCode Go's limit is reached (back in 4 days 9 hours).
+Continuing on this house's own model"). Without one, the turn ends at once with
+when Go is back, instead of sitting "working" for days -- which is what fix
+request #10 did on 2026-09-30.
+
+The model runs on the host, on demand, on the Studio's card:
+
+- opencode knows it as the `home` provider at `127.0.0.1:11460`
+  (`build_opencode_config`), an address on this machine and no key.
+- `programmer-local.socket` holds that port. The first request starts
+  `programmer-local.service`, which pauses the Studio (reason `programmer`, so
+  its page says the card is lent, not that a parent stopped it), **waits for the
+  running job to finish** -- a video shot can take ~25 minutes, and waiting is
+  what the household chose over refusing -- then serves the model with the
+  house's llama.cpp build and waits until it answers.
+- `programmer-local-proxy.service` forwards to it and exits after fifteen idle
+  minutes; the model's unit is `StopWhenUnneeded`, so it stops too, and its
+  stop resumes the Studio.
+- `deploy/host/programmer-local.sh` does the pausing and serving from
+  `~/.config/home-stack/programmer-local.env`, which the deployer writes
+  (mode 600: it carries the Studio's derived secret). Removing the setting
+  disables the socket on the next deploy.
+
+**Give it the model's whole window when it fits.** A conversation that began
+on Go carries Go's history: #10's opencode session was 90k-183k tokens when Go
+ran out, and at a 64k window every request was refused ("exceeds the available
+context size") -- the turn moved and then failed anyway. `ornith:9b` is 262k
+natively, and its cache is small (mostly linear-attention layers): at 262144 it
+takes 10.7 GB of the 12 GB card. Reading a 180k history the first time runs at
+~1,600 tokens/s, a couple of minutes, and then it is cached.
+
+**Each engine has its own session, and a handover.** A bigger window let
+#10's history fit; it did not make it usable. Handed Kimi's ~180k tokens of tool
+output, `ornith:9b` spent ten steps reading one file and committed nothing. So a
+local turn works in an opencode session of its own (`local:<chat_id>` in the
+session store), and whichever engine takes a turn is first told what the other
+did since it last took part: the conversation as the person sees it, text only,
+capped at ~24k characters (the opening request and as much of the end as
+fits), and for a fix request the command that shows its worktree
+(`_opencode_handover`). When Go is back it returns to its own session and is
+handed what the local model did. One conversation, one worktree; only the
+model's working memory is two. `seen` in the session store records when each
+engine last took part, per conversation and not per day.
+
+The model must fit the card whole. `ornith:9b` (Ollama library; a 9B trained
+for agentic coding, 5.6 GB) was chosen on 2026-09-30 and measured on one 3060:
+6.6 GB with a 64k window, 3.5 s to load, ~42 tokens/s, and 3 of 3 on a small
+read-edit-test task through opencode-shaped tools with a 12k-token system
+prompt, the prompt served from cache after the first step. Then, through opencode itself (`opencode run`, its own ~14k-token prompt and
+tools), on a small package with a pricing bug and a missing `--json` flag, pass
+= suite green and tests untouched, three runs each: `ornith:9b` 3/3 (48-89 s,
+11-19 tool calls); `qwen2.5-coder:14b` 0/3 -- it wrote its tool calls as JSON in
+the text instead of making them, so it never touched a file, and at 32k it
+filled the card (11.75 GB). A code-completion leaderboard does not rank models
+for this job; tool calls do. `ornith-1.5:9b` (2026-09-30, the same size and window, plus a
+vision projector the fallback does not load) 3/3 on the same task (64-114 s,
+11-12 tool calls). On the real fix request #10, 1.0 read the same files
+repeatedly and committed nothing, so this house runs 1.5. It is far weaker
+than Kimi K2.7 Code; the pipeline's gates -- tests, the benchmark, the leak
+check, approvals -- are what stop a bad fix from shipping, whichever model
+wrote it.
+
+### The other way round: the local model first
+
+`cloud.opencode.fallback.first: true` (the portal's `OPENCODE_LOCAL_FIRST`)
+runs every Programmer turn on the local model and hands it to Go when the local
+one fails -- spending Go's allowance only where the 9B could not cope. Go still
+takes a turn from the start when:
+
+- **the Studio is rendering.** Lending the card means waiting for the running
+  job, up to ~25 minutes; with Go there, that wait buys nothing.
+- **the conversation is already on Go**: the local model failed in it once, or
+  the person tapped *Retry on OpenCode Go*. It stays there, so an issue the 9B
+  could not do is not retried on it every turn.
+
+What counts as failing (`_LocalWatch`), because a 9B in trouble rarely errors --
+on #10 it read the same files again and again and committed nothing:
+
+- the same tool call with the same input three times, or one file read four
+  times (reads are counted by path, since a long file is read in pieces);
+- forty tool calls without an edit;
+- tests run red at the end of a turn in which it changed files (red before any
+  edit is a bug being reproduced, not a failure);
+- an error opencode reports for the model -- its server did not start, the
+  history did not fit.
+
+Then the local session is aborted and the same message goes to Go, at once and
+even after the local model said something: its partial answer stays, a rule
+sets Go's apart, and a hint says why. Go is told the local model went first
+and may have changed files. With Go out there is nowhere to hand it, so the
+turn stops and says that instead of letting the model circle for half an hour.
+
+A turn that simply finishes on the local model ends with a *Retry on OpenCode
+Go* button -- an answer that is wrong without erring is the failure no watch
+catches, and the person reading it is the one who can tell. Tapping it sends
+that label as the message; HomeCore recognises it, pins the conversation to Go
+and tells Go to redo the previous request.
+
+This is still a person driving opencode in a conversation they are watching,
+so Go is used as the flat plan intends (see CLAUDE.md): the hand-over happens
+inside their turn, never from a timer.
+
 ## Where the configuration lives
 
 Not in `~/.config/opencode/opencode.json`. That file belongs to whoever uses

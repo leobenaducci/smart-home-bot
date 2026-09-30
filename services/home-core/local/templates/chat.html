@@ -1317,6 +1317,9 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
         <select id="project-sel" aria-label="Active project" title="Active project" disabled>
           <option value="">— Project —</option>
         </select>
+        {% if can_convert %}
+        <button id="convert-btn" title="{{ t('improve.convert_hint') }}" hidden>🛠 {{ t('improve.convert_btn') }}</button>
+        {% endif %}
         {% if is_admin %}
         <button id="project-btn" title="Manage projects">📁 Projects</button>
         <button id="credential-btn" title="Manage credentials">🔑 Credentials</button>
@@ -2010,9 +2013,43 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
      alone and comes back in the next one. The server applies it there too. */
   var IMPROVE_PROJECT = 'alfred-self';
   var fixConv = false;
+  /* "Make this a fix request": the conversation the person is in becomes one,
+     in place, so the opencode session keeps what it already found. The server
+     queues the request's opening message here; the queue shows it. */
+  var convertBtn = document.getElementById('convert-btn');
+  if (convertBtn) convertBtn.addEventListener('click', async function() {
+    var problem = (window.prompt({{ t('improve.convert_ask')|tojson }}) || '').trim();
+    if (!problem) return;
+    convertBtn.disabled = true;
+    try {
+      var r = await fetch('/improve/api/requests/convert', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({problem: problem, conv: convStart(), date: curDay})});
+      var d = await r.json().catch(function() { return {}; });
+      if (!r.ok || !d.ok) {
+        alert({{ t('improve.convert_failed')|tojson }} + (d.error ? '\n' + d.error : ''));
+        return;
+      }
+      fixConv = true;
+      convertBtn.hidden = true;
+      if (projectSel && HAS_PROJECTS) {
+        projectSel.dataset.fix = '1';
+        projectSel.value = IMPROVE_PROJECT;
+        projectSel.disabled = true;
+      }
+      await catchUp();
+      pumpQueue();
+    } finally {
+      convertBtn.disabled = false;
+    }
+  });
   function markFixConversation(msgs) {
-    var first = (msgs || []).filter(function(m) { return m.role === 'user'; })[0];
-    fixConv = !!(first && /^Fix request #\d+/.test(first.text || ''));
+    // Any of the person's messages, not only the first: a conversation made a
+    // fix request partway through carries the request's opening further down.
+    fixConv = (msgs || []).some(function(m) {
+      return m.role === 'user' && /^Fix request #\d+/.test(m.text || '');
+    });
+    if (convertBtn) convertBtn.hidden = fixConv || !(msgs || []).length;
     if (!projectSel || !HAS_PROJECTS) return;
     if (fixConv) {
       projectSel.dataset.fix = '1';
@@ -2272,7 +2309,14 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     var out = [], cur = null, curConv = null, lastTs = 0, seen = {}, latest = {}, named = {};
     (msgs || []).forEach(function(m) {
       var ts = m.ts || 0, conv = m.conv || null;
-      var byGap = cur !== null && ts - lastTs > SESSION_GAP;
+      // In the Programmer one conversation is one issue, and an issue goes
+      // quiet for hours -- a model's limit, a night, a weekend -- without
+      // becoming another. Silence split it: the rest showed as a second
+      // conversation under an invented id, its running turn belonged to the
+      // real one and never appeared, and a message sent from it opened a new
+      // opencode session (fix request #10, 2026-09-30). The same id continues.
+      var sameIssue = SPACE === 'programmer' && !!conv && conv === curConv;
+      var byGap = cur !== null && ts - lastTs > SESSION_GAP && !sameIssue;
       // While the run is still unstamped, compare against where it began: a
       // scheduled message names a conversation of its own, and it arrives on a
       // day whose earlier entries are often unstamped machine events. A message
@@ -3027,6 +3071,22 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
   fileInput.addEventListener('change', async function(){await addFiles(fileInput.files);fileInput.value='';});
   cameraBtn.addEventListener('click', function(){cameraInput.click();});
   cameraInput.addEventListener('change', async function(){await addFiles(cameraInput.files);cameraInput.value='';});
+  // A picture pasted into the message box is an attachment, as if chosen with
+  // 📎: a text box takes only text from the clipboard, so a pasted screenshot
+  // went nowhere and said nothing (2026-09-30). Text still pastes as text.
+  inputEl.addEventListener('paste', async function(ev) {
+    var items = (ev.clipboardData && ev.clipboardData.items) || [];
+    var pasted = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' && /^image\//.test(items[i].type || '')) {
+        var f = items[i].getAsFile();
+        if (f) pasted.push(f);
+      }
+    }
+    if (!pasted.length) return;
+    ev.preventDefault();
+    await addFiles(pasted);
+  });
 
   /* ── Mic — hold-to-record → Faster-Whisper ── */
   var WHISPER_URL = '/chat/transcribe';

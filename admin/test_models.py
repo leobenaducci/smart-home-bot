@@ -124,6 +124,11 @@ _cat = {"opencode_zen": [dict(id="zen-a", provider="opencode_zen", input=1.0, ou
                         output=None, cache_read=None, context=None,
                         max_output=None, vision=True)]}
 _local_role = M.recommend("vision", _cat)["by_provider"]
+_private = M.recommend("private", _cat)
+check("Private is local-only, and offered no hosted model at all",
+      M.LOCAL_ONLY == {"private"} and _private["hosted"] == []
+      and set(_private["by_provider"]) <= set(M.OWN_HARDWARE_SOURCES)
+      and "ollama" in _private["by_provider"], _private)
 # `events` and `vision` declare `placement: local` -- this house runs them on
 # its own hardware on purpose. A per-provider block that walked only the paid
 # sources showed those two nothing but providers that charge, which steers a

@@ -337,6 +337,19 @@ try:
 finally:
     A._ollama_needs = _real_needs
 
+print("\nPrivate runs on this house's hardware or not at all")
+check("a role on the Ollama card's servers is local",
+      not A._not_local_for("private", "ollama:qwen3.5:9b")
+      and not A._not_local_for("private", "ollama-text:qwen3.5:9b"))
+check("ollama.com is not, whatever its prefix says",
+      A._not_local_for("private", "ollama-cloud:gemma4:31b"))
+check("nor a hosted model, a typed URL or the flat plan",
+      all(A._not_local_for("private", v) for v in (
+          "gpt-6-luna", "nanogpt:deepseek/deepseek-v4.1-flash",
+          "openai-compatible:some-model", "opencode-go/kimi-k2.7-code", "ollama:")))
+check("and the rule is Private's alone: other roles may still go hosted",
+      not A._not_local_for("everyday", "gpt-6-luna") and not A._not_local_for("private", ""))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))

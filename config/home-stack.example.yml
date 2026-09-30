@@ -882,6 +882,10 @@ assistant:
     classifier: ollama:gemma4:e4b
     doctor: gpt-5.6-luna            # health questions
     legal: gpt-5.6-luna             # contracts and paperwork
+    # A conversation that leaves no record, on this house's own hardware or not
+    # at all: only an `ollama:` / `ollama-<id>:` model is accepted, and blank
+    # means the space refuses to answer rather than send anything out.
+    private: ollama:gemma4:e4b
     # What the assistant hands work to rather than doing in the turn: a
     # background task, a memory consolidation, the morning summary. These were
     # missing from this list for a while, and the gap only showed when a
@@ -1248,6 +1252,24 @@ cloud:
     # says collected data may be used to improve it -- worth knowing, since
     # what the Programmer reads is this house's code.
     model: opencode-go/kimi-k3
+    # What the Programmer runs on while OpenCode Go is out (its 5-hour, weekly
+    # or monthly allowance spent). A local model on one card -- the Studio's,
+    # which is paused while it runs (a running job finishes first) and resumed
+    # after fifteen idle minutes. It must fit the card whole. Leave `model`
+    # empty for none: then a turn Go refuses says when Go is back, and stops.
+    # Needs `./home-stack llamacpp build`. docs/opencode-programmer.md.
+    fallback:
+      model: ""                 # e.g. ornith-1.5:9b, an agentic-coding 9B, 5.6 GB
+      # true: the local model goes first and Go takes over when it gets stuck
+      # (the same call over and over, forty steps without an edit, its tests
+      # red, its server down) or the person taps "Retry on OpenCode Go". Go
+      # also takes a turn while the Studio is rendering, rather than wait.
+      first: false
+      gpu: 1
+      # The window. A conversation that began on Go can already be longer than
+      # 64k -- give it the model's own maximum when the card holds it
+      # (ornith:9b: 262144 fits a 12 GB card, 10.7 GB).
+      context: 65536
     # Which of opencode's two HTTP surfaces HomeCore drives. One process
     # serves both; they are not a rename of each other.
     #

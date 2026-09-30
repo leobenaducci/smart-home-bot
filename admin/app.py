@@ -2965,6 +2965,23 @@ def _responses_only_for(role: str, value: str) -> bool:
     return on_zen and model_catalogue._wants_responses(value)
 
 
+
+def _not_local_for(role: str, value: str) -> bool:
+    """A model outside this house for a role that may only run inside it.
+
+    Local means a server on the Ollama card -- `ollama:` or `ollama-<id>:`,
+    decided by `provider_of_prefix`, which knows `ollama-cloud:` is ollama.com
+    and not an instance. Not `openai-compatible:`, which is any URL somebody
+    typed. Refused at save like the Go rule, because a hand-edited form or a
+    replayed save reaches here without passing the picker; nanobot refuses the
+    turn as well, so a hand-edited config fails closed too.
+    """
+    if role not in model_catalogue.LOCAL_ONLY or not value:
+        return False
+    prefix, sep, rest = str(value).partition(":")
+    return not (sep and rest and OI.provider_of_prefix(prefix))
+
+
 _PROBE_PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "openrouter": "openrouter",
     "together": "together", "openai": "openai", "nanogpt": "nanogpt",
@@ -3317,6 +3334,7 @@ def models_page():
         by_id = {m.get("id"): m for m in model_catalogue.all_models(priced)
                  if isinstance(m, dict)}
         refused_local = []
+        refused_hosted = []
         local_best = None            # the benchmark's ranking, read on first need
         # The rescue chain: one picker per place, in order (CHAIN_SLOTS).
         for persona in CHAIN_ROLES:
@@ -3396,6 +3414,9 @@ def models_page():
             if model_catalogue.is_go_model(value):
                 refused_go.append(f"{persona} ({value})")
                 continue
+            if _not_local_for(persona, value):
+                refused_hosted.append(f"{persona} ({value})")
+                continue
             if not model_catalogue.zero_cost_ok(persona, by_id.get(local_model(value)[0])):
                 refused.append(f"{persona} ({value})")
                 continue
@@ -3408,6 +3429,11 @@ def models_page():
                         "Not saved for {roles}: no local model can do it yet. Add a "
                         "model setup on the Ollama card first.",
                         roles=", ".join(refused_local)), "warn")
+        if refused_hosted:
+            flash(_t_or("admin.models.local_only_refused",
+                        "Not saved for {roles}: it runs on this house's own "
+                        "hardware or not at all. Pick one of the Ollama card's "
+                        "setups.", roles=", ".join(refused_hosted)), "warn")
         if refused_go:
             flash(_t_or("admin.models.go_refused",
                         "Not saved for {roles}: a flat-plan model is only for "
@@ -3784,6 +3810,10 @@ def models_page():
                            "provider": g["provider"]}
                           for g in groups if by_provider.get(g["provider"])
                           and g["provider"] != "ollama"]
+        if row["id"] in model_catalogue.LOCAL_ONLY:
+            # The Ollama card's setups only, which the template lists on its
+            # own; a hosted group here would be a choice the save refuses.
+            row["choices"] = []
         row["suggestions"] = models[:5]
         # "Known" is whether the picker *offers* it, not whether the catalogue
         # has heard of it: a current model the choices leave out (a Together

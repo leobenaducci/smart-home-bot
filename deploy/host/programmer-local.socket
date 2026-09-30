@@ -1,0 +1,16 @@
+# The Programmer's local model, started by the first request that reaches it.
+#
+# opencode's `home` provider points here (build_opencode_config). Nothing is
+# loaded until a turn falls back from OpenCode Go -- the card belongs to the
+# Studio the rest of the time -- and the proxy behind this socket stops the
+# model again after fifteen quiet minutes. See programmer-local.service.
+[Unit]
+Description=The Programmer's local model (socket; starts it on the first request)
+
+[Socket]
+ListenStream=127.0.0.1:11460
+# The proxy, not the model: the proxy is what notices the idle quarter hour.
+Service=programmer-local-proxy.service
+
+[Install]
+WantedBy=sockets.target

@@ -234,6 +234,16 @@ one file per day to `{paths.state}/improve/inbox/` -- 0700, this user only.
   A request from the same conversation is a duplicate only when it is the
   same problem again; `publish_fix` without a number means the latest request
   from the conversation it is asked in.
+  **A conversation can become one.** Work that started as an ordinary
+  Programmer conversation and turned out to be a fix is made a request in
+  place: "Make it a fix request" beside the project selector asks for one line,
+  files the request against *this* conversation
+  (`/improve/api/requests/convert`) and queues its opening message there, so
+  the opencode session keeps what it already found. From then on the
+  conversation is on Alfred himself with the request's rules and gates, like
+  one Alfred filed; its origin is `programmer:<conv>`, so dedupe and "publish
+  the last fix" never take it for another. Offered only where the Programmer
+  runs on opencode for that person.
   In the Programmer's project selector, **🛠 Alfred (mejoras)** is the project
   that is not a repository (`IMPROVE_PROJECT`, `alfred-self`): chosen, each
   turn carries the tool and its rules instead of "checkout this project", and
