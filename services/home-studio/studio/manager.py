@@ -163,8 +163,14 @@ class Manager:
                 self._fail_blocked()
                 job = None if self.paused else self.store.next_job(self.worker.model if self.worker else "")
                 if job is None:
-                    if self.worker and time.time() - self.worker.last_used > self.idle_s:
-                        log.info("idle for %ss: stopping the worker, the card is free", int(self.idle_s))
+                    # Paused, the card is lent -- the Programmer's local model
+                    # waits for this worker to go (programmer-local.sh) -- so an
+                    # idle one goes now, not after `idle_s`: it held the card for
+                    # ten minutes with nothing to do while the Programmer waited
+                    # (2026-10-01).
+                    if self.worker and (self.paused or time.time() - self.worker.last_used > self.idle_s):
+                        log.info("%s: stopping the worker, the card is free",
+                                 "paused" if self.paused else f"idle for {int(self.idle_s)}s")
                         self.worker.stop()
                         self.worker = None
                     self._wake.wait(timeout=5)

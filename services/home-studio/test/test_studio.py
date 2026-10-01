@@ -709,6 +709,16 @@ else:
     check("  a 20-second shot is four 5-second ones", abs(twenty - 4 * five) < 1e-6 and five > 0, (five, twenty))
     check("  measured from what this card did", store2.rate("video_shot") < 60, store2.rate("video_shot"))
     check("  and a default before it has done any", Store(tmp / "empty.db").rate("video_shot") == 360)
+    print("\na paused Studio gives the card back at once")
+    check("  a worker is up, idle, an hour from its idle stop", mgr.worker is not None, mgr.status())
+    mgr.paused, mgr.pause_reason = True, "programmer"
+    mgr.wake()
+    deadline = time.time() + 15
+    while time.time() < deadline and mgr.worker is not None:
+        time.sleep(0.2)
+    check("  paused, it is stopped now -- the Programmer's local model waits for that card",
+          mgr.worker is None and not mgr.status()["worker"], mgr.status())
+    mgr.paused = False
     mgr.stop()
 
 print("\na project's words under version control")
