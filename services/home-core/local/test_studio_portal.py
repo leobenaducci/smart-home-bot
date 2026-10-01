@@ -542,6 +542,41 @@ RDOC["settings"]["look"] = "pastel watercolour"
 RDOC["shots"] = _saved_shots
 A.requests.get = _get_before
 
+print("\na character described from its picture")
+_saved_d = (A._studio_call, A._studio_data_url, A.requests.post)
+puts_d, looked_d = [], []
+def _scd(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/p9/characters":
+        return {"characters": [{"id": "c1", "name": "Bruma", "pictures": ["pictures/a.png", "pictures/b.png"],
+                                "portrait": 1}, {"id": "c2", "name": "Nadie", "pictures": []}]}
+    if method == "PUT":
+        puts_d.append((path, body, via))
+        return {"ok": True}
+    return None
+A._studio_call = _scd
+A._studio_data_url = lambda u, path: "data:image/png;base64,QUJD" if path.endswith("pictures/b.png") else None
+def _vd(url, json=None, headers=None, timeout=None, **kw):
+    looked_d.append((url, json))
+    return _V('{"look": "a toddler of about two, round face, tight dark curls, yellow shirt and blue overalls"}')
+A.requests.post = _vd
+r = client.post("/studio/api/char-describe", headers=HOME, json={"project": "p9", "character": "c1"})
+check("the chosen picture is looked at by the house's own vision model, and nowhere else",
+      r.status_code == 200 and looked_d and looked_d[0][0] == A.STUDIO_VISION_URL
+      and looked_d[0][1]["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,QUJD", r.get_json())
+check("  asked for what an illustrator needs, and no guess at who it is",
+      "no guess at who they are" in looked_d[0][1]["messages"][0]["content"][0]["text"])
+check("  and the look is saved on the character, as the assistant",
+      puts_d == [("projects/p9/characters/c1", {"look": "a toddler of about two, round face, tight dark curls, "
+                                                         "yellow shirt and blue overalls"}, "Alfred")], puts_d)
+r = client.post("/studio/api/char-describe", headers=HOME, json={"project": "p9", "character": "c2"})
+check("a character with no picture is told to get one", r.status_code == 400)
+A._studio_call, A._studio_data_url, A.requests.post = _saved_d
+page = open(os.path.join(os.path.dirname(os.path.abspath(A.__file__)), "templates", "studio.html"), encoding="utf-8").read()
+check("the page has the describe button, the style flag and the style upload",
+      "data-ch-describe" in page and "data-style-ref" in page and 'data-style="1"' in page
+      and "api('char-describe'" in page)
+
+
 print("\none correction for the whole storyboard")
 _saved = (A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable)
 A._studio_configured = A._studio_reachable = lambda: True

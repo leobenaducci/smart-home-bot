@@ -140,6 +140,33 @@ one step to undo -- and redrawn, unless the box's "redraw" is unticked; a frame
 left undrawn is marked changed like any edited shot. Recorded shots are not
 descriptions and are left out.
 
+### Drawn from pictures: the cast's own, and the film's style
+
+Z-Image reads words only, so a character it draws is whoever the description
+makes them -- a different face every frame, and a family's real people come
+out as strangers. A frame or a portrait is drawn instead on **FLUX.2 klein 4B**
+(`recipes.REF_IMAGE_MODEL`) whenever it has pictures to go on:
+
+- **each cast member's chosen picture** -- their portrait, or the photo they
+  were given -- up to three, so each looks like themselves;
+- **the film's style pictures**: reference pictures flagged 🎨 in the Files
+  tab, uploaded as such, or made one from any frame or image (🎨 beside 📌).
+  Two at most; a third is refused rather than quietly left out.
+
+The pictures are found when the job runs (`manager._refs`), and the prompt
+says which is which: "image 1 is Bruma ... draw each of them as that picture
+shows them, even when it is a photograph, in the style below; images 2 and 3
+show the film's style: match their medium, rendering, line, palette and light,
+not their content". One deleted since is left out and the numbering follows.
+With no pictures at all, the frame is Z-Image's from words, as before. klein
+4B shares Z-Image's text encoder and is Apache-licensed; the 9B is not.
+
+A character's look can be **written from its picture** (✍️ on its card): the
+house's own vision model (`assistant.models.vision`) describes what an
+illustrator would need -- age, build, hair, face, clothes -- and nothing about
+who they are; it is saved under the assistant's name. The picture never
+leaves the house.
+
 ### Style lives in the look, and only there
 
 The project's look is put ahead of every frame's description and into every

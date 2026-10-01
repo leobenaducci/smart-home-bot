@@ -52,6 +52,17 @@ s = recipes.settings_for("video_shot", {"prompt": "a cat walks", "look": "pastel
 check("  a shot's video carries the film's look, the same words as its frame",
       s["prompt"].count("Visual style: pastel watercolour.") == 1
       and "Visual style" not in recipes.settings_for("video_shot", {"prompt": "a cat walks"})["prompt"], s["prompt"])
+s = recipes.settings_for("board", {"prompt": "x", "size": "1344x768", "with_refs": True, "image_refs": ["/a.png", "/b.png"]})
+check("  a picture drawn from reference pictures is FLUX.2 klein's, the pictures as people/objects (I)",
+      s["model_type"] == recipes.REF_IMAGE_MODEL == "flux2_klein_4b" and s["video_prompt_type"] == "I"
+      and s["image_refs"] == ["/a.png", "/b.png"], s)
+s = recipes.settings_for("board", {"prompt": "x", "with_refs": True, "image_refs": []})
+check("  with its pictures gone since, the same model from the words alone",
+      s["model_type"] == recipes.REF_IMAGE_MODEL and "image_refs" not in s and s["video_prompt_type"] == "", s)
+check("  and the job is filed under the model it will run on",
+      recipes.model_for("board", {"with_refs": True}) == recipes.REF_IMAGE_MODEL
+      and recipes.model_for("board", {}) == recipes.IMAGE_MODEL and recipes.model_for("video_shot", {"with_refs": True})
+      == recipes.VIDEO_MODEL)
 s = recipes.settings_for("song", {"lyrics": "[Verse]\nla la", "style": "pop", "seconds": 60})
 check("  a song: lyrics are the prompt, style the caption, Spanish by default",
       s["prompt"].startswith("[Verse]") and s["alt_prompt"] == "pop" and s["custom_settings"]["language"] == "es", s)
@@ -1144,6 +1155,68 @@ bp = A.store.get(r["queued"][0]["id"])["params"]["prompt"]
 check("  a shot's cast puts their look in its frame, as edited",
       "Characters: Pelícano: a brown pelican, red helmet, goggles" in bp, bp)
 A.manager.cancel(r["queued"][0]["id"])
+
+print("\n  drawn from pictures: the cast's own, and the film's style")
+rfp = c.post("/api/projects", json={"name": "Carrera"}, headers=h(JUANA, "Juana")).json()
+bru = c.post(f"/api/projects/{rfp['id']}/characters", json={"name": "Bruma", "look": "a toddler"},
+             headers=h(JUANA, "Juana")).json()
+gav = c.post(f"/api/projects/{rfp['id']}/characters", json={"name": "Gaviota", "look": "a grey gull"},
+             headers=h(JUANA, "Juana")).json()
+pic = tmp / "bruma.jpg"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32", "-frames:v", "1",
+                str(pic)], check=True)
+c.post(f"/api/projects/{rfp['id']}/characters/{bru['id']}/upload", files={"file": ("bruma.jpg", pic.read_bytes())},
+       headers=h(JUANA, "Juana"))
+ups = [c.post(f"/api/projects/{rfp['id']}/upload", files={"file": (f"s{i}.png", pic.read_bytes())},
+              data={"style": "1"} if i < 2 else {}, headers=h(JUANA, "Juana")).json() for i in range(3)]
+check("  a picture uploaded as the film's style is flagged as it lands", ups[0].get("style") and ups[1].get("style")
+      and not ups[2].get("style"), ups)
+third = c.post(f"/api/projects/{rfp['id']}/uploads/{ups[2]['file'].split('/', 1)[1]}/style", json={"on": True},
+               headers=h(JUANA, "Juana"))
+check("  at most two: a third is refused, to choose, not quietly left out", third.status_code == 400, third.text)
+c.post(f"/api/projects/{rfp['id']}/uploads/{ups[0]['file'].split('/', 1)[1]}/style", json={"on": False},
+       headers=h(JUANA, "Juana"))
+ok3 = c.post(f"/api/projects/{rfp['id']}/uploads/{ups[2]['file'].split('/', 1)[1]}/style", json={"on": True},
+             headers=h(JUANA, "Juana"))
+check("  with one taken off, it goes on", ok3.status_code == 200 and ok3.json().get("style"), ok3.text)
+rdoc = A.projects.load(JUANA, rfp["id"])
+check("  and the style pictures are kept in the order they were flagged",
+      Projects.style_refs(rdoc) == [ups[1]["file"], ups[2]["file"]], Projects.style_refs(rdoc))
+c.put(f"/api/projects/{rfp['id']}", json={"settings": {"look": "3D cartoon"}, "shots": [
+    {"prompt": "Bruma drives a red car", "seconds": 5, "cast": [bru["id"], gav["id"]]}]}, headers=h(JUANA, "Juana"))
+r = c.post(f"/api/projects/{rfp['id']}/storyboard", json={}, headers=h(JUANA, "Juana")).json()
+fj = A.store.get(r["queued"][0]["id"])
+check("  a frame with a cast member who has a picture, or style pictures, is drawn from them, on klein",
+      fj["model"] == recipes.REF_IMAGE_MODEL and fj["params"]["ref_chars"] == [bru["id"]]
+      and fj["params"]["ref_files"] == [ups[1]["file"], ups[2]["file"]], fj)
+rp_ = A.manager._resolve(fj)
+check("  when it runs: the character's picture first, then the style ones, as files",
+      len(rp_["image_refs"]) == 3 and rp_["image_refs"][0].endswith(".png") and "/characters/" in rp_["image_refs"][0]
+      and all(Path(x).is_file() for x in rp_["image_refs"]), rp_["image_refs"])
+check("  and the prompt says which is which: who, and the style -- not the content",
+      "image 1 is Bruma" in rp_["prompt"] and "images 2 and 3 show the film's style" in rp_["prompt"]
+      and "not their content" in rp_["prompt"] and "Gaviota" not in rp_["prompt"].split("Reference images:")[1], rp_["prompt"])
+A.manager.cancel(fj["id"])
+c.delete(f"/api/projects/{rfp['id']}/uploads/{ups[1]['file'].split('/', 1)[1]}", headers=h(JUANA, "Juana"))
+rp_ = A.manager._resolve(fj)
+check("  a style picture deleted since is left out, and the numbering follows what is sent",
+      len(rp_["image_refs"]) == 2 and "image 2 show" in rp_["prompt"] and "images 2 and" not in rp_["prompt"], rp_["prompt"])
+pj_ = c.post(f"/api/projects/{rfp['id']}/characters/{bru['id']}/portrait", headers=h(JUANA, "Juana")).json()
+pjob = A.store.get(pj_["queued"][0]["id"])
+check("  a portrait is drawn from the character's own picture, in the film's style",
+      pjob["model"] == recipes.REF_IMAGE_MODEL and pjob["params"]["ref_chars"] == [bru["id"]], pjob)
+A.manager.cancel(pjob["id"])
+noface = c.post(f"/api/projects/{rfp['id']}/characters", json={"name": "Nadie"}, headers=h(JUANA, "Juana")).json()
+c.post(f"/api/projects/{rfp['id']}/characters/{noface['id']}/upload", files={"file": ("n.jpg", pic.read_bytes())},
+       headers=h(JUANA, "Juana"))
+pn = c.post(f"/api/projects/{rfp['id']}/characters/{noface['id']}/portrait", headers=h(JUANA, "Juana"))
+check("  a character with a picture and no words yet can still have its portrait drawn", pn.status_code == 200, pn.text)
+for q in (pn.json().get("queued") or []):
+    A.manager.cancel(q["id"])
+check("  and nobody can send pictures in through the job door",
+      not ({"image_refs", "ref_files", "ref_chars", "with_refs"} & set(A.store.get(c.post("/api/jobs", json={
+          "kind": "image", "params": {"prompt": "x", "with_refs": True, "image_refs": ["/etc/passwd"],
+                                      "ref_files": ["uploads/x.png"]}}, headers=h(TOMI, "Tomi")).json()["id"])["params"])))
 check("  only whoever may edit a character can have its portrait drawn",
       c.post(f"/api/projects/{tp['id']}/characters/{ch['id']}/portrait", headers=h(TOMI, "Tomi")).status_code == 403)
 check("  and the generic job door takes none of the kinds with their own routes",

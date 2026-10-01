@@ -395,6 +395,48 @@ class Manager:
                 self.audio.wait_idle()
 
     # -- before and after ---------------------------------------------------
+    def _refs(self, owner: str, pid: str, p: dict) -> tuple[list[str], str]:
+        """The reference pictures of a picture drawn from them, read now, and
+        its prompt with each one's part in it: a character's chosen picture
+        (its portrait, or the photo it was given) for each one cast, then the
+        style pictures. One deleted since is left out, and the numbering
+        follows what is actually sent."""
+        files, cast, style = [], [], []
+        for cid in (p.get("ref_chars") or [])[:recipes.MAX_CAST_REFS]:
+            try:
+                ch = self.characters.get(str(cid), owner, pid) if self.characters else None
+            except ProjectError:
+                ch = None
+            pics = (ch or {}).get("pictures") or []
+            i = (ch or {}).get("portrait", -1)
+            pic = pics[i] if isinstance(i, int) and 0 <= i < len(pics) else (pics[-1] if pics else "")
+            if not pic:
+                continue
+            try:
+                files.append(str(self.characters.file(ch["id"], owner, pid, pic)))
+            except ProjectError:
+                continue
+            cast.append((len(files), ch["name"]))
+        for rel in (p.get("ref_files") or [])[:recipes.MAX_STYLE_REFS]:
+            try:
+                files.append(str(self.projects.file(owner, pid, str(rel))))
+            except ProjectError:
+                continue
+            style.append(len(files))
+        said = []
+        if cast:
+            said.append("; ".join(f"image {n} is {name}" for n, name in cast)
+                        + ": draw each of them as that picture shows them -- face, hair, build, age -- "
+                          "even when the picture is a photograph, in the style below")
+        if style:
+            said.append(("images " + " and ".join(str(n) for n in style) if len(style) > 1 else f"image {style[0]}")
+                        + " show the film's style: match their medium, rendering, line, palette and light, "
+                          "not their content")
+        prompt = str(p.get("prompt") or "")
+        if said:
+            prompt = f"{prompt}\nReference images: " + ". ".join(said) + "."
+        return files, prompt
+
     def _resolve(self, job: dict) -> dict:
         """The job's params with every reference turned into a file on disk,
         read from the project as it is now."""
@@ -429,6 +471,8 @@ class Manager:
         if p.get("start_board"):
             # The approved storyboard frame: what the shot starts from.
             p["start_image"] = str(self.projects.file(owner, pid, p["start_board"]))
+        if p.get("with_refs"):
+            p["image_refs"], p["prompt"] = self._refs(owner, pid, p)
         if p.get("from_take"):
             # The version a retouch starts from, read when it runs: deleted in
             # the meantime is a clear failure, not a retouch of another one.

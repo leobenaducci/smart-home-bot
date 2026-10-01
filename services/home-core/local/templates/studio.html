@@ -450,7 +450,8 @@
           ((c.voice_tests || {})[ME] ? '<audio controls preload="none" src="' + charUrl(c, c.voice_tests[ME]) + '"></audio>' : '') +
           '<div class="row" style="margin-top:8px">' +
           (c.editable ? '<button data-ch-edit="' + c.id + '">✏️ ' + S.ch_edit + '</button>' : '') +
-          (c.editable && c.look ? '<button data-ch-portrait="' + c.id + '">' + S.ch_portrait + '</button>' : '') +
+          (c.editable && (c.look || (c.pictures || []).length) ? '<button data-ch-portrait="' + c.id + '">' + S.ch_portrait + '</button>' : '') +
+          (c.editable && (c.pictures || []).length ? '<button data-ch-describe="' + c.id + '" title="' + esc(S.ch_describe_help) + '">✍️ ' + S.ch_describe + '</button>' : '') +
           (c.voice ? '<button data-ch-speak="' + c.id + '">' + S.ch_speak + '</button>' : '') +
           (c.editable && c.scope !== 'family' ? '<button data-ch-widen="' + c.id + '">' + S[c.scope === 'project' ? 'ch_widen_person' : 'ch_widen_family'] + '</button>' : '') +
           (c.editable ? '<button class="danger" data-ch-del="' + c.id + '">🗑</button>' : '') +
@@ -1123,9 +1124,12 @@
     // A picture made here, kept as a reference: what a shot can start from.
     // Marked once it is one; the reference is a copy, deleted on its own.
     function refButton(file, name) {
-      var has = (current.uploads || []).some(function (u) { return u.kind === 'reference' && u.source === file; });
-      return has ? '<span class="pill ok" title="' + esc(S.ref_is) + '">📌 ✓</span>'
-        : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" title="' + esc(S.ref_add) + '">📌 ' + S.ref_add_short + '</button>';
+      var ref = (current.uploads || []).find(function (u) { return u.kind === 'reference' && u.source === file; });
+      return (ref ? '<span class="pill ok" title="' + esc(S.ref_is) + '">📌 ✓</span>'
+        : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" title="' + esc(S.ref_add) + '">📌 ' + S.ref_add_short + '</button>') +
+        (ref && ref.style ? '<span class="pill ok" title="' + esc(S.ref_style_help) + '">🎨 ✓</span>'
+          : ref ? '<button data-style-ref="' + esc(ref.file.replace(/^uploads\//, '')) + '" data-on="1" title="' + esc(S.ref_style_help) + '">🎨 ' + S.ref_style + '</button>'
+          : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" data-style="1" title="' + esc(S.ref_style_help) + '">🎨 ' + S.ref_style + '</button>');
     }
 
     // The version's parts written out -- guitar as notes and tab, piano --
@@ -1259,12 +1263,17 @@
         return l.length ? l.map(function (u) {
           var prev = kind === 'voice' ? '<audio controls preload="none" src="' + fileUrl(p.id, u.file) + '"></audio>' :
             '<img src="' + fileUrl(p.id, u.file) + '" style="max-width:120px;border-radius:6px">';
-          return '<div class="row" style="margin:6px 0">' + prev + '<span class="muted grow">' + esc(u.name) + '</span>' +
+          var styleBtn = kind !== 'reference' ? '' :
+            '<button data-style-ref="' + esc(u.file.replace(/^uploads\//, '')) + '" data-on="' + (u.style ? '0' : '1') + '"' +
+            (u.style ? ' class="on"' : '') + ' title="' + esc(S.ref_style_help) + '">🎨 ' + S.ref_style + (u.style ? ' ✓' : '') + '</button>';
+          return '<div class="row" style="margin:6px 0">' + prev + '<span class="muted grow">' + esc(u.name) + '</span>' + styleBtn +
             '<button class="danger" data-del-upload="' + esc(u.file.replace(/^uploads\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div>';
         }).join('') : '<p class="muted">' + S.no_files + '</p>';
       }
-      return '<div class="card"><b>' + S.upload_ref + '</b>' + list('reference') +
-        '<div class="row" style="margin-top:8px"><input type="file" accept="image/*" data-upload="reference" style="width:auto"></div></div>' +
+      return '<div class="card"><b>' + S.upload_ref + '</b><p class="muted">' + S.ref_style_intro + '</p>' + list('reference') +
+        '<div class="row" style="margin-top:8px"><input type="file" accept="image/*" data-upload="reference" style="width:auto"></div>' +
+        '<div class="row" style="margin-top:8px"><span class="muted">🎨 ' + S.upload_style + '</span>' +
+        '<input type="file" accept="image/*" data-upload="reference" data-style="1" style="width:auto"></div></div>' +
         '<div class="card"><b>' + S.upload_voice + '</b><p class="muted">' + S.voice_sample_help + '</p>' + list('voice') +
         '<div class="row" style="margin-top:8px"><input type="file" accept="audio/*" data-upload="voice" style="width:auto"></div></div>';
     }
@@ -1318,9 +1327,14 @@
       if (el.dataset.f === 'continuity') { drawTab(); return; }
       if (el.dataset.upload && el.files.length) {
         var fd = new FormData(); fd.append('file', el.files[0]); fd.append('kind', el.dataset.upload);
+        if (el.dataset.style) fd.append('style', '1');
         toast(S.uploading);
         busy++;
-        try { await api('projects/' + current.id + '/upload', { method: 'POST', body: fd }); current = await api('projects/' + current.id); drawTab(); }
+        try {
+          var up = await api('projects/' + current.id + '/upload', { method: 'POST', body: fd });
+          if (up.style_error) toast(up.style_error, true);
+          current = await api('projects/' + current.id); drawTab();
+        }
         catch (e) { toast(fmt('err', { e: e.message }), true); }
         finally { busy--; }
       }
@@ -1456,9 +1470,22 @@
         }
         if (d.asRef) {
           await flushSave();
-          await api('projects/' + p.id + '/references', { method: 'POST', body: { file: d.asRef, name: d.name || '' } });
-          toast(S.ref_added);
+          await api('projects/' + p.id + '/references', { method: 'POST', body: { file: d.asRef, name: d.name || '', style: !!d.style } });
+          toast(d.style ? S.ref_style_added : S.ref_added);
           current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.styleRef) {
+          await api('projects/' + p.id + '/uploads/' + encodeURIComponent(d.styleRef) + '/style', { method: 'POST', body: { on: d.on === '1' } });
+          toast(d.on === '1' ? S.ref_style_added : S.ref_style_removed);
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.chDescribe) {
+          b.disabled = true; b.textContent = '✍️ ' + S.ch_describe_working;
+          try {
+            var dc = await api('char-describe', { method: 'POST', body: { project: p.id, character: d.chDescribe } });
+            toast(fmt('ch_describe_done', { look: dc.look }));
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          await loadCast(); drawTab(); return;
         }
         if (d.score) {
           var st = chosen(itemById(d.score));

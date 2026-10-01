@@ -18,6 +18,16 @@ IMAGE_MODEL = "z_image"
 SONG_MODEL = "ace_step_v1_5_turbo_lm_1_7b"
 INSTRUMENTAL_MODEL = "stable_audio3_medium"
 VOICE_MODEL = "qwen3_tts_base"
+# Drawing *from pictures*: the cast's photos or portraits, and the pictures the
+# person flagged as the film's style. Z-Image reads text only, so a character
+# it draws is whoever its description makes them, different every frame.
+# FLUX.2 klein takes ordered reference images and is told in the prompt what
+# each one is. 4B, not 9B: it shares Z-Image's Qwen3 text encoder (already on
+# disk), fits the card with room, and is Apache-licensed -- the 9B is not.
+REF_IMAGE_MODEL = "flux2_klein_4b"
+# The cast first (three at most, as the review compares), then up to two
+# style pictures. Every reference is more for the model to hold and slower.
+MAX_CAST_REFS, MAX_STYLE_REFS = 3, 2
 
 # `analyze` is a song listened to (studio/analysis.py): not WanGP's, run by the
 # manager itself on the Studio's audio.cpp -- in the same queue, so it never
@@ -44,6 +54,14 @@ VIDEO_SIZES = ("832x480", "480x832", "608x352", "640x640")
 
 class RecipeError(ValueError):
     pass
+
+
+def model_for(kind: str, params: dict) -> str:
+    """The model a job runs on: its kind's, except a picture drawn from
+    reference pictures (`with_refs`, set where the job is asked for)."""
+    if kind in ("image", "board", "portrait") and params.get("with_refs"):
+        return REF_IMAGE_MODEL
+    return MODEL_OF[kind]
 
 
 def h3_frames(seconds: float) -> int:
@@ -107,6 +125,14 @@ def settings_for(kind: str, p: dict) -> dict:
         size = p.get("size") if p.get("size") in IMAGE_SIZES else IMAGE_SIZES[0]
         if not str(p.get("prompt") or "").strip():
             raise RecipeError("a picture needs a description")
+        if p.get("with_refs"):
+            # Pictures, in order, as people/objects ("I"); the prompt says
+            # which is which (manager._resolve). None left -- deleted since --
+            # is the same model from text alone.
+            refs = [str(x) for x in p.get("image_refs") or []]
+            return {"model_type": REF_IMAGE_MODEL, "image_mode": 1, "resolution": size,
+                    "prompt": p["prompt"], "seed": seed, "video_prompt_type": "I" if refs else "",
+                    **({"image_refs": refs} if refs else {})}
         return {"model_type": IMAGE_MODEL, "image_mode": 1, "resolution": size,
                 "prompt": p["prompt"], "seed": seed}
     if kind == "song":
