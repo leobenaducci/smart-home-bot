@@ -97,6 +97,23 @@ class Worker:
         self.log.close()
 
 
+# More than this in use on the card while the Studio holds nothing there is
+# somebody else -- the Programmer's local model takes 10.7 GB of the 12 -- and a
+# job started on top of it fails for lack of memory. Measured idle: ~220 MB.
+FOREIGN_MB = 1500
+
+
+def card_used_mb() -> int | None:
+    """Memory in use on the card this container sees, in MB; None when it
+    cannot be read (no nvidia-smi, no card) -- which is not a reason to stop."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return int(out.split()[0])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
 class Manager:
     def __init__(self, store: Store, projects: Projects, scratch: Path, logs: Path,
                  idle_s: float = 600, notify: Callable[[dict], None] | None = None,
@@ -114,6 +131,9 @@ class Manager:
         # to its owner while the card works, removed when it finishes.
         self.previews: dict[str, Path] = {}
         self.paused = False
+        # MB somebody else holds on the card while a job waits for it, else 0.
+        self.card_busy = 0
+        self.card_used = card_used_mb
         # Why the card is paused, for the page to say: "update" when the
         # deployer holds it to restart the studio, "" when a parent did.
         self.pause_reason = ""
@@ -154,7 +174,8 @@ class Manager:
     def status(self) -> dict:
         return {"worker": bool(self.worker and self.worker.alive()),
                 "model": self.worker.model if self.worker else "",
-                "paused": self.paused, "pause_reason": self.pause_reason if self.paused else ""}
+                "paused": self.paused, "pause_reason": self.pause_reason if self.paused else "",
+                "card_busy_mb": self.card_busy}
 
     # -- the loop -----------------------------------------------------------
     def _loop(self) -> None:
@@ -176,6 +197,20 @@ class Manager:
                     self._wake.wait(timeout=5)
                     self._wake.clear()
                     continue
+                # The card free before a job starts on it. A pause is the polite
+                # way to borrow it, and it is lost when the Studio restarts or a
+                # person resumes it while the borrower is still there: three
+                # songs failed "insufficient VRAM" under the Programmer's model
+                # (2026-10-01). Held by somebody else, the job waits its turn.
+                used = self.card_used() if self.worker is None else None
+                if used is not None and used > FOREIGN_MB:
+                    if not self.card_busy:
+                        log.info("the card has %s MB in use by something else: %s waits", used, job["id"])
+                    self.card_busy = used
+                    self._wake.wait(timeout=15)
+                    self._wake.clear()
+                    continue
+                self.card_busy = 0
                 self._run(job)
             except Exception:                                  # noqa: BLE001 -- the loop must not die
                 log.exception("manager round failed")

@@ -22914,7 +22914,7 @@ STUDIO_UI_KEYS = (
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
-    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_paused_after', 'rec_retry',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_taken', 'card_paused_after', 'rec_retry',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
@@ -23019,7 +23019,9 @@ def studio_notify():
     project = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
     _notify_user(login, str(d.get('text') or '')[:300], title=t_for(login, 'studio.title'),
                  tags='clapper' if d.get('ok') else 'warning',
-                 click='/studio' + (f'?project={project}' if project else ''))
+                 # Absolute, as chat_link() is: a bare path is not a URL to ntfy or
+                 # to a browser, and the app keeps only the path and query anyway.
+                 click=f'{HOMECORE_PUBLIC_URL}/studio' + (f'?project={project}' if project else ''))
     return jsonify(ok=True)
 
 

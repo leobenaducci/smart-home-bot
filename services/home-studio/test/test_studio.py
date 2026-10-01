@@ -719,6 +719,27 @@ else:
     check("  paused, it is stopped now -- the Programmer's local model waits for that card",
           mgr.worker is None and not mgr.status()["worker"], mgr.status())
     mgr.paused = False
+
+    print("\nsomebody else on the card: a job waits instead of failing")
+    mgr.card_used = lambda: 10692
+    jw = store2.add(owner=JUANA, owner_name="Juana", kind="image", model=recipes.IMAGE_MODEL,
+                    params={"prompt": "un faro", "size": "1024x1024"})
+    mgr.wake()
+    time.sleep(2)
+    check("  with 10.7 GB held by something else and no worker of its own, the job is not started",
+          store2.get(jw["id"])["state"] == "queued" and mgr.status()["card_busy_mb"] == 10692,
+          (store2.get(jw["id"])["state"], mgr.status()))
+    with fake._lock:
+        fake._out.append({"kind": "ready"})
+        fake._lock.notify_all()
+    mgr.card_used = lambda: 220
+    mgr.wake()
+    deadline = time.time() + 30
+    while time.time() < deadline and store2.get(jw["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    check("  and once the card is free it runs, and the page stops saying so",
+          store2.get(jw["id"])["state"] == "done" and mgr.status()["card_busy_mb"] == 0,
+          (store2.get(jw["id"]), mgr.status()))
     mgr.stop()
 
 print("\na project's words under version control")

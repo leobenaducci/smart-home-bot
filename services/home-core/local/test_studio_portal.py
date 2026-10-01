@@ -678,6 +678,25 @@ check("the music-video plan is written knowing the style pictures and the first 
  A.requests.request) = _saved_r
 
 
+print("\na Studio notification opens the Studio")
+_sent = []
+_saved_n = A._notify_user
+A._notify_user = lambda login, text, **kw: _sent.append(kw)
+r = client.post("/studio/api/notify", headers={"X-Studio-Secret": A.STUDIO_SECRET},
+                json={"login": USER1, "text": "No se pudo generar: una canción", "project": "abc123def456", "ok": False})
+A._notify_user = _saved_n
+check("its link is a whole address to the project, as the chat's are -- a bare path opened the chat",
+      r.status_code == 200 and _sent and _sent[0]["click"] == A.HOMECORE_PUBLIC_URL + "/studio?project=abc123def456"
+      and _sent[0]["click"].startswith(("http://", "https://")), _sent)
+_ktp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "proxy", "android", "app", "src",
+                    "main", "java", "com", "chat", "app", "MainActivity.kt")
+_kt = open(_ktp, encoding="utf-8").read() if os.path.exists(_ktp) else ""
+if _kt:
+    check("  and the app is willing to open it", '"/studio"' in _kt.split("DEEP_LINK_PREFIXES = listOf(")[1].split(")")[0])
+else:
+    print("  SKIP  the app's source is not here (the image holds only the portal)")
+
+
 print("\none correction for the whole storyboard")
 _saved = (A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable)
 A._studio_configured = A._studio_reachable = lambda: True

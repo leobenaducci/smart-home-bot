@@ -327,7 +327,11 @@
           ' · ' + fmt('card_paused_after', { why: why })
         : q.status.paused ? why : run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) })
+        // Something outside the Studio holds the card (the Programmer's model):
+        // the next job waits for it rather than failing for lack of memory.
+        : q.status.card_busy_mb ? fmt('card_taken', { gb: (q.status.card_busy_mb / 1024).toFixed(1) })
         : S.card_free;
+      if (!run && q.status.card_busy_mb) g.classList.add('paused');
       $('#gpu .bar i').style.width = run ? Math.round(run.progress * 100) + '%' : '0';
       $('#gpu-count').textContent = q.queued.length ? q.queued.length + ' ' + S.queue.toLowerCase() : '';
       drawQueue();
