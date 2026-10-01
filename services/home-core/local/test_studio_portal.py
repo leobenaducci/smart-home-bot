@@ -600,7 +600,8 @@ A._studio_data_url = lambda u, path: "data:image/png;base64,QUJD"
 def _vr(url, json=None, headers=None, timeout=None, **kw):
     looked_r.append(json)
     if "character for a film" in json["messages"][0]["content"][0]["text"]:
-        return _V('{"look": "a baby of about one, round face, dark curls"}')
+        return _V('{"people": [{"where": "right", "main": false, "look": "a man with a beard"},'
+                  ' {"where": "center", "main": true, "look": "a baby of about one, round face, dark curls"}]}')
     return _V('{"shows": "a red go-kart track by a lake", "style": "flat 2D vector drawing"}')
 A.requests.post = _vr
 words, style = A._studio_ref_words(USER1, RDOC2)
@@ -620,10 +621,10 @@ check("the Designer writes each shot knowing what its reference picture shows, a
       and "The film's style pictures" in asked_r[0], asked_r[0][:1500] if asked_r else "")
 looked_r.clear(); posted_r.clear()
 look, why = A._studio_describe_character(USER1, "p8", "c1")
-check("a character's look is written from its picture, keeping the person's own note as facts",
+check("a character's look is the main person's, from a picture with others in it -- keeping the note's facts",
       look == "a baby of about one, round face, dark curls"
       and 'already wrote this about them: "Un bebe"' in looked_r[0]["messages"][0]["content"][0]["text"]
-      and "describe only the main one" in looked_r[0]["messages"][0]["content"][0]["text"]
+      and "never mention another person" in looked_r[0]["messages"][0]["content"][0]["text"]
       and ("PUT", "projects/p8/characters/c1", {"look": look}, "Alfred") in posted_r, (look, why, posted_r))
 _cs = A._studio_call
 A._studio_call = lambda u, m, path, body=None, timeout=30, via="": (

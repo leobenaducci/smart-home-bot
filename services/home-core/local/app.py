@@ -23781,15 +23781,33 @@ def studio_board_correct():
     return jsonify(changed=len(changed), total=len(shots), redrawn=redraw, look=look or '')
 
 
+# Every person in the picture, each on their own, with the main one marked:
+# asked to "describe only the main one", the house's 9B vision model described
+# the man beside her and the child behind her anyway, in two photos of two
+# (2026-10-01). As a list it keeps them apart, and the main one is picked here.
 CHARACTER_DESCRIBE_PROMPT = (
-    "This picture shows a character for a film -- often a photo of a real person. Describe how they look, so an "
-    "illustrator who never sees the picture could draw them recognisably in any style: apparent age, build and "
-    "height, skin tone, face shape, hair (colour, length, texture, style), eyes, anything distinctive, and what "
-    "they wear. Only what is visible: no name, no guess at who they are, nothing about the background or the "
-    "photo itself, no brand names and no writing on their clothes. If more than one person is in the picture, "
-    "describe only the main one -- the largest and most central -- and say nothing at all about the others. "
-    "One or two plain sentences in English, at most 60 words. "
-    'Answer with only a JSON object: {"look": "..."}')
+    "This picture shows a character for a film -- often a photo of a real person, sometimes with other people "
+    "in it. List every person in it, one entry each, and describe each one on their own -- never mention another "
+    "person in an entry. For each: where they are in the picture, whether they are the main person (the largest "
+    "and most central -- exactly one is), and how they look, so an illustrator who never sees the picture could "
+    "draw them recognisably in any style: apparent age, build and height, skin tone, face shape, hair (colour, "
+    "length, texture, style), eyes, anything distinctive, and what they wear. No name, no guess at who they are, "
+    "nothing about the background, no brand names and no writing on clothes. One or two plain sentences in "
+    "English per person, at most 60 words. "
+    'Answer with only a JSON object: {"people": [{"where": "...", "main": true, "look": "..."}]}')
+
+
+def _studio_main_look(raw):
+    """The main person's look from the vision model's answer: the entry marked
+    main, else the first; a bare {"look": ...} is read too."""
+    if not isinstance(raw, dict):
+        return ''
+    people = [p for p in raw.get('people') or [] if isinstance(p, dict) and str(p.get('look') or '').strip()]
+    if people:
+        return str(next((p for p in people if p.get('main') is True), people[0])['look']).strip()
+    return str(raw.get('look') or '').strip()
+
+
 # A look this short is a note, not a description ("Un bebe", "Varon 40,
 # 1.70m"): a picture added to its character replaces it with one, keeping
 # the note's facts. A longer one is somebody's careful words and is left.
@@ -23838,8 +23856,8 @@ def _studio_describe_character(username, pid, cid, only_short=False):
         f'\nThe person already wrote this about them: "{note[:400]}". Keep every fact in it (age, height and '
         "the like) unless the picture plainly contradicts it." if note else "")
     try:
-        look = str((json.loads(_studio_vision(prompt, [url], max_tokens=400) or '') or {}).get('look') or '').strip()[:800]
-    except (ValueError, AttributeError):
+        look = _studio_main_look(json.loads(_studio_vision(prompt, [url], max_tokens=800) or ''))[:800]
+    except ValueError:
         look = ''
     if not look:
         return None, 'studio.ch_describe_failed'
