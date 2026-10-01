@@ -439,7 +439,8 @@ class Manager:
         if cast:
             said.append("; ".join(f"image {n} is {name}" for n, name in cast)
                         + ": draw each of them as that picture shows them -- face, hair, build, age -- "
-                          "even when the picture is a photograph, in the style below")
+                          "even when the picture is a photograph, in the style below. Where a picture has more "
+                          "than one person, the character is the main one; nobody else in it is drawn")
         if own:
             said.append(("images " + " and ".join(str(n) for n in own) if len(own) > 1 else f"image {own[0]}")
                         + " are this shot's own reference: draw its setting, objects and composition from "

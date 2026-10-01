@@ -623,7 +623,18 @@ look, why = A._studio_describe_character(USER1, "p8", "c1")
 check("a character's look is written from its picture, keeping the person's own note as facts",
       look == "a baby of about one, round face, dark curls"
       and 'already wrote this about them: "Un bebe"' in looked_r[0]["messages"][0]["content"][0]["text"]
+      and "describe only the main one" in looked_r[0]["messages"][0]["content"][0]["text"]
       and ("PUT", "projects/p8/characters/c1", {"look": look}, "Alfred") in posted_r, (look, why, posted_r))
+_cs = A._studio_call
+A._studio_call = lambda u, m, path, body=None, timeout=30, via="": (
+    {"characters": [{"id": "c1", "name": "Bruma", "look": "x" * 120, "pictures": ["pictures/a.png"], "portrait": 0}]}
+    if path == "projects/p8/characters" else _cs(u, m, path, body, timeout, via))
+looked_r.clear()
+A._studio_describe_character(USER1, "p8", "c1")
+check("  a look longer than a note is an earlier description, and is not carried into the new one",
+      "already wrote" not in looked_r[0]["messages"][0]["content"][0]["text"])
+check("  and an automatic one leaves it alone", A._studio_describe_character(USER1, "p8", "c1", True) == (None, None))
+A._studio_call = _cs
 bg = []
 A._studio_background = lambda fn, *a: bg.append((fn.__name__, a))
 class _Up:

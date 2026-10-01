@@ -23786,7 +23786,9 @@ CHARACTER_DESCRIBE_PROMPT = (
     "illustrator who never sees the picture could draw them recognisably in any style: apparent age, build and "
     "height, skin tone, face shape, hair (colour, length, texture, style), eyes, anything distinctive, and what "
     "they wear. Only what is visible: no name, no guess at who they are, nothing about the background or the "
-    "photo itself. One or two plain sentences in English, at most 60 words. "
+    "photo itself, no brand names and no writing on their clothes. If more than one person is in the picture, "
+    "describe only the main one -- the largest and most central -- and say nothing at all about the others. "
+    "One or two plain sentences in English, at most 60 words. "
     'Answer with only a JSON object: {"look": "..."}')
 # A look this short is a note, not a description ("Un bebe", "Varon 40,
 # 1.70m"): a picture added to its character replaces it with one, keeping
@@ -23828,9 +23830,13 @@ def _studio_describe_character(username, pid, cid, only_short=False):
     url = _studio_data_url(username, f"projects/{pid}/characters/{cid}/file/{quote(pic, safe='/')}")
     if not url:
         return None, 'studio.ch_describe_failed'
+    # Only a note's facts are carried over: a longer look is most likely an
+    # earlier description, and carrying it would keep whatever it got wrong --
+    # the man beside her in somebody's photo, described as part of her.
+    note = before if len(before) < CHARACTER_LOOK_SHORT else ''
     prompt = CHARACTER_DESCRIBE_PROMPT + (
-        f'\nThe person already wrote this about them: "{before[:400]}". Keep every fact in it (age, height and '
-        "the like) unless the picture plainly contradicts it." if before else "")
+        f'\nThe person already wrote this about them: "{note[:400]}". Keep every fact in it (age, height and '
+        "the like) unless the picture plainly contradicts it." if note else "")
     try:
         look = str((json.loads(_studio_vision(prompt, [url], max_tokens=400) or '') or {}).get('look') or '').strip()[:800]
     except (ValueError, AttributeError):
