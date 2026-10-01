@@ -953,7 +953,9 @@
           '<div class="sb-title"><b>' + S.shot + ' ' + (i + 1) + '</b>' +
           (j ? '<span class="pill run">' + (j.state === 'running' ? S.sb_drawing : S.state_queued) + '</span>' : '') +
           (t && !videoStale(s) ? '<span class="pill ok" title="' + esc(S.sb_has_video) + '">🎥</span>' : '') +
-          (boardChanged(s) ? '<span class="pill" title="' + esc(S.sb_changed) + '">✏️ ' + S.sb_changed_short + '</span>' : '') + '</div>' +
+          (boardChanged(s) ? '<span class="pill" title="' + esc(S.sb_changed) + '">✏️ ' + S.sb_changed_short + '</span>' : '') +
+          // The same removal as the videos panel's: one shot, confirmed, undone from the history.
+          '<span class="grow"></span><button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + esc(S.remove) + '">✕</button></div>' +
           (words !== null ? '<p class="sb-sung">' + (words ? '“' + esc(words) + '”' : S.sb_music_only) + '</p>' : '') +
           '<textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           (b && !startsFresh(s) ? '<p class="muted" style="margin:6px 0 0;font-size:.82rem">⛓ ' + S.sb_continues +

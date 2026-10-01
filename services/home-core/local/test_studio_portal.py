@@ -573,6 +573,9 @@ r = client.post("/studio/api/char-describe", headers=HOME, json={"project": "p9"
 check("a character with no picture is told to get one", r.status_code == 400)
 A._studio_call, A._studio_data_url, A.requests.post = _saved_d
 page = open(os.path.join(os.path.dirname(os.path.abspath(A.__file__)), "templates", "studio.html"), encoding="utf-8").read()
+_bt = page[page.index("function boardTab()"):page.index("\n    function ", page.index("function boardTab()"))]
+check("a storyboard card can remove its shot, as the videos panel's can",
+      'data-remove="shots"' in _bt, _bt[-400:])
 check("the page has the describe button, the style flag and the style upload",
       "data-ch-describe" in page and "data-style-ref" in page and 'data-style="1"' in page
       and "api('char-describe'" in page)
