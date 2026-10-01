@@ -7194,19 +7194,33 @@ def _opencode_asked_for_go(username, msg_content):
                {t_for(username, 'programmer.retry_go'), t_for('', 'programmer.retry_go')} if label)
 
 
-def _studio_rendering():
-    """Whether the Studio is running a job on the card the local model borrows.
-    Lending it means waiting for that job -- a video shot is ~25 minutes -- which
-    is worth it only when there is nowhere else to go."""
+def _studio_card():
+    """The Studio's queue as the Programmer sees it: `running` (a job) and
+    `status` (`worker`: a model still on the card). {} when unreachable."""
     if not STUDIO_URL or not STUDIO_SECRET:
-        return False
+        return {}
     try:
         r = requests.get(f'{STUDIO_URL}/api/queue', timeout=(3, 10), headers={
             'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': 'programmer',
             'X-Studio-Name': 'Programmer', 'X-Studio-Admin': '1'})
-        return bool(r.status_code == 200 and (r.json() or {}).get('running'))
+        return (r.json() or {}) if r.status_code == 200 else {}
     except (requests.RequestException, ValueError):
-        return False
+        return {}
+
+
+def _studio_rendering():
+    """Whether the Studio is running a job on the card the local model borrows.
+    Lending it means waiting for that job -- a video shot is ~25 minutes -- which
+    is worth it only when there is nowhere else to go."""
+    return bool(_studio_card().get('running'))
+
+
+def _studio_holds_card():
+    """Whether the local model, starting now, would wait for the Studio: a job
+    running or a model still loaded. Said in the chat -- a turn waiting on the
+    card showed nothing at all for thirteen minutes (2026-10-01)."""
+    card = _studio_card()
+    return bool(card.get('running') or (card.get('status') or {}).get('worker'))
 
 
 def _opencode_engine(turn, msg_content=''):
@@ -8510,6 +8524,8 @@ def _turn_attempt_opencode(turn, msg_content):
                                                         reset=_go_out['reset'] or '?')
                                           if _go_is_out() else
                                           t_for(username, 'programmer.on_local')})
+                        if _studio_holds_card():
+                            _turn_emit(turn, {'hint': t_for(username, 'programmer.waiting_card')})
                 params = {'directory': directory} if directory else None
                 p = requests.post(f'{base}/session/{session_id}/prompt_async',
                                   params=params, json=body, timeout=30)

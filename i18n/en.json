@@ -1793,6 +1793,7 @@
   "programmer.go_out_local": "OpenCode Go's limit is reached (back in {reset}). Continuing on this house's own model: slower, and less capable.",
   "programmer.go_out": "OpenCode Go's usage limit is reached; it is back in {reset}. There is no local model set up to continue in the meantime.",
   "programmer.on_local": "Working on this house's own model.",
+  "programmer.waiting_card": "Waiting for the Studio to free its card for this house's model: a picture or video it is making finishes first.",
   "programmer.local_to_go": "This house's model got stuck ({why}). OpenCode Go takes over this turn, and the rest of this conversation.",
   "programmer.local_failed": "This house's model got stuck ({why}), and OpenCode Go is out for {reset}. Stopped here: what it changed is still in the files.",
   "programmer.local_why_repeat": "it made the same call {n} times",
