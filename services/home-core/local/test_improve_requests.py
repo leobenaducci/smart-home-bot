@@ -289,7 +289,9 @@ conv_q = []
 A._queue_add = lambda chat_id, item, front=False: conv_q.append((chat_id, item)) or True
 A._queue_advance = lambda login, chat_id: None
 DAY = A._tasks_today().isoformat()
-CONV = 1790800000001
+# Now, not a fixed time: a day's history drops messages older than its own
+# midnight, so a fixed stamp filed under today vanished once the date moved on.
+CONV = int(A.time.time() * 1000)
 A.append_user_history(CODER, {"role": "user", "text": "¿por qué tarda tanto la skill de luces?",
                               "ts": CONV, "conv": CONV}, DAY, A.OPENCODE_SPACE)
 d = coder.post("/improve/api/requests/convert", headers=H,
