@@ -1568,6 +1568,7 @@
   "studio.sb_correct_redraw": "Redraw the frames that change",
   "studio.sb_correct_working": "The Designer is correcting…",
   "studio.sb_correct_done": "{n} of {total} shot(s) corrected.",
+  "studio.sb_correct_look": "The film's look is now: {look}.",
   "studio.sb_correct_none": "The Designer found nothing to change for that correction.",
   "studio.sb_correct_failed": "The Designer did not answer with a corrected storyboard. Try again, or word it differently.",
   "studio.sb_correct_empty": "Write the correction first.",

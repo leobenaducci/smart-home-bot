@@ -509,8 +509,9 @@ check("a frame in the wrong style cannot pass on the rest: two of four shown wou
       rv.get("score") == 4 and rv.get("style") == "no", rv)
 check("  its style problems lead the list the redraw is written from",
       (rv.get("problems") or [""])[0].endswith("es una foto, no acuarela"), rv.get("problems"))
-check("  and the Designer is told to keep to the look, and to restate it",
-      seen and A.STUDIO_STYLE_RULE in seen[-1]["text"] and "wrong style" in seen[-1]["text"], seen[-1:])
+check("  and the Designer is told the look fixes it -- not to write style words of its own",
+      seen and A.STUDIO_STYLE_RULE in seen[-1]["text"] and "not by words of yours" in seen[-1]["text"]
+      and "restat" not in seen[-1]["text"], seen[-1:])
 check("  and the review keeps whether it held the style, for the next frame's references",
       any(c[1].endswith("/boards/bd1/review") and c[2]["review"].get("style") == "no" for c in calls))
 vision_answers[:] = ['{"items": ["un zorro rojo"]}',
@@ -527,6 +528,19 @@ RDOC["shots"] = _saved_shots
 A.requests.get = _get_before
 refs = A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1")
 check("a storyboard of one frame has nothing to compare it with", refs == [])
+RDOC["shots"] = _saved_shots + [
+    {"id": "sh2", "prompt": "the sea", "board": 0, "boards": [
+        {"id": "bd2", "file": "takes/sh2/g.jpg", "review": {"state": "done", "score": 9}}]},
+    {"id": "sh4", "prompt": "a boat", "board": 0, "boards": [{"id": "bd4", "file": "takes/sh2/g.jpg"}]}]
+A.requests.get = _studio_get3
+check("only frames that passed in the style are references: not unreviewed ones, nor ones passed before "
+      "style was checked", A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1") == [])
+RDOC["settings"] = {**RDOC["settings"], "look": ""}
+check("  (with no look, a passing frame is the only style there is)",
+      [n for n, _ in A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1")] == ["shot 2"])
+RDOC["settings"]["look"] = "pastel watercolour"
+RDOC["shots"] = _saved_shots
+A.requests.get = _get_before
 
 print("\none correction for the whole storyboard")
 _saved = (A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable)
@@ -565,7 +579,9 @@ check("only the shots that changed are saved, under the assistant's name",
       saved)
 redrawn = [b for m, p, b, v in calls if p == "projects/p1/storyboard"]
 check("and those, and only those, are redrawn", redrawn == [{"items": ["s1", "s4"]}], redrawn)
-check("the page is told how many of how many", d == {"changed": 2, "total": 3, "redrawn": True}, d)
+check("the page is told how many of how many", d == {"changed": 2, "total": 3, "redrawn": True, "look": ""}, d)
+check("  with style left to the look: none named, none repeated, no photo mentioned",
+      A.STUDIO_STYLE_RULE in text and "photo" in A.STUDIO_STYLE_RULE and "do not repeat the look" in text, text[-900:])
 calls.clear(); asked.clear()
 r = client.post("/studio/api/board-correct", headers=HOME,
                 json={"project": "p1", "feedback": "night", "redraw": False})
@@ -579,6 +595,30 @@ r = client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1"
 check("an answer with the wrong number of shots is asked for once more, then refused, and nothing is saved",
       len(asked) == 2 and r.status_code == 502 and not any(p.endswith("/prompt") for _, p, _, _ in calls),
       (len(asked), r.status_code))
+calls.clear(); asked.clear()
+answer = json.dumps({"look": "3D animated cartoon for children, bright and clean", "shots": [
+    {"prompt": "Mora walks in a sunny park."}, {"prompt": "A dog runs on the beach."},
+    {"prompt": "Mora waves from a window."}]})
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked.append(text) or answer
+r = client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1", "feedback": "make it a cartoon"})
+d = r.get_json() or {}
+puts = [(b, v) for m, p_, b, v in calls if m == "PUT" and p_ == "projects/p1"]
+check("a correction about the style changes the film's look, as the assistant -- not every shot",
+      puts == [({"settings": {"look": "3D animated cartoon for children, bright and clean"}}, "Alfred")]
+      and not any(p_.endswith("/prompt") for _, p_, _, _ in calls), (puts, calls))
+check("  and every frame is redrawn, since the look is in each",
+      [b for m, p_, b, v in calls if p_ == "projects/p1/storyboard"] == [{"items": ["s1", "s2", "s4"]}])
+check("  and the page is told the new look", d.get("look") == "3D animated cartoon for children, bright and clean"
+      and d.get("changed") == 0, d)
+check("  the Designer is asked to say 2D or 3D, and to take style words out of the shots",
+      "2D or 3D" in asked[0] and "Take out of the descriptions any style words" in asked[0], asked[0][-700:])
+calls.clear()
+answer = json.dumps({"look": "watercolour, warm", "shots": [{"prompt": "a"}, {"prompt": "b"}, {"prompt": "c"}]})
+client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1", "feedback": "x"})
+check("  a look that comes back the same is not a change", not any(m == "PUT" for m, *_ in calls), calls)
+check("an old-style answer, a bare array, still reads as the shots",
+      A._studio_parse_correction('[{"prompt": "a"}]', 1) == (None, ["a"])
+      and A._studio_parse_correction('{"look": null, "shots": [{"prompt": "a"}]}', 1) == (None, ["a"]))
 A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable = _saved
 page = open(os.path.join(os.path.dirname(os.path.abspath(A.__file__)), "templates", "studio.html"), encoding="utf-8").read()
 check("the page has the box, keeps what is typed across redraws, and sends it",

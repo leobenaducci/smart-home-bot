@@ -1570,6 +1570,7 @@
   "studio.sb_correct_redraw": "Redibujar los cuadros que cambien",
   "studio.sb_correct_working": "El Diseñador está corrigiendo…",
   "studio.sb_correct_done": "{n} de {total} toma(s) corregida(s).",
+  "studio.sb_correct_look": "El estilo visual de la película ahora es: {look}.",
   "studio.sb_correct_none": "El Diseñador no encontró nada que cambiar con esa corrección.",
   "studio.sb_correct_failed": "El Diseñador no respondió con un storyboard corregido. Probá de nuevo, o decilo de otra forma.",
   "studio.sb_correct_empty": "Primero escribí la corrección.",

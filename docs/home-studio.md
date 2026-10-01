@@ -140,6 +140,30 @@ one step to undo -- and redrawn, unless the box's "redraw" is unticked; a frame
 left undrawn is marked changed like any edited shot. Recorded shots are not
 descriptions and are left out.
 
+### Style lives in the look, and only there
+
+The project's look is put ahead of every frame's description and into every
+shot's video prompt. So the descriptions carry no style of their own: two
+places naming the style is two places that can disagree. Measured on a
+household's music video (2026-10-01): its look said "realista", every shot
+said "Disney style cartoon", and a correction had written "matching his
+reference photo" into 29 of 34 shots. The image model never sees a photo;
+it reads the word. The frames came out 2D, 3D and photographic by turns, and
+redraws told to restate the look wrote "clean, realistic" into them.
+
+- The Designer's redraws and corrections are told to name no style, repeat no
+  look and mention no photo or reference picture (`STUDIO_STYLE_RULE`). A
+  correction also takes such words out of descriptions that already have them.
+- A correction about the style of the whole piece ("make it a 3D cartoon")
+  changes the **look**, under the assistant's name, and every frame is redrawn.
+  The Designer is asked to say 2D or 3D: "cartoon" alone is both.
+- A frame is reviewed for style against the look and against up to two other
+  frames, and only frames that passed **in the style** are used for that.
+  Unreviewed frames used to stand in, and in a storyboard drawn in mixed
+  styles the verdicts contradicted each other.
+- A frame off-style scores at most 4 (6 if partly), whatever else it gets
+  right.
+
 ### Reviewing the frames
 
 Every frame drawn is looked at when it lands -- a first drawing, a redraw,

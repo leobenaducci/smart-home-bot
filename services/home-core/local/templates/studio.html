@@ -1495,7 +1495,8 @@
           try {
             var rc = await api('board-correct', { method: 'POST', body: { project: p.id, feedback: fb, redraw: correctRedraw } });
             correctDraft = '';
-            toast(rc.changed ? fmt('sb_correct_done', { n: rc.changed, total: rc.total }) : S.sb_correct_none);
+            toast((rc.look ? fmt('sb_correct_look', { look: rc.look }) + ' ' : '') +
+                  (rc.changed ? fmt('sb_correct_done', { n: rc.changed, total: rc.total }) : rc.look ? '' : S.sb_correct_none));
           } catch (e) { toast(fmt('err', { e: e.message }), true); }
           finally { current = await api('projects/' + p.id); loadQueue(); drawTab(); }
           return;

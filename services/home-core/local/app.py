@@ -22879,7 +22879,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_none', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_look', 'sb_correct_none', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
     'ch_voice_text', 'ch_record', 'ch_stop', 'ch_pictures', 'ch_save', 'ch_pick_studio', 'ch_pick_files', 'ch_pick_none',
@@ -23274,8 +23274,9 @@ def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
         + "\nWrite the prompt to redraw it with, in English: the same shot, fixing every problem and keeping what "
           "works, 1 to 3 concrete visual sentences for an image model (who, where, action, framing, light). "
           + STUDIO_STYLE_RULE
-          + (" The frame came out in the wrong style: end the prompt with a short phrase restating the film's "
-             "look." if review.get('style') in ('partly', 'no') else "")
+          + (" The frame came out in the wrong style: that is fixed by drawing it again with the look, not by "
+             "words of yours -- leave the style problems out of the prompt." if review.get('style') in ('partly', 'no')
+             else "")
           + " Answer with only the prompt -- no quotes, no heading, no other text."
     )
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-review-{sid}'
@@ -23291,7 +23292,16 @@ def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
 # shot's video prompt), so what the descriptions must not do is name another.
 STUDIO_STYLE_RULE = (
     "The film's look is added to every shot separately: do not name a style, medium, palette or "
-    "rendering of your own, and never one that contradicts the look.")
+    "rendering, and do not repeat the look either. Never mention a photo, picture or reference image "
+    "-- the image model sees only these words, and \"photo\" draws it toward a photograph; describe "
+    "what a person looks like instead.")
+# Measured on a household's music video (2026-10-01): its look said "realista"
+# while every shot said "Disney style cartoon", and a correction had added
+# "matching his reference photo" to 29 of 34 shots. Frames came out 2D, 3D and
+# photographic by turns, and redraws told to restate the look wrote "clean,
+# realistic" into them -- the conflict copied into every description. So the
+# descriptions carry no style at all, the look is the one place for it, and a
+# correction about the style changes the look (`_studio_correct_shots`).
 # How many other frames a frame is compared with for style. Each is an image
 # in the vision call, beside the frame and up to three portraits.
 STUDIO_STYLE_REFS = 2
@@ -23311,11 +23321,15 @@ def _studio_style_refs(username, pid, doc, sid, limit=STUDIO_STYLE_REFS):
     """Up to *limit* other frames of the storyboard to hold this one's style
     to, as (label, data URL): the first frame that passed its review and kept
     to the style -- the anchor, the same for every frame -- and the passing one
-    nearest this shot. Frames whose review found them off-style are never
-    used; before any review has passed, the first frames drawn stand in."""
+    nearest this shot. Only those: until a frame has passed, the look alone is
+    the style. Unreviewed frames used to stand in, and in a storyboard drawn
+    in mixed styles they made the verdicts contradict -- one frame marked
+    wrong for being 3D beside a 2D reference, the next for being 2D beside 3D
+    ones."""
     shots = doc.get('shots') or []
     here = next((i for i, s in enumerate(shots) if s.get('id') == sid), 0)
-    good, fallback = [], []
+    look = str((doc.get('settings') or {}).get('look') or '').strip()
+    good = []
     for i, s in enumerate(shots):
         if s.get('id') == sid or not s.get('boards'):
             continue
@@ -23327,14 +23341,14 @@ def _studio_style_refs(username, pid, doc, sid, limit=STUDIO_STYLE_REFS):
         r = b.get('review') or {}
         if r.get('style') in ('partly', 'no'):
             continue
-        if r.get('state') == 'done' and int(r.get('score') or 0) >= 7:
+        # Passed, and in the style: checked against the look when there is one. A
+        # review from before style was checked says nothing about it.
+        kept = r.get('style') == 'yes' or (not look and not r.get('style'))
+        if r.get('state') == 'done' and int(r.get('score') or 0) >= 7 and kept:
             good.append((i, s, b))
-        elif not r.get('state') or r.get('state') == 'done':
-            fallback.append((i, s, b))
     picked = good[:1]
     rest = sorted(good[1:], key=lambda x: abs(x[0] - here))
     picked += rest[:max(0, limit - len(picked))]
-    picked += fallback[:max(0, limit - len(picked))]
     out = []
     for i, s, b in sorted(picked, key=lambda x: x[0])[:limit]:
         url = _studio_data_url(username, f"projects/{pid}/file/{quote(b['file'], safe='/')}")
@@ -23606,12 +23620,40 @@ def studio_board_refine():
     return jsonify(started=len(shots))
 
 
+def _studio_parse_correction(text, n):
+    """(look or None, the n descriptions) from the Designer's correction, or
+    None. `{"look": ..., "shots": [...]}`; a bare array is read as shots with
+    the look left alone."""
+    if not text:
+        return None
+    start, end = text.find('{'), text.rfind('}')
+    if 0 <= start < end and (text.find('[') < 0 or start < text.find('[')):
+        try:
+            raw = json.loads(text[start:end + 1])
+        except ValueError:
+            raw = None
+        if isinstance(raw, dict) and isinstance(raw.get('shots'), list):
+            shots = _studio_parse_plan(json.dumps(raw['shots']), n)
+            if shots is None:
+                return None
+            look = raw.get('look')
+            look = str(look).strip()[:600] if isinstance(look, str) and look.strip() else None
+            return look, [o['prompt'] for o in shots]
+    shots = _studio_parse_plan(text, n)
+    return (None, [o['prompt'] for o in shots]) if shots is not None else None
+
+
 def _studio_correct_shots(username, doc, shots, feedback):
-    """Every shot's description rewritten by the Designer from one piece of
-    feedback, or None. One call for the whole storyboard, so the correction is
-    applied consistently -- "she wears red" in every shot she is in, not in the
-    ones a per-shot pass happened to read that way. Exactly one description per
-    shot, in order; a shot the feedback does not concern comes back as it was."""
+    """(the look, every shot's description) rewritten by the Designer from one
+    piece of feedback, or None. One call for the whole storyboard, so the
+    correction is applied consistently -- "she wears red" in every shot she is
+    in, not in the ones a per-shot pass happened to read that way. Exactly one
+    description per shot, in order; a shot the feedback does not concern comes
+    back as it was. A correction about the style of the whole piece changes
+    the look, and nothing else carries style: "Disney cartoon" written into
+    every shot under a look that said "realistic" is how a household's frames
+    came out 2D, 3D and photographic by turns (2026-10-01). The look comes back
+    None when it stays as it is."""
     chars = (_studio_call(username, 'GET', f"projects/{doc['id']}/characters") or {}).get('characters') or []
     by_id = {c.get('id'): c for c in chars}
     cast_text = "\n".join(f"- {str(c.get('name'))[:60]}: {str(c.get('look') or '')[:300]}"
@@ -23635,18 +23677,23 @@ def _studio_correct_shots(username, doc, shots, feedback):
         "back exactly as written. Keep each description 1 to 3 sentences, in English, concrete and visual -- "
         "who and what is on screen, the setting, the action, the camera, the light and the mood -- with no "
         "sounds, no quotes of lyrics and no text on screen. Keep the characters described the same way in "
-        "every shot. " + STUDIO_STYLE_RULE + " Do not merge, split or reorder shots.\n"
-        f'Answer with only a JSON array of exactly {n} objects, in the same order, with no code fence and no '
-        f'other text: [{{"prompt": "..."}}, ...]')
+        "every shot. " + STUDIO_STYLE_RULE + " Take out of the descriptions any style words, and any mention "
+        "of a photo or reference picture, that are already there. Do not merge, split or reorder shots.\n"
+        "If the correction is about the visual style of the whole piece -- cartoon or realistic, 2D or 3D, a "
+        "studio's look, a palette, a medium -- it goes in the look and in no description: write the whole new "
+        "look, a short phrase an image model reads as one unambiguous style (say which of 2D or 3D). Otherwise "
+        "the look is null.\n"
+        f'Answer with only a JSON object, with no code fence and no other text: {{"look": null or "...", '
+        f'"shots": [{{"prompt": "..."}}, ...]}} -- exactly {n} shots, in the same order.')
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-board'
-    out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S,
-                                               profile='designer'), n)
+    out = _studio_parse_correction(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S,
+                                                     profile='designer'), n)
     if out is None:
-        again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only the JSON "
-                 f"array, exactly {n} entries in the same order, no code fence.")
-        out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
-                                                   profile='designer'), n)
-    return [o['prompt'] for o in out] if out is not None else None
+        again = (f'That was not the JSON object asked for, with exactly {n} shots. Answer again with only '
+                 f'{{"look": null or "...", "shots": [...]}}, exactly {n} shots in the same order, no code fence.')
+        out = _studio_parse_correction(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
+                                                         profile='designer'), n)
+    return out
 
 
 @app.route('/studio/api/board-correct', methods=['POST'])
@@ -23673,19 +23720,26 @@ def studio_board_correct():
     shots = [x for x in doc.get('shots') or [] if not x.get('recorded') and str(x.get('prompt') or '').strip()]
     if not shots:
         return jsonify(error=t('studio.sb_empty')), 400
-    new = _studio_correct_shots(username, doc, shots, feedback)
-    if new is None:
+    out = _studio_correct_shots(username, doc, shots, feedback)
+    if out is None:
         return jsonify(error=t('studio.sb_correct_failed')), 502
+    look, new = out
+    old_look = str((doc.get('settings') or {}).get('look') or '').strip()
+    look = look if look and look != old_look else None
+    # The look first: it is in every frame, so a new one redraws them all.
+    if look and not _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'look': look}}, via='Alfred'):
+        look = None
     changed = []
     for shot, text in zip(shots, new):
         if text and text != str(shot.get('prompt') or '').strip():
             if _studio_call(username, 'POST', f"projects/{pid}/items/{shot['id']}/prompt",
                             {'prompt': text}, via='Alfred'):
                 changed.append(shot['id'])
-    redraw = bool(changed) and d.get('redraw', True) is not False
+    drawn = [x['id'] for x in shots] if look else changed
+    redraw = bool(drawn) and d.get('redraw', True) is not False
     if redraw:
-        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {'items': changed})
-    return jsonify(changed=len(changed), total=len(shots), redrawn=redraw)
+        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {'items': drawn})
+    return jsonify(changed=len(changed), total=len(shots), redrawn=redraw, look=look or '')
 
 
 @app.route('/studio/api/frame-review', methods=['POST'])
