@@ -28,6 +28,9 @@ REF_IMAGE_MODEL = "flux2_klein_4b"
 # The cast first (three at most, as the review compares), then up to two
 # style pictures. Every reference is more for the model to hold and slower.
 MAX_CAST_REFS, MAX_STYLE_REFS = 3, 2
+# A shot's own reference pictures (its `refs`): what *that* shot is drawn
+# from -- a place, an object, a composition -- beside the cast and the style.
+MAX_SHOT_REFS = 2
 
 # `analyze` is a song listened to (studio/analysis.py): not WanGP's, run by the
 # manager itself on the Studio's audio.cpp -- in the same queue, so it never

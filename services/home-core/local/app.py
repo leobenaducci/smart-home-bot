@@ -22895,7 +22895,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_look', 'sb_correct_none', 'ch_describe', 'ch_describe_help', 'ch_describe_working', 'ch_describe_done', 'ref_style', 'ref_style_help', 'ref_style_intro', 'ref_style_added', 'ref_style_removed', 'upload_style', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_look', 'sb_correct_none', 'ch_describe', 'ch_describe_help', 'ch_describe_working', 'ch_describe_done', 'ref_style', 'ref_style_help', 'ref_style_intro', 'ref_style_added', 'ref_style_removed', 'upload_style', 'shot_ref', 'shot_ref_help', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
     'ch_voice_text', 'ch_record', 'ch_stop', 'ch_pictures', 'ch_save', 'ch_pick_studio', 'ch_pick_files', 'ch_pick_none',
@@ -23141,6 +23141,19 @@ def studio_music_video():
     # The project's characters: who may appear, how they look and are. The
     # page maps the names Alfred puts on each shot back to the characters.
     people = [c for c in (d.get('characters') or []) if isinstance(c, dict) and c.get('name')][:12]
+    # The project's reference pictures, in words (`_studio_ref_words`): the
+    # style pictures, and the one chosen for the first shot.
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    doc = _studio_call(username, 'GET', f'projects/{pid}') if pid else None
+    first_ref = str(d.get('ref') or '')
+    if doc and first_ref:
+        doc = {**doc, 'shots': [{'refs': [first_ref]}]}
+    ref_words, ref_style = _studio_ref_words(username, doc) if doc else ({}, [])
+    refs_text = "".join(
+        [f"The film's style pictures show:\n" + "\n".join(f"- {ref_words[r]}" for r in ref_style if r in ref_words)
+         + "\n" if any(r in ref_words for r in ref_style) else "",
+         f"The first shot is drawn from a reference picture, which shows: {ref_words[first_ref]}\n"
+         if first_ref in ref_words else ""])
     cast_text = "\n".join(
         f"- {str(c['name'])[:60]}: {str(c.get('look') or '')[:300]}"
         + (f" Personality: {str(c.get('personality'))[:200]}" if c.get('personality') else '')
@@ -23169,6 +23182,7 @@ def studio_music_video():
         + (", timed to the song as listed below" if plan else f" of about {each} seconds each") + ", in order.\n"
         + (f"Musical style: {style}.\n" if style else "")
         + (f"What the person wants it to look like: {idea}\n" if idea else "")
+        + refs_text
         + (f"The characters (use them by these names, and keep each one as described):\n{cast_text}\n"
            if cast_text else "")
         + (f"The shots, with what is heard during each (show what those words are about, "
@@ -23178,8 +23192,8 @@ def studio_music_video():
         + "For each shot write one description for a text-to-video model, in English: who and "
           "what is on screen, the setting, the action, the camera (framing and movement), the "
           "light and the mood -- 1 to 3 sentences, concrete and visual, no sounds, no quotes of the "
-          "lyrics, no text on screen. Keep the same characters and look across shots, describing "
-          "them the same way each time. Mark `continues: true` when a shot is the same moment "
+          "lyrics, no text on screen. Keep the same characters across shots, describing "
+          "them the same way each time. " + STUDIO_STYLE_RULE + " Mark `continues: true` when a shot is the same moment "
           "carrying on from the one before (same place, same action, no cut); otherwise false. "
           "The first shot is always false.\n"
           + ('For each shot also list the characters on screen by name in "cast" (an empty list if none). '
@@ -23274,7 +23288,7 @@ def _studio_vision(prompt, images, max_tokens=900):
         return None
 
 
-def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
+def _studio_redraw_prompt(username, sid, shot, board, look, cast, review, ref_words=''):
     """What the Designer would draw the frame with instead: the review's
     findings in, one image prompt out. Text only -- the picture itself was
     looked at on the house's card."""
@@ -23285,6 +23299,7 @@ def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
         + (f"The film's look: {look}\n" if look else "")
         + ("The characters, as they must look every time:\n"
            + "\n".join(f"- {c['name']}: {c.get('look') or ''}" for c in cast) + "\n" if cast else "")
+        + (f"The shot is drawn from its own reference picture, which shows: {ref_words}\n" if ref_words else "")
         + "Someone who looked at the frame found these problems:\n" + "\n".join(f"- {x}" for x in review['problems'])
         + ("\nAnd this works:\n" + "\n".join(f"- {x}" for x in review['ok']) if review['ok'] else "")
         + "\nWrite the prompt to redraw it with, in English: the same shot, fixing every problem and keeping what "
@@ -23547,7 +23562,9 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
     # The picture was looked at on the house's card; what to draw instead is
     # writing, and the storyboard's writing is the Designer's.
     if review['score'] < threshold and review['problems']:
-        review['prompt'] = _studio_redraw_prompt(username, sid, shot, board, look, cast, review)
+        words, _ = _studio_ref_words(username, doc) if shot.get('refs') else ({}, [])
+        review['prompt'] = _studio_redraw_prompt(username, sid, shot, board, look, cast, review,
+                                                 ' '.join(words[r] for r in (shot.get('refs') or [])[:2] if r in words))
     _studio_call(username, 'POST', path, {'review': {**review, 'state': 'done'}})
     return review
 
@@ -23675,16 +23692,22 @@ def _studio_correct_shots(username, doc, shots, feedback):
     cast_text = "\n".join(f"- {str(c.get('name'))[:60]}: {str(c.get('look') or '')[:300]}"
                           for c in chars if c.get('name'))[:3000]
     look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    words, style = _studio_ref_words(username, doc)
     listed = "\n".join(
         f"Shot {i + 1}" + (" (continues the shot before)" if s.get('continuity') else '')
         + (f" [on screen: {', '.join(str(by_id[c].get('name')) for c in s.get('cast') or [] if c in by_id)}]"
-           if s.get('cast') else '') + f": {str(s.get('prompt') or '').strip()[:1200]}"
+           if s.get('cast') else '')
+        + "".join(f" [drawn from its reference picture -- {words[r]}]" for r in (s.get('refs') or [])[:2] if r in words)
+        + f": {str(s.get('prompt') or '').strip()[:1200]}"
         for i, s in enumerate(shots))
+    style_text = "\n".join(f"- {words[r]}" for r in style if r in words)
     n = len(shots)
     prompt = (
         "Here is a storyboard, one description per shot for a text-to-image and text-to-video model, "
         "and a correction the person wants applied to it.\n"
         + (f"The look of the whole piece: {look}\n" if look else "")
+        + (f"The film's style pictures, which every frame is drawn to match (described for you; the look says "
+           f"the style, so this is what they show):\n{style_text}\n" if style_text else "")
         + (f"The characters, as they must be described:\n{cast_text}\n" if cast_text else "")
         + f"The shots, in order:\n{listed}\n\n"
         + f"The person's correction, for the whole storyboard:\n{feedback}\n\n"
@@ -23765,6 +23788,92 @@ CHARACTER_DESCRIBE_PROMPT = (
     "they wear. Only what is visible: no name, no guess at who they are, nothing about the background or the "
     "photo itself. One or two plain sentences in English, at most 60 words. "
     'Answer with only a JSON object: {"look": "..."}')
+# A look this short is a note, not a description ("Un bebe", "Varon 40,
+# 1.70m"): a picture added to its character replaces it with one, keeping
+# the note's facts. A longer one is somebody's careful words and is left.
+CHARACTER_LOOK_SHORT = 80
+# What a reference picture shows and how it is drawn, in words: the Designer
+# that writes the shots never sees a picture (its model is hosted; the
+# pictures are the household's), so the house's vision model says it once
+# and the words are kept on the picture.
+REFERENCE_DESCRIBE_PROMPT = (
+    "This picture is a reference for a film. Say in English, at most 70 words in all, (1) what it shows that a "
+    "shot drawn from it should keep -- the place, the objects, the people's positions and clothes, the "
+    "composition, the light; no guess at who anyone is -- and (2) its visual style: the medium (photograph, 2D "
+    "drawing, 3D render, painting...), the rendering, line, texture and palette. "
+    'Answer with only a JSON object: {"shows": "...", "style": "..."}')
+
+
+def _studio_chosen_picture(ch):
+    pics = ch.get('pictures') or []
+    i = ch.get('portrait', -1)
+    return pics[i] if isinstance(i, int) and 0 <= i < len(pics) else (pics[-1] if pics else '')
+
+
+def _studio_describe_character(username, pid, cid, only_short=False):
+    """The character's look written from its chosen picture and saved, as
+    the assistant: (look, None), or (None, the i18n key of why not). The
+    person's own words are kept as facts. With *only_short*, a look already
+    longer than a note is left alone -- (None, None)."""
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    ch = next((c for c in chars if c.get('id') == cid), None)
+    if ch is None:
+        return None, 'studio.ch_describe_failed'
+    before = str(ch.get('look') or '').strip()
+    if only_short and len(before) >= CHARACTER_LOOK_SHORT:
+        return None, None
+    pic = _studio_chosen_picture(ch)
+    if not pic:
+        return None, 'studio.ch_describe_nopic'
+    url = _studio_data_url(username, f"projects/{pid}/characters/{cid}/file/{quote(pic, safe='/')}")
+    if not url:
+        return None, 'studio.ch_describe_failed'
+    prompt = CHARACTER_DESCRIBE_PROMPT + (
+        f'\nThe person already wrote this about them: "{before[:400]}". Keep every fact in it (age, height and '
+        "the like) unless the picture plainly contradicts it." if before else "")
+    try:
+        look = str((json.loads(_studio_vision(prompt, [url], max_tokens=400) or '') or {}).get('look') or '').strip()[:800]
+    except (ValueError, AttributeError):
+        look = ''
+    if not look:
+        return None, 'studio.ch_describe_failed'
+    if not _studio_call(username, 'PUT', f'projects/{pid}/characters/{cid}', {'look': look}, via='Alfred'):
+        return None, 'studio.ch_describe_failed'
+    return look, None
+
+
+def _studio_ref_words(username, doc):
+    """({picture: words}, [style pictures]) for the project's style pictures
+    and every shot's own references: described once by the house's vision
+    model and kept on the picture (`description`), then read from there."""
+    pid = doc.get('id') or ''
+    ups = {u.get('file'): u for u in doc.get('uploads') or [] if u.get('kind') == 'reference'}
+    style = [u['file'] for u in sorted((u for u in ups.values() if u.get('style')),
+                                       key=lambda u: u.get('style_at') or 0)][:2]
+    wanted = list(style)
+    for shot in doc.get('shots') or []:
+        for rel in (shot.get('refs') or [])[:2]:
+            if rel in ups and rel not in wanted:
+                wanted.append(rel)
+    out = {}
+    for rel in wanted[:24]:
+        words = str(ups[rel].get('description') or '').strip()
+        if not words:
+            url = _studio_data_url(username, f"projects/{pid}/file/{quote(rel, safe='/')}")
+            try:
+                raw = json.loads(_studio_vision(REFERENCE_DESCRIBE_PROMPT, [url], max_tokens=400) or '') if url else {}
+            except ValueError:
+                raw = {}
+            raw = raw if isinstance(raw, dict) else {}
+            words = ' '.join(x for x in (f"Shows: {str(raw.get('shows') or '').strip()}" if raw.get('shows') else '',
+                                         f"Style: {str(raw.get('style') or '').strip()}" if raw.get('style') else '')
+                             if x)[:800]
+            if words:
+                _studio_call(username, 'POST', f"projects/{pid}/uploads/{rel.split('/', 1)[1]}/description",
+                             {'description': words})
+        if words:
+            out[rel] = words
+    return out, style
 
 
 @app.route('/studio/api/char-describe', methods=['POST'])
@@ -23781,27 +23890,9 @@ def studio_char_describe():
     d = request.get_json(silent=True) or {}
     pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
     cid = re.sub(r'[^a-z0-9]', '', str(d.get('character') or ''))[:32]
-    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
-    ch = next((c for c in chars if c.get('id') == cid), None)
-    if ch is None:
-        abort(404)
-    pics = ch.get('pictures') or []
-    i = ch.get('portrait', -1)
-    pic = pics[i] if isinstance(i, int) and 0 <= i < len(pics) else (pics[-1] if pics else '')
-    if not pic:
-        return jsonify(error=t('studio.ch_describe_nopic')), 400
-    url = _studio_data_url(username, f"projects/{pid}/characters/{cid}/file/{quote(pic, safe='/')}")
-    if not url:
-        return jsonify(error=t('studio.ch_describe_failed')), 502
-    try:
-        look = str((json.loads(_studio_vision(CHARACTER_DESCRIBE_PROMPT, [url], max_tokens=400) or '')
-                    or {}).get('look') or '').strip()[:800]
-    except (ValueError, AttributeError):
-        look = ''
+    look, why = _studio_describe_character(username, pid, cid)
     if not look:
-        return jsonify(error=t('studio.ch_describe_failed')), 502
-    if not _studio_call(username, 'PUT', f'projects/{pid}/characters/{cid}', {'look': look}, via='Alfred'):
-        return jsonify(error=t('studio.ch_describe_failed')), 502
+        return jsonify(error=t(why or 'studio.ch_describe_failed')), 400 if why == 'studio.ch_describe_nopic' else 502
     return jsonify(look=look)
 
 
@@ -23935,14 +24026,22 @@ def studio_api(sub):
     # here rather than in the studio, and never forwarded to it.
     download = request.args.get('download') if request.method == 'GET' and '/file/' in sub else None
     params = {k: v for k, v in request.args.items() if k != 'download'}
+    body = request.get_data() if request.method != 'GET' else None
     try:
         upstream = requests.request(
             request.method, f'{STUDIO_URL}/api/{sub}', params=params, headers=headers,
-            data=request.get_data() if request.method != 'GET' else None,
-            stream=True, timeout=(5, 120))
+            data=body, stream=True, timeout=(5, 120))
     except requests.RequestException as exc:
         app.logger.warning('studio: %s %s failed: %s', request.method, sub, exc)
         return jsonify(error=t('studio.unreachable')), 502
+    # A picture given to a character whose look is only a note: the house's
+    # vision model writes the look from it, in the background, keeping the
+    # note's facts (`_studio_describe_character`). A voice sample is not a
+    # picture and starts nothing.
+    m = re.fullmatch(r'projects/([a-z0-9]{1,32})/characters/([a-z0-9]{1,32})/upload', sub)
+    if (m and request.method == 'POST' and upstream.status_code == 200 and STUDIO_VISION_URL
+            and not re.search(rb'name="kind"\r\n\r\nvoice', body or b'')):
+        _studio_background(_studio_describe_character, session['user'], m.group(1), m.group(2), True)
     out = Response(stream_with_context(upstream.iter_content(chunk_size=256 * 1024)),
                    status=upstream.status_code)
     for h in _STUDIO_RESP_HEADERS:

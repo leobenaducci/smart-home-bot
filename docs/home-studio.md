@@ -161,11 +161,23 @@ not their content". One deleted since is left out and the numbering follows.
 With no pictures at all, the frame is Z-Image's from words, as before. klein
 4B shares Z-Image's text encoder and is Apache-licensed; the 9B is not.
 
+A shot can have **its own reference picture** (the picker on every shot): its
+frame is drawn from it -- the place, the objects, the composition -- after the
+cast's pictures and before the style ones, and the prompt says so.
+
+The Designer writes the shots without seeing a picture: its model is hosted and
+the pictures are the household's. So each reference picture is **put into
+words** once by the house's vision model -- what it shows and its style -- and
+kept on it (`description`); the plan, a correction and a redraw read those
+words (`_studio_ref_words`).
+
 A character's look can be **written from its picture** (✍️ on its card): the
 house's own vision model (`assistant.models.vision`) describes what an
 illustrator would need -- age, build, hair, face, clothes -- and nothing about
 who they are; it is saved under the assistant's name. The picture never
-leaves the house.
+leaves the house. A picture given to a character whose look is only a note -- under 80
+characters, "Un bebe" -- starts that at once, in the background, and the
+note's facts are kept.
 
 ### Style lives in the look, and only there
 

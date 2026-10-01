@@ -577,6 +577,84 @@ check("the page has the describe button, the style flag and the style upload",
       and "api('char-describe'" in page)
 
 
+print("\nreference pictures, in words, for the Designer")
+_saved_r = (A._studio_call, A._studio_data_url, A.requests.post, A._run_nanobot_turn, A._studio_background,
+            A.requests.request)
+posted_r, looked_r, asked_r = [], [], []
+RDOC2 = {"id": "p8", "settings": {"look": "3D cartoon"},
+         "uploads": [{"file": "uploads/a-style.png", "kind": "reference", "style": True, "style_at": 1},
+                     {"file": "uploads/b-track.png", "kind": "reference"},
+                     {"file": "uploads/c-old.png", "kind": "reference", "description": "Shows: a kept description"}],
+         "shots": [{"id": "s1", "prompt": "The race starts.", "refs": ["uploads/b-track.png"]},
+                   {"id": "s2", "prompt": "The finish line.", "refs": ["uploads/c-old.png"]}]}
+def _scr(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/p8":
+        return RDOC2
+    if path == "projects/p8/characters":
+        return {"characters": [{"id": "c1", "name": "Bruma", "look": "Un bebe", "pictures": ["pictures/a.png"],
+                                "portrait": 0}]}
+    posted_r.append((method, path, body, via))
+    return {"ok": True}
+A._studio_call = _scr
+A._studio_data_url = lambda u, path: "data:image/png;base64,QUJD"
+def _vr(url, json=None, headers=None, timeout=None, **kw):
+    looked_r.append(json)
+    if "character for a film" in json["messages"][0]["content"][0]["text"]:
+        return _V('{"look": "a baby of about one, round face, dark curls"}')
+    return _V('{"shows": "a red go-kart track by a lake", "style": "flat 2D vector drawing"}')
+A.requests.post = _vr
+words, style = A._studio_ref_words(USER1, RDOC2)
+check("each reference picture is put into words once, by the house's model, what it shows and its style",
+      words["uploads/b-track.png"] == "Shows: a red go-kart track by a lake Style: flat 2D vector drawing"
+      and style == ["uploads/a-style.png"] and len(looked_r) == 2, (words, len(looked_r)))
+check("  and the words are kept on the picture, so the next call reads them",
+      ("POST", "projects/p8/uploads/b-track.png/description",
+       {"description": "Shows: a red go-kart track by a lake Style: flat 2D vector drawing"}, "") in posted_r, posted_r)
+check("  a picture already described is not looked at again",
+      words["uploads/c-old.png"] == "Shows: a kept description" and len(looked_r) == 2)
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_r.append(text) or json.dumps(
+    {"look": None, "shots": [{"prompt": "a"}, {"prompt": "b"}]})
+A._studio_correct_shots(USER1, RDOC2, RDOC2["shots"], "closer shots")
+check("the Designer writes each shot knowing what its reference picture shows, and the style pictures",
+      asked_r and "Shot 1 [drawn from its reference picture -- Shows: a red go-kart track by a lake" in asked_r[0]
+      and "The film's style pictures" in asked_r[0], asked_r[0][:1500] if asked_r else "")
+looked_r.clear(); posted_r.clear()
+look, why = A._studio_describe_character(USER1, "p8", "c1")
+check("a character's look is written from its picture, keeping the person's own note as facts",
+      look == "a baby of about one, round face, dark curls"
+      and 'already wrote this about them: "Un bebe"' in looked_r[0]["messages"][0]["content"][0]["text"]
+      and ("PUT", "projects/p8/characters/c1", {"look": look}, "Alfred") in posted_r, (look, why, posted_r))
+bg = []
+A._studio_background = lambda fn, *a: bg.append((fn.__name__, a))
+class _Up:
+    status_code = 200
+    headers = {}
+    def iter_content(self, chunk_size=1):
+        return iter([b"{}"])
+A.requests.request = lambda *a, **kw: _Up()
+client.post("/studio/api/projects/p8/characters/c1/upload", headers=HOME,
+            data=b'--x\r\nContent-Disposition: form-data; name="kind"\r\n\r\npicture\r\n--x--',
+            content_type="multipart/form-data; boundary=x")
+check("a picture given to a character starts its description, in the background, only if its look is a note",
+      bg == [("_studio_describe_character", (USER1, "p8", "c1", True))], bg)
+bg.clear()
+client.post("/studio/api/projects/p8/characters/c1/upload", headers=HOME,
+            data=b'--x\r\nContent-Disposition: form-data; name="kind"\r\n\r\nvoice\r\n--x--',
+            content_type="multipart/form-data; boundary=x")
+check("  a voice sample starts nothing", bg == [], bg)
+asked_r.clear()
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None, images=None: asked_r.append(text) or json.dumps(
+    [{"prompt": "a"}, {"prompt": "b"}])
+client.post("/studio/api/music-video", headers=HOME, json={"shots": 2, "seconds": 10, "kind": "song", "lyrics": "la",
+                                                            "project": "p8", "ref": "uploads/b-track.png"})
+check("the music-video plan is written knowing the style pictures and the first shot's reference",
+      asked_r and "The film's style pictures show" in asked_r[0]
+      and "The first shot is drawn from a reference picture, which shows: Shows: a red go-kart track" in asked_r[0]
+      and A.STUDIO_STYLE_RULE in asked_r[0], asked_r[0][:900] if asked_r else "")
+(A._studio_call, A._studio_data_url, A.requests.post, A._run_nanobot_turn, A._studio_background,
+ A.requests.request) = _saved_r
+
+
 print("\none correction for the whole storyboard")
 _saved = (A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable)
 A._studio_configured = A._studio_reachable = lambda: True

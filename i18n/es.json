@@ -1583,6 +1583,8 @@
   "studio.ref_style_added": "Esta imagen ahora es parte del estilo de la película.",
   "studio.ref_style_removed": "Esta imagen ya no marca el estilo.",
   "studio.upload_style": "Subir una imagen del estilo",
+  "studio.shot_ref": "Imagen de referencia para esta toma",
+  "studio.shot_ref_help": "Su cuadro se dibuja a partir de esta imagen -- el lugar, los objetos, la composición -- en el estilo de la película, con las fotos de los personajes. Una toma que empieza de cero y no tiene cuadro empieza su video desde ella.",
   "studio.sb_correct_none": "El Diseñador no encontró nada que cambiar con esa corrección.",
   "studio.sb_correct_failed": "El Diseñador no respondió con un storyboard corregido. Probá de nuevo, o decilo de otra forma.",
   "studio.sb_correct_empty": "Primero escribí la corrección.",

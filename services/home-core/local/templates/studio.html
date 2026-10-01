@@ -1014,8 +1014,12 @@
         var startSel = fromBoard ? '<label class="f">' + S.start_image + '</label><div class="row"><img src="' + fileUrl(p.id, board.file) +
             '" alt="" style="height:64px;border-radius:6px"><span class="muted">🖼️ ' + S.sb_starts_from + '</span></div>' +
             (videoStale(s) ? '<p class="note" style="margin-top:6px">⚠️ ' + S.sb_video_older + '</p>' : '')
-          : (i === 0 || s.continuity === false) && refs.length ? '<label class="f">' + S.start_image + '</label><select data-f="refs" data-id="' + s.id + '"><option value="">' + S.none + '</option>' +
-          refs.map(function (u) { return '<option value="' + esc(u.file) + '"' + ((s.refs || [])[0] === u.file ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' : '';
+          : '';
+        // The shot's own reference picture: its frame is drawn from it (with the
+        // cast's pictures and the film's style), and a shot that starts fresh
+        // with no frame starts its video from it.
+        startSel += refs.length ? '<label class="f" title="' + esc(S.shot_ref_help) + '">🖼️ ' + S.shot_ref + '</label><select data-f="refs" data-id="' + s.id + '"><option value="">' + S.none + '</option>' +
+          refs.map(function (u) { return '<option value="' + esc(u.file) + '"' + ((s.refs || [])[0] === u.file ? ' selected' : '') + '>' + esc(u.name) + (u.style ? ' 🎨' : '') + '</option>'; }).join('') + '</select>' : '';
         html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>' + S.shot + ' ' + (i + 1) + '</b>' + statusPill(s) +
           '<span class="grow"></span><button data-up="' + s.id + '" title="' + S.move_up + '">↑</button><button data-down="' + s.id + '" title="' + S.move_down + '">↓</button>' +
           '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + S.remove + '">✕</button></div>' +
@@ -1738,7 +1742,7 @@
           await flushSave();
           var r = await api('music-video', { method: 'POST', body: { shots: plan.length, seconds: total, kind: a.kind || 'song',
             lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '',
-            idea: idea, plan: cuts || [],
+            idea: idea, plan: cuts || [], project: p.id, ref: ref || '',
             characters: cast.map(function (c) { return { name: c.name, look: c.look, personality: c.personality }; }) } });
           var fresh = await api('projects/' + p.id);
           var before = (fresh.shots || []).length;

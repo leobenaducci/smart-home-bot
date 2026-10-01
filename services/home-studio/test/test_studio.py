@@ -1211,6 +1211,23 @@ c.delete(f"/api/projects/{rfp['id']}/uploads/{ups[1]['file'].split('/', 1)[1]}",
 rp_ = A.manager._resolve(fj)
 check("  a style picture deleted since is left out, and the numbering follows what is sent",
       len(rp_["image_refs"]) == 2 and "image 2 show" in rp_["prompt"] and "images 2 and" not in rp_["prompt"], rp_["prompt"])
+c.put(f"/api/projects/{rfp['id']}", json={"shots": [{**A.projects.load(JUANA, rfp["id"])["shots"][0],
+                                                     "refs": [ups[0]["file"]]}]}, headers=h(JUANA, "Juana"))
+r = c.post(f"/api/projects/{rfp['id']}/storyboard", json={"items": [A.projects.load(JUANA, rfp["id"])["shots"][0]["id"]]},
+           headers=h(JUANA, "Juana")).json()
+oj = A.store.get(r["queued"][0]["id"])
+ro = A.manager._resolve(oj)
+check("  a shot's own reference picture is drawn from too: after the cast, before the style",
+      oj["params"]["ref_shot"] == [ups[0]["file"]] and len(ro["image_refs"]) == 3
+      and "image 2 are this shot's own reference" in ro["prompt"] and "image 3 show the film's style" in ro["prompt"],
+      ro["prompt"])
+A.manager.cancel(oj["id"])
+dsc = c.post(f"/api/projects/{rfp['id']}/uploads/{ups[0]['file'].split('/', 1)[1]}/description",
+             json={"description": "a sunny racetrack"}, headers=h(JUANA, "Juana")).json()
+check("  and a reference picture keeps what it shows, in words, for the Designer",
+      dsc.get("description") == "a sunny racetrack"
+      and next(u for u in A.projects.load(JUANA, rfp["id"])["uploads"] if u["file"] == ups[0]["file"])["description"]
+      == "a sunny racetrack")
 pj_ = c.post(f"/api/projects/{rfp['id']}/characters/{bru['id']}/portrait", headers=h(JUANA, "Juana")).json()
 pjob = A.store.get(pj_["queued"][0]["id"])
 check("  a portrait is drawn from the character's own picture, in the film's style",

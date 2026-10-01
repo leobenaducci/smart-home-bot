@@ -631,6 +631,20 @@ class Projects:
         flagged = [u for u in doc.get("uploads") or [] if u.get("style") and u.get("kind") == "reference"]
         return [u["file"] for u in sorted(flagged, key=lambda u: u.get("style_at") or 0)]
 
+    def set_upload_field(self, owner: str, pid: str, rel: str, key: str, value) -> dict:
+        """One server-side field of an upload: its `description`."""
+        if key not in ("description",) or not re.fullmatch(r"uploads/[A-Za-z0-9._-]+", rel or ""):
+            raise ProjectError("no such file")
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            entry = next((u for u in doc.get("uploads") or [] if u.get("file") == rel), None)
+            if entry is None:
+                raise ProjectError("no such file")
+            entry[key] = value
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return entry
+
     def set_upload_style(self, owner: str, pid: str, rel: str, on: bool, limit: int) -> dict:
         """A reference picture flagged (or not) as the film's style. At most
         *limit*: each one is another picture the model holds while drawing, so

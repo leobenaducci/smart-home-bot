@@ -1581,6 +1581,8 @@
   "studio.ref_style_added": "The film's style now includes this picture.",
   "studio.ref_style_removed": "This picture no longer sets the style.",
   "studio.upload_style": "Upload a picture of the style",
+  "studio.shot_ref": "Reference picture for this shot",
+  "studio.shot_ref_help": "Its frame is drawn from this picture -- the place, the objects, the composition -- in the film's style, with the cast's own pictures. A shot that starts fresh and has no frame starts its video from it.",
   "studio.sb_correct_none": "The Designer found nothing to change for that correction.",
   "studio.sb_correct_failed": "The Designer did not answer with a corrected storyboard. Try again, or word it differently.",
   "studio.sb_correct_empty": "Write the correction first.",

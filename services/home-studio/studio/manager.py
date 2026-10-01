@@ -407,7 +407,7 @@ class Manager:
         (its portrait, or the photo it was given) for each one cast, then the
         style pictures. One deleted since is left out, and the numbering
         follows what is actually sent."""
-        files, cast, style = [], [], []
+        files, cast, style, own = [], [], [], []
         for cid in (p.get("ref_chars") or [])[:recipes.MAX_CAST_REFS]:
             try:
                 ch = self.characters.get(str(cid), owner, pid) if self.characters else None
@@ -423,6 +423,12 @@ class Manager:
             except ProjectError:
                 continue
             cast.append((len(files), ch["name"]))
+        for rel in (p.get("ref_shot") or [])[:recipes.MAX_SHOT_REFS]:
+            try:
+                files.append(str(self.projects.file(owner, pid, str(rel))))
+            except ProjectError:
+                continue
+            own.append(len(files))
         for rel in (p.get("ref_files") or [])[:recipes.MAX_STYLE_REFS]:
             try:
                 files.append(str(self.projects.file(owner, pid, str(rel))))
@@ -434,6 +440,10 @@ class Manager:
             said.append("; ".join(f"image {n} is {name}" for n, name in cast)
                         + ": draw each of them as that picture shows them -- face, hair, build, age -- "
                           "even when the picture is a photograph, in the style below")
+        if own:
+            said.append(("images " + " and ".join(str(n) for n in own) if len(own) > 1 else f"image {own[0]}")
+                        + " are this shot's own reference: draw its setting, objects and composition from "
+                          "them, in the film's style")
         if style:
             said.append(("images " + " and ".join(str(n) for n in style) if len(style) > 1 else f"image {style[0]}")
                         + " show the film's style: match their medium, rendering, line, palette and light, "

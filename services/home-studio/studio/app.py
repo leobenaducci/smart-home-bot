@@ -235,14 +235,16 @@ OPEN_KINDS = ("image", "song", "instrumental", "voice", "video_shot")
 # references into somebody's files. Sent from outside they would name any
 # file the studio can read -- another person's -- so they never come in here.
 RESOLVED_PARAMS = ("start_image", "end_image", "voice_file", "source_video", "source_file",
-                   "start_board", "voice_char", "from_take", "image_refs", "ref_chars", "ref_files", "with_refs")
+                   "start_board", "voice_char", "from_take", "image_refs", "ref_chars", "ref_files", "ref_shot",
+                   "with_refs")
 
 
-def _drawing_refs(doc: dict, cast: list[str], me: Who, pid: str) -> dict:
+def _drawing_refs(doc: dict, cast: list[str], me: Who, pid: str, own: list[str] | None = None) -> dict:
     """What a picture is drawn from besides its words: the cast's pictures (a
-    character with none is drawn from its look alone) and the project's style
-    pictures. Empty when there are none, and the picture is Z-Image's from
-    text, as before. The files are found when the job runs (manager._refs)."""
+    character with none is drawn from its look alone), the shot's own
+    reference pictures (*own*: its `refs`) and the project's style pictures.
+    Empty when there are none, and the picture is Z-Image's from text, as
+    before. The files are found when the job runs (manager._refs)."""
     chars = []
     for cid in cast or []:
         try:
@@ -252,7 +254,9 @@ def _drawing_refs(doc: dict, cast: list[str], me: Who, pid: str) -> dict:
             continue
     files = Projects.style_refs(doc)[:recipes.MAX_STYLE_REFS]
     chars = chars[:recipes.MAX_CAST_REFS]
-    return {"with_refs": True, "ref_chars": chars, "ref_files": files} if chars or files else {}
+    shot = [str(r) for r in (own or []) if str(r).startswith("uploads/")][:recipes.MAX_SHOT_REFS]
+    return ({"with_refs": True, "ref_chars": chars, "ref_files": files, "ref_shot": shot}
+            if chars or files or shot else {})
 
 
 @app.post("/api/jobs")
@@ -687,7 +691,7 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
         # for, kept on the frame so the page can tell a frame whose shot has
         # been described differently since -- one to draw again.
         params = {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200],
-                  **_drawing_refs(doc, shot.get("cast") or [], me, pid)}
+                  **_drawing_refs(doc, shot.get("cast") or [], me, pid, shot.get("refs") or [])}
         if drawn != what:
             params["drawn_from"] = drawn
         if refine:
@@ -1083,6 +1087,18 @@ def add_reference(pid: str, body: dict, me: Who = Depends(who)):
         return entry
     except ProjectError as exc:
         _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.post("/api/projects/{pid}/uploads/{name}/description")
+def upload_description(pid: str, name: str, body: dict | None = None, me: Who = Depends(who)):
+    """What a reference picture shows, in words, kept on it: written by the
+    house's vision model so the Designer -- which never sees the picture --
+    can write shots from it."""
+    try:
+        return projects.set_upload_field(me.login, pid, f"uploads/{name}", "description",
+                                         str((body or {}).get("description") or "").strip()[:800])
+    except ProjectError as exc:
+        _bad(exc, 404)
 
 
 @app.post("/api/projects/{pid}/uploads/{name}/style")
