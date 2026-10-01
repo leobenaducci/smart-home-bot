@@ -81,6 +81,10 @@ def h3_prompt(shot: dict, language: str = "Spanish", index: int = 1) -> str:
     # every shot they are cast in, which is what keeps them recognisable.
     if str(shot.get("characters") or "").strip():
         desc += f" Characters: {str(shot['characters']).strip()}."
+    # The film's look, in every shot alike -- the same words the storyboard
+    # frames were drawn with -- so the style holds across cuts.
+    if str(shot.get("look") or "").strip():
+        desc += f" Visual style: {str(shot['look']).strip().rstrip('.')}."
     seconds = shot.get("seconds") or 5
     lines = [f"integrated_multimodal_description: [Shot {index}] A {seconds:g}-second single take. {desc}"]
     dialogue = str(shot.get("dialogue") or "").strip()

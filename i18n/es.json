@@ -1521,6 +1521,8 @@
   "studio.board_redraw": "Redibujar",
   "studio.board_queued": "Storyboard en camino: {n} cuadro(s)",
   "studio.sb_review_apply": "Usar y redibujar",
+  "studio.review_item_look": "El estilo visual de la película: {look}",
+  "studio.review_item_style": "El mismo estilo que los otros cuadros del storyboard",
   "studio.sb_review_applied": "Descripción actualizada; el cuadro se redibuja y se revisa cuando llega.",
   "studio.sb_redrawing_review": "Redibujando — el cuadro nuevo se revisa cuando llega.",
   "studio.project_name": "Nombre del proyecto",

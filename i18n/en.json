@@ -1519,6 +1519,8 @@
   "studio.board_redraw": "Redraw",
   "studio.board_queued": "Storyboard on its way: {n} frame(s)",
   "studio.sb_review_apply": "Use and redraw",
+  "studio.review_item_look": "The film's look: {look}",
+  "studio.review_item_style": "The same style as the storyboard's other frames",
   "studio.sb_review_applied": "Description updated; the frame is being redrawn and will be reviewed when it lands.",
   "studio.sb_redrawing_review": "Redrawing — the new frame is reviewed when it lands.",
   "studio.project_name": "Project name",

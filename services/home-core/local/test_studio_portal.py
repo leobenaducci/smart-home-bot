@@ -467,6 +467,67 @@ check("every drawn frame is sent, and a house with no vision model leaves them u
 A.STUDIO_VISION_URL = saved_url
 
 
+print("\n  one style, every frame")
+OTHER = b"\xff\xd8 another frame"
+_saved_shots = RDOC["shots"]
+RDOC["shots"] = _saved_shots + [
+    {"id": "sh2", "prompt": "the sea at night", "board": 0, "boards": [
+        {"id": "bd2", "file": "takes/sh2/g.jpg", "review": {"state": "done", "score": 8, "style": "yes"}}]},
+    {"id": "sh3", "prompt": "a gull", "board": 0, "boards": [
+        {"id": "bd3", "file": "takes/sh3/h.jpg", "review": {"state": "done", "score": 9, "style": "no"}}]}]
+_get_before = A.requests.get
+def _studio_get3(url, headers=None, timeout=None, **kw):
+    if url.endswith("/file/takes/sh2/g.jpg"):
+        return _R(200, content=OTHER, ctype="image/jpeg")
+    if url.endswith("/file/takes/sh3/h.jpg"):
+        return _R(200, content=b"\xff\xd8 off-style", ctype="image/jpeg")
+    return _studio_get2(url, headers=headers, timeout=timeout, **kw)
+A.requests.get = _studio_get3
+refs = A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1")
+check("a frame is held to the storyboard's frames that passed and kept the style -- never one found off-style",
+      [n for n, _ in refs] == ["shot 2"] and refs[0][1].endswith(base64.b64encode(OTHER).decode()), [n for n, _ in refs])
+vision_answers[:] = ['{"items": ["un zorro rojo", "la escalera del faro"]}',
+                     '{"checks": [{"item": "El estilo visual", "shown": "no", "why": "es una foto, no acuarela"},'
+                     ' {"item": "El mismo estilo", "shown": "partly", "why": "más oscuro"},'
+                     ' {"item": "un zorro rojo", "shown": "yes"}, {"item": "la escalera del faro", "shown": "yes"}],'
+                     ' "defects": []}']
+plans[:] = ["a red fox on lighthouse stairs, in pastel watercolour"]
+seen.clear()
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+rv = (r.get_json() or {}).get("review") or {}
+vparts = looked[-1]["body"]["messages"][0]["content"]
+vt = vparts[0]["text"]
+check("the look and the other frames' style are items of the checklist, first and in the project's language",
+      "- " + A._studio_t("es", "studio.review_item_look", "The film's look: {look}", look="pastel watercolour") in vt
+      and "- " + A._studio_t("es", "studio.review_item_style", "The same style as the storyboard's other frames") in vt
+      and vt.index("Requirements:") < vt.index("pastel watercolour", vt.index("Requirements:"))
+      < vt.index("- un zorro rojo"), vt[-500:])
+check("  with the other frame sent as a picture, after the portraits, and named as style, not content",
+      [x["image_url"]["url"] for x in vparts if x["type"] == "image_url"][-1].endswith(base64.b64encode(OTHER).decode())
+      and "not the same content" in vt and "not the style" in vt, vt[:600])
+check("a frame in the wrong style cannot pass on the rest: two of four shown would be 6, capped at 4",
+      rv.get("score") == 4 and rv.get("style") == "no", rv)
+check("  its style problems lead the list the redraw is written from",
+      (rv.get("problems") or [""])[0].endswith("es una foto, no acuarela"), rv.get("problems"))
+check("  and the Designer is told to keep to the look, and to restate it",
+      seen and A.STUDIO_STYLE_RULE in seen[-1]["text"] and "wrong style" in seen[-1]["text"], seen[-1:])
+check("  and the review keeps whether it held the style, for the next frame's references",
+      any(c[1].endswith("/boards/bd1/review") and c[2]["review"].get("style") == "no" for c in calls))
+vision_answers[:] = ['{"items": ["un zorro rojo"]}',
+                     '{"checks": [{"item": "a", "shown": "yes"}, {"item": "b", "shown": "yes"},'
+                     ' {"item": "c", "shown": "yes"}], "defects": []}']
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+check("a frame in the style passes as before", (r.get_json() or {})["review"]["score"] == 10
+      and r.get_json()["review"]["style"] == "yes", r.get_json())
+plans[:] = ['[{"prompt": "x"}, {"prompt": "y"}, {"prompt": "z"}]']
+seen.clear()
+A._studio_correct_shots(USER1, RDOC, RDOC["shots"], "make it night")
+check("a correction keeps to the look as well", seen and A.STUDIO_STYLE_RULE in seen[0]["text"])
+RDOC["shots"] = _saved_shots
+A.requests.get = _get_before
+refs = A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1")
+check("a storyboard of one frame has nothing to compare it with", refs == [])
+
 print("\none correction for the whole storyboard")
 _saved = (A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable)
 A._studio_configured = A._studio_reachable = lambda: True

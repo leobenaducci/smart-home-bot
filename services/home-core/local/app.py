@@ -23272,13 +23272,97 @@ def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
         + "Someone who looked at the frame found these problems:\n" + "\n".join(f"- {x}" for x in review['problems'])
         + ("\nAnd this works:\n" + "\n".join(f"- {x}" for x in review['ok']) if review['ok'] else "")
         + "\nWrite the prompt to redraw it with, in English: the same shot, fixing every problem and keeping what "
-          "works, 1 to 3 concrete visual sentences for an image model (who, where, action, framing, light). Answer "
-          "with only the prompt -- no quotes, no heading, no other text."
+          "works, 1 to 3 concrete visual sentences for an image model (who, where, action, framing, light). "
+          + STUDIO_STYLE_RULE
+          + (" The frame came out in the wrong style: end the prompt with a short phrase restating the film's "
+             "look." if review.get('style') in ('partly', 'no') else "")
+          + " Answer with only the prompt -- no quotes, no heading, no other text."
     )
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-review-{sid}'
     text = _run_nanobot_turn(username, chat_id, prompt, STUDIO_REVIEW_TIMEOUT_S, profile='designer') or ''
     text = re.sub(r'^```\w*|```$', '', text.strip()).strip().strip('"“”').strip()
     return text.split('\n\n')[0].strip()[:1200]
+
+
+# One style, every frame. A storyboard's frames are where its shots start --
+# the video model carries a frame's look through the whole shot -- so a frame
+# in another style is a cut that jumps, whatever else it gets right. The look
+# is put ahead of every frame's description by the Studio (and into every
+# shot's video prompt), so what the descriptions must not do is name another.
+STUDIO_STYLE_RULE = (
+    "The film's look is added to every shot separately: do not name a style, medium, palette or "
+    "rendering of your own, and never one that contradicts the look.")
+# How many other frames a frame is compared with for style. Each is an image
+# in the vision call, beside the frame and up to three portraits.
+STUDIO_STYLE_REFS = 2
+# A frame off the film's style cannot pass on the strength of the rest: it is
+# one item of up to ten, so counted like the others a frame in the wrong style
+# still scored 8 and was kept. Capped under the default bar instead.
+STUDIO_STYLE_CAP = {'no': 4, 'partly': 6}
+
+
+def _studio_t(locale, key, english, **params):
+    """A string in the project's language rather than the viewer's: a review is
+    written into the project, in the language its checklist is in."""
+    return _translator(key, locale=locale, **params) if _translator else english.format(**params)
+
+
+def _studio_style_refs(username, pid, doc, sid, limit=STUDIO_STYLE_REFS):
+    """Up to *limit* other frames of the storyboard to hold this one's style
+    to, as (label, data URL): the first frame that passed its review and kept
+    to the style -- the anchor, the same for every frame -- and the passing one
+    nearest this shot. Frames whose review found them off-style are never
+    used; before any review has passed, the first frames drawn stand in."""
+    shots = doc.get('shots') or []
+    here = next((i for i, s in enumerate(shots) if s.get('id') == sid), 0)
+    good, fallback = [], []
+    for i, s in enumerate(shots):
+        if s.get('id') == sid or not s.get('boards'):
+            continue
+        boards = s['boards']
+        k = s.get('board', -1)
+        b = boards[k] if isinstance(k, int) and 0 <= k < len(boards) else boards[-1]
+        if not b.get('file'):
+            continue
+        r = b.get('review') or {}
+        if r.get('style') in ('partly', 'no'):
+            continue
+        if r.get('state') == 'done' and int(r.get('score') or 0) >= 7:
+            good.append((i, s, b))
+        elif not r.get('state') or r.get('state') == 'done':
+            fallback.append((i, s, b))
+    picked = good[:1]
+    rest = sorted(good[1:], key=lambda x: abs(x[0] - here))
+    picked += rest[:max(0, limit - len(picked))]
+    picked += fallback[:max(0, limit - len(picked))]
+    out = []
+    for i, s, b in sorted(picked, key=lambda x: x[0])[:limit]:
+        url = _studio_data_url(username, f"projects/{pid}/file/{quote(b['file'], safe='/')}")
+        if url:
+            out.append((f'shot {i + 1}', url))
+    return out
+
+
+def _studio_style_marks(review, labels, n_items):
+    """The review's worst mark on its style items, and the score capped by it
+    (`STUDIO_STYLE_CAP`); style problems are put first, for the redraw. The
+    style items lead the checklist; the model is asked to answer in order but
+    may reword an item, so it is matched by position when the count agrees and
+    by its words otherwise."""
+    checks = review.get('checks') or []
+    if len(checks) == n_items:
+        mine = checks[:len(labels)]
+    else:
+        mine = [c for c in checks if any(c.get('item', '')[:40].lower() == l[:40].lower() for l in labels)]
+    marks = [c['shown'] for c in mine]
+    worst = 'no' if 'no' in marks else 'partly' if 'partly' in marks else ('yes' if marks else '')
+    review['style'] = worst
+    if worst in STUDIO_STYLE_CAP:
+        review['score'] = min(review['score'], STUDIO_STYLE_CAP[worst])
+        off = [(c['item'] + (f": {c['why']}" if c.get('why') else ''))[:300]
+               for c in mine if c['shown'] != 'yes']
+        review['problems'] = (off + [p for p in review['problems'] if p not in off])[:8]
+    return review
 
 
 def _studio_requirements(shot, look, cast, language):
@@ -23290,7 +23374,8 @@ def _studio_requirements(shot, look, cast, language):
         "List the concrete things a single still picture must show to match this storyboard shot: the subject "
         "and what it looks like, its pose or action, where it is looking, the setting, the framing and camera "
         "angle, the light, the mood. Leave out camera movement, sound and anything that happens over time -- a "
-        f"still cannot show them. 4 to 8 short items, each one thing a viewer could check, in {language}. "
+        "still cannot show them -- and the visual style or medium, which is checked on its own. "
+        f"4 to 8 short items, each one thing a viewer could check, in {language}. "
         'Answer with only a JSON object: {"items": ["...", ...]}\n\n'
         f"The shot: {shot.get('prompt') or ''}\n"
         + (f"The film's look: {look}\n" if look else "")
@@ -23396,10 +23481,26 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
     if not items:
         _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the shot could not be read'}})
         return None
+    # Style, checked as items of their own and in the project's language like
+    # the rest: the look as written, and -- when there are other frames -- the
+    # same style as them (`_studio_style_refs`).
+    locale = str((doc.get('settings') or {}).get('language') or 'es')[:2]
+    styles = _studio_style_refs(username, pid, doc, sid)
+    labels = []
+    if look:
+        labels.append(_studio_t(locale, 'studio.review_item_look', "The film's look: {look}", look=look[:300]))
+    if styles:
+        labels.append(_studio_t(locale, 'studio.review_item_style', "The same style as the storyboard's other frames"))
+    items = labels + items
+    images += [u for _, u in styles]
     prompt = (
         "Check this storyboard frame against each requirement below. The first picture is the frame"
         + (f"; the next are reference portraits of {', '.join(refs)}, in that order, which the characters in the "
-           "frame must look like" if refs else "") + ". For each requirement say whether the frame shows it: "
+           "frame must look like -- they show who the characters are, not the style" if refs else "")
+        + (f"; the last {len(styles)} are other frames of the same storyboard ({', '.join(n for n, _ in styles)}), "
+           "the style the frame must share: the same medium and rendering, palette, line and texture, and "
+           "treatment of light -- not the same content" if styles else "")
+        + ". For each requirement, in the order given, say whether the frame shows it: "
         '"yes", "partly" or "no", with a few words on what is actually there. Be strict: "yes" only when it is '
         "clearly there as asked. Then list the rendering defects only -- malformed anatomy, extra or missing limbs, "
         "broken hands or faces, garbled text, artifacts; not a requirement that is missing, that is already "
@@ -23411,6 +23512,7 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
     if review is None:
         _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the review could not be read'}})
         return None
+    _studio_style_marks(review, labels, len(items))
     review['round'] = round_
     # The picture was looked at on the house's card; what to draw instead is
     # writing, and the storyboard's writing is the Designer's.
@@ -23533,7 +23635,7 @@ def _studio_correct_shots(username, doc, shots, feedback):
         "back exactly as written. Keep each description 1 to 3 sentences, in English, concrete and visual -- "
         "who and what is on screen, the setting, the action, the camera, the light and the mood -- with no "
         "sounds, no quotes of lyrics and no text on screen. Keep the characters described the same way in "
-        "every shot. Do not merge, split or reorder shots.\n"
+        "every shot. " + STUDIO_STYLE_RULE + " Do not merge, split or reorder shots.\n"
         f'Answer with only a JSON array of exactly {n} objects, in the same order, with no code fence and no '
         f'other text: [{{"prompt": "..."}}, ...]')
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-board'

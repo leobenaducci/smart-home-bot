@@ -443,6 +443,9 @@ class Projects:
                 raise ProjectError("a review needs a score") from None
             clean.update(ok=words(review.get("ok")), problems=words(review.get("problems")),
                          prompt=str(review.get("prompt") or "").strip()[:1200],
+                         # Whether it keeps to the film's style -- the portal
+                         # holds other frames to the ones that do.
+                         style=review.get("style") if review.get("style") in ("yes", "partly", "no") else "",
                          round=max(0, min(9, int(review.get("round") or 0))),
                          # The checklist the score was counted from: each thing
                          # the shot asks for, and whether the frame shows it.

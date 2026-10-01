@@ -1098,6 +1098,10 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
             continue
         params = {k: shot.get(k) for k in ("prompt", "soundscape", "music", "dialogue", "seconds", "exact")}
         params["characters"] = characters.describe(shot.get("cast") or [], me.login, pid)
+        # The project's look, as every frame and portrait already had it: a
+        # shot that continues from the one before starts from no frame, and
+        # without the words it drifts from the film's style over its length.
+        params["look"] = str(doc["settings"].get("look") or "").strip()
         params.update(language_name=lang, size=size, index=idx + 1)
         after = ""
         if idx > 0 and shot.get("continuity", True):

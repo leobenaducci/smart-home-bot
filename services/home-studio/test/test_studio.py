@@ -48,6 +48,10 @@ check("  a continued shot starts from a frame (S) with the small text encoder",
 s = recipes.settings_for("video_shot", {"prompt": "x", "dialogue": "Hola, ¿qué tal?", "start_image": "/a", "end_image": "/b"})
 check("  dialogue goes in H3's <d>[Spanish] ...</d>, both ends anchored (SE)",
       "<d>[Spanish] Hola, ¿qué tal?</d>" in s["prompt"] and s["image_prompt_type"] == "SE", s["prompt"])
+s = recipes.settings_for("video_shot", {"prompt": "a cat walks", "look": "pastel watercolour."})
+check("  a shot's video carries the film's look, the same words as its frame",
+      s["prompt"].count("Visual style: pastel watercolour.") == 1
+      and "Visual style" not in recipes.settings_for("video_shot", {"prompt": "a cat walks"})["prompt"], s["prompt"])
 s = recipes.settings_for("song", {"lyrics": "[Verse]\nla la", "style": "pop", "seconds": 60})
 check("  a song: lyrics are the prompt, style the caption, Spanish by default",
       s["prompt"].startswith("[Verse]") and s["alt_prompt"] == "pop" and s["custom_settings"]["language"] == "es", s)
@@ -996,6 +1000,8 @@ for jid in (q["id"] for q in r["queued"]):
 g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
 gp = A.store.get(g["queued"][0]["id"])["params"]
 check("  a shot that starts fresh starts from its approved frame", gp.get("start_board") == "takes/f.png", gp)
+check("  and its video is told the film's look, as its frame was",
+      gp.get("look") == "neón, noche" and "Visual style: neón, noche." in recipes.h3_prompt(gp), gp)
 A.manager.cancel(g["queued"][0]["id"])
 c.put(f"/api/projects/{sbp['id']}", json={"settings": {"use_storyboard": False}}, headers=h(JUANA, "Juana"))
 g = c.post(f"/api/projects/{sbp['id']}/generate", json={"items": [sdoc["shots"][1]["id"]]}, headers=h(JUANA, "Juana")).json()
@@ -1055,6 +1061,12 @@ rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
             headers=h(JUANA, "Juana")).json()
 check("  a review is kept on its frame, shaped: a score out of ten, a few findings",
       rv["review"]["score"] == 10 and len(rv["review"]["problems"]) == 8 and rv["review"]["state"] == "done", rv.get("review"))
+rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
+            json={"review": {"score": 4, "style": "no"}}, headers=h(JUANA, "Juana")).json()
+check("  and whether the frame kept to the film's style", rv["review"]["style"] == "no", rv.get("review"))
+rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
+            json={"review": {"score": 4, "style": "<b>"}}, headers=h(JUANA, "Juana")).json()
+check("  as one of three words, or nothing", rv["review"]["style"] == "", rv.get("review"))
 check("  a review without a score is refused",
       c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review", json={"review": {"ok": []}},
              headers=h(JUANA, "Juana")).status_code == 404)
