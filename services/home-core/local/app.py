@@ -23840,9 +23840,12 @@ def _studio_describe_character(username, pid, cid, only_short=False):
     if ch is None:
         return None, 'studio.ch_describe_failed'
     before = str(ch.get('look') or '').strip()
-    if only_short and len(before) >= CHARACTER_LOOK_SHORT:
-        return None, None
     pic = _studio_chosen_picture(ch)
+    # Automatically, only over a note, or over a look the assistant wrote from
+    # another picture -- the photo was changed, so its description goes too. A
+    # look somebody wrote at length is theirs.
+    if only_short and len(before) >= CHARACTER_LOOK_SHORT and not (ch.get('look_from') and ch['look_from'] != pic):
+        return None, None
     if not pic:
         return None, 'studio.ch_describe_nopic'
     url = _studio_data_url(username, f"projects/{pid}/characters/{cid}/file/{quote(pic, safe='/')}")
@@ -23851,7 +23854,7 @@ def _studio_describe_character(username, pid, cid, only_short=False):
     # Only a note's facts are carried over: a longer look is most likely an
     # earlier description, and carrying it would keep whatever it got wrong --
     # the man beside her in somebody's photo, described as part of her.
-    note = before if len(before) < CHARACTER_LOOK_SHORT else ''
+    note = before if len(before) < CHARACTER_LOOK_SHORT and not ch.get('look_from') else ''
     prompt = CHARACTER_DESCRIBE_PROMPT + (
         f'\nThe person already wrote this about them: "{note[:400]}". Keep every fact in it (age, height and '
         "the like) unless the picture plainly contradicts it." if note else "")
@@ -23861,7 +23864,8 @@ def _studio_describe_character(username, pid, cid, only_short=False):
         look = ''
     if not look:
         return None, 'studio.ch_describe_failed'
-    if not _studio_call(username, 'PUT', f'projects/{pid}/characters/{cid}', {'look': look}, via='Alfred'):
+    if not _studio_call(username, 'PUT', f'projects/{pid}/characters/{cid}', {'look': look, 'look_from': pic},
+                        via='Alfred'):
         return None, 'studio.ch_describe_failed'
     return look, None
 

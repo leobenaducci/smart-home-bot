@@ -1228,6 +1228,21 @@ check("  and a reference picture keeps what it shows, in words, for the Designer
       dsc.get("description") == "a sunny racetrack"
       and next(u for u in A.projects.load(JUANA, rfp["id"])["uploads"] if u["file"] == ups[0]["file"])["description"]
       == "a sunny racetrack")
+pic2 = tmp / "bruma2.jpg"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=green:s=32x32", "-frames:v", "1",
+                str(pic2)], check=True)
+ch2 = c.post(f"/api/projects/{rfp['id']}/characters/{bru['id']}/upload", files={"file": ("b2.jpg", pic2.read_bytes())},
+             headers=h(JUANA, "Juana")).json()
+check("  a picture given to a character becomes its chosen one -- a changed photo changes what is drawn",
+      len(ch2["pictures"]) == 2 and ch2["portrait"] == 1, ch2)
+c.put(f"/api/projects/{rfp['id']}/characters/{bru['id']}", json={"look": "a toddler", "look_from": ch2["pictures"][1]},
+      headers=h(JUANA, "Juana"))
+same = c.put(f"/api/projects/{rfp['id']}/characters/{bru['id']}", json={"look": "a toddler", "name": "Bruma"},
+             headers=h(JUANA, "Juana")).json()
+mine = c.put(f"/api/projects/{rfp['id']}/characters/{bru['id']}", json={"look": "my own words"},
+             headers=h(JUANA, "Juana")).json()
+check("  a look keeps the picture it was written from until somebody changes the words",
+      same.get("look_from") == ch2["pictures"][1] and "look_from" not in mine, (same, mine))
 pj_ = c.post(f"/api/projects/{rfp['id']}/characters/{bru['id']}/portrait", headers=h(JUANA, "Juana")).json()
 pjob = A.store.get(pj_["queued"][0]["id"])
 check("  a portrait is drawn from the character's own picture, in the film's style",

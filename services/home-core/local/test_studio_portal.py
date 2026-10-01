@@ -567,7 +567,8 @@ check("  asked for what an illustrator needs, and no guess at who it is",
       "no guess at who they are" in looked_d[0][1]["messages"][0]["content"][0]["text"])
 check("  and the look is saved on the character, as the assistant",
       puts_d == [("projects/p9/characters/c1", {"look": "a toddler of about two, round face, tight dark curls, "
-                                                         "yellow shirt and blue overalls"}, "Alfred")], puts_d)
+                                                         "yellow shirt and blue overalls",
+                                              "look_from": "pictures/b.png"}, "Alfred")], puts_d)
 r = client.post("/studio/api/char-describe", headers=HOME, json={"project": "p9", "character": "c2"})
 check("a character with no picture is told to get one", r.status_code == 400)
 A._studio_call, A._studio_data_url, A.requests.post = _saved_d
@@ -625,7 +626,8 @@ check("a character's look is the main person's, from a picture with others in it
       look == "a baby of about one, round face, dark curls"
       and 'already wrote this about them: "Un bebe"' in looked_r[0]["messages"][0]["content"][0]["text"]
       and "never mention another person" in looked_r[0]["messages"][0]["content"][0]["text"]
-      and ("PUT", "projects/p8/characters/c1", {"look": look}, "Alfred") in posted_r, (look, why, posted_r))
+      and ("PUT", "projects/p8/characters/c1", {"look": look, "look_from": "pictures/a.png"}, "Alfred") in posted_r,
+      (look, why, posted_r))
 _cs = A._studio_call
 A._studio_call = lambda u, m, path, body=None, timeout=30, via="": (
     {"characters": [{"id": "c1", "name": "Bruma", "look": "x" * 120, "pictures": ["pictures/a.png"], "portrait": 0}]}
@@ -635,6 +637,12 @@ A._studio_describe_character(USER1, "p8", "c1")
 check("  a look longer than a note is an earlier description, and is not carried into the new one",
       "already wrote" not in looked_r[0]["messages"][0]["content"][0]["text"])
 check("  and an automatic one leaves it alone", A._studio_describe_character(USER1, "p8", "c1", True) == (None, None))
+A._studio_call = lambda u, m, path, body=None, timeout=30, via="": (
+    {"characters": [{"id": "c1", "name": "Bruma", "look": "x" * 120, "look_from": "pictures/a.png",
+                     "pictures": ["pictures/a.png", "pictures/b.png"], "portrait": 1}]}
+    if path == "projects/p8/characters" else _cs(u, m, path, body, timeout, via))
+check("  unless the assistant wrote it from another picture: the photo changed, so it is written again",
+      A._studio_describe_character(USER1, "p8", "c1", True)[0] == "a baby of about one, round face, dark curls")
 A._studio_call = _cs
 bg = []
 A._studio_background = lambda fn, *a: bg.append((fn.__name__, a))
