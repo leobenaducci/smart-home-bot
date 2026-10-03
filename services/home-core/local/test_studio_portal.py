@@ -19,6 +19,7 @@ should get their verse back. So this pins what reaches the model in each mode,
 with the model stubbed out.
 """
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -125,6 +126,15 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "rec_subs", "rec_subs_running", "rec_subs_failed", "rec_transcript", "rec_trim", "rec_trim_running", "rec_trim_done", "rec_trim_failed", "render_subs",
             "rec_describe", "rec_describing", "rec_desc_title", "rec_desc_description", "rec_desc_chapters", "rec_desc_copy", "rec_desc_copied", "rec_desc_failed", "card_paused_update", "card_paused_after", "rec_retry"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
+
+# Every string the page's script reads, sent to it: the list above is kept by
+# hand, and three pause buttons once read "undefined" because their keys were
+# in the catalogues but not in STUDIO_UI_KEYS (2026-10-02). Names built at run
+# time (S['pkind_' + k.id]) cannot be read here; the list above covers those.
+_page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "studio.html"), encoding="utf-8").read()
+_used = set(re.findall(r"\bS\.([a-z][a-z0-9_]*)", _page)) | set(re.findall(r"\bfmt\('([a-z][a-z0-9_]*)'", _page))
+_missing = sorted(k for k in _used if k not in A.STUDIO_UI_KEYS)
+check("every S.<key> and fmt('<key>') the page uses is sent to it", not _missing, _missing)
 
 print("\na music video is planned by Alfred, shot by shot")
 plans = []
