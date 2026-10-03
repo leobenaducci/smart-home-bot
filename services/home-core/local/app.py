@@ -282,6 +282,30 @@ def chat_link(prefill=None, welcome=None, date=None, space=None):
     return url
 
 
+def tasks_link(task_id=None, review=False):
+    """The chat with the chores panel open -- on one task when there is one,
+    and on the review list for a parent who has something to approve. A chore
+    notification that opened the bare chat showed nothing about the chore: the
+    plain ones (approved, points, a prize) are not in the conversation at all."""
+    params = ['panel=tasks']
+    if review:
+        params.append('mode=review')
+    if task_id:
+        params.append('task=' + quote(str(task_id)))
+    return f'{HOMECORE_PUBLIC_URL}/chat?' + '&'.join(params)
+
+
+def tasks_page_link(tab):
+    """The chores page on one of its tabs: the prizes to hand over are only
+    there, not in the chat's panel."""
+    return f'{HOMECORE_PUBLIC_URL}/tasks?tab=' + quote(tab)
+
+
+def files_link():
+    """The chat with the files panel open, where shared files are."""
+    return f'{HOMECORE_PUBLIC_URL}/chat?panel=files'
+
+
 def _ntfy_header(value: str) -> str:
     """An ntfy header value, encoded if HTTP cannot carry it as it stands.
 
@@ -10790,7 +10814,7 @@ def _grant_share(username, rel, targets, notify=True):
                 send_ntfy(topic,
                           f'{sharer} shared "{name}" with you.',
                           title='Nuevo archivo compartido', tags='inbox_tray',
-                          click=chat_link())
+                          click=files_link())
     return {'ok': True, 'path': rel, 'name': parts[-1], 'targets': targets, 'added': added}, 200
 
 
@@ -11506,7 +11530,7 @@ def _tasks_auto_resolve(conn, now, today):
         balance = _points_balance(conn, assignee)
         _notify_user(assignee,
                      f'Chore approved! {title} +{points} pts (total: {balance})',
-                     title='Tarea aprobada', tags='tada')
+                     title='Tarea aprobada', tags='tada', click=tasks_link(task_id))
 
     stale_day = (today - timedelta(days=TASKS_AUTO_EXCUSE_DAYS)).isoformat()
     note = TASKS_AUTO_EXCUSE_NOTE % TASKS_AUTO_EXCUSE_DAYS
@@ -11679,7 +11703,7 @@ def _tasks_send_weekly_report(conn, now, today):
         delivered = _alfred_notify(admin, prompt, scope=_event_scope('ev-task'), profile=EVENT_PROFILE)
         if delivered:
             if not _user_watching(admin):
-                _notify_user(admin, delivered[:300], title='Alfred', tags='bar_chart')
+                _notify_user(admin, delivered[:300], title='Alfred', tags='bar_chart', click=chat_link())
         else:
             _notify_user(admin, body, title='Resumen semanal', tags='bar_chart',
                          click=chat_link('How was the week of chores?'))
@@ -11957,7 +11981,7 @@ def _tasks_send_reminders(conn, now, today):
         if text:
             if not _user_watching(assignee):
                 _notify_user(assignee, text[:300], title='Alfred', tags='alarm_clock',
-                             actions=_task_reminder_actions(tid))
+                             actions=_task_reminder_actions(tid), click=chat_link())
         else:
             _notify_user(assignee, f'Recordatorio: {title} ({when}) +{points} pts',
                          title='Recordatorio de tarea', tags='alarm_clock',
@@ -12274,7 +12298,7 @@ def tasks_api_complete():
         conn.close()
     _notify_tasks_admins(f'{_tasks_display_name(assignee)} finished: {title} (+{points} pts) — to review',
                          title='Tarea por revisar', tags='hourglass_flowing_sand',
-                         click=chat_link(f'Revisar la tarea "{title}" de {_tasks_display_name(assignee)}'))
+                         click=tasks_link(data.get('task_id'), review=True))
     return jsonify(ok=True, status='review')
 
 
@@ -12353,11 +12377,11 @@ def tasks_api_notify_action():
         _notify_tasks_admins(
             f'{_tasks_display_name(assignee)} termino: {title} (+{points} pts) — por revisar',
             title='Tarea por revisar', tags='hourglass_flowing_sand',
-            click=chat_link(f'Revisar la tarea "{title}" de {_tasks_display_name(assignee)}'))
+            click=tasks_link(task_id, review=True))
     elif do == 'excuse':
         _notify_tasks_admins(
             f'{_tasks_display_name(assignee)} no pudo hacer: {title}' + (f'\nMotivo: {note}' if note else ''),
-            title='Tarea justificada', tags='speech_balloon')
+            title='Tarea justificada', tags='speech_balloon', click=tasks_link(task_id, review=True))
     return jsonify(ok=True, status={'complete': 'review', 'postpone': 'pending', 'excuse': 'excused'}[do])
 
 
@@ -12389,7 +12413,8 @@ def tasks_api_excuse():
     finally:
         conn.close()
     _notify_tasks_admins(f'{_tasks_display_name(assignee)} no pudo hacer: {title}\nMotivo: {note}',
-                         title='Tarea justificada', tags='speech_balloon')
+                         title='Tarea justificada', tags='speech_balloon',
+                         click=tasks_link(data.get('task_id'), review=True))
     return jsonify(ok=True, status='excused')
 
 
@@ -12576,7 +12601,7 @@ def tasks_api_approve():
     if refunded:
         msg += f' (y te devolvimos {refunded})'
     _notify_user(assignee, f'{msg} (total: {balance})',
-                 title='Tarea aprobada', tags='tada')
+                 title='Tarea aprobada', tags='tada', click=tasks_link(task_id))
     return jsonify(ok=True, status='approved', balance=balance, refunded=refunded)
 
 
@@ -12652,7 +12677,7 @@ def tasks_api_accept_excuse():
     msg = f'Your excuse was accepted: {title}'
     if refunded:
         msg += f'\nTe devolvimos {refunded} pts (total: {balance})'
-    _notify_user(assignee, msg, title='Excuse accepted', tags='white_check_mark')
+    _notify_user(assignee, msg, title='Excuse accepted', tags='white_check_mark', click=tasks_link(task_id))
     return jsonify(ok=True, status='excused', accepted=True,
                    refunded=refunded, balance=balance)
 
@@ -12988,7 +13013,7 @@ def tasks_api_redeem():
         conn.close()
     _notify_tasks_admins(f'{_tasks_display_name(username)} quiere canjear: {icon} {name} ({cost} pts)',
                          title='Canje solicitado', tags='gift',
-                         click=chat_link('Ver los canjes de premios pendientes'))
+                         click=tasks_page_link('redeems'))
     return jsonify(ok=True, id=redemption_id, balance=balance)
 
 
@@ -13039,7 +13064,8 @@ def tasks_api_redemption_fulfill(red_id):
                      (int(time.time()), session['user'], red_id))
     finally:
         conn.close()
-    _notify_user(user, f'Prize handed over! {icon} {name} 🎉', title='Prize handed over', tags='gift')
+    _notify_user(user, f'Prize handed over! {icon} {name} 🎉', title='Prize handed over', tags='gift',
+                 click=tasks_link())
     return jsonify(ok=True)
 
 
@@ -13069,7 +13095,8 @@ def tasks_api_redemption_cancel(red_id):
         conn.execute('COMMIT')
     finally:
         conn.close()
-    _notify_user(user, f'Canje cancelado: {name} (+{cost} pts devueltos)', title='Canje cancelado')
+    _notify_user(user, f'Canje cancelado: {name} (+{cost} pts devueltos)', title='Canje cancelado',
+                 click=tasks_link())
     return jsonify(ok=True)
 
 
@@ -13102,7 +13129,7 @@ def tasks_api_adjust():
     # that did not.
     if delta >= 0:
         _notify_user(user, f'+{delta} pts: {reason} (total: {balance})',
-                     title='Puntos', tags='star')
+                     title='Puntos', tags='star', click=tasks_link())
     else:
         _notify_user(user, f'−{abs(delta)} pts: {reason} (total: {balance})',
                      title='Puntos descontados', tags='disappointed',
@@ -15557,7 +15584,7 @@ def _geo_deliver(notify_user, target_user, text, place_name, direction):
     if delivered:
         if not _user_watching(notify_user):
             _notify_user(notify_user, delivered[:300], title='Alfred', tags='round_pushpin',
-                         click=_grocery_chat_link() if grocery else None)
+                         click=_grocery_chat_link() if grocery else chat_link())
     else:
         _notify_user(notify_user, fallback, title='📍 Recordatorio',
                      tags='round_pushpin',
@@ -15691,7 +15718,7 @@ def _geo_track_deliver(requester, target, text):
     delivered = _alfred_notify(requester, prompt, scope=_event_scope('ev-geo'), profile=EVENT_PROFILE)
     if delivered:
         if not _user_watching(requester):
-            _notify_user(requester, delivered[:300], title='Alfred', tags='round_pushpin')
+            _notify_user(requester, delivered[:300], title='Alfred', tags='round_pushpin', click=chat_link())
     else:
         _notify_user(requester, f'{who}: {text}', title='📍 Seguimiento',
                      tags='round_pushpin', click=chat_link(welcome=f'{who}: {text}'))
@@ -16459,7 +16486,7 @@ def _geo_notify_watched(requester, target, kind, until=None):
         msg = f'{who} dejo de ver tu ubicacion.'
     else:
         msg = f'{who} consulto tu ubicacion.'
-    _notify_user(target, msg, title='Ubicacion', tags='round_pushpin')
+    _notify_user(target, msg, title='Ubicacion', tags='round_pushpin', click=chat_link())
 
 
 def _geo_notify_shared(sharer, recipient, until):
@@ -16473,7 +16500,7 @@ def _geo_notify_shared(sharer, recipient, until):
     hasta = datetime.fromtimestamp(until, TASKS_TZ).strftime('%H:%M') if until else ''
     msg = (f'{who} is sharing their location with you until {hasta}.'
            if hasta else f'{who} is sharing their location with you.')
-    _notify_user(recipient, msg, title='Ubicacion', tags='round_pushpin')
+    _notify_user(recipient, msg, title='Ubicacion', tags='round_pushpin', click=chat_link(f'Where is {who}?'))
 
 
 def _geo_location_payload(target, loc, prev_ts=None):

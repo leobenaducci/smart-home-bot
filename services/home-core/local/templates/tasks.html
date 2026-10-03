@@ -1647,6 +1647,11 @@
     (async function () {
       await loadMine();
       loadPrizes(); loadMyRedemptions(); loadLedger();
+      // A notification's link names the tab it is about (?tab=redeems: a
+      // prize somebody asked for), so the tap lands where it is handled.
+      const wantTab = new URLSearchParams(location.search).get('tab');
+      const tabBtn = IS_ADMIN && wantTab && document.querySelector('.tab[data-tab="' + wantTab + '"]');
+      if (tabBtn) tabBtn.click();
     })();
   </script>
 </body>
