@@ -300,12 +300,15 @@ def admin(action: str, body: dict | None = None, me: Who = Depends(who)):
     if not me.admin:
         raise HTTPException(403, "only a parent")
     if action == "pause":
-        manager.paused = True
         # Why, for the page to say: a Studio update, the card lent to the
-        # Programmer's local model (deploy/host/programmer-local.sh), or -- with
-        # no reason -- a parent's decision.
+        # Programmer's local model (deploy/host/programmer-local.sh) or to the
+        # coding benchmark (deploy/codebench), or -- with no reason -- a
+        # parent's decision. `now` stops the job on the card as well; it goes
+        # back to the queue.
         reason = (body or {}).get("reason")
-        manager.pause_reason = reason if reason in ("update", "programmer") else ""
+        stopped = manager.pause(reason if reason in ("update", "programmer", "bench") else "",
+                                now=bool((body or {}).get("now")))
+        return {"ok": True, "stopped": stopped, **manager.status()}
     elif action == "resume":
         manager.paused = False
         manager.wake()

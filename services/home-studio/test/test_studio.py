@@ -197,6 +197,8 @@ else:
     notified = []
     mgr = Manager(store2, projects, tmp / "scratch", tmp / "logs", idle_s=3600,
                   notify=notified.append, worker_factory=lambda: fake)
+    # Not the real card: this machine's Studio may be on it while the suite runs.
+    mgr.card_used = lambda: 0
     doc = projects.load(JUANA, p["id"])
     first, second = doc["shots"]
     fr = projects.dir(JUANA, p["id"]) / "takes" / "fr.png"
@@ -741,6 +743,49 @@ else:
           store2.get(jw["id"])["state"] == "done" and mgr.status()["card_busy_mb"] == 0,
           (store2.get(jw["id"]), mgr.status()))
     mgr.stop()
+
+    print("\na pause now stops the job on the card and puts it back in the queue")
+
+    class SlowWorker(FakeWorker):
+        """Works until it is told to stop, the way a long video shot does."""
+
+        def send(self, **msg):
+            with self._lock:
+                if "run" in msg:
+                    self.running = msg["run"]
+                    self._out.append({"kind": "progress", "id": msg["run"], "progress": 0.3, "phase": "Denoising"})
+                elif msg.get("cancel") == getattr(self, "running", None):
+                    self._out.append({"kind": "done", "id": msg["cancel"], "success": False, "files": [],
+                                      "errors": ["cancelled"]})
+                self._lock.notify_all()
+
+    slow = SlowWorker(tmp / "scratch")
+    slow._out.append({"kind": "ready"})
+    mgr3 = Manager(store2, projects, tmp / "scratch", tmp / "logs", idle_s=3600,
+                   notify=notified.append, worker_factory=lambda: slow)
+    mgr3.card_used = lambda: 0
+    mgr3.start()
+    jl = store2.add(owner=JUANA, owner_name="Juana", kind="image", model=recipes.IMAGE_MODEL,
+                    params={"prompt": "una tormenta", "size": "1024x1024"})
+    mgr3.wake()
+    deadline = time.time() + 15
+    while time.time() < deadline and store2.get(jl["id"])["state"] != "running":
+        time.sleep(0.1)
+    heard = len(notified)
+    stopped = mgr3.pause(now=True)
+    deadline = time.time() + 15
+    while time.time() < deadline and (store2.get(jl["id"])["state"] != "queued" or mgr3.worker is not None):
+        time.sleep(0.1)
+    back = store2.get(jl["id"])
+    check("  the running job is stopped and queued again, from the start, and the card is let go",
+          stopped == jl["id"] and back["state"] == "queued" and back["progress"] == 0 and not back["started"]
+          and mgr3.worker is None, (stopped, back, mgr3.status()))
+    check("  nobody is told it failed", len(notified) == heard, notified[heard:])
+    time.sleep(1)
+    check("  and it waits while paused", store2.get(jl["id"])["state"] == "queued")
+    check("  a pause that is not now leaves the job alone", mgr3.pause() is None)
+    mgr3.stop()
+    store2.cancel(jl["id"])
 
 print("\na project's words under version control")
 import json  # noqa: E402

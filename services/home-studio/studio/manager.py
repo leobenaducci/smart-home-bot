@@ -138,6 +138,9 @@ class Manager:
         # deployer holds it to restart the studio, "" when a parent did.
         self.pause_reason = ""
         self._cancelling: set[str] = set()
+        # Jobs a pause stopped on the card, to go back to the queue rather
+        # than end cancelled.
+        self._requeue: set[str] = set()
         self._stop = threading.Event()
         self._wake = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="studio-manager", daemon=True)
@@ -170,6 +173,28 @@ class Manager:
             self.store.update(job_id, phase="cancelling")
             return "running"
         return self.store.cancel(job_id)
+
+    def pause(self, reason: str = "", now: bool = False) -> str | None:
+        """Stop taking jobs. With `now` the one on the card stops too and goes
+        back to the queue, to start over on resume: WanGP cannot keep half a
+        shot, and a pause that waits out a 25-minute video is not what a person
+        pressing it -- or a benchmark that needs the card -- is asking for.
+        Only the generator's jobs can be stopped; the audio unit's (listening,
+        scores, repaints) take a minute or two and finish. The job stopped, or
+        None."""
+        self.paused, self.pause_reason = True, reason
+        self.wake()
+        if not now:
+            return None
+        job = self.store.running()
+        if not job or job["kind"] in ("analyze", "repaint", "score"):
+            return None
+        self._requeue.add(job["id"])
+        self.store.update(job["id"], phase="pausing")
+        if self.worker and self.worker.alive():
+            self._cancelling.add(job["id"])
+            self.worker.send(cancel=job["id"])
+        return job["id"]
 
     def status(self) -> dict:
         return {"worker": bool(self.worker and self.worker.alive()),
@@ -254,6 +279,10 @@ class Manager:
             self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc))
             self._notify(job, ok=False)
             return
+        if job["id"] in self._requeue:                        # paused while the generator loaded
+            self._requeue.discard(job["id"])
+            self.store.requeue(job["id"])
+            return
         out_dir = self.scratch / job["id"]
         worker.send(run=job["id"], settings=settings, output_dir=str(out_dir))
         worker.model = settings["model_type"]
@@ -277,6 +306,15 @@ class Manager:
         stale = self.previews.pop(job["id"], None)
         if stale:
             stale.unlink(missing_ok=True)
+        paused = job["id"] in self._requeue
+        self._requeue.discard(job["id"])
+        if paused and not (result and result.get("success")):
+            self._cancelling.discard(job["id"])
+            if result is None:
+                self.worker = None
+            self.store.requeue(job["id"])
+            log.info("paused: %s goes back to the queue", job["id"])
+            return
         if result is None:
             self._cancelling.discard(job["id"])
             self.worker = None

@@ -62,6 +62,7 @@
     #gpu.paused .dot { background: var(--clay); }
     #gpu .bar { flex: 1; max-width: 220px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
     #gpu .bar i { display: block; height: 100%; background: var(--honey); width: 0; transition: width .6s; }
+    #gpu-pause { padding: 3px 10px; font-size: .78rem; flex: none; }
     @keyframes pulse { 50% { opacity: .35 } }
     @media (prefers-reduced-motion: reduce) { #gpu.busy .dot { animation: none; } }
 
@@ -221,6 +222,7 @@
   <div id="gpu" role="button" aria-expanded="false" aria-controls="queue">
     <span class="dot"></span><span id="gpu-text">…</span><span class="bar"><i></i></span>
     <span class="grow"></span><span class="muted" id="gpu-count"></span>
+    {% if is_admin %}<button id="gpu-pause" hidden></button>{% endif %}
   </div>
   <section id="queue" aria-live="polite"></section>
 
@@ -321,7 +323,8 @@
       // say both when both are true, and why, so a shot still moving does
       // not sit under a word that says it is not.
       var why = q.status.pause_reason === 'update' ? S.card_paused_update
-        : q.status.pause_reason === 'programmer' ? S.card_paused_programmer : S.card_paused;
+        : q.status.pause_reason === 'programmer' ? S.card_paused_programmer
+        : q.status.pause_reason === 'bench' ? S.card_paused_bench : S.card_paused;
       $('#gpu-text').textContent = q.status.paused && run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) }) +
           ' · ' + fmt('card_paused_after', { why: why })
@@ -334,6 +337,15 @@
       if (!run && q.status.card_busy_mb) g.classList.add('paused');
       $('#gpu .bar i').style.width = run ? Math.round(run.progress * 100) + '%' : '0';
       $('#gpu-count').textContent = q.queued.length ? q.queued.length + ' ' + S.queue.toLowerCase() : '';
+      // Pausing in view, not only in the drawer: with nothing on the card it
+      // pauses at once; with a job running it opens the drawer, which offers
+      // after this job or now.
+      var pb = $('#gpu-pause');
+      if (pb) {
+        pb.hidden = false;
+        pb.textContent = q.status.paused ? '▶ ' + S.resume : '⏸ ' + S.pause;
+        pb.dataset.act = q.status.paused ? 'resume' : run && !stoppable(run) ? 'pause' : run ? 'drawer' : 'pause';
+      }
       drawQueue();
       if (current) syncJobs();
     }
@@ -350,10 +362,39 @@
           '<span class="muted">' + (j.starts_in ? fmt('starts_in', { t: dur(j.starts_in) }) : S.starts_now) +
           ' · ' + fmt('takes_about', { t: dur(j.takes) }) + '</span>'));
       });
-      var admin = IS_ADMIN ? '<div class="row" style="margin-top:8px"><button data-admin="' + (q.status.paused ? 'resume' : 'pause') + '">' +
-        (q.status.paused ? S.resume : S.pause) + '</button></div>' : '';
+      var admin = '';
+      if (IS_ADMIN) {
+        // Now stops the job on the card -- it goes back to the queue and
+        // starts over -- so the card is free at once; after waits for it.
+        var now = q.running && stoppable(q.running) && q.running.phase !== 'pausing'
+          ? '<button class="danger" data-admin="pause-now" title="' + esc(S.pause_now_about) + '">' +
+            (q.status.paused ? S.pause_stop_running : S.pause_now) + '</button>' : '';
+        admin = '<div class="row" style="margin-top:8px">' + (q.status.paused
+          ? '<button data-admin="resume">' + S.resume + '</button>' + now
+          : '<button data-admin="pause">' + (q.running ? S.pause_after : S.pause) + '</button>' + now) +
+          (now ? '<span class="muted">' + S.pause_now_about + '</span>' : '') + '</div>';
+      }
       box.innerHTML = (rows.length ? rows.join('') : '<p class="muted">' + S.queue_empty + '</p>') + admin;
     }
+    // The generator's jobs can be stopped mid-way; the audio unit's cannot.
+    function stoppable(j) { return ['analyze', 'repaint', 'score'].indexOf(j.kind) < 0; }
+    async function pauseCard(act) {
+      if (act === 'pause-now') {
+        var r = queueState && queueState.running;
+        if (r && !confirm(fmt('pause_now_confirm', { what: r.what }))) return;
+        await api('admin/pause', { method: 'POST', body: { now: true } });
+      } else await api('admin/' + act, { method: 'POST', body: {} });
+      loadQueue();
+    }
+    var pauseBtn = $('#gpu-pause');
+    if (pauseBtn) pauseBtn.addEventListener('click', async function (ev) {
+      ev.stopPropagation();
+      if (this.dataset.act === 'drawer') {
+        var box = $('#queue'); box.classList.add('open'); $('#gpu').setAttribute('aria-expanded', true); drawQueue();
+        return;
+      }
+      try { await pauseCard(this.dataset.act); } catch (e) { toast(fmt('err', { e: e.message }), true); }
+    });
     function qrow(j, pos, right) {
       var who = j.mine ? S.yours : esc(j.owner_name);
       var title = j.title ? ' — ' + esc(j.title) : '';
@@ -371,7 +412,7 @@
       var b = ev.target.closest('button'); if (!b) return;
       try {
         if (b.dataset.cancel) { if (!confirm(S.cancel_confirm)) return; await api('jobs/' + b.dataset.cancel, { method: 'DELETE' }); }
-        else if (b.dataset.admin) await api('admin/' + b.dataset.admin, { method: 'POST', body: {} });
+        else if (b.dataset.admin) { await pauseCard(b.dataset.admin); return; }
         else if (b.dataset.raise) await api('admin/priority', { method: 'POST', body: { id: b.dataset.raise, priority: 10 } });
         loadQueue();
       } catch (e) { toast(fmt('err', { e: e.message }), true); }
