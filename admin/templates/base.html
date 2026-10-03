@@ -634,6 +634,14 @@ button {
 button:hover { background: var(--panel-2); }
 button.ghost { background: transparent; color: var(--ink); border-color: var(--edge); }
 button.ghost:hover { background: var(--plate); }
+/* A link that goes somewhere, drawn as a button: an underlined line inside a
+   help paragraph was barely readable as something to press (2026-10-02). */
+a.button { display: inline-block; font-size: .88rem; font-weight: 600; line-height: 1.3; padding: 8px 16px;
+  border: 1px solid var(--panel); border-radius: var(--r); background: var(--panel); color: var(--door-ink);
+  text-decoration: none; }
+a.button:hover { background: var(--panel-2); }
+a.button.ghost { background: transparent; color: var(--ink); border-color: var(--edge); }
+a.button.ghost:hover { background: var(--plate); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* A control that reveals the form underneath it, with no script behind it.
@@ -885,7 +893,7 @@ pre.out, .joblog {
     <div class="directory">
       {% for endpoint, slot, label in nav_rows %}
         <a href="{{ url_for(endpoint) }}"
-           {% if page == endpoint or (endpoint == 'members' and page == 'member_profile') or (endpoint == 'models_page' and page == 'models_catalog') %}aria-current="page"{% endif %}>
+           {% if page == endpoint or (endpoint == 'members' and page == 'member_profile') or (endpoint == 'models_page' and page in ('models_catalog', 'codebench_page')) %}aria-current="page"{% endif %}>
           <span class="slot">{{ slot }}</span>{{ label }}
           {% if endpoint == 'deploy' and pending_count %}
             <span class="tag-dot" title="{{ t('admin.deploy.pending_services', n=pending_count) }}"></span>

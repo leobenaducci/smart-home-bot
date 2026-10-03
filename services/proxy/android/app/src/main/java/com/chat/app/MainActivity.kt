@@ -259,7 +259,9 @@ class MainActivity : FragmentActivity() {
          * untrusted input, so it gets to pick *which* of our pages opens, not
          * to navigate the WebView anywhere it likes.
          */
-        private val DEEP_LINK_PREFIXES = listOf("/chat", "/tasks", "/grocery", "/geo", "/menu")
+        // `/studio`: a finished or failed song, picture or shot -- without it a
+        // Studio notification opened the chat, with nothing about the job in it.
+        private val DEEP_LINK_PREFIXES = listOf("/chat", "/tasks", "/grocery", "/geo", "/menu", "/studio")
 
         /**
          * Extensions MimeTypeMap does not reliably know, spelled out so the

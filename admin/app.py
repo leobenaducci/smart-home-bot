@@ -1221,6 +1221,9 @@ IMPACT = {
     # Written into each member's agent front matter and read by opencode only
     # at startup, so the unit that rewrites those files has to run again.
     "cloud.opencode.model": ["alfred-mcp"],
+    # The Programmer's local model: alfred-mcp writes its llama-server unit
+    # and opencode's provider for it, the portal reads which model to name.
+    "cloud.opencode.fallback": ["alfred-mcp", "home-core"],
     "cloud.notifications": ["ntfy", "home-core", "nanobot", "nanobot-house", "mqtt"],
     "cloud.certificates": ["home-core"],
     "cloud.vps": ["local-proxy", "cloud-proxy"],
@@ -3489,6 +3492,27 @@ def models_page():
                 flash(_t_or("admin.models.code_unknown",
                             "Not saved: {model} is not on this account's "
                             "roster.", model=wanted), "warn")
+            # The Programmer's local model (cloud.opencode.fallback), on the
+            # same card: blank switches it off and the card goes back to the
+            # Studio. Served by llama.cpp -- programmer-local.sh -- so the
+            # name is checked by the shape that script can serve.
+            if "code_local_model" in request.form:
+                local = (request.form.get("code_local_model") or "").strip()
+                if local.startswith("hf:"):
+                    local = f"{OI.MODELS_DIR}/hf/{local[3:]}"
+                if not local:
+                    opencode.pop("fallback", None)
+                elif _PROGRAMMER_MODEL_RE.fullmatch(local) and ".." not in local:
+                    fb = opencode.setdefault("fallback", {})
+                    fb["model"] = local
+                    ctx = request.form.get("code_local_context", type=int) or 65536
+                    fb["context"] = ctx if 4096 <= ctx <= 262144 else 65536
+                    fb.setdefault("gpu", _codebench_gpu() if _codebench_gpu() is not None else 1)
+                    fb["first"] = request.form.get("code_local_first") == "1"
+                else:
+                    flash(_t_or("admin.codebench.programmer_bad",
+                                "That model cannot be the Programmer's: an Ollama name or a "
+                                ".gguf in the models folder."), "warn")
 
         # The Speech card: which whisper listens and which audio.cpp package
         # speaks. Both already lived in the config -- `services.faster-whisper
@@ -3946,6 +3970,8 @@ def models_page():
         bench_containers=bench_containers(),
         bench_efforts=model_bench.EFFORTS,
         code_model=str(_oc.get("model") or ""),
+        code_local=_programmer_local(cfg),
+        code_local_models=[m for m in _codebench_models() if "llamacpp" in m["engines"]],
         code_choices=code_choices,
         code_enabled=bool(_oc.get("enabled")),
         rows=rows,
@@ -7340,6 +7366,184 @@ def bench_log():
     )
 
 
+# --------------------------------------------------------------------------
+# The coding benchmark (admin/codebench.py): local models on five fixed
+# problems, on the Studio's card. One runner per admin process; a run is cut
+# short by a restart of this container, and the next start tidies up after it.
+# --------------------------------------------------------------------------
+import codebench as code_bench  # noqa: E402
+
+CODEBENCH_ROOT = ROOT / "deploy" / "codebench"
+_codebench: "code_bench.Runner | None" = None
+_codebench_lock = threading.Lock()
+
+
+def _codebench_gpu() -> int | None:
+    """The card the benchmark borrows: the Studio's, else the one the
+    Programmer's local model is configured on."""
+    cfg = load_config()
+    studio = (cfg.get("services") or {}).get("home-studio") or {}
+    dev = str(studio.get("gpu_device") or "").strip()
+    if studio.get("enabled") and studio.get("gpu") and dev.isdigit():
+        return int(dev)
+    fallback = ((cfg.get("cloud") or {}).get("opencode") or {}).get("fallback") or {}
+    with contextlib.suppress(TypeError, ValueError):
+        if fallback.get("model"):
+            return int(fallback.get("gpu", 1))
+    return None
+
+
+def _codebench_studio() -> tuple[str, str]:
+    """The Studio's address and secret (deploy.py: studio_url, derive_studio_secret)."""
+    cfg = load_config()
+    svc = (cfg.get("services") or {}).get("home-studio") or {}
+    name = str((cfg.get("dns") or {}).get("studio") or "").strip()
+    shared = ""
+    for line in _read_secrets().splitlines():
+        if line.startswith("PROXY_SHARED_SECRET="):
+            shared = line.split("=", 1)[1].strip()
+    if not svc.get("enabled") or not name or not shared:
+        return "", ""
+    return (f"http://{name}:{svc.get('port', 21035)}",
+            hashlib.sha256(f"{shared}:home-studio".encode()).hexdigest())
+
+
+def codebench() -> "code_bench.Runner":
+    global _codebench
+    with _codebench_lock:
+        if _codebench is None:
+            import llamacpp as LC
+            import model_library as ML
+            _codebench = code_bench.Runner(
+                CODEBENCH_ROOT, APK_DIR / "codebench", gpu=_codebench_gpu, studio=_codebench_studio,
+                ollama_url=lambda: ML.OLLAMA_URL, build_dir=LC.build_dir, models_dir=OI.MODELS_DIR,
+                server_image=LC.IMAGE)
+            threading.Thread(target=_codebench.recover, daemon=True).start()
+            _codebench.watch()
+        return _codebench
+
+
+def _codebench_models() -> list[dict]:
+    """What can be benchmarked: the Ollama store as it is now, and the GGUF
+    files in the library, each with the engines it may run on and how the
+    library's load test went on each."""
+    import model_library as ML
+    lib = _config_dir_json(LIBRARY_FILE)
+    tests = lib.get("tests") or {}
+    out, seen = [], set()
+    for m in ML.ollama_models() or []:
+        mid = m.get("id") or m.get("name")
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        out.append({"id": mid, "store": "ollama", "gib": round(int(m.get("bytes") or 0) / 2**30, 1),
+                    "engines": list(code_bench.ENGINES)})
+    for m in lib.get("models") or []:
+        if m.get("store") == "ollama" or m["id"] in seen:
+            continue
+        seen.add(m["id"])
+        out.append({"id": m["id"], "store": "file", "gib": round(int(m.get("bytes") or 0) / 2**30, 1),
+                    "engines": [e for e in m.get("engines") or [] if e in code_bench.ENGINES]})
+    for m in out:
+        m["verdicts"] = {e: ("ok" if (tests.get(m["id"]) or {}).get(e, {}).get("ok") else
+                             "fail" if e in (tests.get(m["id"]) or {}) else "untested") for e in m["engines"]}
+    # An embedding model cannot write code.
+    return [m for m in out if "embed" not in m["id"].lower()]
+
+
+@app.get("/models/coding")
+def codebench_page():
+    runner = codebench()
+    return render_template("codebench.html", problems=code_bench.problems(CODEBENCH_ROOT),
+                           models=_codebench_models(), engines=code_bench.ENGINES,
+                           engine_labels=code_bench.ENGINE_LABELS, contexts=code_bench.CONTEXTS,
+                           default_context=code_bench.DEFAULT_CONTEXT, gpu=_codebench_gpu(),
+                           studio_on=bool(_codebench_studio()[0]), runs=runner.runs(),
+                           programmer=_programmer_local(load_config()))
+
+
+def _programmer_local(cfg: dict) -> dict:
+    fb = ((cfg.get("cloud") or {}).get("opencode") or {}).get("fallback") or {}
+    return {"model": str(fb.get("model") or ""), "context": int(fb.get("context") or 65536),
+            "first": bool(fb.get("first")), "gpu": fb.get("gpu", 1)}
+
+
+# deploy.py's _FALLBACK_MODEL_RE: what programmer-local.sh can serve.
+_PROGRAMMER_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(:[A-Za-z0-9._-]{1,63})?"
+                                  r"|/var/lib/home-stack/models/[\w./-]{1,300}\.gguf")
+
+
+@app.post("/models/coding/programmer")
+def codebench_programmer():
+    """Which model the Programmer runs locally (cloud.opencode.fallback): the
+    one a benchmark here picked, or one chosen from the list. It is served by
+    llama.cpp, so that is the engine whose results say whether it will work."""
+    model = (request.form.get("model") or "").strip()
+    if model.startswith("hf:"):
+        model = f"{OI.MODELS_DIR}/hf/{model[3:]}"
+    if not _PROGRAMMER_MODEL_RE.fullmatch(model) or ".." in model:
+        return jsonify(ok=False, error=_t_or("admin.codebench.programmer_bad",
+                                             "That model cannot be the Programmer's: an Ollama name or a "
+                                             ".gguf in the models folder.")), 400
+    context = request.form.get("context", type=int) or 65536
+    if not 4096 <= context <= 262144:
+        return jsonify(ok=False, error="4096-262144"), 400
+    cfg = load_config()
+    fb = cfg.setdefault("cloud", {}).setdefault("opencode", {}).setdefault("fallback", {})
+    fb["model"], fb["context"] = model, context
+    fb.setdefault("gpu", _codebench_gpu() if _codebench_gpu() is not None else 1)
+    if "first" in request.form:
+        fb["first"] = request.form.get("first") == "1"
+    save_config(cfg)
+    note_pending(IMPACT["cloud.opencode.fallback"])
+    return jsonify(ok=True, programmer=_programmer_local(cfg))
+
+
+@app.get("/models/coding/state")
+def codebench_state():
+    runner = codebench()
+    return jsonify(status=runner.status(), queue=runner.queue(), runs=runner.runs())
+
+
+@app.get("/models/coding/run/<run_id>")
+def codebench_run(run_id: str):
+    run = codebench().run_file(run_id)
+    return jsonify(run) if run else (jsonify(error="no such run"), 404)
+
+
+@app.post("/models/coding/start")
+def codebench_start():
+    runner = codebench()
+    known = {p["id"] for p in code_bench.problems(CODEBENCH_ROOT)}
+    try:
+        entry = code_bench.check_entry({
+            "model": request.form.get("model"), "engine": request.form.get("engine"),
+            "context": request.form.get("context"), "problems": request.form.getlist("problem"),
+            "interrupt": request.form.get("interrupt") == "1"}, known)
+    except code_bench.BenchError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    if _codebench_gpu() is None:
+        return jsonify(ok=False, error=_t_or("admin.codebench.no_card",
+                                             "There is no card for it: the Studio's card is not configured.")), 400
+    return jsonify(ok=True, entry=runner.add(entry, session.get("user", "")))
+
+
+@app.post("/models/coding/stop")
+def codebench_stop():
+    codebench().stop()
+    return jsonify(ok=True)
+
+
+@app.post("/models/coding/remove")
+def codebench_remove():
+    return jsonify(ok=codebench().remove(request.form.get("id", "")))
+
+
+@app.post("/models/coding/delete")
+def codebench_delete():
+    return jsonify(ok=codebench().delete_run(request.form.get("id", "")))
+
+
 def _cases_digest() -> str:
     """The digest of the cases file a run started now would be scored by."""
     try:
@@ -9383,6 +9587,9 @@ if __name__ == "__main__":
     # This is how the container starts -- admin/Dockerfile's CMD is
     # `python /app/admin/app.py` -- not a dev-only branch.
     start_price_watcher()
+    # A coding benchmark cut short by this restart: its containers go and a
+    # Studio it paused is resumed now, not when somebody next opens its page.
+    codebench()
     #
     # The container is on the host's network, so there is no port publish
     # between a container side and a host side any more: what this binds is

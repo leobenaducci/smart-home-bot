@@ -62,11 +62,13 @@
     #gpu.paused .dot { background: var(--clay); }
     #gpu .bar { flex: 1; max-width: 220px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
     #gpu .bar i { display: block; height: 100%; background: var(--honey); width: 0; transition: width .6s; }
+    #gpu-pause { padding: 3px 10px; font-size: .78rem; flex: none; }
     @keyframes pulse { 50% { opacity: .35 } }
     @media (prefers-reduced-motion: reduce) { #gpu.busy .dot { animation: none; } }
 
     /* Queue drawer */
-    #queue { display: none; background: var(--paper-2); border-bottom: 1px solid var(--line); padding: 12px 20px; }
+    #queue { display: none; background: var(--paper-2); border-bottom: 1px solid var(--line); padding: 12px 20px;
+      scroll-margin-top: 48px; }   /* clear of the sticky card bar above it */
     #queue.open { display: block; }
     .qrow { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); font-size: .84rem; }
     .qrow:first-child { border-top: 0; }
@@ -221,6 +223,7 @@
   <div id="gpu" role="button" aria-expanded="false" aria-controls="queue">
     <span class="dot"></span><span id="gpu-text">…</span><span class="bar"><i></i></span>
     <span class="grow"></span><span class="muted" id="gpu-count"></span>
+    {% if is_admin %}<button id="gpu-pause" hidden></button>{% endif %}
   </div>
   <section id="queue" aria-live="polite"></section>
 
@@ -321,15 +324,29 @@
       // say both when both are true, and why, so a shot still moving does
       // not sit under a word that says it is not.
       var why = q.status.pause_reason === 'update' ? S.card_paused_update
-        : q.status.pause_reason === 'programmer' ? S.card_paused_programmer : S.card_paused;
+        : q.status.pause_reason === 'programmer' ? S.card_paused_programmer
+        : q.status.pause_reason === 'bench' ? S.card_paused_bench : S.card_paused;
       $('#gpu-text').textContent = q.status.paused && run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) }) +
           ' · ' + fmt('card_paused_after', { why: why })
         : q.status.paused ? why : run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) })
+        // Something outside the Studio holds the card (the Programmer's model):
+        // the next job waits for it rather than failing for lack of memory.
+        : q.status.card_busy_mb ? fmt('card_taken', { gb: (q.status.card_busy_mb / 1024).toFixed(1) })
         : S.card_free;
+      if (!run && q.status.card_busy_mb) g.classList.add('paused');
       $('#gpu .bar i').style.width = run ? Math.round(run.progress * 100) + '%' : '0';
       $('#gpu-count').textContent = q.queued.length ? q.queued.length + ' ' + S.queue.toLowerCase() : '';
+      // Pausing in view, not only in the drawer: with nothing on the card it
+      // pauses at once; with a job running it opens the drawer, which offers
+      // after this job or now.
+      var pb = $('#gpu-pause');
+      if (pb) {
+        pb.hidden = false;
+        pb.textContent = q.status.paused ? '▶ ' + S.resume : '⏸ ' + S.pause;
+        pb.dataset.act = q.status.paused ? 'resume' : run && !stoppable(run) ? 'pause' : run ? 'drawer' : 'pause';
+      }
       drawQueue();
       if (current) syncJobs();
     }
@@ -346,10 +363,43 @@
           '<span class="muted">' + (j.starts_in ? fmt('starts_in', { t: dur(j.starts_in) }) : S.starts_now) +
           ' · ' + fmt('takes_about', { t: dur(j.takes) }) + '</span>'));
       });
-      var admin = IS_ADMIN ? '<div class="row" style="margin-top:8px"><button data-admin="' + (q.status.paused ? 'resume' : 'pause') + '">' +
-        (q.status.paused ? S.resume : S.pause) + '</button></div>' : '';
-      box.innerHTML = (rows.length ? rows.join('') : '<p class="muted">' + S.queue_empty + '</p>') + admin;
+      var admin = '';
+      if (IS_ADMIN) {
+        // Now stops the job on the card -- it goes back to the queue and
+        // starts over -- so the card is free at once; after waits for it.
+        var now = q.running && stoppable(q.running) && q.running.phase !== 'pausing'
+          ? '<button class="danger" data-admin="pause-now" title="' + esc(S.pause_now_about) + '">' +
+            (q.status.paused ? S.pause_stop_running : S.pause_now) + '</button>' : '';
+        // First, not after the list: under 26 queued shots it was off the
+        // screen, and ⏸ seemed to do nothing (2026-10-02).
+        admin = '<div class="row" id="pause-row" style="margin-bottom:8px">' + (q.status.paused
+          ? '<button data-admin="resume">' + S.resume + '</button>' + now
+          : '<button data-admin="pause">' + (q.running ? S.pause_after : S.pause) + '</button>' + now) +
+          (now ? '<span class="muted">' + S.pause_now_about + '</span>' : '') + '</div>';
+      }
+      box.innerHTML = admin + (rows.length ? rows.join('') : '<p class="muted">' + S.queue_empty + '</p>');
     }
+    // The generator's jobs can be stopped mid-way; the audio unit's cannot.
+    function stoppable(j) { return ['analyze', 'repaint', 'score'].indexOf(j.kind) < 0; }
+    async function pauseCard(act) {
+      if (act === 'pause-now') {
+        var r = queueState && queueState.running;
+        if (r && !confirm(fmt('pause_now_confirm', { what: r.what }))) return;
+        await api('admin/pause', { method: 'POST', body: { now: true } });
+      } else await api('admin/' + act, { method: 'POST', body: {} });
+      loadQueue();
+    }
+    var pauseBtn = $('#gpu-pause');
+    if (pauseBtn) pauseBtn.addEventListener('click', async function (ev) {
+      ev.stopPropagation();
+      if (this.dataset.act === 'drawer') {
+        var box = $('#queue'); box.classList.add('open'); $('#gpu').setAttribute('aria-expanded', true); drawQueue();
+        var first = box.querySelector('#pause-row button');
+        if (first) { box.scrollIntoView({ block: 'start' }); first.focus(); }
+        return;
+      }
+      try { await pauseCard(this.dataset.act); } catch (e) { toast(fmt('err', { e: e.message }), true); }
+    });
     function qrow(j, pos, right) {
       var who = j.mine ? S.yours : esc(j.owner_name);
       var title = j.title ? ' — ' + esc(j.title) : '';
@@ -367,7 +417,7 @@
       var b = ev.target.closest('button'); if (!b) return;
       try {
         if (b.dataset.cancel) { if (!confirm(S.cancel_confirm)) return; await api('jobs/' + b.dataset.cancel, { method: 'DELETE' }); }
-        else if (b.dataset.admin) await api('admin/' + b.dataset.admin, { method: 'POST', body: {} });
+        else if (b.dataset.admin) { await pauseCard(b.dataset.admin); return; }
         else if (b.dataset.raise) await api('admin/priority', { method: 'POST', body: { id: b.dataset.raise, priority: 10 } });
         loadQueue();
       } catch (e) { toast(fmt('err', { e: e.message }), true); }
@@ -450,7 +500,8 @@
           ((c.voice_tests || {})[ME] ? '<audio controls preload="none" src="' + charUrl(c, c.voice_tests[ME]) + '"></audio>' : '') +
           '<div class="row" style="margin-top:8px">' +
           (c.editable ? '<button data-ch-edit="' + c.id + '">✏️ ' + S.ch_edit + '</button>' : '') +
-          (c.editable && c.look ? '<button data-ch-portrait="' + c.id + '">' + S.ch_portrait + '</button>' : '') +
+          (c.editable && (c.look || (c.pictures || []).length) ? '<button data-ch-portrait="' + c.id + '">' + S.ch_portrait + '</button>' : '') +
+          (c.editable && (c.pictures || []).length ? '<button data-ch-describe="' + c.id + '" title="' + esc(S.ch_describe_help) + '">✍️ ' + S.ch_describe + '</button>' : '') +
           (c.voice ? '<button data-ch-speak="' + c.id + '">' + S.ch_speak + '</button>' : '') +
           (c.editable && c.scope !== 'family' ? '<button data-ch-widen="' + c.id + '">' + S[c.scope === 'project' ? 'ch_widen_person' : 'ch_widen_family'] + '</button>' : '') +
           (c.editable ? '<button class="danger" data-ch-del="' + c.id + '">🗑</button>' : '') +
@@ -952,7 +1003,9 @@
           '<div class="sb-title"><b>' + S.shot + ' ' + (i + 1) + '</b>' +
           (j ? '<span class="pill run">' + (j.state === 'running' ? S.sb_drawing : S.state_queued) + '</span>' : '') +
           (t && !videoStale(s) ? '<span class="pill ok" title="' + esc(S.sb_has_video) + '">🎥</span>' : '') +
-          (boardChanged(s) ? '<span class="pill" title="' + esc(S.sb_changed) + '">✏️ ' + S.sb_changed_short + '</span>' : '') + '</div>' +
+          (boardChanged(s) ? '<span class="pill" title="' + esc(S.sb_changed) + '">✏️ ' + S.sb_changed_short + '</span>' : '') +
+          // The same removal as the videos panel's: one shot, confirmed, undone from the history.
+          '<span class="grow"></span><button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + esc(S.remove) + '">✕</button></div>' +
           (words !== null ? '<p class="sb-sung">' + (words ? '“' + esc(words) + '”' : S.sb_music_only) + '</p>' : '') +
           '<textarea data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
           (b && !startsFresh(s) ? '<p class="muted" style="margin:6px 0 0;font-size:.82rem">⛓ ' + S.sb_continues +
@@ -1013,8 +1066,12 @@
         var startSel = fromBoard ? '<label class="f">' + S.start_image + '</label><div class="row"><img src="' + fileUrl(p.id, board.file) +
             '" alt="" style="height:64px;border-radius:6px"><span class="muted">🖼️ ' + S.sb_starts_from + '</span></div>' +
             (videoStale(s) ? '<p class="note" style="margin-top:6px">⚠️ ' + S.sb_video_older + '</p>' : '')
-          : (i === 0 || s.continuity === false) && refs.length ? '<label class="f">' + S.start_image + '</label><select data-f="refs" data-id="' + s.id + '"><option value="">' + S.none + '</option>' +
-          refs.map(function (u) { return '<option value="' + esc(u.file) + '"' + ((s.refs || [])[0] === u.file ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' : '';
+          : '';
+        // The shot's own reference picture: its frame is drawn from it (with the
+        // cast's pictures and the film's style), and a shot that starts fresh
+        // with no frame starts its video from it.
+        startSel += refs.length ? '<label class="f" title="' + esc(S.shot_ref_help) + '">🖼️ ' + S.shot_ref + '</label><select data-f="refs" data-id="' + s.id + '"><option value="">' + S.none + '</option>' +
+          refs.map(function (u) { return '<option value="' + esc(u.file) + '"' + ((s.refs || [])[0] === u.file ? ' selected' : '') + '>' + esc(u.name) + (u.style ? ' 🎨' : '') + '</option>'; }).join('') + '</select>' : '';
         html += '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>' + S.shot + ' ' + (i + 1) + '</b>' + statusPill(s) +
           '<span class="grow"></span><button data-up="' + s.id + '" title="' + S.move_up + '">↑</button><button data-down="' + s.id + '" title="' + S.move_down + '">↓</button>' +
           '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + S.remove + '">✕</button></div>' +
@@ -1123,9 +1180,12 @@
     // A picture made here, kept as a reference: what a shot can start from.
     // Marked once it is one; the reference is a copy, deleted on its own.
     function refButton(file, name) {
-      var has = (current.uploads || []).some(function (u) { return u.kind === 'reference' && u.source === file; });
-      return has ? '<span class="pill ok" title="' + esc(S.ref_is) + '">📌 ✓</span>'
-        : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" title="' + esc(S.ref_add) + '">📌 ' + S.ref_add_short + '</button>';
+      var ref = (current.uploads || []).find(function (u) { return u.kind === 'reference' && u.source === file; });
+      return (ref ? '<span class="pill ok" title="' + esc(S.ref_is) + '">📌 ✓</span>'
+        : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" title="' + esc(S.ref_add) + '">📌 ' + S.ref_add_short + '</button>') +
+        (ref && ref.style ? '<span class="pill ok" title="' + esc(S.ref_style_help) + '">🎨 ✓</span>'
+          : ref ? '<button data-style-ref="' + esc(ref.file.replace(/^uploads\//, '')) + '" data-on="1" title="' + esc(S.ref_style_help) + '">🎨 ' + S.ref_style + '</button>'
+          : '<button data-as-ref="' + esc(file) + '" data-name="' + esc(name) + '" data-style="1" title="' + esc(S.ref_style_help) + '">🎨 ' + S.ref_style + '</button>');
     }
 
     // The version's parts written out -- guitar as notes and tab, piano --
@@ -1259,12 +1319,17 @@
         return l.length ? l.map(function (u) {
           var prev = kind === 'voice' ? '<audio controls preload="none" src="' + fileUrl(p.id, u.file) + '"></audio>' :
             '<img src="' + fileUrl(p.id, u.file) + '" style="max-width:120px;border-radius:6px">';
-          return '<div class="row" style="margin:6px 0">' + prev + '<span class="muted grow">' + esc(u.name) + '</span>' +
+          var styleBtn = kind !== 'reference' ? '' :
+            '<button data-style-ref="' + esc(u.file.replace(/^uploads\//, '')) + '" data-on="' + (u.style ? '0' : '1') + '"' +
+            (u.style ? ' class="on"' : '') + ' title="' + esc(S.ref_style_help) + '">🎨 ' + S.ref_style + (u.style ? ' ✓' : '') + '</button>';
+          return '<div class="row" style="margin:6px 0">' + prev + '<span class="muted grow">' + esc(u.name) + '</span>' + styleBtn +
             '<button class="danger" data-del-upload="' + esc(u.file.replace(/^uploads\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div>';
         }).join('') : '<p class="muted">' + S.no_files + '</p>';
       }
-      return '<div class="card"><b>' + S.upload_ref + '</b>' + list('reference') +
-        '<div class="row" style="margin-top:8px"><input type="file" accept="image/*" data-upload="reference" style="width:auto"></div></div>' +
+      return '<div class="card"><b>' + S.upload_ref + '</b><p class="muted">' + S.ref_style_intro + '</p>' + list('reference') +
+        '<div class="row" style="margin-top:8px"><input type="file" accept="image/*" data-upload="reference" style="width:auto"></div>' +
+        '<div class="row" style="margin-top:8px"><span class="muted">🎨 ' + S.upload_style + '</span>' +
+        '<input type="file" accept="image/*" data-upload="reference" data-style="1" style="width:auto"></div></div>' +
         '<div class="card"><b>' + S.upload_voice + '</b><p class="muted">' + S.voice_sample_help + '</p>' + list('voice') +
         '<div class="row" style="margin-top:8px"><input type="file" accept="audio/*" data-upload="voice" style="width:auto"></div></div>';
     }
@@ -1318,9 +1383,14 @@
       if (el.dataset.f === 'continuity') { drawTab(); return; }
       if (el.dataset.upload && el.files.length) {
         var fd = new FormData(); fd.append('file', el.files[0]); fd.append('kind', el.dataset.upload);
+        if (el.dataset.style) fd.append('style', '1');
         toast(S.uploading);
         busy++;
-        try { await api('projects/' + current.id + '/upload', { method: 'POST', body: fd }); current = await api('projects/' + current.id); drawTab(); }
+        try {
+          var up = await api('projects/' + current.id + '/upload', { method: 'POST', body: fd });
+          if (up.style_error) toast(up.style_error, true);
+          current = await api('projects/' + current.id); drawTab();
+        }
         catch (e) { toast(fmt('err', { e: e.message }), true); }
         finally { busy--; }
       }
@@ -1456,9 +1526,22 @@
         }
         if (d.asRef) {
           await flushSave();
-          await api('projects/' + p.id + '/references', { method: 'POST', body: { file: d.asRef, name: d.name || '' } });
-          toast(S.ref_added);
+          await api('projects/' + p.id + '/references', { method: 'POST', body: { file: d.asRef, name: d.name || '', style: !!d.style } });
+          toast(d.style ? S.ref_style_added : S.ref_added);
           current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.styleRef) {
+          await api('projects/' + p.id + '/uploads/' + encodeURIComponent(d.styleRef) + '/style', { method: 'POST', body: { on: d.on === '1' } });
+          toast(d.on === '1' ? S.ref_style_added : S.ref_style_removed);
+          current = await api('projects/' + p.id); drawTab(); return;
+        }
+        if (d.chDescribe) {
+          b.disabled = true; b.textContent = '✍️ ' + S.ch_describe_working;
+          try {
+            var dc = await api('char-describe', { method: 'POST', body: { project: p.id, character: d.chDescribe } });
+            toast(fmt('ch_describe_done', { look: dc.look }));
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          await loadCast(); drawTab(); return;
         }
         if (d.score) {
           var st = chosen(itemById(d.score));
@@ -1495,7 +1578,8 @@
           try {
             var rc = await api('board-correct', { method: 'POST', body: { project: p.id, feedback: fb, redraw: correctRedraw } });
             correctDraft = '';
-            toast(rc.changed ? fmt('sb_correct_done', { n: rc.changed, total: rc.total }) : S.sb_correct_none);
+            toast((rc.look ? fmt('sb_correct_look', { look: rc.look }) + ' ' : '') +
+                  (rc.changed ? fmt('sb_correct_done', { n: rc.changed, total: rc.total }) : rc.look ? '' : S.sb_correct_none));
           } catch (e) { toast(fmt('err', { e: e.message }), true); }
           finally { current = await api('projects/' + p.id); loadQueue(); drawTab(); }
           return;
@@ -1710,7 +1794,7 @@
           await flushSave();
           var r = await api('music-video', { method: 'POST', body: { shots: plan.length, seconds: total, kind: a.kind || 'song',
             lyrics: a.lyrics || '', text: a.text || '', style: a.style || '', title: a.title || '',
-            idea: idea, plan: cuts || [],
+            idea: idea, plan: cuts || [], project: p.id, ref: ref || '',
             characters: cast.map(function (c) { return { name: c.name, look: c.look, personality: c.personality }; }) } });
           var fresh = await api('projects/' + p.id);
           var before = (fresh.shots || []).length;

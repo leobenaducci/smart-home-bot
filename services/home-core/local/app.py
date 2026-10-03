@@ -282,6 +282,30 @@ def chat_link(prefill=None, welcome=None, date=None, space=None):
     return url
 
 
+def tasks_link(task_id=None, review=False):
+    """The chat with the chores panel open -- on one task when there is one,
+    and on the review list for a parent who has something to approve. A chore
+    notification that opened the bare chat showed nothing about the chore: the
+    plain ones (approved, points, a prize) are not in the conversation at all."""
+    params = ['panel=tasks']
+    if review:
+        params.append('mode=review')
+    if task_id:
+        params.append('task=' + quote(str(task_id)))
+    return f'{HOMECORE_PUBLIC_URL}/chat?' + '&'.join(params)
+
+
+def tasks_page_link(tab):
+    """The chores page on one of its tabs: the prizes to hand over are only
+    there, not in the chat's panel."""
+    return f'{HOMECORE_PUBLIC_URL}/tasks?tab=' + quote(tab)
+
+
+def files_link():
+    """The chat with the files panel open, where shared files are."""
+    return f'{HOMECORE_PUBLIC_URL}/chat?panel=files'
+
+
 def _ntfy_header(value: str) -> str:
     """An ntfy header value, encoded if HTTP cannot carry it as it stands.
 
@@ -7194,19 +7218,33 @@ def _opencode_asked_for_go(username, msg_content):
                {t_for(username, 'programmer.retry_go'), t_for('', 'programmer.retry_go')} if label)
 
 
-def _studio_rendering():
-    """Whether the Studio is running a job on the card the local model borrows.
-    Lending it means waiting for that job -- a video shot is ~25 minutes -- which
-    is worth it only when there is nowhere else to go."""
+def _studio_card():
+    """The Studio's queue as the Programmer sees it: `running` (a job) and
+    `status` (`worker`: a model still on the card). {} when unreachable."""
     if not STUDIO_URL or not STUDIO_SECRET:
-        return False
+        return {}
     try:
         r = requests.get(f'{STUDIO_URL}/api/queue', timeout=(3, 10), headers={
             'X-Studio-Secret': STUDIO_SECRET, 'X-Studio-User': 'programmer',
             'X-Studio-Name': 'Programmer', 'X-Studio-Admin': '1'})
-        return bool(r.status_code == 200 and (r.json() or {}).get('running'))
+        return (r.json() or {}) if r.status_code == 200 else {}
     except (requests.RequestException, ValueError):
-        return False
+        return {}
+
+
+def _studio_rendering():
+    """Whether the Studio is running a job on the card the local model borrows.
+    Lending it means waiting for that job -- a video shot is ~25 minutes -- which
+    is worth it only when there is nowhere else to go."""
+    return bool(_studio_card().get('running'))
+
+
+def _studio_holds_card():
+    """Whether the local model, starting now, would wait for the Studio: a job
+    running or a model still loaded. Said in the chat -- a turn waiting on the
+    card showed nothing at all for thirteen minutes (2026-10-01)."""
+    card = _studio_card()
+    return bool(card.get('running') or (card.get('status') or {}).get('worker'))
 
 
 def _opencode_engine(turn, msg_content=''):
@@ -8510,6 +8548,8 @@ def _turn_attempt_opencode(turn, msg_content):
                                                         reset=_go_out['reset'] or '?')
                                           if _go_is_out() else
                                           t_for(username, 'programmer.on_local')})
+                        if _studio_holds_card():
+                            _turn_emit(turn, {'hint': t_for(username, 'programmer.waiting_card')})
                 params = {'directory': directory} if directory else None
                 p = requests.post(f'{base}/session/{session_id}/prompt_async',
                                   params=params, json=body, timeout=30)
@@ -10774,7 +10814,7 @@ def _grant_share(username, rel, targets, notify=True):
                 send_ntfy(topic,
                           f'{sharer} shared "{name}" with you.',
                           title='Nuevo archivo compartido', tags='inbox_tray',
-                          click=chat_link())
+                          click=files_link())
     return {'ok': True, 'path': rel, 'name': parts[-1], 'targets': targets, 'added': added}, 200
 
 
@@ -11490,7 +11530,7 @@ def _tasks_auto_resolve(conn, now, today):
         balance = _points_balance(conn, assignee)
         _notify_user(assignee,
                      f'Chore approved! {title} +{points} pts (total: {balance})',
-                     title='Tarea aprobada', tags='tada')
+                     title='Tarea aprobada', tags='tada', click=tasks_link(task_id))
 
     stale_day = (today - timedelta(days=TASKS_AUTO_EXCUSE_DAYS)).isoformat()
     note = TASKS_AUTO_EXCUSE_NOTE % TASKS_AUTO_EXCUSE_DAYS
@@ -11663,7 +11703,7 @@ def _tasks_send_weekly_report(conn, now, today):
         delivered = _alfred_notify(admin, prompt, scope=_event_scope('ev-task'), profile=EVENT_PROFILE)
         if delivered:
             if not _user_watching(admin):
-                _notify_user(admin, delivered[:300], title='Alfred', tags='bar_chart')
+                _notify_user(admin, delivered[:300], title='Alfred', tags='bar_chart', click=chat_link())
         else:
             _notify_user(admin, body, title='Resumen semanal', tags='bar_chart',
                          click=chat_link('How was the week of chores?'))
@@ -11941,7 +11981,7 @@ def _tasks_send_reminders(conn, now, today):
         if text:
             if not _user_watching(assignee):
                 _notify_user(assignee, text[:300], title='Alfred', tags='alarm_clock',
-                             actions=_task_reminder_actions(tid))
+                             actions=_task_reminder_actions(tid), click=chat_link())
         else:
             _notify_user(assignee, f'Recordatorio: {title} ({when}) +{points} pts',
                          title='Recordatorio de tarea', tags='alarm_clock',
@@ -12258,7 +12298,7 @@ def tasks_api_complete():
         conn.close()
     _notify_tasks_admins(f'{_tasks_display_name(assignee)} finished: {title} (+{points} pts) — to review',
                          title='Tarea por revisar', tags='hourglass_flowing_sand',
-                         click=chat_link(f'Revisar la tarea "{title}" de {_tasks_display_name(assignee)}'))
+                         click=tasks_link(data.get('task_id'), review=True))
     return jsonify(ok=True, status='review')
 
 
@@ -12337,11 +12377,11 @@ def tasks_api_notify_action():
         _notify_tasks_admins(
             f'{_tasks_display_name(assignee)} termino: {title} (+{points} pts) — por revisar',
             title='Tarea por revisar', tags='hourglass_flowing_sand',
-            click=chat_link(f'Revisar la tarea "{title}" de {_tasks_display_name(assignee)}'))
+            click=tasks_link(task_id, review=True))
     elif do == 'excuse':
         _notify_tasks_admins(
             f'{_tasks_display_name(assignee)} no pudo hacer: {title}' + (f'\nMotivo: {note}' if note else ''),
-            title='Tarea justificada', tags='speech_balloon')
+            title='Tarea justificada', tags='speech_balloon', click=tasks_link(task_id, review=True))
     return jsonify(ok=True, status={'complete': 'review', 'postpone': 'pending', 'excuse': 'excused'}[do])
 
 
@@ -12373,7 +12413,8 @@ def tasks_api_excuse():
     finally:
         conn.close()
     _notify_tasks_admins(f'{_tasks_display_name(assignee)} no pudo hacer: {title}\nMotivo: {note}',
-                         title='Tarea justificada', tags='speech_balloon')
+                         title='Tarea justificada', tags='speech_balloon',
+                         click=tasks_link(data.get('task_id'), review=True))
     return jsonify(ok=True, status='excused')
 
 
@@ -12560,7 +12601,7 @@ def tasks_api_approve():
     if refunded:
         msg += f' (y te devolvimos {refunded})'
     _notify_user(assignee, f'{msg} (total: {balance})',
-                 title='Tarea aprobada', tags='tada')
+                 title='Tarea aprobada', tags='tada', click=tasks_link(task_id))
     return jsonify(ok=True, status='approved', balance=balance, refunded=refunded)
 
 
@@ -12636,7 +12677,7 @@ def tasks_api_accept_excuse():
     msg = f'Your excuse was accepted: {title}'
     if refunded:
         msg += f'\nTe devolvimos {refunded} pts (total: {balance})'
-    _notify_user(assignee, msg, title='Excuse accepted', tags='white_check_mark')
+    _notify_user(assignee, msg, title='Excuse accepted', tags='white_check_mark', click=tasks_link(task_id))
     return jsonify(ok=True, status='excused', accepted=True,
                    refunded=refunded, balance=balance)
 
@@ -12972,7 +13013,7 @@ def tasks_api_redeem():
         conn.close()
     _notify_tasks_admins(f'{_tasks_display_name(username)} quiere canjear: {icon} {name} ({cost} pts)',
                          title='Canje solicitado', tags='gift',
-                         click=chat_link('Ver los canjes de premios pendientes'))
+                         click=tasks_page_link('redeems'))
     return jsonify(ok=True, id=redemption_id, balance=balance)
 
 
@@ -13023,7 +13064,8 @@ def tasks_api_redemption_fulfill(red_id):
                      (int(time.time()), session['user'], red_id))
     finally:
         conn.close()
-    _notify_user(user, f'Prize handed over! {icon} {name} 🎉', title='Prize handed over', tags='gift')
+    _notify_user(user, f'Prize handed over! {icon} {name} 🎉', title='Prize handed over', tags='gift',
+                 click=tasks_link())
     return jsonify(ok=True)
 
 
@@ -13053,7 +13095,8 @@ def tasks_api_redemption_cancel(red_id):
         conn.execute('COMMIT')
     finally:
         conn.close()
-    _notify_user(user, f'Canje cancelado: {name} (+{cost} pts devueltos)', title='Canje cancelado')
+    _notify_user(user, f'Canje cancelado: {name} (+{cost} pts devueltos)', title='Canje cancelado',
+                 click=tasks_link())
     return jsonify(ok=True)
 
 
@@ -13086,7 +13129,7 @@ def tasks_api_adjust():
     # that did not.
     if delta >= 0:
         _notify_user(user, f'+{delta} pts: {reason} (total: {balance})',
-                     title='Puntos', tags='star')
+                     title='Puntos', tags='star', click=tasks_link())
     else:
         _notify_user(user, f'−{abs(delta)} pts: {reason} (total: {balance})',
                      title='Puntos descontados', tags='disappointed',
@@ -15541,7 +15584,7 @@ def _geo_deliver(notify_user, target_user, text, place_name, direction):
     if delivered:
         if not _user_watching(notify_user):
             _notify_user(notify_user, delivered[:300], title='Alfred', tags='round_pushpin',
-                         click=_grocery_chat_link() if grocery else None)
+                         click=_grocery_chat_link() if grocery else chat_link())
     else:
         _notify_user(notify_user, fallback, title='📍 Recordatorio',
                      tags='round_pushpin',
@@ -15675,7 +15718,7 @@ def _geo_track_deliver(requester, target, text):
     delivered = _alfred_notify(requester, prompt, scope=_event_scope('ev-geo'), profile=EVENT_PROFILE)
     if delivered:
         if not _user_watching(requester):
-            _notify_user(requester, delivered[:300], title='Alfred', tags='round_pushpin')
+            _notify_user(requester, delivered[:300], title='Alfred', tags='round_pushpin', click=chat_link())
     else:
         _notify_user(requester, f'{who}: {text}', title='📍 Seguimiento',
                      tags='round_pushpin', click=chat_link(welcome=f'{who}: {text}'))
@@ -16443,7 +16486,7 @@ def _geo_notify_watched(requester, target, kind, until=None):
         msg = f'{who} dejo de ver tu ubicacion.'
     else:
         msg = f'{who} consulto tu ubicacion.'
-    _notify_user(target, msg, title='Ubicacion', tags='round_pushpin')
+    _notify_user(target, msg, title='Ubicacion', tags='round_pushpin', click=chat_link())
 
 
 def _geo_notify_shared(sharer, recipient, until):
@@ -16457,7 +16500,7 @@ def _geo_notify_shared(sharer, recipient, until):
     hasta = datetime.fromtimestamp(until, TASKS_TZ).strftime('%H:%M') if until else ''
     msg = (f'{who} is sharing their location with you until {hasta}.'
            if hasta else f'{who} is sharing their location with you.')
-    _notify_user(recipient, msg, title='Ubicacion', tags='round_pushpin')
+    _notify_user(recipient, msg, title='Ubicacion', tags='round_pushpin', click=chat_link(f'Where is {who}?'))
 
 
 def _geo_location_payload(target, loc, prev_ts=None):
@@ -22879,7 +22922,7 @@ STUDIO_UI_KEYS = (
     'new_project_kind', 'kind_soon', 'pkind_music_video', 'pkind_music_video_about', 'pkind_short_film',
     'pkind_short_film_about', 'pkind_explainer', 'pkind_explainer_about', 'pkind_podcast', 'pkind_podcast_about',
     'pkind_recording', 'pkind_recording_about', 'pkind_free', 'pkind_free_about', 'storyboard',
-    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_none', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
+    'board_make', 'board_draw', 'board_redraw', 'board_queued', 'sb_review_apply', 'sb_review_applied', 'sb_redrawing_review', 'project_name', 'more', 'rail_label', 'rail_song', 'rail_song_none', 'rail_song_bpm', 'rail_song_unheard', 'rail_board', 'rail_board_st', 'rail_weak', 'rail_videos', 'rail_videos_st', 'rail_making', 'rail_stale', 'rail_film', 'rail_film_st', 'rail_film_none', 'rail_none', 'sb_video_old', 'sb_has_video', 'sb_review_n', 'fit_button', 'fit_help', 'fit_confirm', 'fit_done', 'fit_short', 'sb_review', 'sb_review_help', 'sb_review_all', 'sb_reviewing', 'sb_review_started', 'sb_review_failed', 'sb_review_round', 'sb_review_suggests', 'sb_refine', 'sb_refine_help', 'sb_refine_confirm', 'sb_refine_started', 'sb_refine_busy', 'sb_correct', 'sb_correct_help', 'sb_correct_placeholder', 'sb_correct_redraw', 'sb_correct_working', 'sb_correct_done', 'sb_correct_look', 'sb_correct_none', 'ch_describe', 'ch_describe_help', 'ch_describe_working', 'ch_describe_done', 'ref_style', 'ref_style_help', 'ref_style_intro', 'ref_style_added', 'ref_style_removed', 'upload_style', 'shot_ref', 'shot_ref_help', 'sb_correct_failed', 'sb_correct_empty', 'hist_button', 'hist_title', 'hist_help', 'hist_empty', 'hist_show', 'hist_nothing', 'hist_reordered', 'hist_revert', 'hist_revert_help', 'hist_revert_confirm', 'hist_restore', 'hist_restore_help', 'hist_restore_confirm', 'hist_tag_now', 'hist_tag_prompt', 'hist_untag_confirm', 'hist_done', 'hist_conflicts', 'score_make', 'score_open', 'score_running', 'score_retry', 'score_confirm', 'score_queued', 'sb_use', 'sb_starts_from', 'sb_video_older', 'sb_to_video', 'sb_to_video_off', 'sb_video_stale', 'sb_continues', 'sb_use_frame', 'board_from', 'board_from_none', 'ref_add', 'ref_add_short', 'ref_is', 'ref_added', 'tab_board', 'sb_help', 'sb_empty', 'sb_redraw_changed', 'sb_animatic', 'sb_changed', 'sb_changed_short', 'sb_drawing', 'sb_music_only', 'mv_then', 'mv_then_board', 'mv_then_video', 'mv_then_none', 'mv_board_estimate',
     'tab_cast', 'ch_none', 'ch_new', 'ch_edit', 'ch_name',
     'ch_look', 'ch_look_ph', 'ch_personality', 'ch_personality_ph', 'ch_voice',
     'ch_voice_text', 'ch_record', 'ch_stop', 'ch_pictures', 'ch_save', 'ch_pick_studio', 'ch_pick_files', 'ch_pick_none',
@@ -22898,7 +22941,8 @@ STUDIO_UI_KEYS = (
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
-    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_paused_after', 'rec_retry',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_paused_bench', 'card_taken', 'card_paused_after', 'rec_retry',
+    'pause_after', 'pause_now', 'pause_stop_running', 'pause_now_about', 'pause_now_confirm',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
@@ -23003,7 +23047,9 @@ def studio_notify():
     project = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
     _notify_user(login, str(d.get('text') or '')[:300], title=t_for(login, 'studio.title'),
                  tags='clapper' if d.get('ok') else 'warning',
-                 click='/studio' + (f'?project={project}' if project else ''))
+                 # Absolute, as chat_link() is: a bare path is not a URL to ntfy or
+                 # to a browser, and the app keeps only the path and query anyway.
+                 click=f'{HOMECORE_PUBLIC_URL}/studio' + (f'?project={project}' if project else ''))
     return jsonify(ok=True)
 
 
@@ -23125,6 +23171,19 @@ def studio_music_video():
     # The project's characters: who may appear, how they look and are. The
     # page maps the names Alfred puts on each shot back to the characters.
     people = [c for c in (d.get('characters') or []) if isinstance(c, dict) and c.get('name')][:12]
+    # The project's reference pictures, in words (`_studio_ref_words`): the
+    # style pictures, and the one chosen for the first shot.
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    doc = _studio_call(username, 'GET', f'projects/{pid}') if pid else None
+    first_ref = str(d.get('ref') or '')
+    if doc and first_ref:
+        doc = {**doc, 'shots': [{'refs': [first_ref]}]}
+    ref_words, ref_style = _studio_ref_words(username, doc) if doc else ({}, [])
+    refs_text = "".join(
+        [f"The film's style pictures show:\n" + "\n".join(f"- {ref_words[r]}" for r in ref_style if r in ref_words)
+         + "\n" if any(r in ref_words for r in ref_style) else "",
+         f"The first shot is drawn from a reference picture, which shows: {ref_words[first_ref]}\n"
+         if first_ref in ref_words else ""])
     cast_text = "\n".join(
         f"- {str(c['name'])[:60]}: {str(c.get('look') or '')[:300]}"
         + (f" Personality: {str(c.get('personality'))[:200]}" if c.get('personality') else '')
@@ -23153,6 +23212,7 @@ def studio_music_video():
         + (", timed to the song as listed below" if plan else f" of about {each} seconds each") + ", in order.\n"
         + (f"Musical style: {style}.\n" if style else "")
         + (f"What the person wants it to look like: {idea}\n" if idea else "")
+        + refs_text
         + (f"The characters (use them by these names, and keep each one as described):\n{cast_text}\n"
            if cast_text else "")
         + (f"The shots, with what is heard during each (show what those words are about, "
@@ -23162,8 +23222,8 @@ def studio_music_video():
         + "For each shot write one description for a text-to-video model, in English: who and "
           "what is on screen, the setting, the action, the camera (framing and movement), the "
           "light and the mood -- 1 to 3 sentences, concrete and visual, no sounds, no quotes of the "
-          "lyrics, no text on screen. Keep the same characters and look across shots, describing "
-          "them the same way each time. Mark `continues: true` when a shot is the same moment "
+          "lyrics, no text on screen. Keep the same characters across shots, describing "
+          "them the same way each time. " + STUDIO_STYLE_RULE + " Mark `continues: true` when a shot is the same moment "
           "carrying on from the one before (same place, same action, no cut); otherwise false. "
           "The first shot is always false.\n"
           + ('For each shot also list the characters on screen by name in "cast" (an empty list if none). '
@@ -23258,7 +23318,7 @@ def _studio_vision(prompt, images, max_tokens=900):
         return None
 
 
-def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
+def _studio_redraw_prompt(username, sid, shot, board, look, cast, review, ref_words=''):
     """What the Designer would draw the frame with instead: the review's
     findings in, one image prompt out. Text only -- the picture itself was
     looked at on the house's card."""
@@ -23269,16 +23329,115 @@ def _studio_redraw_prompt(username, sid, shot, board, look, cast, review):
         + (f"The film's look: {look}\n" if look else "")
         + ("The characters, as they must look every time:\n"
            + "\n".join(f"- {c['name']}: {c.get('look') or ''}" for c in cast) + "\n" if cast else "")
+        + (f"The shot is drawn from its own reference picture, which shows: {ref_words}\n" if ref_words else "")
         + "Someone who looked at the frame found these problems:\n" + "\n".join(f"- {x}" for x in review['problems'])
         + ("\nAnd this works:\n" + "\n".join(f"- {x}" for x in review['ok']) if review['ok'] else "")
         + "\nWrite the prompt to redraw it with, in English: the same shot, fixing every problem and keeping what "
-          "works, 1 to 3 concrete visual sentences for an image model (who, where, action, framing, light). Answer "
-          "with only the prompt -- no quotes, no heading, no other text."
+          "works, 1 to 3 concrete visual sentences for an image model (who, where, action, framing, light). "
+          + STUDIO_STYLE_RULE
+          + (" The frame came out in the wrong style: that is fixed by drawing it again with the look, not by "
+             "words of yours -- leave the style problems out of the prompt." if review.get('style') in ('partly', 'no')
+             else "")
+          + " Answer with only the prompt -- no quotes, no heading, no other text."
     )
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-review-{sid}'
     text = _run_nanobot_turn(username, chat_id, prompt, STUDIO_REVIEW_TIMEOUT_S, profile='designer') or ''
     text = re.sub(r'^```\w*|```$', '', text.strip()).strip().strip('"“”').strip()
     return text.split('\n\n')[0].strip()[:1200]
+
+
+# One style, every frame. A storyboard's frames are where its shots start --
+# the video model carries a frame's look through the whole shot -- so a frame
+# in another style is a cut that jumps, whatever else it gets right. The look
+# is put ahead of every frame's description by the Studio (and into every
+# shot's video prompt), so what the descriptions must not do is name another.
+STUDIO_STYLE_RULE = (
+    "The film's look is added to every shot separately: do not name a style, medium, palette or "
+    "rendering, and do not repeat the look either. Never mention a photo, picture or reference image "
+    "-- the image model sees only these words, and \"photo\" draws it toward a photograph; describe "
+    "what a person looks like instead.")
+# Measured on a household's music video (2026-10-01): its look said "realista"
+# while every shot said "Disney style cartoon", and a correction had added
+# "matching his reference photo" to 29 of 34 shots. Frames came out 2D, 3D and
+# photographic by turns, and redraws told to restate the look wrote "clean,
+# realistic" into them -- the conflict copied into every description. So the
+# descriptions carry no style at all, the look is the one place for it, and a
+# correction about the style changes the look (`_studio_correct_shots`).
+# How many other frames a frame is compared with for style. Each is an image
+# in the vision call, beside the frame and up to three portraits.
+STUDIO_STYLE_REFS = 2
+# A frame off the film's style cannot pass on the strength of the rest: it is
+# one item of up to ten, so counted like the others a frame in the wrong style
+# still scored 8 and was kept. Capped under the default bar instead.
+STUDIO_STYLE_CAP = {'no': 4, 'partly': 6}
+
+
+def _studio_t(locale, key, english, **params):
+    """A string in the project's language rather than the viewer's: a review is
+    written into the project, in the language its checklist is in."""
+    return _translator(key, locale=locale, **params) if _translator else english.format(**params)
+
+
+def _studio_style_refs(username, pid, doc, sid, limit=STUDIO_STYLE_REFS):
+    """Up to *limit* other frames of the storyboard to hold this one's style
+    to, as (label, data URL): the first frame that passed its review and kept
+    to the style -- the anchor, the same for every frame -- and the passing one
+    nearest this shot. Only those: until a frame has passed, the look alone is
+    the style. Unreviewed frames used to stand in, and in a storyboard drawn
+    in mixed styles they made the verdicts contradict -- one frame marked
+    wrong for being 3D beside a 2D reference, the next for being 2D beside 3D
+    ones."""
+    shots = doc.get('shots') or []
+    here = next((i for i, s in enumerate(shots) if s.get('id') == sid), 0)
+    look = str((doc.get('settings') or {}).get('look') or '').strip()
+    good = []
+    for i, s in enumerate(shots):
+        if s.get('id') == sid or not s.get('boards'):
+            continue
+        boards = s['boards']
+        k = s.get('board', -1)
+        b = boards[k] if isinstance(k, int) and 0 <= k < len(boards) else boards[-1]
+        if not b.get('file'):
+            continue
+        r = b.get('review') or {}
+        if r.get('style') in ('partly', 'no'):
+            continue
+        # Passed, and in the style: checked against the look when there is one. A
+        # review from before style was checked says nothing about it.
+        kept = r.get('style') == 'yes' or (not look and not r.get('style'))
+        if r.get('state') == 'done' and int(r.get('score') or 0) >= 7 and kept:
+            good.append((i, s, b))
+    picked = good[:1]
+    rest = sorted(good[1:], key=lambda x: abs(x[0] - here))
+    picked += rest[:max(0, limit - len(picked))]
+    out = []
+    for i, s, b in sorted(picked, key=lambda x: x[0])[:limit]:
+        url = _studio_data_url(username, f"projects/{pid}/file/{quote(b['file'], safe='/')}")
+        if url:
+            out.append((f'shot {i + 1}', url))
+    return out
+
+
+def _studio_style_marks(review, labels, n_items):
+    """The review's worst mark on its style items, and the score capped by it
+    (`STUDIO_STYLE_CAP`); style problems are put first, for the redraw. The
+    style items lead the checklist; the model is asked to answer in order but
+    may reword an item, so it is matched by position when the count agrees and
+    by its words otherwise."""
+    checks = review.get('checks') or []
+    if len(checks) == n_items:
+        mine = checks[:len(labels)]
+    else:
+        mine = [c for c in checks if any(c.get('item', '')[:40].lower() == l[:40].lower() for l in labels)]
+    marks = [c['shown'] for c in mine]
+    worst = 'no' if 'no' in marks else 'partly' if 'partly' in marks else ('yes' if marks else '')
+    review['style'] = worst
+    if worst in STUDIO_STYLE_CAP:
+        review['score'] = min(review['score'], STUDIO_STYLE_CAP[worst])
+        off = [(c['item'] + (f": {c['why']}" if c.get('why') else ''))[:300]
+               for c in mine if c['shown'] != 'yes']
+        review['problems'] = (off + [p for p in review['problems'] if p not in off])[:8]
+    return review
 
 
 def _studio_requirements(shot, look, cast, language):
@@ -23290,7 +23449,8 @@ def _studio_requirements(shot, look, cast, language):
         "List the concrete things a single still picture must show to match this storyboard shot: the subject "
         "and what it looks like, its pose or action, where it is looking, the setting, the framing and camera "
         "angle, the light, the mood. Leave out camera movement, sound and anything that happens over time -- a "
-        f"still cannot show them. 4 to 8 short items, each one thing a viewer could check, in {language}. "
+        "still cannot show them -- and the visual style or medium, which is checked on its own. "
+        f"4 to 8 short items, each one thing a viewer could check, in {language}. "
         'Answer with only a JSON object: {"items": ["...", ...]}\n\n'
         f"The shot: {shot.get('prompt') or ''}\n"
         + (f"The film's look: {look}\n" if look else "")
@@ -23396,10 +23556,26 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
     if not items:
         _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the shot could not be read'}})
         return None
+    # Style, checked as items of their own and in the project's language like
+    # the rest: the look as written, and -- when there are other frames -- the
+    # same style as them (`_studio_style_refs`).
+    locale = str((doc.get('settings') or {}).get('language') or 'es')[:2]
+    styles = _studio_style_refs(username, pid, doc, sid)
+    labels = []
+    if look:
+        labels.append(_studio_t(locale, 'studio.review_item_look', "The film's look: {look}", look=look[:300]))
+    if styles:
+        labels.append(_studio_t(locale, 'studio.review_item_style', "The same style as the storyboard's other frames"))
+    items = labels + items
+    images += [u for _, u in styles]
     prompt = (
         "Check this storyboard frame against each requirement below. The first picture is the frame"
         + (f"; the next are reference portraits of {', '.join(refs)}, in that order, which the characters in the "
-           "frame must look like" if refs else "") + ". For each requirement say whether the frame shows it: "
+           "frame must look like -- they show who the characters are, not the style" if refs else "")
+        + (f"; the last {len(styles)} are other frames of the same storyboard ({', '.join(n for n, _ in styles)}), "
+           "the style the frame must share: the same medium and rendering, palette, line and texture, and "
+           "treatment of light -- not the same content" if styles else "")
+        + ". For each requirement, in the order given, say whether the frame shows it: "
         '"yes", "partly" or "no", with a few words on what is actually there. Be strict: "yes" only when it is '
         "clearly there as asked. Then list the rendering defects only -- malformed anatomy, extra or missing limbs, "
         "broken hands or faces, garbled text, artifacts; not a requirement that is missing, that is already "
@@ -23411,11 +23587,14 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
     if review is None:
         _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the review could not be read'}})
         return None
+    _studio_style_marks(review, labels, len(items))
     review['round'] = round_
     # The picture was looked at on the house's card; what to draw instead is
     # writing, and the storyboard's writing is the Designer's.
     if review['score'] < threshold and review['problems']:
-        review['prompt'] = _studio_redraw_prompt(username, sid, shot, board, look, cast, review)
+        words, _ = _studio_ref_words(username, doc) if shot.get('refs') else ({}, [])
+        review['prompt'] = _studio_redraw_prompt(username, sid, shot, board, look, cast, review,
+                                                 ' '.join(words[r] for r in (shot.get('refs') or [])[:2] if r in words))
     _studio_call(username, 'POST', path, {'review': {**review, 'state': 'done'}})
     return review
 
@@ -23504,27 +23683,61 @@ def studio_board_refine():
     return jsonify(started=len(shots))
 
 
+def _studio_parse_correction(text, n):
+    """(look or None, the n descriptions) from the Designer's correction, or
+    None. `{"look": ..., "shots": [...]}`; a bare array is read as shots with
+    the look left alone."""
+    if not text:
+        return None
+    start, end = text.find('{'), text.rfind('}')
+    if 0 <= start < end and (text.find('[') < 0 or start < text.find('[')):
+        try:
+            raw = json.loads(text[start:end + 1])
+        except ValueError:
+            raw = None
+        if isinstance(raw, dict) and isinstance(raw.get('shots'), list):
+            shots = _studio_parse_plan(json.dumps(raw['shots']), n)
+            if shots is None:
+                return None
+            look = raw.get('look')
+            look = str(look).strip()[:600] if isinstance(look, str) and look.strip() else None
+            return look, [o['prompt'] for o in shots]
+    shots = _studio_parse_plan(text, n)
+    return (None, [o['prompt'] for o in shots]) if shots is not None else None
+
+
 def _studio_correct_shots(username, doc, shots, feedback):
-    """Every shot's description rewritten by the Designer from one piece of
-    feedback, or None. One call for the whole storyboard, so the correction is
-    applied consistently -- "she wears red" in every shot she is in, not in the
-    ones a per-shot pass happened to read that way. Exactly one description per
-    shot, in order; a shot the feedback does not concern comes back as it was."""
+    """(the look, every shot's description) rewritten by the Designer from one
+    piece of feedback, or None. One call for the whole storyboard, so the
+    correction is applied consistently -- "she wears red" in every shot she is
+    in, not in the ones a per-shot pass happened to read that way. Exactly one
+    description per shot, in order; a shot the feedback does not concern comes
+    back as it was. A correction about the style of the whole piece changes
+    the look, and nothing else carries style: "Disney cartoon" written into
+    every shot under a look that said "realistic" is how a household's frames
+    came out 2D, 3D and photographic by turns (2026-10-01). The look comes back
+    None when it stays as it is."""
     chars = (_studio_call(username, 'GET', f"projects/{doc['id']}/characters") or {}).get('characters') or []
     by_id = {c.get('id'): c for c in chars}
     cast_text = "\n".join(f"- {str(c.get('name'))[:60]}: {str(c.get('look') or '')[:300]}"
                           for c in chars if c.get('name'))[:3000]
     look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    words, style = _studio_ref_words(username, doc)
     listed = "\n".join(
         f"Shot {i + 1}" + (" (continues the shot before)" if s.get('continuity') else '')
         + (f" [on screen: {', '.join(str(by_id[c].get('name')) for c in s.get('cast') or [] if c in by_id)}]"
-           if s.get('cast') else '') + f": {str(s.get('prompt') or '').strip()[:1200]}"
+           if s.get('cast') else '')
+        + "".join(f" [drawn from its reference picture -- {words[r]}]" for r in (s.get('refs') or [])[:2] if r in words)
+        + f": {str(s.get('prompt') or '').strip()[:1200]}"
         for i, s in enumerate(shots))
+    style_text = "\n".join(f"- {words[r]}" for r in style if r in words)
     n = len(shots)
     prompt = (
         "Here is a storyboard, one description per shot for a text-to-image and text-to-video model, "
         "and a correction the person wants applied to it.\n"
         + (f"The look of the whole piece: {look}\n" if look else "")
+        + (f"The film's style pictures, which every frame is drawn to match (described for you; the look says "
+           f"the style, so this is what they show):\n{style_text}\n" if style_text else "")
         + (f"The characters, as they must be described:\n{cast_text}\n" if cast_text else "")
         + f"The shots, in order:\n{listed}\n\n"
         + f"The person's correction, for the whole storyboard:\n{feedback}\n\n"
@@ -23533,18 +23746,23 @@ def _studio_correct_shots(username, doc, shots, feedback):
         "back exactly as written. Keep each description 1 to 3 sentences, in English, concrete and visual -- "
         "who and what is on screen, the setting, the action, the camera, the light and the mood -- with no "
         "sounds, no quotes of lyrics and no text on screen. Keep the characters described the same way in "
-        "every shot. Do not merge, split or reorder shots.\n"
-        f'Answer with only a JSON array of exactly {n} objects, in the same order, with no code fence and no '
-        f'other text: [{{"prompt": "..."}}, ...]')
+        "every shot. " + STUDIO_STYLE_RULE + " Take out of the descriptions any style words, and any mention "
+        "of a photo or reference picture, that are already there. Do not merge, split or reorder shots.\n"
+        "If the correction is about the visual style of the whole piece -- cartoon or realistic, 2D or 3D, a "
+        "studio's look, a palette, a medium -- it goes in the look and in no description: write the whole new "
+        "look, a short phrase an image model reads as one unambiguous style (say which of 2D or 3D). Otherwise "
+        "the look is null.\n"
+        f'Answer with only a JSON object, with no code fence and no other text: {{"look": null or "...", '
+        f'"shots": [{{"prompt": "..."}}, ...]}} -- exactly {n} shots, in the same order.')
     chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-board'
-    out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S,
-                                               profile='designer'), n)
+    out = _studio_parse_correction(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S,
+                                                     profile='designer'), n)
     if out is None:
-        again = (f"That was not a JSON array of exactly {n} shot objects. Answer again with only the JSON "
-                 f"array, exactly {n} entries in the same order, no code fence.")
-        out = _studio_parse_plan(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
-                                                   profile='designer'), n)
-    return [o['prompt'] for o in out] if out is not None else None
+        again = (f'That was not the JSON object asked for, with exactly {n} shots. Answer again with only '
+                 f'{{"look": null or "...", "shots": [...]}}, exactly {n} shots in the same order, no code fence.')
+        out = _studio_parse_correction(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
+                                                         profile='designer'), n)
+    return out
 
 
 @app.route('/studio/api/board-correct', methods=['POST'])
@@ -23571,19 +23789,169 @@ def studio_board_correct():
     shots = [x for x in doc.get('shots') or [] if not x.get('recorded') and str(x.get('prompt') or '').strip()]
     if not shots:
         return jsonify(error=t('studio.sb_empty')), 400
-    new = _studio_correct_shots(username, doc, shots, feedback)
-    if new is None:
+    out = _studio_correct_shots(username, doc, shots, feedback)
+    if out is None:
         return jsonify(error=t('studio.sb_correct_failed')), 502
+    look, new = out
+    old_look = str((doc.get('settings') or {}).get('look') or '').strip()
+    look = look if look and look != old_look else None
+    # The look first: it is in every frame, so a new one redraws them all.
+    if look and not _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'look': look}}, via='Alfred'):
+        look = None
     changed = []
     for shot, text in zip(shots, new):
         if text and text != str(shot.get('prompt') or '').strip():
             if _studio_call(username, 'POST', f"projects/{pid}/items/{shot['id']}/prompt",
                             {'prompt': text}, via='Alfred'):
                 changed.append(shot['id'])
-    redraw = bool(changed) and d.get('redraw', True) is not False
+    drawn = [x['id'] for x in shots] if look else changed
+    redraw = bool(drawn) and d.get('redraw', True) is not False
     if redraw:
-        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {'items': changed})
-    return jsonify(changed=len(changed), total=len(shots), redrawn=redraw)
+        _studio_call(username, 'POST', f'projects/{pid}/storyboard', {'items': drawn})
+    return jsonify(changed=len(changed), total=len(shots), redrawn=redraw, look=look or '')
+
+
+# Every person in the picture, each on their own, with the main one marked:
+# asked to "describe only the main one", the house's 9B vision model described
+# the man beside her and the child behind her anyway, in two photos of two
+# (2026-10-01). As a list it keeps them apart, and the main one is picked here.
+CHARACTER_DESCRIBE_PROMPT = (
+    "This picture shows a character for a film -- often a photo of a real person, sometimes with other people "
+    "in it. List every person in it, one entry each, and describe each one on their own -- never mention another "
+    "person in an entry. For each: where they are in the picture, whether they are the main person (the largest "
+    "and most central -- exactly one is), and how they look, so an illustrator who never sees the picture could "
+    "draw them recognisably in any style: apparent age, build and height, skin tone, face shape, hair (colour, "
+    "length, texture, style), eyes, anything distinctive, and what they wear. No name, no guess at who they are, "
+    "nothing about the background, no brand names and no writing on clothes. One or two plain sentences in "
+    "English per person, at most 60 words. "
+    'Answer with only a JSON object: {"people": [{"where": "...", "main": true, "look": "..."}]}')
+
+
+def _studio_main_look(raw):
+    """The main person's look from the vision model's answer: the entry marked
+    main, else the first; a bare {"look": ...} is read too."""
+    if not isinstance(raw, dict):
+        return ''
+    people = [p for p in raw.get('people') or [] if isinstance(p, dict) and str(p.get('look') or '').strip()]
+    if people:
+        return str(next((p for p in people if p.get('main') is True), people[0])['look']).strip()
+    return str(raw.get('look') or '').strip()
+
+
+# A look this short is a note, not a description ("Un bebe", "Varon 40,
+# 1.70m"): a picture added to its character replaces it with one, keeping
+# the note's facts. A longer one is somebody's careful words and is left.
+CHARACTER_LOOK_SHORT = 80
+# What a reference picture shows and how it is drawn, in words: the Designer
+# that writes the shots never sees a picture (its model is hosted; the
+# pictures are the household's), so the house's vision model says it once
+# and the words are kept on the picture.
+REFERENCE_DESCRIBE_PROMPT = (
+    "This picture is a reference for a film. Say in English, at most 70 words in all, (1) what it shows that a "
+    "shot drawn from it should keep -- the place, the objects, the people's positions and clothes, the "
+    "composition, the light; no guess at who anyone is -- and (2) its visual style: the medium (photograph, 2D "
+    "drawing, 3D render, painting...), the rendering, line, texture and palette. "
+    'Answer with only a JSON object: {"shows": "...", "style": "..."}')
+
+
+def _studio_chosen_picture(ch):
+    pics = ch.get('pictures') or []
+    i = ch.get('portrait', -1)
+    return pics[i] if isinstance(i, int) and 0 <= i < len(pics) else (pics[-1] if pics else '')
+
+
+def _studio_describe_character(username, pid, cid, only_short=False):
+    """The character's look written from its chosen picture and saved, as
+    the assistant: (look, None), or (None, the i18n key of why not). The
+    person's own words are kept as facts. With *only_short*, a look already
+    longer than a note is left alone -- (None, None)."""
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    ch = next((c for c in chars if c.get('id') == cid), None)
+    if ch is None:
+        return None, 'studio.ch_describe_failed'
+    before = str(ch.get('look') or '').strip()
+    pic = _studio_chosen_picture(ch)
+    # Automatically, only over a note, or over a look the assistant wrote from
+    # another picture -- the photo was changed, so its description goes too. A
+    # look somebody wrote at length is theirs.
+    if only_short and len(before) >= CHARACTER_LOOK_SHORT and not (ch.get('look_from') and ch['look_from'] != pic):
+        return None, None
+    if not pic:
+        return None, 'studio.ch_describe_nopic'
+    url = _studio_data_url(username, f"projects/{pid}/characters/{cid}/file/{quote(pic, safe='/')}")
+    if not url:
+        return None, 'studio.ch_describe_failed'
+    # Only a note's facts are carried over: a longer look is most likely an
+    # earlier description, and carrying it would keep whatever it got wrong --
+    # the man beside her in somebody's photo, described as part of her.
+    note = before if len(before) < CHARACTER_LOOK_SHORT and not ch.get('look_from') else ''
+    prompt = CHARACTER_DESCRIBE_PROMPT + (
+        f'\nThe person already wrote this about them: "{note[:400]}". Keep every fact in it (age, height and '
+        "the like) unless the picture plainly contradicts it." if note else "")
+    try:
+        look = _studio_main_look(json.loads(_studio_vision(prompt, [url], max_tokens=800) or ''))[:800]
+    except ValueError:
+        look = ''
+    if not look:
+        return None, 'studio.ch_describe_failed'
+    if not _studio_call(username, 'PUT', f'projects/{pid}/characters/{cid}', {'look': look, 'look_from': pic},
+                        via='Alfred'):
+        return None, 'studio.ch_describe_failed'
+    return look, None
+
+
+def _studio_ref_words(username, doc):
+    """({picture: words}, [style pictures]) for the project's style pictures
+    and every shot's own references: described once by the house's vision
+    model and kept on the picture (`description`), then read from there."""
+    pid = doc.get('id') or ''
+    ups = {u.get('file'): u for u in doc.get('uploads') or [] if u.get('kind') == 'reference'}
+    style = [u['file'] for u in sorted((u for u in ups.values() if u.get('style')),
+                                       key=lambda u: u.get('style_at') or 0)][:2]
+    wanted = list(style)
+    for shot in doc.get('shots') or []:
+        for rel in (shot.get('refs') or [])[:2]:
+            if rel in ups and rel not in wanted:
+                wanted.append(rel)
+    out = {}
+    for rel in wanted[:24]:
+        words = str(ups[rel].get('description') or '').strip()
+        if not words:
+            url = _studio_data_url(username, f"projects/{pid}/file/{quote(rel, safe='/')}")
+            try:
+                raw = json.loads(_studio_vision(REFERENCE_DESCRIBE_PROMPT, [url], max_tokens=400) or '') if url else {}
+            except ValueError:
+                raw = {}
+            raw = raw if isinstance(raw, dict) else {}
+            words = ' '.join(x for x in (f"Shows: {str(raw.get('shows') or '').strip()}" if raw.get('shows') else '',
+                                         f"Style: {str(raw.get('style') or '').strip()}" if raw.get('style') else '')
+                             if x)[:800]
+            if words:
+                _studio_call(username, 'POST', f"projects/{pid}/uploads/{rel.split('/', 1)[1]}/description",
+                             {'description': words})
+        if words:
+            out[rel] = words
+    return out, style
+
+
+@app.route('/studio/api/char-describe', methods=['POST'])
+@api_login_required
+def studio_char_describe():
+    """✍️ A character's look written from its picture -- the portrait chosen,
+    or the photo it was given -- by the house's own vision model
+    (`assistant.models.vision`): a family photo is looked at on this machine
+    and goes nowhere else. Saved on the character under the assistant's name,
+    to edit or undo like any change."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    cid = re.sub(r'[^a-z0-9]', '', str(d.get('character') or ''))[:32]
+    look, why = _studio_describe_character(username, pid, cid)
+    if not look:
+        return jsonify(error=t(why or 'studio.ch_describe_failed')), 400 if why == 'studio.ch_describe_nopic' else 502
+    return jsonify(look=look)
 
 
 @app.route('/studio/api/frame-review', methods=['POST'])
@@ -23716,14 +24084,22 @@ def studio_api(sub):
     # here rather than in the studio, and never forwarded to it.
     download = request.args.get('download') if request.method == 'GET' and '/file/' in sub else None
     params = {k: v for k, v in request.args.items() if k != 'download'}
+    body = request.get_data() if request.method != 'GET' else None
     try:
         upstream = requests.request(
             request.method, f'{STUDIO_URL}/api/{sub}', params=params, headers=headers,
-            data=request.get_data() if request.method != 'GET' else None,
-            stream=True, timeout=(5, 120))
+            data=body, stream=True, timeout=(5, 120))
     except requests.RequestException as exc:
         app.logger.warning('studio: %s %s failed: %s', request.method, sub, exc)
         return jsonify(error=t('studio.unreachable')), 502
+    # A picture given to a character whose look is only a note: the house's
+    # vision model writes the look from it, in the background, keeping the
+    # note's facts (`_studio_describe_character`). A voice sample is not a
+    # picture and starts nothing.
+    m = re.fullmatch(r'projects/([a-z0-9]{1,32})/characters/([a-z0-9]{1,32})/upload', sub)
+    if (m and request.method == 'POST' and upstream.status_code == 200 and STUDIO_VISION_URL
+            and not re.search(rb'name="kind"\r\n\r\nvoice', body or b'')):
+        _studio_background(_studio_describe_character, session['user'], m.group(1), m.group(2), True)
     out = Response(stream_with_context(upstream.iter_content(chunk_size=256 * 1024)),
                    status=upstream.status_code)
     for h in _STUDIO_RESP_HEADERS:

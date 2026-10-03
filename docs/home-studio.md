@@ -140,6 +140,69 @@ one step to undo -- and redrawn, unless the box's "redraw" is unticked; a frame
 left undrawn is marked changed like any edited shot. Recorded shots are not
 descriptions and are left out.
 
+### Drawn from pictures: the cast's own, and the film's style
+
+Z-Image reads words only, so a character it draws is whoever the description
+makes them -- a different face every frame, and a family's real people come
+out as strangers. A frame or a portrait is drawn instead on **FLUX.2 klein 4B**
+(`recipes.REF_IMAGE_MODEL`) whenever it has pictures to go on:
+
+- **each cast member's chosen picture** -- their portrait, or the photo they
+  were given -- up to three, so each looks like themselves;
+- **the film's style pictures**: reference pictures flagged 🎨 in the Files
+  tab, uploaded as such, or made one from any frame or image (🎨 beside 📌).
+  Two at most; a third is refused rather than quietly left out.
+
+The pictures are found when the job runs (`manager._refs`), and the prompt
+says which is which: "image 1 is Bruma ... draw each of them as that picture
+shows them, even when it is a photograph, in the style below; images 2 and 3
+show the film's style: match their medium, rendering, line, palette and light,
+not their content". One deleted since is left out and the numbering follows.
+With no pictures at all, the frame is Z-Image's from words, as before. klein
+4B shares Z-Image's text encoder and is Apache-licensed; the 9B is not.
+
+A shot can have **its own reference picture** (the picker on every shot): its
+frame is drawn from it -- the place, the objects, the composition -- after the
+cast's pictures and before the style ones, and the prompt says so.
+
+The Designer writes the shots without seeing a picture: its model is hosted and
+the pictures are the household's. So each reference picture is **put into
+words** once by the house's vision model -- what it shows and its style -- and
+kept on it (`description`); the plan, a correction and a redraw read those
+words (`_studio_ref_words`).
+
+A character's look can be **written from its picture** (✍️ on its card): the
+house's own vision model (`assistant.models.vision`) describes what an
+illustrator would need -- age, build, hair, face, clothes -- and nothing about
+who they are; it is saved under the assistant's name. The picture never
+leaves the house. A picture given to a character whose look is only a note -- under 80
+characters, "Un bebe" -- starts that at once, in the background, and the
+note's facts are kept.
+
+### Style lives in the look, and only there
+
+The project's look is put ahead of every frame's description and into every
+shot's video prompt. So the descriptions carry no style of their own: two
+places naming the style is two places that can disagree. Measured on a
+household's music video (2026-10-01): its look said "realista", every shot
+said "Disney style cartoon", and a correction had written "matching his
+reference photo" into 29 of 34 shots. The image model never sees a photo;
+it reads the word. The frames came out 2D, 3D and photographic by turns, and
+redraws told to restate the look wrote "clean, realistic" into them.
+
+- The Designer's redraws and corrections are told to name no style, repeat no
+  look and mention no photo or reference picture (`STUDIO_STYLE_RULE`). A
+  correction also takes such words out of descriptions that already have them.
+- A correction about the style of the whole piece ("make it a 3D cartoon")
+  changes the **look**, under the assistant's name, and every frame is redrawn.
+  The Designer is asked to say 2D or 3D: "cartoon" alone is both.
+- A frame is reviewed for style against the look and against up to two other
+  frames, and only frames that passed **in the style** are used for that.
+  Unreviewed frames used to stand in, and in a storyboard drawn in mixed
+  styles the verdicts contradicted each other.
+- A frame off-style scores at most 4 (6 if partly), whatever else it gets
+  right.
+
 ### Reviewing the frames
 
 Every frame drawn is looked at when it lands -- a first drawing, a redraw,

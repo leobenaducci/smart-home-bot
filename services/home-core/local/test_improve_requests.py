@@ -41,7 +41,11 @@ if not os.path.isdir(os.path.join(dst, "i18n")) and os.path.isdir(_repo_i18n):
 os.chdir(dst)
 CODER, OTHER = "999000111", "999000222"
 os.environ.update(SECRET_KEY="t" * 32, PROXY_SHARED_SECRET="p" * 32, DEBUG_API_KEY="d" * 32,
-                  OPENCODE_SERVERS="user1=http://127.0.0.1:4096",
+                  # Port 9 (discard): nothing answers. This was the live Programmer's
+                  # port, and the deployer runs this suite on the host's network --
+                  # every HomeCore deploy left two fix requests running on the real
+                  # opencode server, retrying on Go's limit (2026-10-01).
+                  OPENCODE_SERVERS="user1=http://127.0.0.1:9",
                   IMPROVE_DIR="/srv/state/improve")
 with open(os.path.join(dst, "users.json"), "w", encoding="utf-8") as f:
     f.write('[{"username": "%s", "member": "user1", "nanobot_id": 1},'
@@ -75,6 +79,9 @@ coder, other = client(CODER), client(OTHER)
 print("\nfiling a request")
 check("the Programmer is on opencode for one of them", bool(A._opencode_url(CODER))
       and not A._opencode_url(OTHER), A.OPENCODE_SERVERS)
+# No turn leaves this suite: a request that starts one is recorded, never
+# sent. The sections below that count launches set their own.
+A._turn_launch = lambda *a, **kw: {"id": "t"}
 r = coder.post("/improve/api/requests", headers=H, json={
     "problem": "La skill de luces apunta al servidor equivocado; arreglala.",
     "context": "skill lights, flash_light: connection refused."})
@@ -289,7 +296,9 @@ conv_q = []
 A._queue_add = lambda chat_id, item, front=False: conv_q.append((chat_id, item)) or True
 A._queue_advance = lambda login, chat_id: None
 DAY = A._tasks_today().isoformat()
-CONV = 1790800000001
+# Now, not a fixed time: a day's history drops messages older than its own
+# midnight, so a fixed stamp filed under today vanished once the date moved on.
+CONV = int(A.time.time() * 1000)
 A.append_user_history(CODER, {"role": "user", "text": "¿por qué tarda tanto la skill de luces?",
                               "ts": CONV, "conv": CONV}, DAY, A.OPENCODE_SPACE)
 d = coder.post("/improve/api/requests/convert", headers=H,

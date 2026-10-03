@@ -32,7 +32,10 @@ from .projects import ID_RE, LOGIN_RE, ProjectError
 
 SCOPES = ("project", "person", "family")
 FAMILY_DIR = "@family"
-EDITABLE = ("name", "look", "personality", "voice_text", "portrait")
+# `look_from`: the picture the look was written from, when the assistant wrote
+# it (the portal's describe) -- so a new picture can have it written again. A
+# look changed by hand drops it: those are the person's words.
+EDITABLE = ("name", "look", "personality", "voice_text", "portrait", "look_from")
 
 
 class CharacterError(ProjectError):
@@ -130,7 +133,10 @@ class Characters:
             d, doc = found
             if not self.may_edit(doc, owner, admin):
                 raise CharacterError("only whoever made this character can change it")
-            doc.update(self._clean(fields, doc))
+            clean = self._clean(fields, doc)
+            if "look" in clean and clean["look"] != doc.get("look") and "look_from" not in clean:
+                doc.pop("look_from", None)
+            doc.update(clean)
             doc["updated"] = time.time()
             self._write(d, doc)
             return doc
@@ -227,9 +233,12 @@ class Characters:
                     (d / old).unlink(missing_ok=True)
                 doc["voice"] = rel
             else:
+                # A picture the person gives is the one they mean: it becomes the
+                # chosen one. It was added to the list and the first one kept,
+                # so a changed photo changed nothing -- on the card, in the
+                # portraits, in the frames (2026-10-01).
                 doc.setdefault("pictures", []).append(rel)
-                if doc.get("portrait", -1) < 0:
-                    doc["portrait"] = len(doc["pictures"]) - 1
+                doc["portrait"] = len(doc["pictures"]) - 1
             doc["updated"] = time.time()
             self._write(d, doc)
             return doc
@@ -285,6 +294,6 @@ class Characters:
                 n = len(doc.get("pictures") or [])
                 out[key] = value if isinstance(value, int) and -1 <= value < n else doc.get("portrait", -1)
             else:
-                limit = {"name": 60, "look": 800, "personality": 1200, "voice_text": 600}[key]
+                limit = {"name": 60, "look": 800, "personality": 1200, "voice_text": 600, "look_from": 200}[key]
                 out[key] = str(value or "").strip()[:limit]
         return out

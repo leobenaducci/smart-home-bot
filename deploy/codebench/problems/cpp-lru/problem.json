@@ -1,0 +1,11 @@
+{
+  "title": "LRU cache that forgets the wrong things",
+  "language": "C++",
+  "kind": "fix",
+  "about": "A header-only LRU cache with two bugs: reading a key does not refresh it, and writing an existing key duplicates it.",
+  "task": "The C++ tests in this repository fail: run `make test`. Fix lru.hpp so the cache behaves as its comments describe and every test passes. Do not edit anything under tests/ or the Makefile. Stop when `make test` passes.",
+  "check": "make -s test",
+  "hidden": "mkdir -p build && g++ -std=c++17 -Wall -Wextra -g -fsanitize=address,undefined -I. -Itests -o build/hidden tests/test_lru_hidden.cpp && ./build/hidden",
+  "protected": ["tests/", "Makefile"],
+  "timeout": 900
+}

@@ -97,6 +97,23 @@ class Worker:
         self.log.close()
 
 
+# More than this in use on the card while the Studio holds nothing there is
+# somebody else -- the Programmer's local model takes 10.7 GB of the 12 -- and a
+# job started on top of it fails for lack of memory. Measured idle: ~220 MB.
+FOREIGN_MB = 1500
+
+
+def card_used_mb() -> int | None:
+    """Memory in use on the card this container sees, in MB; None when it
+    cannot be read (no nvidia-smi, no card) -- which is not a reason to stop."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return int(out.split()[0])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
 class Manager:
     def __init__(self, store: Store, projects: Projects, scratch: Path, logs: Path,
                  idle_s: float = 600, notify: Callable[[dict], None] | None = None,
@@ -114,10 +131,16 @@ class Manager:
         # to its owner while the card works, removed when it finishes.
         self.previews: dict[str, Path] = {}
         self.paused = False
+        # MB somebody else holds on the card while a job waits for it, else 0.
+        self.card_busy = 0
+        self.card_used = card_used_mb
         # Why the card is paused, for the page to say: "update" when the
         # deployer holds it to restart the studio, "" when a parent did.
         self.pause_reason = ""
         self._cancelling: set[str] = set()
+        # Jobs a pause stopped on the card, to go back to the queue rather
+        # than end cancelled.
+        self._requeue: set[str] = set()
         self._stop = threading.Event()
         self._wake = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="studio-manager", daemon=True)
@@ -151,10 +174,33 @@ class Manager:
             return "running"
         return self.store.cancel(job_id)
 
+    def pause(self, reason: str = "", now: bool = False) -> str | None:
+        """Stop taking jobs. With `now` the one on the card stops too and goes
+        back to the queue, to start over on resume: WanGP cannot keep half a
+        shot, and a pause that waits out a 25-minute video is not what a person
+        pressing it -- or a benchmark that needs the card -- is asking for.
+        Only the generator's jobs can be stopped; the audio unit's (listening,
+        scores, repaints) take a minute or two and finish. The job stopped, or
+        None."""
+        self.paused, self.pause_reason = True, reason
+        self.wake()
+        if not now:
+            return None
+        job = self.store.running()
+        if not job or job["kind"] in ("analyze", "repaint", "score"):
+            return None
+        self._requeue.add(job["id"])
+        self.store.update(job["id"], phase="pausing")
+        if self.worker and self.worker.alive():
+            self._cancelling.add(job["id"])
+            self.worker.send(cancel=job["id"])
+        return job["id"]
+
     def status(self) -> dict:
         return {"worker": bool(self.worker and self.worker.alive()),
                 "model": self.worker.model if self.worker else "",
-                "paused": self.paused, "pause_reason": self.pause_reason if self.paused else ""}
+                "paused": self.paused, "pause_reason": self.pause_reason if self.paused else "",
+                "card_busy_mb": self.card_busy}
 
     # -- the loop -----------------------------------------------------------
     def _loop(self) -> None:
@@ -163,13 +209,33 @@ class Manager:
                 self._fail_blocked()
                 job = None if self.paused else self.store.next_job(self.worker.model if self.worker else "")
                 if job is None:
-                    if self.worker and time.time() - self.worker.last_used > self.idle_s:
-                        log.info("idle for %ss: stopping the worker, the card is free", int(self.idle_s))
+                    # Paused, the card is lent -- the Programmer's local model
+                    # waits for this worker to go (programmer-local.sh) -- so an
+                    # idle one goes now, not after `idle_s`: it held the card for
+                    # ten minutes with nothing to do while the Programmer waited
+                    # (2026-10-01).
+                    if self.worker and (self.paused or time.time() - self.worker.last_used > self.idle_s):
+                        log.info("%s: stopping the worker, the card is free",
+                                 "paused" if self.paused else f"idle for {int(self.idle_s)}s")
                         self.worker.stop()
                         self.worker = None
                     self._wake.wait(timeout=5)
                     self._wake.clear()
                     continue
+                # The card free before a job starts on it. A pause is the polite
+                # way to borrow it, and it is lost when the Studio restarts or a
+                # person resumes it while the borrower is still there: three
+                # songs failed "insufficient VRAM" under the Programmer's model
+                # (2026-10-01). Held by somebody else, the job waits its turn.
+                used = self.card_used() if self.worker is None else None
+                if used is not None and used > FOREIGN_MB:
+                    if not self.card_busy:
+                        log.info("the card has %s MB in use by something else: %s waits", used, job["id"])
+                    self.card_busy = used
+                    self._wake.wait(timeout=15)
+                    self._wake.clear()
+                    continue
+                self.card_busy = 0
                 self._run(job)
             except Exception:                                  # noqa: BLE001 -- the loop must not die
                 log.exception("manager round failed")
@@ -213,6 +279,10 @@ class Manager:
             self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc))
             self._notify(job, ok=False)
             return
+        if job["id"] in self._requeue:                        # paused while the generator loaded
+            self._requeue.discard(job["id"])
+            self.store.requeue(job["id"])
+            return
         out_dir = self.scratch / job["id"]
         worker.send(run=job["id"], settings=settings, output_dir=str(out_dir))
         worker.model = settings["model_type"]
@@ -236,6 +306,15 @@ class Manager:
         stale = self.previews.pop(job["id"], None)
         if stale:
             stale.unlink(missing_ok=True)
+        paused = job["id"] in self._requeue
+        self._requeue.discard(job["id"])
+        if paused and not (result and result.get("success")):
+            self._cancelling.discard(job["id"])
+            if result is None:
+                self.worker = None
+            self.store.requeue(job["id"])
+            log.info("paused: %s goes back to the queue", job["id"])
+            return
         if result is None:
             self._cancelling.discard(job["id"])
             self.worker = None
@@ -395,6 +474,59 @@ class Manager:
                 self.audio.wait_idle()
 
     # -- before and after ---------------------------------------------------
+    def _refs(self, owner: str, pid: str, p: dict) -> tuple[list[str], str]:
+        """The reference pictures of a picture drawn from them, read now, and
+        its prompt with each one's part in it: a character's chosen picture
+        (its portrait, or the photo it was given) for each one cast, then the
+        style pictures. One deleted since is left out, and the numbering
+        follows what is actually sent."""
+        files, cast, style, own = [], [], [], []
+        for cid in (p.get("ref_chars") or [])[:recipes.MAX_CAST_REFS]:
+            try:
+                ch = self.characters.get(str(cid), owner, pid) if self.characters else None
+            except ProjectError:
+                ch = None
+            pics = (ch or {}).get("pictures") or []
+            i = (ch or {}).get("portrait", -1)
+            pic = pics[i] if isinstance(i, int) and 0 <= i < len(pics) else (pics[-1] if pics else "")
+            if not pic:
+                continue
+            try:
+                files.append(str(self.characters.file(ch["id"], owner, pid, pic)))
+            except ProjectError:
+                continue
+            cast.append((len(files), ch["name"]))
+        for rel in (p.get("ref_shot") or [])[:recipes.MAX_SHOT_REFS]:
+            try:
+                files.append(str(self.projects.file(owner, pid, str(rel))))
+            except ProjectError:
+                continue
+            own.append(len(files))
+        for rel in (p.get("ref_files") or [])[:recipes.MAX_STYLE_REFS]:
+            try:
+                files.append(str(self.projects.file(owner, pid, str(rel))))
+            except ProjectError:
+                continue
+            style.append(len(files))
+        said = []
+        if cast:
+            said.append("; ".join(f"image {n} is {name}" for n, name in cast)
+                        + ": draw each of them as that picture shows them -- face, hair, build, age -- "
+                          "even when the picture is a photograph, in the style below. Where a picture has more "
+                          "than one person, the character is the main one; nobody else in it is drawn")
+        if own:
+            said.append(("images " + " and ".join(str(n) for n in own) if len(own) > 1 else f"image {own[0]}")
+                        + " are this shot's own reference: draw its setting, objects and composition from "
+                          "them, in the film's style")
+        if style:
+            said.append(("images " + " and ".join(str(n) for n in style) if len(style) > 1 else f"image {style[0]}")
+                        + " show the film's style: match their medium, rendering, line, palette and light, "
+                          "not their content")
+        prompt = str(p.get("prompt") or "")
+        if said:
+            prompt = f"{prompt}\nReference images: " + ". ".join(said) + "."
+        return files, prompt
+
     def _resolve(self, job: dict) -> dict:
         """The job's params with every reference turned into a file on disk,
         read from the project as it is now."""
@@ -429,6 +561,8 @@ class Manager:
         if p.get("start_board"):
             # The approved storyboard frame: what the shot starts from.
             p["start_image"] = str(self.projects.file(owner, pid, p["start_board"]))
+        if p.get("with_refs"):
+            p["image_refs"], p["prompt"] = self._refs(owner, pid, p)
         if p.get("from_take"):
             # The version a retouch starts from, read when it runs: deleted in
             # the meantime is a clear failure, not a retouch of another one.

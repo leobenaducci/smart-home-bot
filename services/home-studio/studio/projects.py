@@ -443,6 +443,9 @@ class Projects:
                 raise ProjectError("a review needs a score") from None
             clean.update(ok=words(review.get("ok")), problems=words(review.get("problems")),
                          prompt=str(review.get("prompt") or "").strip()[:1200],
+                         # Whether it keeps to the film's style -- the portal
+                         # holds other frames to the ones that do.
+                         style=review.get("style") if review.get("style") in ("yes", "partly", "no") else "",
                          round=max(0, min(9, int(review.get("round") or 0))),
                          # The checklist the score was counted from: each thing
                          # the shot asks for, and whether the frame shows it.
@@ -620,6 +623,53 @@ class Projects:
             take[key] = value
             doc["updated"] = time.time()
             self._write(owner, pid, doc)
+
+    @staticmethod
+    def style_refs(doc: dict) -> list[str]:
+        """The pictures flagged as the film's style, oldest flag first: what
+        every frame, portrait and picture of the project is drawn to match."""
+        flagged = [u for u in doc.get("uploads") or [] if u.get("style") and u.get("kind") == "reference"]
+        return [u["file"] for u in sorted(flagged, key=lambda u: u.get("style_at") or 0)]
+
+    def set_upload_field(self, owner: str, pid: str, rel: str, key: str, value) -> dict:
+        """One server-side field of an upload: its `description`."""
+        if key not in ("description",) or not re.fullmatch(r"uploads/[A-Za-z0-9._-]+", rel or ""):
+            raise ProjectError("no such file")
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            entry = next((u for u in doc.get("uploads") or [] if u.get("file") == rel), None)
+            if entry is None:
+                raise ProjectError("no such file")
+            entry[key] = value
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return entry
+
+    def set_upload_style(self, owner: str, pid: str, rel: str, on: bool, limit: int) -> dict:
+        """A reference picture flagged (or not) as the film's style. At most
+        *limit*: each one is another picture the model holds while drawing, so
+        a fourth would quietly be left out -- refused instead, to choose."""
+        if not re.fullmatch(r"uploads/[A-Za-z0-9._-]+", rel or ""):
+            raise ProjectError("no such file")
+        with self._lock(f"{owner}/{pid}"):
+            doc = self.load(owner, pid)
+            entry = next((u for u in doc.get("uploads") or [] if u.get("file") == rel), None)
+            if entry is None:
+                raise ProjectError("no such file")
+            if not re.search(r"\.(?:png|jpe?g|webp)$", rel, re.I):
+                raise ProjectError("only a picture can show the style")
+            if on and not entry.get("style") and len(self.style_refs(doc)) >= limit:
+                raise ProjectError(f"at most {limit} pictures show the style; take one off first")
+            if on:
+                entry["kind"] = "reference"
+                entry.setdefault("style_at", time.time())
+                entry["style"] = True
+            else:
+                entry.pop("style", None)
+                entry.pop("style_at", None)
+            doc["updated"] = time.time()
+            self._write(owner, pid, doc)
+            return entry
 
     def delete_upload(self, owner: str, pid: str, rel: str) -> None:
         """A file the person brought, gone from the disk, and from whatever

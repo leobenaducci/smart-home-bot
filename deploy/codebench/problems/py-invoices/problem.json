@@ -1,0 +1,11 @@
+{
+  "title": "Invoices: a discount that adds, and a missing --json",
+  "language": "Python",
+  "kind": "fix",
+  "about": "A small package across five modules: a discount applied with the wrong sign, and a CLI flag the tests expect that does not exist yet.",
+  "task": "The test suite in this repository fails. Make every test pass by changing the code under invoices/ -- do not edit anything under tests/. Run `python -m pytest -q` to confirm, and stop when it is green.",
+  "check": "python -m pytest -q -p no:cacheprovider",
+  "hidden": "python -m pytest -q -p no:cacheprovider tests/test_hidden.py",
+  "protected": ["tests/"],
+  "timeout": 900
+}

@@ -221,7 +221,7 @@ def _enqueue(me: Who, kind: str, params: dict, project: str = "", target: str = 
         _bad(ValueError(f"unknown kind {kind}"))
     if project:
         projects.load(me.login, project)                      # it exists and it is theirs
-    job = store.add(owner=me.login, owner_name=me.name, kind=kind, model=recipes.MODEL_OF[kind],
+    job = store.add(owner=me.login, owner_name=me.name, kind=kind, model=recipes.model_for(kind, params),
                     params=params, title=title, project=project, target=target, after=after)
     manager.wake()
     return job
@@ -235,7 +235,28 @@ OPEN_KINDS = ("image", "song", "instrumental", "voice", "video_shot")
 # references into somebody's files. Sent from outside they would name any
 # file the studio can read -- another person's -- so they never come in here.
 RESOLVED_PARAMS = ("start_image", "end_image", "voice_file", "source_video", "source_file",
-                   "start_board", "voice_char", "from_take")
+                   "start_board", "voice_char", "from_take", "image_refs", "ref_chars", "ref_files", "ref_shot",
+                   "with_refs")
+
+
+def _drawing_refs(doc: dict, cast: list[str], me: Who, pid: str, own: list[str] | None = None) -> dict:
+    """What a picture is drawn from besides its words: the cast's pictures (a
+    character with none is drawn from its look alone), the shot's own
+    reference pictures (*own*: its `refs`) and the project's style pictures.
+    Empty when there are none, and the picture is Z-Image's from text, as
+    before. The files are found when the job runs (manager._refs)."""
+    chars = []
+    for cid in cast or []:
+        try:
+            if characters.get(str(cid), me.login, pid).get("pictures"):
+                chars.append(str(cid))
+        except ProjectError:
+            continue
+    files = Projects.style_refs(doc)[:recipes.MAX_STYLE_REFS]
+    chars = chars[:recipes.MAX_CAST_REFS]
+    shot = [str(r) for r in (own or []) if str(r).startswith("uploads/")][:recipes.MAX_SHOT_REFS]
+    return ({"with_refs": True, "ref_chars": chars, "ref_files": files, "ref_shot": shot}
+            if chars or files or shot else {})
 
 
 @app.post("/api/jobs")
@@ -279,12 +300,15 @@ def admin(action: str, body: dict | None = None, me: Who = Depends(who)):
     if not me.admin:
         raise HTTPException(403, "only a parent")
     if action == "pause":
-        manager.paused = True
         # Why, for the page to say: a Studio update, the card lent to the
-        # Programmer's local model (deploy/host/programmer-local.sh), or -- with
-        # no reason -- a parent's decision.
+        # Programmer's local model (deploy/host/programmer-local.sh) or to the
+        # coding benchmark (deploy/codebench), or -- with no reason -- a
+        # parent's decision. `now` stops the job on the card as well; it goes
+        # back to the queue.
         reason = (body or {}).get("reason")
-        manager.pause_reason = reason if reason in ("update", "programmer") else ""
+        stopped = manager.pause(reason if reason in ("update", "programmer", "bench") else "",
+                                now=bool((body or {}).get("now")))
+        return {"ok": True, "stopped": stopped, **manager.status()}
     elif action == "resume":
         manager.paused = False
         manager.wake()
@@ -416,12 +440,15 @@ def character_portrait(pid: str, cid: str, me: Who = Depends(who)):
         _bad(exc, 404)
     if not Characters.may_edit(ch, me.login, me.admin):
         _bad(ProjectError("only whoever made this character can change its pictures"), 403)
-    if not ch.get("look"):
-        _bad(ValueError("describe how the character looks first"))
+    if not ch.get("look") and not ch.get("pictures"):
+        _bad(ValueError("describe how the character looks first, or give it a picture"))
     look = str(doc["settings"].get("look") or "").strip()
     prompt = (f"{look}. " if look else "") + f"Character portrait of {ch['name']}: {ch['look']}. " \
              "Full figure, facing the camera, plain background, clear light."
-    job = _enqueue(me, "portrait", {"prompt": prompt[:1500], "size": "832x1216", "admin": me.admin},
+    # From its own picture when it has one -- a photo of the person, drawn
+    # again in the film's look -- and the film's style pictures.
+    job = _enqueue(me, "portrait", {"prompt": prompt[:1500], "size": "832x1216", "admin": me.admin,
+                                    **_drawing_refs(doc, [cid], me, pid)},
                    pid, cid, title=ch["name"])
     return {"queued": [_public(store.get(job["id"]) or job, me)]}
 
@@ -666,7 +693,8 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
         # `shot_prompt`: the description as it was when the frame was asked
         # for, kept on the frame so the page can tell a frame whose shot has
         # been described differently since -- one to draw again.
-        params = {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200]}
+        params = {"prompt": prompt[:1500], "size": size, "shot_prompt": what[:1200],
+                  **_drawing_refs(doc, shot.get("cast") or [], me, pid, shot.get("refs") or [])}
         if drawn != what:
             params["drawn_from"] = drawn
         if refine:
@@ -776,13 +804,21 @@ def duplicate_project(pid: str, body: dict | None = None, me: Who = Depends(who)
 
 @app.post("/api/projects/{pid}/upload")
 async def upload(pid: str, file: UploadFile = File(...), kind: str = Form("reference"),
-                 me: Who = Depends(who)):
+                 style: str = Form(""), me: Who = Depends(who)):
     data = await file.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "too large")
     try:
-        return projects.add_upload(me.login, pid, file.filename or "file", data,
-                                   kind if kind in ("reference", "voice", "audio") else "reference")
+        entry = projects.add_upload(me.login, pid, file.filename or "file", data,
+                                    kind if kind in ("reference", "voice", "audio") else "reference")
+        if style and entry["kind"] == "reference":
+            # A style picture brought in: flagged as it lands. Over the limit
+            # it is still kept, as a plain reference, and the answer says so.
+            try:
+                entry = projects.set_upload_style(me.login, pid, entry["file"], True, recipes.MAX_STYLE_REFS)
+            except ProjectError as exc:
+                entry = {**entry, "style_error": str(exc)}
+        return entry
     except ProjectError as exc:
         _bad(exc, 404)
 
@@ -1045,9 +1081,36 @@ def delete_take(pid: str, item_id: str, take_id: str, me: Who = Depends(who)):
 
 @app.post("/api/projects/{pid}/references")
 def add_reference(pid: str, body: dict, me: Who = Depends(who)):
-    """A picture made in this project, kept as a reference picture."""
+    """A picture made in this project, kept as a reference picture -- and,
+    with `style`, flagged as the film's style at once."""
     try:
-        return projects.reference_from(me.login, pid, str(body.get("file") or ""), str(body.get("name") or ""))
+        entry = projects.reference_from(me.login, pid, str(body.get("file") or ""), str(body.get("name") or ""))
+        if body.get("style"):
+            entry = projects.set_upload_style(me.login, pid, entry["file"], True, recipes.MAX_STYLE_REFS)
+        return entry
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.post("/api/projects/{pid}/uploads/{name}/description")
+def upload_description(pid: str, name: str, body: dict | None = None, me: Who = Depends(who)):
+    """What a reference picture shows, in words, kept on it: written by the
+    house's vision model so the Designer -- which never sees the picture --
+    can write shots from it."""
+    try:
+        return projects.set_upload_field(me.login, pid, f"uploads/{name}", "description",
+                                         str((body or {}).get("description") or "").strip()[:800])
+    except ProjectError as exc:
+        _bad(exc, 404)
+
+
+@app.post("/api/projects/{pid}/uploads/{name}/style")
+def upload_style(pid: str, name: str, body: dict | None = None, me: Who = Depends(who)):
+    """🎨 A reference picture flagged as the film's style, or not: every frame
+    and portrait drawn after it is drawn to match it (recipes.REF_IMAGE_MODEL)."""
+    try:
+        return projects.set_upload_style(me.login, pid, f"uploads/{name}", bool((body or {}).get("on", True)),
+                                         recipes.MAX_STYLE_REFS)
     except ProjectError as exc:
         _bad(exc, 404 if "no such" in str(exc) else 400)
 
@@ -1098,6 +1161,10 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
             continue
         params = {k: shot.get(k) for k in ("prompt", "soundscape", "music", "dialogue", "seconds", "exact")}
         params["characters"] = characters.describe(shot.get("cast") or [], me.login, pid)
+        # The project's look, as every frame and portrait already had it: a
+        # shot that continues from the one before starts from no frame, and
+        # without the words it drifts from the film's style over its length.
+        params["look"] = str(doc["settings"].get("look") or "").strip()
         params.update(language_name=lang, size=size, index=idx + 1)
         after = ""
         if idx > 0 and shot.get("continuity", True):

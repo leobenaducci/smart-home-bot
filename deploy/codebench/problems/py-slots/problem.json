@@ -1,0 +1,11 @@
+{
+  "title": "Free time between meetings",
+  "language": "Python",
+  "kind": "implement",
+  "about": "Write time parsing, interval merging and free-slot search from their docstrings, edge cases included: touching meetings, meetings outside the day, an inclusive minimum.",
+  "task": "Implement the functions in slots/times.py and slots/calendar.py as their docstrings specify -- every rule in them, not only what the tests check. `python -m pytest -q` runs the tests. Do not edit anything under tests/. Stop when the tests pass and the implementation follows the docstrings.",
+  "check": "python -m pytest -q -p no:cacheprovider",
+  "hidden": "python -m pytest -q -p no:cacheprovider tests/test_slots_hidden.py",
+  "protected": ["tests/"],
+  "timeout": 900
+}

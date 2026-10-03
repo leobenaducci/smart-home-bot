@@ -344,6 +344,8 @@
    while it runs, which the intro says. #}
 <div class="card wide" id="bench">
   <h2>{{ t('admin.models.bench_heading') }}</h2>
+  <div class="row stack-s"><a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a>
+    <span class="help">{{ t('admin.codebench.open_about') }}</span></div>
   <p class="intro">{{ t('admin.models.bench_intro') }}</p>
 
   <form id="bench-form" method="post" action="{{ url_for('bench_start') }}"
@@ -1238,7 +1240,7 @@
    one; this card reads its own roster. The reason for the split is in
    CLAUDE.md: the flat plan expects a person at a keyboard, and every other
    role here is unattended traffic on the same key. #}
-<div class="card">
+<div class="card" id="code">
   <h2>{{ t('admin.models.code_heading') }}</h2>
   <p class="intro">{{ t('admin.models.code_intro') }}</p>
   {% if not code_enabled %}
@@ -1268,7 +1270,35 @@
       </select>
       <p class="help">{{ t('admin.models.code_help') }}</p>
     </div>
-    <p class="stack"><button type="submit">{{ t('common.save') }}</button></p>
+    {# The local model the Programmer runs on the Studio's card
+       (cloud.opencode.fallback), served by llama.cpp. The coding benchmark
+       measures the candidates; its ★ sets the same thing. #}
+    <div class="fields">
+      <div class="field wide">
+        <label for="code-local">{{ t('admin.models.code_local_label') }}</label>
+        <select id="code-local" name="code_local_model">
+          <option value="">{{ t('admin.models.code_local_none') }}</option>
+          {% set ns = namespace(found=false) %}
+          {% for m in code_local_models %}
+            {% set picked = m.id == code_local.model or (m.id.startswith('hf:') and code_local.model.endswith('/' ~ m.id[3:])) %}
+            {% if picked %}{% set ns.found = true %}{% endif %}
+            <option value="{{ m.id }}" {% if picked %}selected{% endif %}>{{ m.id }}{% if m.gib %} · {{ m.gib }} GB{% endif %}{% if m.verdicts.llamacpp == 'fail' %} — {{ t('admin.codebench.verdict_fail_short') }}{% endif %}</option>
+          {% endfor %}
+          {% if code_local.model and not ns.found %}<option value="{{ code_local.model }}" selected>{{ code_local.model }}</option>{% endif %}
+        </select>
+        <p class="help">{{ t('admin.models.code_local_help') }}</p>
+      </div>
+      <div class="field">
+        <label for="code-local-context">{{ t('admin.codebench.context') }}</label>
+        <select id="code-local-context" name="code_local_context">
+          {% for c in [32768, 65536, 131072, 262144] %}<option value="{{ c }}" {% if c == code_local.context %}selected{% endif %}>{{ c // 1024 }}k</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <label class="check-row"><input type="checkbox" name="code_local_first" value="1" {% if code_local.first %}checked{% endif %}>
+      {{ t('admin.codebench.programmer_first_label') }}</label>
+    <p class="stack row"><button type="submit">{{ t('common.save') }}</button>
+      <a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a></p>
   </form>
   {% else %}
   <p class="help">{{ t('admin.models.code_no_roster') }}</p>

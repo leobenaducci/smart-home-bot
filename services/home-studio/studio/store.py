@@ -122,6 +122,13 @@ class Store:
         return job["state"]
 
     # -- reading ------------------------------------------------------------
+    def requeue(self, job_id: str) -> None:
+        """A running job back in the queue, to start over: a pause that stopped
+        it mid-way. Its place is kept -- it was first in line once already."""
+        with self._lock, self._conn() as c:
+            c.execute("UPDATE jobs SET state='queued', started=NULL, progress=0, phase='' "
+                      "WHERE id=? AND state='running'", (job_id,))
+
     def get(self, job_id: str) -> dict | None:
         with self._conn() as c:
             return self._row(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())

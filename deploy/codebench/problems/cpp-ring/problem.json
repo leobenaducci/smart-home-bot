@@ -1,0 +1,11 @@
+{
+  "title": "A ring buffer that corrupts memory",
+  "language": "C++",
+  "kind": "fix",
+  "about": "A ring of ints that indexes past its storage after wrapping and is copied shallowly (a double free). The tests run under AddressSanitizer.",
+  "task": "`make test` fails: the tests are built with AddressSanitizer and UndefinedBehaviorSanitizer. Fix ring.hpp and ring.cpp so the ring behaves as the comments in ring.hpp describe -- including copying and moving -- and every test passes cleanly. Do not edit anything under tests/ or the Makefile. Stop when `make test` passes.",
+  "check": "make -s test",
+  "hidden": "mkdir -p build && g++ -std=c++17 -Wall -Wextra -g -fsanitize=address,undefined -fno-sanitize-recover=all -I. -Itests -o build/hidden tests/test_ring_hidden.cpp ring.cpp && ./build/hidden",
+  "protected": ["tests/", "Makefile"],
+  "timeout": 900
+}

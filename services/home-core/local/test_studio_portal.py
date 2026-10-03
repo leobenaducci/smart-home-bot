@@ -19,6 +19,7 @@ should get their verse back. So this pins what reaches the model in each mode,
 with the model stubbed out.
 """
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -125,6 +126,15 @@ for key in ("lyrics_mode_edit", "lyrics_mode_new", "lyrics_confirm_new", "lyrics
             "rec_subs", "rec_subs_running", "rec_subs_failed", "rec_transcript", "rec_trim", "rec_trim_running", "rec_trim_done", "rec_trim_failed", "render_subs",
             "rec_describe", "rec_describing", "rec_desc_title", "rec_desc_description", "rec_desc_chapters", "rec_desc_copy", "rec_desc_copied", "rec_desc_failed", "card_paused_update", "card_paused_after", "rec_retry"):
     check(key, key in A.STUDIO_UI_KEYS and all(f"studio.{key}" in c for c in CATALOGUES.values()))
+
+# Every string the page's script reads, sent to it: the list above is kept by
+# hand, and three pause buttons once read "undefined" because their keys were
+# in the catalogues but not in STUDIO_UI_KEYS (2026-10-02). Names built at run
+# time (S['pkind_' + k.id]) cannot be read here; the list above covers those.
+_page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "studio.html"), encoding="utf-8").read()
+_used = set(re.findall(r"\bS\.([a-z][a-z0-9_]*)", _page)) | set(re.findall(r"\bfmt\('([a-z][a-z0-9_]*)'", _page))
+_missing = sorted(k for k in _used if k not in A.STUDIO_UI_KEYS)
+check("every S.<key> and fmt('<key>') the page uses is sent to it", not _missing, _missing)
 
 print("\na music video is planned by Alfred, shot by shot")
 plans = []
@@ -467,6 +477,236 @@ check("every drawn frame is sent, and a house with no vision model leaves them u
 A.STUDIO_VISION_URL = saved_url
 
 
+print("\n  one style, every frame")
+OTHER = b"\xff\xd8 another frame"
+_saved_shots = RDOC["shots"]
+RDOC["shots"] = _saved_shots + [
+    {"id": "sh2", "prompt": "the sea at night", "board": 0, "boards": [
+        {"id": "bd2", "file": "takes/sh2/g.jpg", "review": {"state": "done", "score": 8, "style": "yes"}}]},
+    {"id": "sh3", "prompt": "a gull", "board": 0, "boards": [
+        {"id": "bd3", "file": "takes/sh3/h.jpg", "review": {"state": "done", "score": 9, "style": "no"}}]}]
+_get_before = A.requests.get
+def _studio_get3(url, headers=None, timeout=None, **kw):
+    if url.endswith("/file/takes/sh2/g.jpg"):
+        return _R(200, content=OTHER, ctype="image/jpeg")
+    if url.endswith("/file/takes/sh3/h.jpg"):
+        return _R(200, content=b"\xff\xd8 off-style", ctype="image/jpeg")
+    return _studio_get2(url, headers=headers, timeout=timeout, **kw)
+A.requests.get = _studio_get3
+refs = A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1")
+check("a frame is held to the storyboard's frames that passed and kept the style -- never one found off-style",
+      [n for n, _ in refs] == ["shot 2"] and refs[0][1].endswith(base64.b64encode(OTHER).decode()), [n for n, _ in refs])
+vision_answers[:] = ['{"items": ["un zorro rojo", "la escalera del faro"]}',
+                     '{"checks": [{"item": "El estilo visual", "shown": "no", "why": "es una foto, no acuarela"},'
+                     ' {"item": "El mismo estilo", "shown": "partly", "why": "más oscuro"},'
+                     ' {"item": "un zorro rojo", "shown": "yes"}, {"item": "la escalera del faro", "shown": "yes"}],'
+                     ' "defects": []}']
+plans[:] = ["a red fox on lighthouse stairs, in pastel watercolour"]
+seen.clear()
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+rv = (r.get_json() or {}).get("review") or {}
+vparts = looked[-1]["body"]["messages"][0]["content"]
+vt = vparts[0]["text"]
+check("the look and the other frames' style are items of the checklist, first and in the project's language",
+      "- " + A._studio_t("es", "studio.review_item_look", "The film's look: {look}", look="pastel watercolour") in vt
+      and "- " + A._studio_t("es", "studio.review_item_style", "The same style as the storyboard's other frames") in vt
+      and vt.index("Requirements:") < vt.index("pastel watercolour", vt.index("Requirements:"))
+      < vt.index("- un zorro rojo"), vt[-500:])
+check("  with the other frame sent as a picture, after the portraits, and named as style, not content",
+      [x["image_url"]["url"] for x in vparts if x["type"] == "image_url"][-1].endswith(base64.b64encode(OTHER).decode())
+      and "not the same content" in vt and "not the style" in vt, vt[:600])
+check("a frame in the wrong style cannot pass on the rest: two of four shown would be 6, capped at 4",
+      rv.get("score") == 4 and rv.get("style") == "no", rv)
+check("  its style problems lead the list the redraw is written from",
+      (rv.get("problems") or [""])[0].endswith("es una foto, no acuarela"), rv.get("problems"))
+check("  and the Designer is told the look fixes it -- not to write style words of its own",
+      seen and A.STUDIO_STYLE_RULE in seen[-1]["text"] and "not by words of yours" in seen[-1]["text"]
+      and "restat" not in seen[-1]["text"], seen[-1:])
+check("  and the review keeps whether it held the style, for the next frame's references",
+      any(c[1].endswith("/boards/bd1/review") and c[2]["review"].get("style") == "no" for c in calls))
+vision_answers[:] = ['{"items": ["un zorro rojo"]}',
+                     '{"checks": [{"item": "a", "shown": "yes"}, {"item": "b", "shown": "yes"},'
+                     ' {"item": "c", "shown": "yes"}], "defects": []}']
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+check("a frame in the style passes as before", (r.get_json() or {})["review"]["score"] == 10
+      and r.get_json()["review"]["style"] == "yes", r.get_json())
+plans[:] = ['[{"prompt": "x"}, {"prompt": "y"}, {"prompt": "z"}]']
+seen.clear()
+A._studio_correct_shots(USER1, RDOC, RDOC["shots"], "make it night")
+check("a correction keeps to the look as well", seen and A.STUDIO_STYLE_RULE in seen[0]["text"])
+RDOC["shots"] = _saved_shots
+A.requests.get = _get_before
+refs = A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1")
+check("a storyboard of one frame has nothing to compare it with", refs == [])
+RDOC["shots"] = _saved_shots + [
+    {"id": "sh2", "prompt": "the sea", "board": 0, "boards": [
+        {"id": "bd2", "file": "takes/sh2/g.jpg", "review": {"state": "done", "score": 9}}]},
+    {"id": "sh4", "prompt": "a boat", "board": 0, "boards": [{"id": "bd4", "file": "takes/sh2/g.jpg"}]}]
+A.requests.get = _studio_get3
+check("only frames that passed in the style are references: not unreviewed ones, nor ones passed before "
+      "style was checked", A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1") == [])
+RDOC["settings"] = {**RDOC["settings"], "look": ""}
+check("  (with no look, a passing frame is the only style there is)",
+      [n for n, _ in A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1")] == ["shot 2"])
+RDOC["settings"]["look"] = "pastel watercolour"
+RDOC["shots"] = _saved_shots
+A.requests.get = _get_before
+
+print("\na character described from its picture")
+_saved_d = (A._studio_call, A._studio_data_url, A.requests.post)
+puts_d, looked_d = [], []
+def _scd(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/p9/characters":
+        return {"characters": [{"id": "c1", "name": "Bruma", "pictures": ["pictures/a.png", "pictures/b.png"],
+                                "portrait": 1}, {"id": "c2", "name": "Nadie", "pictures": []}]}
+    if method == "PUT":
+        puts_d.append((path, body, via))
+        return {"ok": True}
+    return None
+A._studio_call = _scd
+A._studio_data_url = lambda u, path: "data:image/png;base64,QUJD" if path.endswith("pictures/b.png") else None
+def _vd(url, json=None, headers=None, timeout=None, **kw):
+    looked_d.append((url, json))
+    return _V('{"look": "a toddler of about two, round face, tight dark curls, yellow shirt and blue overalls"}')
+A.requests.post = _vd
+r = client.post("/studio/api/char-describe", headers=HOME, json={"project": "p9", "character": "c1"})
+check("the chosen picture is looked at by the house's own vision model, and nowhere else",
+      r.status_code == 200 and looked_d and looked_d[0][0] == A.STUDIO_VISION_URL
+      and looked_d[0][1]["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,QUJD", r.get_json())
+check("  asked for what an illustrator needs, and no guess at who it is",
+      "no guess at who they are" in looked_d[0][1]["messages"][0]["content"][0]["text"])
+check("  and the look is saved on the character, as the assistant",
+      puts_d == [("projects/p9/characters/c1", {"look": "a toddler of about two, round face, tight dark curls, "
+                                                         "yellow shirt and blue overalls",
+                                              "look_from": "pictures/b.png"}, "Alfred")], puts_d)
+r = client.post("/studio/api/char-describe", headers=HOME, json={"project": "p9", "character": "c2"})
+check("a character with no picture is told to get one", r.status_code == 400)
+A._studio_call, A._studio_data_url, A.requests.post = _saved_d
+page = open(os.path.join(os.path.dirname(os.path.abspath(A.__file__)), "templates", "studio.html"), encoding="utf-8").read()
+_bt = page[page.index("function boardTab()"):page.index("\n    function ", page.index("function boardTab()"))]
+check("a storyboard card can remove its shot, as the videos panel's can",
+      'data-remove="shots"' in _bt, _bt[-400:])
+check("the page has the describe button, the style flag and the style upload",
+      "data-ch-describe" in page and "data-style-ref" in page and 'data-style="1"' in page
+      and "api('char-describe'" in page)
+
+
+print("\nreference pictures, in words, for the Designer")
+_saved_r = (A._studio_call, A._studio_data_url, A.requests.post, A._run_nanobot_turn, A._studio_background,
+            A.requests.request)
+posted_r, looked_r, asked_r = [], [], []
+RDOC2 = {"id": "p8", "settings": {"look": "3D cartoon"},
+         "uploads": [{"file": "uploads/a-style.png", "kind": "reference", "style": True, "style_at": 1},
+                     {"file": "uploads/b-track.png", "kind": "reference"},
+                     {"file": "uploads/c-old.png", "kind": "reference", "description": "Shows: a kept description"}],
+         "shots": [{"id": "s1", "prompt": "The race starts.", "refs": ["uploads/b-track.png"]},
+                   {"id": "s2", "prompt": "The finish line.", "refs": ["uploads/c-old.png"]}]}
+def _scr(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/p8":
+        return RDOC2
+    if path == "projects/p8/characters":
+        return {"characters": [{"id": "c1", "name": "Bruma", "look": "Un bebe", "pictures": ["pictures/a.png"],
+                                "portrait": 0}]}
+    posted_r.append((method, path, body, via))
+    return {"ok": True}
+A._studio_call = _scr
+A._studio_data_url = lambda u, path: "data:image/png;base64,QUJD"
+def _vr(url, json=None, headers=None, timeout=None, **kw):
+    looked_r.append(json)
+    if "character for a film" in json["messages"][0]["content"][0]["text"]:
+        return _V('{"people": [{"where": "right", "main": false, "look": "a man with a beard"},'
+                  ' {"where": "center", "main": true, "look": "a baby of about one, round face, dark curls"}]}')
+    return _V('{"shows": "a red go-kart track by a lake", "style": "flat 2D vector drawing"}')
+A.requests.post = _vr
+words, style = A._studio_ref_words(USER1, RDOC2)
+check("each reference picture is put into words once, by the house's model, what it shows and its style",
+      words["uploads/b-track.png"] == "Shows: a red go-kart track by a lake Style: flat 2D vector drawing"
+      and style == ["uploads/a-style.png"] and len(looked_r) == 2, (words, len(looked_r)))
+check("  and the words are kept on the picture, so the next call reads them",
+      ("POST", "projects/p8/uploads/b-track.png/description",
+       {"description": "Shows: a red go-kart track by a lake Style: flat 2D vector drawing"}, "") in posted_r, posted_r)
+check("  a picture already described is not looked at again",
+      words["uploads/c-old.png"] == "Shows: a kept description" and len(looked_r) == 2)
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_r.append(text) or json.dumps(
+    {"look": None, "shots": [{"prompt": "a"}, {"prompt": "b"}]})
+A._studio_correct_shots(USER1, RDOC2, RDOC2["shots"], "closer shots")
+check("the Designer writes each shot knowing what its reference picture shows, and the style pictures",
+      asked_r and "Shot 1 [drawn from its reference picture -- Shows: a red go-kart track by a lake" in asked_r[0]
+      and "The film's style pictures" in asked_r[0], asked_r[0][:1500] if asked_r else "")
+looked_r.clear(); posted_r.clear()
+look, why = A._studio_describe_character(USER1, "p8", "c1")
+check("a character's look is the main person's, from a picture with others in it -- keeping the note's facts",
+      look == "a baby of about one, round face, dark curls"
+      and 'already wrote this about them: "Un bebe"' in looked_r[0]["messages"][0]["content"][0]["text"]
+      and "never mention another person" in looked_r[0]["messages"][0]["content"][0]["text"]
+      and ("PUT", "projects/p8/characters/c1", {"look": look, "look_from": "pictures/a.png"}, "Alfred") in posted_r,
+      (look, why, posted_r))
+_cs = A._studio_call
+A._studio_call = lambda u, m, path, body=None, timeout=30, via="": (
+    {"characters": [{"id": "c1", "name": "Bruma", "look": "x" * 120, "pictures": ["pictures/a.png"], "portrait": 0}]}
+    if path == "projects/p8/characters" else _cs(u, m, path, body, timeout, via))
+looked_r.clear()
+A._studio_describe_character(USER1, "p8", "c1")
+check("  a look longer than a note is an earlier description, and is not carried into the new one",
+      "already wrote" not in looked_r[0]["messages"][0]["content"][0]["text"])
+check("  and an automatic one leaves it alone", A._studio_describe_character(USER1, "p8", "c1", True) == (None, None))
+A._studio_call = lambda u, m, path, body=None, timeout=30, via="": (
+    {"characters": [{"id": "c1", "name": "Bruma", "look": "x" * 120, "look_from": "pictures/a.png",
+                     "pictures": ["pictures/a.png", "pictures/b.png"], "portrait": 1}]}
+    if path == "projects/p8/characters" else _cs(u, m, path, body, timeout, via))
+check("  unless the assistant wrote it from another picture: the photo changed, so it is written again",
+      A._studio_describe_character(USER1, "p8", "c1", True)[0] == "a baby of about one, round face, dark curls")
+A._studio_call = _cs
+bg = []
+A._studio_background = lambda fn, *a: bg.append((fn.__name__, a))
+class _Up:
+    status_code = 200
+    headers = {}
+    def iter_content(self, chunk_size=1):
+        return iter([b"{}"])
+A.requests.request = lambda *a, **kw: _Up()
+client.post("/studio/api/projects/p8/characters/c1/upload", headers=HOME,
+            data=b'--x\r\nContent-Disposition: form-data; name="kind"\r\n\r\npicture\r\n--x--',
+            content_type="multipart/form-data; boundary=x")
+check("a picture given to a character starts its description, in the background, only if its look is a note",
+      bg == [("_studio_describe_character", (USER1, "p8", "c1", True))], bg)
+bg.clear()
+client.post("/studio/api/projects/p8/characters/c1/upload", headers=HOME,
+            data=b'--x\r\nContent-Disposition: form-data; name="kind"\r\n\r\nvoice\r\n--x--',
+            content_type="multipart/form-data; boundary=x")
+check("  a voice sample starts nothing", bg == [], bg)
+asked_r.clear()
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None, images=None: asked_r.append(text) or json.dumps(
+    [{"prompt": "a"}, {"prompt": "b"}])
+client.post("/studio/api/music-video", headers=HOME, json={"shots": 2, "seconds": 10, "kind": "song", "lyrics": "la",
+                                                            "project": "p8", "ref": "uploads/b-track.png"})
+check("the music-video plan is written knowing the style pictures and the first shot's reference",
+      asked_r and "The film's style pictures show" in asked_r[0]
+      and "The first shot is drawn from a reference picture, which shows: Shows: a red go-kart track" in asked_r[0]
+      and A.STUDIO_STYLE_RULE in asked_r[0], asked_r[0][:900] if asked_r else "")
+(A._studio_call, A._studio_data_url, A.requests.post, A._run_nanobot_turn, A._studio_background,
+ A.requests.request) = _saved_r
+
+
+print("\na Studio notification opens the Studio")
+_sent = []
+_saved_n = A._notify_user
+A._notify_user = lambda login, text, **kw: _sent.append(kw)
+r = client.post("/studio/api/notify", headers={"X-Studio-Secret": A.STUDIO_SECRET},
+                json={"login": USER1, "text": "No se pudo generar: una canción", "project": "abc123def456", "ok": False})
+A._notify_user = _saved_n
+check("its link is a whole address to the project, as the chat's are -- a bare path opened the chat",
+      r.status_code == 200 and _sent and _sent[0]["click"] == A.HOMECORE_PUBLIC_URL + "/studio?project=abc123def456"
+      and _sent[0]["click"].startswith(("http://", "https://")), _sent)
+_ktp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "proxy", "android", "app", "src",
+                    "main", "java", "com", "chat", "app", "MainActivity.kt")
+_kt = open(_ktp, encoding="utf-8").read() if os.path.exists(_ktp) else ""
+if _kt:
+    check("  and the app is willing to open it", '"/studio"' in _kt.split("DEEP_LINK_PREFIXES = listOf(")[1].split(")")[0])
+else:
+    print("  SKIP  the app's source is not here (the image holds only the portal)")
+
+
 print("\none correction for the whole storyboard")
 _saved = (A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable)
 A._studio_configured = A._studio_reachable = lambda: True
@@ -504,7 +744,9 @@ check("only the shots that changed are saved, under the assistant's name",
       saved)
 redrawn = [b for m, p, b, v in calls if p == "projects/p1/storyboard"]
 check("and those, and only those, are redrawn", redrawn == [{"items": ["s1", "s4"]}], redrawn)
-check("the page is told how many of how many", d == {"changed": 2, "total": 3, "redrawn": True}, d)
+check("the page is told how many of how many", d == {"changed": 2, "total": 3, "redrawn": True, "look": ""}, d)
+check("  with style left to the look: none named, none repeated, no photo mentioned",
+      A.STUDIO_STYLE_RULE in text and "photo" in A.STUDIO_STYLE_RULE and "do not repeat the look" in text, text[-900:])
 calls.clear(); asked.clear()
 r = client.post("/studio/api/board-correct", headers=HOME,
                 json={"project": "p1", "feedback": "night", "redraw": False})
@@ -518,6 +760,30 @@ r = client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1"
 check("an answer with the wrong number of shots is asked for once more, then refused, and nothing is saved",
       len(asked) == 2 and r.status_code == 502 and not any(p.endswith("/prompt") for _, p, _, _ in calls),
       (len(asked), r.status_code))
+calls.clear(); asked.clear()
+answer = json.dumps({"look": "3D animated cartoon for children, bright and clean", "shots": [
+    {"prompt": "Mora walks in a sunny park."}, {"prompt": "A dog runs on the beach."},
+    {"prompt": "Mora waves from a window."}]})
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked.append(text) or answer
+r = client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1", "feedback": "make it a cartoon"})
+d = r.get_json() or {}
+puts = [(b, v) for m, p_, b, v in calls if m == "PUT" and p_ == "projects/p1"]
+check("a correction about the style changes the film's look, as the assistant -- not every shot",
+      puts == [({"settings": {"look": "3D animated cartoon for children, bright and clean"}}, "Alfred")]
+      and not any(p_.endswith("/prompt") for _, p_, _, _ in calls), (puts, calls))
+check("  and every frame is redrawn, since the look is in each",
+      [b for m, p_, b, v in calls if p_ == "projects/p1/storyboard"] == [{"items": ["s1", "s2", "s4"]}])
+check("  and the page is told the new look", d.get("look") == "3D animated cartoon for children, bright and clean"
+      and d.get("changed") == 0, d)
+check("  the Designer is asked to say 2D or 3D, and to take style words out of the shots",
+      "2D or 3D" in asked[0] and "Take out of the descriptions any style words" in asked[0], asked[0][-700:])
+calls.clear()
+answer = json.dumps({"look": "watercolour, warm", "shots": [{"prompt": "a"}, {"prompt": "b"}, {"prompt": "c"}]})
+client.post("/studio/api/board-correct", headers=HOME, json={"project": "p1", "feedback": "x"})
+check("  a look that comes back the same is not a change", not any(m == "PUT" for m, *_ in calls), calls)
+check("an old-style answer, a bare array, still reads as the shots",
+      A._studio_parse_correction('[{"prompt": "a"}]', 1) == (None, ["a"])
+      and A._studio_parse_correction('{"look": null, "shots": [{"prompt": "a"}]}', 1) == (None, ["a"]))
 A._studio_call, A._run_nanobot_turn, A._studio_configured, A._studio_reachable = _saved
 page = open(os.path.join(os.path.dirname(os.path.abspath(A.__file__)), "templates", "studio.html"), encoding="utf-8").read()
 check("the page has the box, keeps what is typed across redraws, and sends it",

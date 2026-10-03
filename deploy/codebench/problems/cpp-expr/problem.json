@@ -1,0 +1,11 @@
+{
+  "title": "An arithmetic evaluator, from its grammar",
+  "language": "C++",
+  "kind": "implement",
+  "about": "Write a recursive-descent evaluator for + - * / ^, unary minus and parentheses to a grammar in the header, with the errors it names.",
+  "task": "Implement evaluate() in expr.cpp to the specification in expr.hpp: the grammar, the precedence and the errors it describes. `make test` builds and runs the tests. Do not edit anything under tests/ or the Makefile. Stop when `make test` passes and the implementation follows the whole specification.",
+  "check": "make -s test",
+  "hidden": "mkdir -p build && g++ -std=c++17 -Wall -Wextra -g -fsanitize=address,undefined -I. -Itests -o build/hidden tests/test_expr_hidden.cpp expr.cpp && ./build/hidden",
+  "protected": ["tests/", "Makefile"],
+  "timeout": 900
+}

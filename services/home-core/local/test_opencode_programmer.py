@@ -978,8 +978,14 @@ A.requests = Recorder(
                        else FakeResp(lines=sse([{"type": "session.idle", "properties": {"sessionID": LSID}}]))),
     post=lambda u, kw: posted.append((u, kw)) or FakeResp(payload={"id": LSID}))
 t = _lt()
+emitted.clear()
+_saved_holds = A._studio_holds_card
+A._studio_holds_card = lambda: True
 err, _ = A._turn_attempt_opencode(t, "explicame")
+A._studio_holds_card = _saved_holds
 check("a local turn that finishes is not a failure", err is None and not t.get("go"), err)
+check("  and one that has to wait for the Studio's card says so, rather than nothing",
+      any(ev.get("hint") == A.t_for(LOGIN, "programmer.waiting_card") for ev in emitted), emitted)
 _offer = A._retry_on_go_offer(t)
 check("  and ends with a button to try it on Go",
       ":::ask" in _offer and _label in _offer and _label in t["text"], _offer)
