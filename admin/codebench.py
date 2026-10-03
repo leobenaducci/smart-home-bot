@@ -46,7 +46,7 @@ from typing import Callable
 # llama.cpp first: it is what the Programmer runs its local model on.
 ENGINES = ("llamacpp", "ollama", "prism")
 ENGINE_LABELS = {"ollama": "Ollama", "llamacpp": "llama.cpp", "prism": "llama.cpp (PrismML)"}
-CONTEXTS = (16384, 32768, 65536, 131072)
+CONTEXTS = (16384, 32768, 65536, 131072, 262144)
 DEFAULT_CONTEXT = 32768
 NETWORK = "codebench"
 SERVER = "codebench-server"

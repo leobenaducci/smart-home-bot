@@ -55,6 +55,9 @@ ok = C.check_entry({"model": "qwen3.5:9b", "engine": "llamacpp", "context": "327
 check("a model, an engine, a window and problems, in the problems' own order",
       ok == {"model": "qwen3.5:9b", "engine": "llamacpp", "context": 32768,
              "problems": ["cpp-lru", "py-slots"], "interrupt": False}, ok)
+check("a 256k window may be asked for, as the Programmer's own runs at",
+      C.check_entry({"model": "qwen3.5:9b", "engine": "llamacpp", "context": "262144",
+                     "problems": ["cpp-lru"]}, known)["context"] == 262144)
 for bad, why in [
     ({"model": "qwen; rm -rf /", "engine": "ollama", "context": 32768, "problems": ["cpp-lru"]}, "a shell in the name"),
     ({"model": "/etc/../x.gguf", "engine": "llamacpp", "context": 32768, "problems": ["cpp-lru"]}, "a path out"),
