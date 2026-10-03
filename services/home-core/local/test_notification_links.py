@@ -48,10 +48,19 @@ def check(label, cond, detail=""):
         failures.append(label)
 
 
-kt = open(APP_KT, encoding="utf-8").read()
-PREFIXES = re.findall(r'"(/[a-z]+)"', re.search(r"DEEP_LINK_PREFIXES\s*=\s*listOf\(([^)]*)\)", kt).group(1))
-ntfy_kt = open(NTFY_KT, encoding="utf-8").read()
-SILENT_TAGS = set(re.findall(r'_TAG\s*=\s*"([a-z_]+)"', ntfy_kt))
+# The app's source is in the repository but not in the portal's image, where
+# the deployer runs this suite. There the app's lists are the ones last read
+# here, and the checks that compare the two sides are skipped, saying so.
+HAVE_APP = os.path.exists(APP_KT) and os.path.exists(NTFY_KT)
+if HAVE_APP:
+    kt = open(APP_KT, encoding="utf-8").read()
+    PREFIXES = re.findall(r'"(/[a-z]+)"', re.search(r"DEEP_LINK_PREFIXES\s*=\s*listOf\(([^)]*)\)", kt).group(1))
+    SILENT_TAGS = set(re.findall(r'_TAG\s*=\s*"([a-z_]+)"', open(NTFY_KT, encoding="utf-8").read()))
+else:
+    PREFIXES = ["/chat", "/tasks", "/grocery", "/geo", "/menu", "/studio"]
+    SILENT_TAGS = {"geofence_sync", "notif_sync", "notif_reply", "location_request", "location_track",
+                   "location_track_stop", "ring_phone", "ring_phone_stop", "device_cmd", "family_msg",
+                   "family_stop", "family_sms", "alfred_update", "alfred_update_beta"}
 
 
 def app_opens(url):
@@ -62,10 +71,13 @@ def app_opens(url):
 
 
 print("what the app accepts")
-check("the app's deep-link list is read", "/chat" in PREFIXES and "/tasks" in PREFIXES, PREFIXES)
-check("and the tags it handles without showing anything", {"geofence_sync", "notif_sync", "location_request",
-                                                             "family_msg", "ring_phone"} <= SILENT_TAGS,
-      sorted(SILENT_TAGS))
+if HAVE_APP:
+    check("the app's deep-link list is read", "/chat" in PREFIXES and "/tasks" in PREFIXES, PREFIXES)
+    check("and the tags it handles without showing anything", {"geofence_sync", "notif_sync", "location_request",
+                                                                 "family_msg", "ring_phone"} <= SILENT_TAGS,
+          sorted(SILENT_TAGS))
+else:
+    print("  SKIP  the app's source is not here (the image holds only the portal): its lists as last read")
 
 print("\nevery push names where it opens")
 src = open(os.path.join(SRC, "app.py"), encoding="utf-8").read()
