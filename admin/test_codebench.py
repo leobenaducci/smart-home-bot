@@ -97,6 +97,18 @@ check("this build's lines, behind their slot prefix; progress lines are not tota
 f = C.server_facts("load_tensors: offloaded 20/41 layers to GPU\n")
 check("a model that did not fit says so", f["all_on_gpu"] is False and f["gen_tok_s"] is None, f)
 
+_crash = """llama_kv_cache: size = 9216.00 MiB (131072 cells, 48 layers)
+ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory
+llama_init_from_model: failed to initialize the context
+/llama/bin/libllama.so.0(llama_decode+0xf)[0x7aa615f10a3f]
+/llama/bin/libllama-common.so.0(_Z23common_init_from_paramsR13common_paramsb+0x43b)[0x7aa6165f68ab]
+/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x7aa61699a28b]
+"""
+_why = C.load_failure(_crash)
+check("a failed load says why, not only the backtrace after it",
+      "cudaMalloc failed: out of memory" in _why and "failed to initialize" in _why
+      and _why.count("libllama") <= 2, _why)
+
 print("\nthe queue and the results")
 with tempfile.TemporaryDirectory() as tmp:
     r = C.Runner(ROOT, pathlib.Path(tmp), gpu=lambda: 1, studio=lambda: ("", ""),

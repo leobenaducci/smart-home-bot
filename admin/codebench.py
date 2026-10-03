@@ -144,6 +144,20 @@ def check_entry(raw: dict, known: set[str]) -> dict:
 
 # -- reading the server's log -----------------------------------------------------
 _LAYERS = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
+# What says why a load failed, rather than the backtrace after it: the tail of
+# a crash is twenty lines of C++ symbols (Bonsai on Prism, 2026-10-02).
+_WHY = re.compile(r"out of memory|cudaMalloc|failed to allocate|CUDA error|GGML_ASSERT|error:|"
+                  r"failed to load|unable to|not enough|exceeds|terminate called|abort", re.I)
+
+
+def load_failure(log: str) -> str:
+    """The lines of a server's log that say why it did not load, then its
+    last few: what goes in a failed run's error."""
+    lines = [ln.strip() for ln in log.splitlines() if ln.strip()]
+    why = [ln for ln in lines if _WHY.search(ln) and not ln.startswith(("/", "#"))]
+    keep = list(dict.fromkeys(why[:8]))
+    tail = [ln for ln in lines[-4:] if ln not in keep]
+    return "\n".join(keep + (["…"] if keep and tail else []) + tail)[-1500:]
 # Bare in older builds; behind "slot print_timing: id 0 | task 57 |" in newer ones.
 _SPEED = re.compile(r"(?:^|\|)[ \t]*(prompt eval|eval) time =.*?([\d.]+) tokens per second", re.M)
 
@@ -255,6 +269,7 @@ class Runner:
             return False
         try:
             (self.results / f"{run_id}.json").unlink()
+            (self.results / f"{run_id}.server.log").unlink(missing_ok=True)
             return True
         except OSError:
             return False
@@ -480,9 +495,9 @@ class Runner:
                 raise BenchError("stopped")
             state = self._docker_out("inspect", "-f", "{{.State.Running}}", SERVER).strip()
             if state != "true":
-                logs = self._docker("logs", "--tail", "15", SERVER)
-                raise BenchError("the model server exited while loading: "
-                                 + ((logs.stdout or "") + (logs.stderr or ""))[-800:])
+                logs = self._docker("logs", SERVER)
+                raise BenchError("the model server exited while loading:\n"
+                                 + load_failure((logs.stdout or "") + (logs.stderr or "")))
             try:
                 if entry["engine"] == "ollama":
                     req = urllib.request.Request(base + "/api/generate", method="POST",
@@ -550,10 +565,16 @@ class Runner:
                 self._save(run)
             run["state"] = "stopped" if self._stop.is_set() else "done"
         except BenchError as exc:
-            run["state"], run["error"] = ("stopped", "") if self._stop.is_set() else ("failed", str(exc)[:800])
+            run["state"], run["error"] = ("stopped", "") if self._stop.is_set() else ("failed", str(exc)[:1600])
         finally:
             run["finished"] = time.time()
             self._save(run)
+            # The server's whole log beside the run, for what the page does not show.
+            logs = self._docker("logs", SERVER)
+            if logs.returncode == 0:
+                with contextlib.suppress(OSError):
+                    (self.results / f"{run['id']}.server.log").write_text(
+                        ((logs.stdout or "") + (logs.stderr or ""))[-400_000:])
             self._docker("rm", "-f", SERVER)
             self._live = {}
 
