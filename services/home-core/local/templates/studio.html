@@ -139,7 +139,21 @@
     .takes button { padding: 3px 8px; font-size: .72rem; }
     .takes button.on { background: var(--olive); color: #fff; }
     .link { text-align: center; color: var(--olive-2); font-size: .72rem; margin: -6px 0 6px; }
+    /* `hidden` means hidden: the button rules' own display beat the attribute,
+       and the recorder's Start stayed on screen while it recorded. */
+    [hidden] { display: none !important; }
     .timeline { display: flex; gap: 3px; overflow-x: auto; padding: 8px 0; }
+    /* A recording's camera over its screen, and the controls under it. The
+       camera is a recording of its own, laid over here and in the film --
+       never drawn into the screen's -- so it moves and hides afterwards. */
+    .layered { position: relative; border-radius: 8px; overflow: hidden; background: #000; }
+    .layered video.main { width: 100%; display: block; }
+    .layered video.pip { position: absolute; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.45); pointer-events: none; }
+    .layer-tools { margin-top: 6px; gap: 6px; font-size: .84rem; }
+    .layer-tools button { padding: 3px 8px; min-width: 2.2em; }
+    .layer-tools button.on { border-color: var(--honey); color: var(--honey); font-weight: 700; }
+    .layer-tools input[type=range] { width: 110px; vertical-align: middle; }
+    .layer-tools label { display: inline-flex; align-items: center; gap: 4px; }
     .timeline div { flex: none; height: 38px; border-radius: 6px; background: var(--line) center/cover; border: 2px solid transparent;
       font-size: .66rem; color: #fff; display: grid; place-items: center; text-shadow: 0 1px 2px #000; cursor: pointer; }
     .timeline div.made { background-color: var(--olive-2); }
@@ -680,6 +694,84 @@
     }
     // What can be done with a recorded clip: its subtitles (the house's
     // speech recogniser) and taking its long silences out (a new version).
+    // A recording's camera and computer sound are recordings of their own,
+    // never drawn or mixed into the screen's: shown, moved and turned up or
+    // down here, and in the film when it is rendered (home-studio media.stitch).
+    var CORNERS = [['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']];
+    var CAM_SIZES = [[0.2, 'cam_small'], [0.28, 'cam_medium'], [0.36, 'cam_large']];
+    function camLayout(s) {
+      var l = (s && s.cam_layout) || {};
+      return { show: l.show !== false, corner: l.corner || 'br', size: +l.size || 0.28 };
+    }
+    function mixOf(s) {
+      var m = (s && s.mix) || {};
+      return { mic: m.mic == null ? 1 : +m.mic, pc: m.pc == null ? 1 : +m.pc };
+    }
+    function placeCam(el, l) {
+      if (!el) return;
+      el.style.display = l.show ? 'block' : 'none';
+      el.style.width = Math.round(l.size * 100) + '%';
+      el.style.left = /l$/.test(l.corner) ? '2%' : 'auto';
+      el.style.right = /r$/.test(l.corner) ? '2%' : 'auto';
+      el.style.top = /^t/.test(l.corner) ? '3%' : 'auto';
+      el.style.bottom = /^b/.test(l.corner) ? '3%' : 'auto';
+    }
+    // The camera and the computer sound follow the screen's video -- play,
+    // pause, seek, speed -- and are put back in step when they drift.
+    function followMain(main, others) {
+      others = others.filter(Boolean);
+      if (!others.length || main.dataset.following) return;
+      main.dataset.following = '1';
+      function sync() {
+        others.forEach(function (o) {
+          if (Math.abs((o.currentTime || 0) - main.currentTime) > 0.25) { try { o.currentTime = main.currentTime; } catch (e) {} }
+        });
+      }
+      main.addEventListener('play', function () { sync(); others.forEach(function (o) { o.play().catch(function () {}); }); });
+      main.addEventListener('pause', function () { others.forEach(function (o) { o.pause(); }); });
+      main.addEventListener('seeked', sync);
+      main.addEventListener('timeupdate', sync);
+      main.addEventListener('ratechange', function () { others.forEach(function (o) { o.playbackRate = main.playbackRate; }); });
+    }
+    // Volumes above 100% are heard in the film; a browser plays at most 100%.
+    function applyLayers(stage, s) {
+      var l = camLayout(s), m = mixOf(s), main = stage.querySelector('video.main'), pc = stage.querySelector('audio.pc');
+      placeCam(stage.querySelector('video.pip'), l);
+      if (main) main.volume = Math.min(1, m.mic);
+      if (pc) pc.volume = Math.min(1, m.pc);
+    }
+    function wireLayered() {
+      document.querySelectorAll('[data-layered]').forEach(function (stage) {
+        var s = itemById(stage.dataset.layered); if (!s) return;
+        applyLayers(stage, s);
+        followMain(stage.querySelector('video.main'), [stage.querySelector('video.pip'), stage.querySelector('audio.pc')]);
+      });
+    }
+    function layeredMedia(s, t, p) {
+      var l = camLayout(s), m = mixOf(s);
+      var html = '<div class="layered" data-layered="' + s.id + '"><video class="main" controls preload="metadata" poster="' +
+        (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '"></video>' +
+        (t.cam ? '<video class="pip" muted playsinline preload="auto" src="' + fileUrl(p.id, t.cam) + '"></video>' : '') +
+        (t.pc ? '<audio class="pc" preload="auto" src="' + fileUrl(p.id, t.pc) + '"></audio>' : '') + '</div>';
+      html += '<div class="row layer-tools">';
+      if (t.cam) {
+        html += '<span title="' + esc(S.cam_help) + '">📷</span><button data-cam-corner="none" data-id="' + s.id + '"' + (l.show ? '' : ' class="on"') + '>' + S.cam_off + '</button>' +
+          CORNERS.map(function (c) {
+            return '<button data-cam-corner="' + c[0] + '" data-id="' + s.id + '" title="' + esc(S['cam_' + c[0]]) + '"' +
+              (l.show && l.corner === c[0] ? ' class="on"' : '') + '>' + c[1] + '</button>';
+          }).join('') +
+          '<select data-cam-size="' + s.id + '" style="width:auto" title="' + esc(S.cam_size) + '">' + CAM_SIZES.map(function (z) {
+            return '<option value="' + z[0] + '"' + (Math.abs(l.size - z[0]) < 0.01 ? ' selected' : '') + '>' + S[z[1]] + '</option>'; }).join('') + '</select>';
+      }
+      html += '<span class="grow"></span><label title="' + esc(S.vol_help) + '">🎤 ' + S.vol_mic +
+        ' <input type="range" min="0" max="2" step="0.05" data-vol="mic" data-id="' + s.id + '" value="' + m.mic + '"><span class="muted">' + Math.round(m.mic * 100) + '%</span></label>';
+      if (t.pc) html += '<label title="' + esc(S.vol_help) + '">🔊 ' + S.vol_pc +
+        ' <input type="range" min="0" max="2" step="0.05" data-vol="pc" data-id="' + s.id + '" value="' + m.pc + '"><span class="muted">' + Math.round(m.pc * 100) + '%</span></label>';
+      html += '</div>';
+      if (t.cam_error || t.pc_error) html += '<p class="note">⚠️ ' + esc(S.rec_track_failed) + '</p>';
+      return html;
+    }
+
     function recordingTools(s, t, p, i) {
       var tr = t.transcript || {}, trim = s.trim || {}, html = '';
       if (tr.state === 'running') html += '<span class="pill run">' + S.rec_subs_running + '</span>';
@@ -833,7 +925,7 @@
       var body = $('#tabbody');
       if (tab === 'cast') { body.innerHTML = castTab(); return; }
       if (tab === 'board') { body.innerHTML = boardTab(); loadSung(); return; }
-      if (tab === 'video') body.innerHTML = videoTab();
+      if (tab === 'video') { body.innerHTML = videoTab(); wireLayered(); }
       else if (tab === 'audio') body.innerHTML = audioTab();
       else if (tab === 'images') body.innerHTML = imagesTab();
       else body.innerHTML = filesTab();
@@ -1045,7 +1137,8 @@
             (rs === 'failed' ? '<button data-rec-retry="' + s.id + '">' + S.rec_retry + '</button>' : '') +
             '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
             '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
-            (t && t.file ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>' +
+            (t && t.file ? (t.cam || t.pc ? layeredMedia(s, t, p)
+                : '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>') +
               takesRow(s) +
               '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) +
               recordingTools(s, t, p, i) +
@@ -1367,6 +1460,13 @@
       if (el.id === 'sb-correct-text') { correctDraft = el.value; return; }
       if (el.id === 'sb-correct-redraw') { correctRedraw = el.checked; return; }
       if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
+      if (el.dataset.vol) {
+        var vs = itemById(el.dataset.id); if (!vs) return;
+        vs.mix = Object.assign(mixOf(vs), {}); vs.mix[el.dataset.vol] = Number(el.value);
+        el.nextElementSibling.textContent = Math.round(Number(el.value) * 100) + '%';
+        var vstage = document.querySelector('[data-layered="' + vs.id + '"]'); if (vstage) applyLayers(vstage, vs);
+        markDirty(); return;
+      }
       if (!el.dataset.f) return;
       var item = itemById(el.dataset.id); if (!item) return;
       var v = el.type === 'checkbox' ? el.checked : el.type === 'range' || el.type === 'number' ? Number(el.value) : el.value;
@@ -1381,6 +1481,12 @@
       if (el.id === 'use-sb') { current.settings.use_storyboard = el.checked; markDirty(); drawTab(); return; }
       if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
       if (el.dataset.f === 'continuity') { drawTab(); return; }
+      if (el.dataset.camSize) {
+        var zs = itemById(el.dataset.camSize); if (!zs) return;
+        zs.cam_layout = Object.assign(camLayout(zs), { size: Number(el.value) });
+        var zstage = document.querySelector('[data-layered="' + zs.id + '"]'); if (zstage) applyLayers(zstage, zs);
+        markDirty(); return;
+      }
       if (el.dataset.upload && el.files.length) {
         var fd = new FormData(); fd.append('file', el.files[0]); fd.append('kind', el.dataset.upload);
         if (el.dataset.style) fd.append('style', '1');
@@ -1474,6 +1580,17 @@
         }
         if (b.id === 'preview') return previewPlayer();
         if (b.id === 'rec') return recorder();
+        if (d.camCorner) {
+          var cs = itemById(d.id); if (!cs) return;
+          var was = camLayout(cs);
+          cs.cam_layout = d.camCorner === 'none' ? Object.assign(was, { show: false }) : Object.assign(was, { show: true, corner: d.camCorner });
+          var cstage = document.querySelector('[data-layered="' + cs.id + '"]');
+          if (cstage) applyLayers(cstage, cs);
+          b.parentNode.querySelectorAll('[data-cam-corner]').forEach(function (x) {
+            x.classList.toggle('on', cs.cam_layout.show ? x.dataset.camCorner === cs.cam_layout.corner : x.dataset.camCorner === 'none');
+          });
+          markDirty(); return;
+        }
         if (d.describe) return describeClip(d.describe, b);
         if (d.recRetry) {
           await api('projects/' + p.id + '/recordings/' + d.recRetry + '/finish', { method: 'POST' });
@@ -1912,25 +2029,55 @@
       };
     }
 
-    // Recording yourself: the screen, the camera, or both -- the camera in a
-    // corner over the screen, like a stream -- with the microphone. Pieces
-    // go up as they are made (a closed tab loses seconds, not the take), and
-    // stopping asks the Studio to join them into a clip of the project.
+    // Recording yourself: the screen, the camera, or both, with the
+    // microphone and -- from the screen -- the computer's sound. Each is a
+    // recording of its own: the screen with the microphone, the camera, and
+    // the computer's sound, never drawn or mixed into one another, so where
+    // the camera sits (or whether it shows) and how loud each sound is are
+    // decided afterwards, on the clip. The page shows the camera where it
+    // will start out. Pieces go up as they are made (a closed tab loses
+    // seconds, not the take), and stopping asks the Studio to join them.
     function recorder() {
       var p = current, dlg = $('#dlg'), canScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
-      var st = { rec: null, rid: null, n: 0, sent: 0, queue: Promise.resolve(), streams: [], ticker: null, t0: 0, paused: 0, pauseAt: 0 };
+      var st = { recs: [], rid: null, counts: { main: 0, cam: 0, pc: 0 }, n: 0, sent: 0, queue: Promise.resolve(), streams: [],
+                 t0: 0, paused: 0, pauseAt: 0, started: {}, layout: { show: true, corner: 'br', size: 0.28 } };
       dlg.classList.add('wide');
+      var box = function (id, label, on, extra) {
+        return '<label class="row" style="font-size:.9rem"><input type="checkbox" id="' + id + '" style="width:auto"' + (on ? ' checked' : '') + (extra || '') + '> ' + label + '</label>';
+      };
       dlg.innerHTML = '<h2>🔴 ' + S.rec_title + '</h2>' +
-        '<div class="row"><label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-screen" style="width:auto"' + (canScreen ? ' checked' : ' disabled') + '> ' + S.rec_screen + '</label>' +
-        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-cam" style="width:auto" checked> ' + S.rec_cam + '</label>' +
-        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-mic" style="width:auto" checked> ' + S.rec_mic + '</label></div>' +
+        '<div class="row">' + box('rc-screen', S.rec_screen, canScreen, canScreen ? '' : ' disabled') + box('rc-cam', S.rec_cam, true) +
+        box('rc-mic', S.rec_mic, true) + box('rc-pc', S.rec_pc, canScreen, canScreen ? '' : ' disabled') + '</div>' +
         (canScreen ? '' : '<p class="muted">' + S.rec_no_screen + '</p>') +
-        '<video id="rc-view" muted playsinline autoplay style="width:100%;background:#000;border-radius:8px;margin-top:8px"></video>' +
+        '<div class="row layer-tools" id="rc-where"><span>📷</span><button data-rc-corner="none">' + S.cam_off + '</button>' +
+          CORNERS.map(function (c) { return '<button data-rc-corner="' + c[0] + '" title="' + esc(S['cam_' + c[0]]) + '">' + c[1] + '</button>'; }).join('') +
+          '<select id="rc-size" style="width:auto">' + CAM_SIZES.map(function (z) { return '<option value="' + z[0] + '"' + (z[0] === 0.28 ? ' selected' : '') + '>' + S[z[1]] + '</option>'; }).join('') + '</select></div>' +
+        '<p class="muted" style="font-size:.82rem;margin:4px 0 0">' + S.rec_apart + '</p>' +
+        '<div class="layered" style="margin-top:8px"><video id="rc-view" class="main" muted playsinline autoplay></video>' +
+        '<video id="rc-camview" class="pip" muted playsinline autoplay style="display:none"></video></div>' +
         '<div class="row" style="margin-top:10px"><button class="primary" id="rc-start">' + S.rec_start + '</button>' +
         '<button id="rc-pause" hidden>' + S.rec_pause + '</button><button class="danger" id="rc-stop" hidden>' + S.rec_stop + '</button>' +
         '<span class="muted" id="rc-time"></span><span class="grow"></span><span class="muted" id="rc-up"></span>' +
         '<button id="rc-no">' + S.cancel + '</button></div>';
       dlg.showModal();
+      function where() {
+        var both = $('#rc-screen').checked && $('#rc-cam').checked;
+        $('#rc-where').style.display = both ? '' : 'none';
+        $('#rc-pc').disabled = !canScreen || !$('#rc-screen').checked;
+        dlg.querySelectorAll('[data-rc-corner]').forEach(function (b) {
+          b.classList.toggle('on', st.layout.show ? b.dataset.rcCorner === st.layout.corner : b.dataset.rcCorner === 'none');
+        });
+        if ($('#rc-camview').srcObject) placeCam($('#rc-camview'), st.layout);
+      }
+      ['rc-screen', 'rc-cam'].forEach(function (id) { $('#' + id).onchange = where; });
+      dlg.querySelectorAll('[data-rc-corner]').forEach(function (b) {
+        b.onclick = function () {
+          st.layout = b.dataset.rcCorner === 'none' ? Object.assign(st.layout, { show: false }) : Object.assign(st.layout, { show: true, corner: b.dataset.rcCorner });
+          where();
+        };
+      });
+      $('#rc-size').onchange = function () { st.layout.size = Number(this.value); where(); };
+      where();
       function clockNow() {
         var sec = Math.max(0, ((st.pauseAt || Date.now()) - st.t0 - st.paused) / 1000);
         $('#rc-time').textContent = '● ' + clock(sec);
@@ -1938,89 +2085,92 @@
       function upState() { $('#rc-up').textContent = st.sent < st.n ? fmt('rec_uploading', { n: st.n - st.sent }) : (st.n ? S.rec_saved : ''); }
       function release() {
         st.streams.forEach(function (m) { m.getTracks().forEach(function (t) { t.stop(); }); });
-        if (st.ticker) st.ticker.terminate();
         clearInterval(st.clock); dlg.classList.remove('wide');
       }
-      function send(blob) {
-        var n = st.n++; upState();
+      function send(blob, track) {
+        var n = st.counts[track]++; st.n++; upState();
         st.queue = st.queue.then(async function () {
           for (var attempt = 0; attempt < 5; attempt++) {
             try {
-              var r = await fetch('/studio/api/projects/' + p.id + '/recordings/' + st.rid + '/chunk?n=' + n, {
+              var r = await fetch('/studio/api/projects/' + p.id + '/recordings/' + st.rid + '/chunk?n=' + n + '&track=' + track, {
                 method: 'POST', body: blob, headers: { 'X-CSRF-Token': CSRF, 'Content-Type': 'application/octet-stream' } });
               if (r.ok) { st.sent++; upState(); return; }
             } catch (e) { /* the network again, a moment later */ }
             await new Promise(function (ok) { setTimeout(ok, 2000 * (attempt + 1)); });
           }
-          toast(fmt('err', { e: 'piece ' + n }), true);
+          toast(fmt('err', { e: track + ' ' + n }), true);
         });
       }
-      $('#rc-no').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); release(); dlg.close(); };
+      function recording() { return st.recs.some(function (r) { return r.rec.state !== 'inactive'; }); }
+      $('#rc-no').onclick = function () { st.recs.forEach(function (r) { if (r.rec.state !== 'inactive') r.rec.stop(); }); release(); dlg.close(); };
       $('#rc-start').onclick = async function () {
         var wantScreen = $('#rc-screen').checked, wantCam = $('#rc-cam').checked, wantMic = $('#rc-mic').checked;
+        var wantPc = wantScreen && $('#rc-pc').checked;
         if (!wantScreen && !wantCam) { toast(S.rec_need_source, true); return; }
         var screen = null, cam = null, mic = null;
         try {
-          if (wantScreen) { screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false }); st.streams.push(screen); }
+          // The computer's sound comes with the screen, when the browser's
+          // dialog is told to share it.
+          if (wantScreen) { screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: wantPc }); st.streams.push(screen); }
           if (wantCam) { cam = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }); st.streams.push(cam); }
           if (wantMic) { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); st.streams.push(mic); }
         } catch (e) { release(); toast(fmt('rec_denied', { e: e.message }), true); return; }
-        var video;
-        if (screen && cam) {
-          // One picture: the screen, and the camera in the bottom-right corner.
-          // Drawn on a worker's clock -- a page's own timers are slowed to a
-          // crawl while the person is in the window being recorded.
-          var sv = document.createElement('video'), cv = document.createElement('video');
-          sv.srcObject = screen; cv.srcObject = cam; sv.muted = cv.muted = true; sv.play(); cv.play();
-          var canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
-          var g = canvas.getContext('2d');
-          st.ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(0)},33)'], { type: 'text/javascript' })));
-          st.ticker.onmessage = function () {
-            g.fillStyle = '#000'; g.fillRect(0, 0, 1280, 720);
-            if (sv.videoWidth) {
-              var k = Math.min(1280 / sv.videoWidth, 720 / sv.videoHeight), w = sv.videoWidth * k, h = sv.videoHeight * k;
-              g.drawImage(sv, (1280 - w) / 2, (720 - h) / 2, w, h);
-            }
-            if (cv.videoWidth) {
-              var cw = 320, ch = cw * cv.videoHeight / cv.videoWidth;
-              g.drawImage(cv, 1280 - cw - 20, 720 - ch - 20, cw, ch);
-            }
-          };
-          video = canvas.captureStream(30).getVideoTracks()[0];
-        } else {
-          video = (screen || cam).getVideoTracks()[0];
-        }
+        var pcTrack = screen && screen.getAudioTracks()[0];
+        if (wantPc && !pcTrack) toast(S.rec_pc_none);
+        // The screen's recording carries the microphone; without a screen,
+        // the camera's does. A camera beside a screen is a recording of its
+        // own, and so is the computer's sound.
+        var main = new MediaStream([(screen || cam).getVideoTracks()[0]].concat(mic ? mic.getAudioTracks() : []));
+        var tracks = [{ track: 'main', stream: main, video: true }];
+        if (screen && cam) tracks.push({ track: 'cam', stream: new MediaStream(cam.getVideoTracks()), video: true });
+        if (pcTrack) tracks.push({ track: 'pc', stream: new MediaStream([pcTrack]), video: false });
+        $('#rc-view').srcObject = main;
+        if (screen && cam) { $('#rc-camview').srcObject = cam; placeCam($('#rc-camview'), st.layout); }
         // Sharing stopped from the browser's own bar ends the recording too.
-        if (screen) screen.getVideoTracks()[0].onended = function () { if (st.rec && st.rec.state !== 'inactive') $('#rc-stop').click(); };
-        var tracks = [video].concat(mic ? mic.getAudioTracks() : []);
-        var out = new MediaStream(tracks);
-        $('#rc-view').srcObject = out;
-        var type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(function (t) {
-          return window.MediaRecorder && MediaRecorder.isTypeSupported(t); });
+        if (screen) screen.getVideoTracks()[0].onended = function () { if (recording()) $('#rc-stop').click(); };
+        var pick = function (types) { return types.find(function (t) { return window.MediaRecorder && MediaRecorder.isTypeSupported(t); }); };
+        var vtype = pick(['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']);
+        var ctype = pick(['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']);
+        var atype = pick(['audio/webm;codecs=opus', 'audio/webm']);
         try {
           var n = (p.shots || []).filter(function (x) { return x.recorded; }).length + 1;
           st.rid = (await api('projects/' + p.id + '/recordings', { method: 'POST', body: { title: fmt('rec_default_title', { n: n }) } })).id;
-          st.rec = new MediaRecorder(out, { mimeType: type, videoBitsPerSecond: 2500000 });
+          st.recs = tracks.map(function (t) {
+            var opts = t.track === 'main' ? { mimeType: vtype, videoBitsPerSecond: 2500000 }
+              : t.track === 'cam' ? { mimeType: ctype, videoBitsPerSecond: 1200000 } : { mimeType: atype, audioBitsPerSecond: 160000 };
+            return { track: t.track, rec: new MediaRecorder(t.stream, opts) };
+          });
         } catch (e) { release(); toast(fmt('err', { e: e.message }), true); return; }
-        st.rec.ondataavailable = function (e) { if (e.data && e.data.size) send(e.data); };
-        st.rec.onstop = async function () {
+        var stopped = st.recs.map(function (r) {
+          r.rec.ondataavailable = function (e) { if (e.data && e.data.size) send(e.data, r.track); };
+          // When each actually started: the camera and the computer sound
+          // are lined up with the screen by these.
+          r.rec.onstart = function () { st.started[r.track] = performance.now(); };
+          return new Promise(function (ok) { r.rec.onstop = ok; });
+        });
+        Promise.all(stopped).then(async function () {
           $('#rc-stop').disabled = true; $('#rc-pause').hidden = true;
           await st.queue;
-          try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST' }); }
+          var t0 = st.started.main || 0, body = { cam_layout: st.layout, mix: { mic: 1, pc: 1 } };
+          if (st.started.cam) body.cam_offset_ms = Math.round(st.started.cam - t0);
+          if (st.started.pc) body.pc_offset_ms = Math.round(st.started.pc - t0);
+          try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST', body: body }); }
           catch (e) { toast(fmt('err', { e: e.message }), true); }
           release(); dlg.close();
           current = await api('projects/' + p.id); drawTab();
-        };
-        st.rec.start(5000);
+        });
+        st.recs.forEach(function (r) { r.rec.start(5000); });
         st.t0 = Date.now(); st.clock = setInterval(clockNow, 500);
         $('#rc-start').hidden = true; $('#rc-pause').hidden = false; $('#rc-stop').hidden = false; $('#rc-no').hidden = true;
-        ['rc-screen', 'rc-cam', 'rc-mic'].forEach(function (id) { $('#' + id).disabled = true; });
+        ['rc-screen', 'rc-cam', 'rc-mic', 'rc-pc'].forEach(function (id) { $('#' + id).disabled = true; });
       };
       $('#rc-pause').onclick = function () {
-        if (st.rec.state === 'recording') { st.rec.pause(); st.pauseAt = Date.now(); this.textContent = S.rec_resume; }
-        else { st.rec.resume(); st.paused += Date.now() - st.pauseAt; st.pauseAt = 0; this.textContent = S.rec_pause; }
+        var on = st.recs.some(function (r) { return r.rec.state === 'recording'; });
+        st.recs.forEach(function (r) { if (on && r.rec.state === 'recording') r.rec.pause(); else if (!on && r.rec.state === 'paused') r.rec.resume(); });
+        if (on) { st.pauseAt = Date.now(); this.textContent = S.rec_resume; }
+        else { st.paused += Date.now() - st.pauseAt; st.pauseAt = 0; this.textContent = S.rec_pause; }
       };
-      $('#rc-stop').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); };
+      $('#rc-stop').onclick = function () { st.recs.forEach(function (r) { if (r.rec.state !== 'inactive') r.rec.stop(); }); };
     }
 
     // The video as it stands, in the browser: each chosen take in order, a
@@ -2035,7 +2185,10 @@
         var t = chosen(s), len = s.exact ? +s.seconds : ((t && t.seconds) || s.seconds || 5);
         var bd = chosenBoard(s);
         segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', board: bd ? fileUrl(p.id, bd.file) : '',
-                    prompt: s.prompt || '', start: at, len: len });
+                    prompt: s.prompt || '', start: at, len: len,
+                    // A recording's camera and computer sound, as the clip has them.
+                    cam: t && t.cam ? fileUrl(p.id, t.cam) : '', pc: t && t.pc ? fileUrl(p.id, t.pc) : '',
+                    layout: camLayout(s), mix: s.recorded ? mixOf(s) : null });
         at += len;
       });
       dlg.classList.add('wide');
@@ -2043,6 +2196,8 @@
       dlg.innerHTML = '<h2>▶ ' + S.preview + '</h2>' +
         '<div id="pv-stage" style="position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">' +
         '<video id="pv-v" playsinline style="width:100%;height:100%;object-fit:contain"></video>' +
+        '<video id="pv-pip" class="pip" muted playsinline style="position:absolute;display:none;border-radius:8px"></video>' +
+        '<audio id="pv-pc"></audio>' +
         '<div id="pv-card" style="position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:16px;color:#eee;font-size:.9rem;background:#222"></div></div>' +
         '<div class="row" style="margin-top:8px"><span id="pv-at" class="muted"></span><span class="grow"></span>' +
         (tracks.length ? '<label class="f" style="margin:0">' + S.soundtrack + '</label><select id="pv-a" style="width:auto"><option value="">' + S.none + '</option>' +
@@ -2052,8 +2207,10 @@
         '<button id="pv-dl">⬇ ' + S.preview_download + '</button><button id="pv-no">' + S.preview_close + '</button></div>';
       dlg.showModal();
       var v = $('#pv-v'), card = $('#pv-card'), audio = new Audio(), idx = 0, timer = null, playing = false;
+      var pip = $('#pv-pip'), pcs = $('#pv-pc');
+      followMain(v, [pip, pcs]);
       function song() { var sel = $('#pv-a'); var a = sel && sel.value ? itemById(sel.value) : null; return a ? fileUrl(p.id, chosen(a).file) : ''; }
-      function stop() { playing = false; clearTimeout(timer); v.pause(); audio.pause(); $('#pv-play').textContent = '▶'; }
+      function stop() { playing = false; clearTimeout(timer); v.pause(); audio.pause(); pip.pause(); pcs.pause(); $('#pv-play').textContent = '▶'; }
       function show(i) {
         clearTimeout(timer);
         if (i >= segs.length) { stop(); idx = 0; return; }
@@ -2069,12 +2226,17 @@
           // style.display, not `hidden`: the card's own inline `display` beat
           // the attribute, and it covered every shot (2026-09-28).
           card.style.display = 'none'; v.style.visibility = 'visible'; v.muted = $('#pv-m').checked;
+          // The camera over it where the clip puts it, and the computer
+          // sound under it, each following the clip's video.
+          if (seg.cam) { pip.src = seg.cam; placeCam(pip, seg.layout); } else { pip.removeAttribute('src'); pip.style.display = 'none'; }
+          if (seg.pc) { pcs.src = seg.pc; pcs.volume = Math.min(1, seg.mix.pc); pcs.muted = $('#pv-m').checked; } else pcs.removeAttribute('src');
+          v.volume = seg.mix ? Math.min(1, seg.mix.mic) : 1;
           v.src = seg.file; v.play().catch(function () {});
           v.onended = function () { if (playing) show(idx + 1); };
           // A shot made long for its cut is shown only up to the cut.
           v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
         } else {
-          v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex';
+          v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex'; pip.style.display = 'none'; pcs.pause();
           card.innerHTML = seg.board
             ? '<img src="' + seg.board + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">' +
               '<span class="pill" style="position:absolute;left:8px;top:8px">🖼️ ' + S.storyboard + ' · ' + S.shot + ' ' + seg.n + '</span>'
@@ -2086,7 +2248,7 @@
         if (playing) return stop();
         playing = true; this.textContent = '⏸'; show(idx);
       };
-      $('#pv-m').onchange = function () { v.muted = this.checked; };
+      $('#pv-m').onchange = function () { v.muted = this.checked; pcs.muted = this.checked; };
       // The same video as a file: every shot in place -- the ones not made
       // yet as a card -- with the song under it, and a preview watermark
       // saying which shot, where in the song and which version each is.

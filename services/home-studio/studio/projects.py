@@ -40,8 +40,11 @@ EDITABLE = {
     # chosen storyboard frame is not here: it has its own call (choose_board),
     # so a page holding an older copy cannot undo a frame just drawn.
     # `description`, `chapters`: a recording's, written with the assistant.
+    # `cam_layout`, `mix`: a recording's camera (shown or not, which corner,
+    # how big) and the volumes of its microphone and its computer sound --
+    # each recorded apart, so these are decided after (`clean_layout`).
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "cast", "description", "chapters"),
+              "exact", "start", "cast", "description", "chapters", "cam_layout", "mix"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -55,8 +58,36 @@ REMOVED_DIR = ".history-removed"
 PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
 
 
+CORNERS = ("tl", "tr", "bl", "br")
+
+
 class ProjectError(ValueError):
     pass
+
+
+def clean_layout(value: Any) -> dict:
+    """A recording's camera as the page sets it: shown or not, in which
+    corner, at what share of the picture's width."""
+    value = value if isinstance(value, dict) else {}
+    try:
+        size = max(0.12, min(0.5, round(float(value.get("size", 0.28)), 3)))
+    except (TypeError, ValueError):
+        size = 0.28
+    return {"show": bool(value.get("show", True)),
+            "corner": value.get("corner") if value.get("corner") in CORNERS else "br", "size": size}
+
+
+def clean_mix(value: Any) -> dict:
+    """A recording's volumes: its microphone and its computer sound, each 0
+    (off) to 2 (twice as loud)."""
+    value = value if isinstance(value, dict) else {}
+    out = {}
+    for key in ("mic", "pc"):
+        try:
+            out[key] = max(0.0, min(2.0, round(float(value.get(key, 1.0)), 2)))
+        except (TypeError, ValueError):
+            out[key] = 1.0
+    return out
 
 
 def _new_id() -> str:
@@ -518,7 +549,9 @@ class Projects:
             if isinstance(chosen, int) and chosen >= 0:
                 item["chosen"] = -1 if chosen == idx else chosen - (1 if chosen > idx else 0)
             base = self.dir(owner, pid)
-            for key in ("file", "first", "last"):
+            # `cam`, `pc`: a recording's camera and computer sound, recorded
+            # apart from the screen and kept beside it.
+            for key in ("file", "first", "last", "cam", "pc"):
                 self._unlink_inside(base, str(take.get(key) or ""))
             self._unlink_inside(base, str((take.get("analysis") or {}).get("file") or ""))
             for key in ("file", "srt"):
@@ -751,6 +784,10 @@ class Projects:
 
 def _clean(key: str, value: Any, item: dict) -> Any:
     """One editable field, shaped: text trimmed, numbers bounded."""
+    if key == "cam_layout":
+        return clean_layout(value)
+    if key == "mix":
+        return clean_mix(value)
     if key == "seconds":
         try:
             return max(1.0, min(600.0, round(float(value), 4)))

@@ -10,6 +10,7 @@ without WanGP or a GPU. What the real models do is measured by the prototype
 People are the invented household: Tomi and Mora (parents), Juana.
 """
 import os
+import re
 import shutil
 from collections import Counter
 import subprocess
@@ -1476,6 +1477,117 @@ check("  deleting a version takes its transcript with it", not srt_left.exists()
 empty = c.post(f"/api/projects/{rp['id']}/recordings", json={}, headers=h(JUANA, "Juana")).json()
 check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)
+print("\n  a tutorial: the screen, the camera and the computer's sound, each recorded apart")
+tp = c.post("/api/projects", json={"name": "Tutorial aparte", "kind": "recording"}, headers=h(JUANA, "Juana")).json()
+trec = c.post(f"/api/projects/{tp['id']}/recordings", json={"title": "Toma"}, headers=h(JUANA, "Juana")).json()
+scr, camw, pcw = tmp / "t-screen.webm", tmp / "t-cam.webm", tmp / "t-pc.webm"
+# The screen with the microphone: speech, a three-second pause, speech.
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi",
+                "-i", "aevalsrc='if(lt(t,2)+gt(t,5),sin(2*PI*300*t),0)':s=48000:d=7", "-t", "7", "-shortest",
+                "-c:v", "libvpx", "-b:v", "300k", "-c:a", "libopus", str(scr)], check=True)
+# The camera: green, no sound. The computer: a tone all through, no picture.
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=0x00ff00:s=160x120:rate=25:d=7",
+                "-c:v", "libvpx", "-b:v", "200k", str(camw)], check=True)
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:d=7", "-c:a", "libopus",
+                str(pcw)], check=True)
+for track, f in (("main", scr), ("cam", camw), ("pc", pcw)):
+    r = c.post(f"/api/projects/{tp['id']}/recordings/{trec['id']}/chunk?n=0&track={track}", content=f.read_bytes(),
+               headers={**h(JUANA, "Juana"), "Content-Type": "application/octet-stream"})
+check("  three tracks taken in, each by its name", r.status_code == 200 and r.json()["track"] == "pc", r.text)
+check("  and no fourth",
+      c.post(f"/api/projects/{tp['id']}/recordings/{trec['id']}/chunk?n=0&track=other", content=b"x",
+             headers={**h(JUANA, "Juana"), "Content-Type": "application/octet-stream"}).status_code == 400)
+c.post(f"/api/projects/{tp['id']}/recordings/{trec['id']}/finish",
+       json={"cam_offset_ms": 200, "pc_offset_ms": -100, "cam_layout": {"show": True, "corner": "tl", "size": 0.3},
+             "mix": {"mic": 1, "pc": 0.5}}, headers=h(JUANA, "Juana"))
+
+
+def tclip():
+    return next(x for x in c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+                if x["id"] == trec["id"])
+
+
+deadline = time.time() + 180
+while time.time() < deadline and tclip()["recording"]["state"] == "processing":
+    time.sleep(0.5)
+tc = tclip()
+tt = Projects.chosen_take(tc) or {}
+tbase = A.projects.dir(JUANA, tp["id"])
+check("  the camera and the computer sound are kept beside the screen, not in it",
+      tc["recording"]["state"] == "done" and tt.get("cam") and tt.get("pc")
+      and not media.probe(tbase / tt["cam"])["has_audio"] and media.probe(tbase / tt["file"])["has_audio"], (tc, tt))
+check("  each lined up with the screen, as long as it",
+      all(abs(media.probe(tbase / tt[k])["seconds"] - tc["seconds"]) < 0.25 for k in ("cam", "pc")),
+      [media.probe(tbase / tt[k])["seconds"] for k in ("cam", "pc")] + [tc["seconds"]])
+check("  where the camera was shown while recording, and the volumes, become the clip's",
+      tc.get("cam_layout") == {"show": True, "corner": "tl", "size": 0.3} and tc.get("mix") == {"mic": 1.0, "pc": 0.5},
+      (tc.get("cam_layout"), tc.get("mix")))
+
+
+def tfilm():
+    c.post(f"/api/projects/{tp['id']}/render", json={}, headers=h(JUANA, "Juana"))
+    end = time.time() + 180
+    while time.time() < end:
+        st = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+        if (st.get("render") or {}).get("state") != "running":
+            break
+        time.sleep(0.5)
+    assert st["render"]["state"] == "done", st.get("render")
+    return tbase / st["render"]["file"]
+
+
+def pixel(video, x, y, at=1.0):
+    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", str(at), "-i", str(video), "-frames:v", "1",
+                          "-vf", f"crop=2:2:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True).stdout
+    return tuple(raw[:3])
+
+
+def loudness(video, at, seconds=1.0):
+    err = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(at), "-t", str(seconds), "-i", str(video),
+                          "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+    m = re.search(r"mean_volume: (-?[\d.]+|-inf) dB", err)
+    return float(m.group(1)) if m and m.group(1) != "-inf" else -200.0
+
+
+def green(px):
+    return len(px) == 3 and px[1] > 160 and px[0] < 90 and px[2] < 90
+
+
+film1 = tfilm()
+check("  the film draws the camera in its corner, and only there",
+      green(pixel(film1, 40, 30)) and not green(pixel(film1, 300, 170)), (pixel(film1, 40, 30), pixel(film1, 300, 170)))
+check("  and the computer sound under the microphone, through the microphone's pause",
+      loudness(film1, 3.0) > -45, loudness(film1, 3.0))
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, cam_layout={"show": False, "corner": "tl", "size": 0.3},
+                                                         mix={"mic": 1, "pc": 0}) for x in shots]}, headers=h(JUANA, "Juana"))
+film2 = tfilm()
+check("  turned off afterwards, the camera is not in the film -- it was never in the recording",
+      not green(pixel(film2, 40, 30)), pixel(film2, 40, 30))
+check("  and the computer sound turned down to nothing is gone from the pause", loudness(film2, 3.0) < -60,
+      loudness(film2, 3.0))
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, cam_layout={"show": "yes", "corner": "middle", "size": 9},
+                                                         mix={"mic": -3, "pc": "x"}) for x in shots]},
+      headers=h(JUANA, "Juana"))
+tc = tclip()
+check("  a layout and volumes are kept in bounds",
+      tc["cam_layout"] == {"show": True, "corner": "br", "size": 0.5} and tc["mix"] == {"mic": 0.0, "pc": 1.0},
+      (tc["cam_layout"], tc["mix"]))
+c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/trim", json={}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 120
+while time.time() < deadline and (tclip().get("trim") or {}).get("state") == "running":
+    time.sleep(0.3)
+tc = tclip()
+tt2 = Projects.chosen_take(tc) or {}
+check("  the microphone's pause is cut from all three, so they stay together",
+      (tc.get("trim") or {}).get("state") == "done" and tt2.get("cam") and tt2.get("pc")
+      and all(abs(media.probe(tbase / tt2[k])["seconds"] - media.probe(tbase / tt2["file"])["seconds"]) < 0.3
+              for k in ("cam", "pc")) and media.probe(tbase / tt2["file"])["seconds"] < tc["seconds"] + 0.1
+      and media.probe(tbase / tt2["file"])["seconds"] < 5.2, (tc.get("trim"), tt2))
+left = [tbase / tt2[k] for k in ("file", "cam", "pc")]
+A.projects.delete_take(JUANA, tp["id"], trec["id"], tt2["id"])
+check("  deleting a version takes its camera and computer sound with it", not any(f.exists() for f in left))
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 

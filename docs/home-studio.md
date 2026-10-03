@@ -263,19 +263,44 @@ with the character's.
 
 ## Recording (the Recording kind)
 
-🔴 in a Recording (or free) project: the screen, the camera or both -- the
-camera in a corner over the screen, drawn on a worker's clock because a
-page's own timers crawl while the person is in the window being recorded --
-with the microphone. The browser's recorder hands over a piece every five
-seconds, and each goes up as it is made (`/recordings/<id>/chunk?n=`, retried),
-so a closed tab or a dropped network loses seconds, not the take. Finishing
-joins the pieces in order -- they are one stream cut up -- and encodes the clip
-on the CPU (H.265, 30 fps), beside the card's queue; a clip that fails to
-encode keeps its pieces. Each recording is a clip of the project, in the same
-timeline as generated shots, so the preview, the film and the downloads work
-on it unchanged. Screen recording is a computer's browser only; in the
-Android app the camera also needs the app to grant it (it grants only the
-microphone today).
+🔴 in a Recording (or free) project: the screen, the camera or both, with the
+microphone and -- from the screen -- the computer's sound. Made for tutorials:
+show the screen, talk over it, and decide afterwards whether your face is in a
+corner.
+
+**Each source is a recording of its own.** With the screen and the camera both
+on, the page runs up to three recorders at once: the screen with the
+microphone (`main`), the camera (`cam`) and the computer's sound (`pc`, what the
+browser's "Share audio" hands over). Nothing is drawn into or mixed with
+anything else. Each sends its own pieces (`/recordings/<id>/chunk?n=&track=`),
+and finishing tells the Studio when the camera and the computer sound started
+relative to the screen (`cam_offset_ms`, `pc_offset_ms`), so each is encoded
+lined up with the screen's clip and as long as it (`media.encode_camera`,
+`media.encode_sound`) and kept on the take as `cam` and `pc`. A camera or
+computer sound that fails to encode costs that track, not the recording.
+
+**Decided afterwards, on the clip.** The camera's place is the clip's
+`cam_layout` -- shown or hidden, a corner (`tl`, `tr`, `bl`, `br`), a share of the
+width -- and the sounds' volumes are its `mix` (`mic`, `pc`, 0-200%). The page
+lays the camera over the screen and plays the computer sound under it, each
+following the screen's video (play, pause, seek, speed), so a change is seen
+and heard at once; the recorder shows the camera where it will start out. The
+film and the preview's download draw the camera in its corner and mix the
+sounds at their volumes when they are rendered (`media.stitch`'s `pips` and
+`sounds`); hiding the camera afterwards takes it out of the film, because it was
+never in the recording. A browser plays at most 100%; louder is heard in the
+film.
+
+The pieces go up as they are made, so a closed tab or a dropped network loses
+seconds, not the take; finishing joins each track's pieces in order and
+encodes them on the CPU (H.265, 30 fps; the computer sound as AAC), beside the
+card's queue. A clip that fails to encode keeps its pieces. Each recording is
+a clip of the project, in the same timeline as generated shots, so the
+preview, the film and the downloads work on it unchanged. Screen recording is
+a computer's browser only (and the computer's sound is whatever that browser
+can share: a tab's sound everywhere, the whole system's on Windows and
+ChromeOS); in the Android app the camera also needs the app to grant it (it
+grants only the microphone today).
 
 What a recording gets afterwards, each on the CPU pool beside the card:
 **subtitles** -- its speech sent to the house's speech recogniser (faster-whisper,
@@ -284,6 +309,8 @@ instead), kept on the version as a transcript and SubRip `.srt`, downloadable
 and burnt into a film when asked (libass, DejaVu Sans) -- and **taking out its
 long silences**: stretches below -35 dB for over 1.2 s are cut, leaving 0.3 s
 either side so no word is clipped, as a new version with the original kept.
+The silences are found in the microphone alone, and the camera and the
+computer sound are cut at the same places, so the three stay together.
 A trimmed version needs its own subtitles; the transcript belongs to the
 version it was made from.
 

@@ -107,6 +107,40 @@ def encode_recording(src: Path, out: Path) -> Path:
     return out
 
 
+def encode_camera(src: Path, out: Path, offset: float, seconds: float) -> Path:
+    """The camera, recorded beside the screen as a track of its own, kept as a
+    clip that lines up with the screen's frame for frame: *offset* is how much
+    later than the screen it started (negative: earlier), so it is padded or
+    cut by that much, and it is as long as the screen's clip. No sound -- the
+    microphone is on the screen's track. Kept apart so whether it is shown,
+    and in which corner, can be decided after (`stitch`'s `pips`)."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pre = ["-ss", f"{-offset:.3f}"] if offset < 0 else []
+    pad = f"tpad=start_duration={offset:.3f}:start_mode=clone," if offset > 0 else ""
+    _run(["-fflags", "+genpts", *pre, "-i", str(src), "-map", "0:v:0", "-an",
+          "-vf", f"{pad}scale='min(1280,iw)':-2,fps=30", "-t", f"{seconds:.3f}",
+          *X265, "-movflags", "+faststart", str(out)], timeout=7200)
+    if probe(out)["seconds"] <= 0:
+        raise MediaError("the camera could not be read")
+    return out
+
+
+def encode_sound(src: Path, out: Path, offset: float, seconds: float) -> Path:
+    """The computer's sound, recorded beside the screen as a track of its own,
+    kept lined up with the screen's clip (*offset*: how much later it started;
+    negative, earlier) and as long as it: AAC, stereo. Apart from the
+    microphone, so each can be turned up, down or off afterwards."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pre = ["-ss", f"{-offset:.3f}"] if offset < 0 else []
+    delay = f"adelay=delays={int(offset * 1000)}:all=1," if offset > 0 else ""
+    _run(["-fflags", "+genpts", *pre, "-i", str(src), "-map", "0:a:0", "-vn",
+          "-af", f"{delay}aresample=48000,apad", "-t", f"{seconds:.3f}",
+          "-c:a", "aac", "-b:a", "160k", "-ac", "2", str(out)], timeout=7200)
+    if probe(out)["seconds"] <= 0:
+        raise MediaError("the computer sound could not be read")
+    return out
+
+
 def silences(src: Path, noise_db: float = -35.0, min_s: float = 1.2) -> list[tuple[float, float]]:
     """Stretches of *src* quieter than *noise_db* for at least *min_s*."""
     done = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(src), "-vn",
@@ -124,10 +158,11 @@ def silences(src: Path, noise_db: float = -35.0, min_s: float = 1.2) -> list[tup
     return out
 
 
-def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1.2,
-                 keep: float = 0.3) -> tuple[Path, float]:
-    """*src* without its long silences, `keep` seconds of each left either side
-    so a word is never clipped. Returns the new clip and the seconds removed."""
+def speaking_spans(src: Path, noise_db: float = -35.0, min_s: float = 1.2,
+                   keep: float = 0.3) -> tuple[list[tuple[float, float]], float]:
+    """The stretches of *src* to keep when its long silences are taken out --
+    `keep` seconds of each silence left either side so a word is never
+    clipped -- and its whole length."""
     total = probe(src)["seconds"]
     gaps = [(a + keep, b - keep) for a, b in silences(src, noise_db, min_s) if b - a - 2 * keep > 0.2]
     if not gaps:
@@ -139,11 +174,29 @@ def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1
         t = b
     if total - t > 0.05:
         spans.append((t, total))
+    return spans, total
+
+
+def cut_spans(src: Path, out: Path, spans: list[tuple[float, float]], sound: bool = True,
+              picture: bool = True) -> Path:
+    """*src* with only *spans* kept, joined. The same spans on a recording's
+    camera (no sound) and computer sound (no picture) keep them with the
+    screen."""
     expr = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in spans)
     out.parent.mkdir(parents=True, exist_ok=True)
-    _run(["-i", str(src), "-vf", f"select='{expr}',setpts=N/FRAME_RATE/TB",
-          "-af", f"aselect='{expr}',asetpts=N/SR/TB", *X265, "-c:a", "aac", "-b:a", "160k",
-          "-movflags", "+faststart", str(out)], timeout=7200)
+    audio = (["-af", f"aselect='{expr}',asetpts=N/SR/TB", "-c:a", "aac", "-b:a", "160k"] if sound else ["-an"])
+    video = (["-vf", f"select='{expr}',setpts=N/FRAME_RATE/TB", *X265] if picture else ["-vn"])
+    _run(["-i", str(src), *video, *audio, *(["-movflags", "+faststart"] if picture else []), str(out)],
+         timeout=7200)
+    return out
+
+
+def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1.2,
+                 keep: float = 0.3) -> tuple[Path, float]:
+    """*src* without its long silences, `keep` seconds of each left either side
+    so a word is never clipped. Returns the new clip and the seconds removed."""
+    spans, total = speaking_spans(src, noise_db, min_s, keep)
+    cut_spans(src, out, spans)
     return out, round(total - sum(b - a for a, b in spans), 2)
 
 
@@ -220,13 +273,23 @@ def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
 
 def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
            lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
-           fast: bool = False, subs: list[Path | None] | None = None) -> Path:
+           fast: bool = False, subs: list[Path | None] | None = None,
+           pips: list[dict | None] | None = None, sounds: list[dict | None] | None = None) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
     shots come from one model but a retake can differ in a stream parameter,
     and the demuxer then produces a file that plays wrong without failing.
     A crossfade blends the join (video xfade, audio acrossfade).
+
+    `pips`: a recording's camera, drawn in a corner of its clip -- `{"file",
+    "corner": tl|tr|bl|br, "size": share of the width}` -- or None. The camera
+    is kept as a track of its own (`encode_camera`), lined up with its clip,
+    so whether and where it shows is decided here, at render time.
+
+    `sounds`: a recording's volumes and computer sound -- `{"own": volume of
+    the clip's own sound (the microphone), "file": the computer sound, or
+    absent, "volume": its volume}` -- or None for the clip as it is.
     """
     if not videos:
         raise MediaError("nothing to stitch")
@@ -254,6 +317,18 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         if mark:
             mark_input[i] = len(videos) + len(mark_input)
             args += ["-loop", "1", "-framerate", "24", "-i", str(mark)]
+    pips = list(pips or [None] * len(videos))
+    pip_input = {}
+    for i, pip in enumerate(pips):
+        if pip and pip.get("file"):
+            pip_input[i] = len(videos) + len(mark_input) + len(pip_input)
+            args += ["-i", str(pip["file"])]
+    sounds = list(sounds or [None] * len(videos))
+    sound_input = {}
+    for i, snd in enumerate(sounds):
+        if snd and snd.get("file"):
+            sound_input[i] = len(videos) + len(mark_input) + len(pip_input) + len(sound_input)
+            args += ["-i", str(snd["file"])]
     parts, n = [], len(videos)
     for i, info in enumerate(infos):
         label = f"b{i}" if i in mark_input else f"v{i}"
@@ -263,15 +338,41 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         sub = (subs or [None] * len(videos))[i] if subs else None
         burn = (f",subtitles=filename={sub}:force_style='FontName=DejaVu Sans,FontSize=18,"
                 f"Outline=2,Shadow=0,MarginV=22'") if sub else ""
-        parts.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24{burn},format=yuv420p[{label}]")
+        sized = (f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                 f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24")
+        if i in pip_input:
+            # The camera over the clip, before the subtitles so they are not
+            # under it: sized to its share of the width, a margin from the
+            # edges, and cut to the clip's length so the clip ends on time.
+            pip = pips[i]
+            pw = max(64, int(w * min(0.5, max(0.1, float(pip.get("size") or 0.28))) / 2) * 2)
+            m = max(8, int(w * 0.02))
+            corner = pip.get("corner") if pip.get("corner") in ("tl", "tr", "bl", "br") else "br"
+            x = f"{m}" if corner in ("tl", "bl") else f"W-w-{m}"
+            y = f"{m}" if corner in ("tl", "tr") else f"H-h-{m}"
+            parts.append(sized + f"[s{i}]")
+            parts.append(f"[{pip_input[i]}:v]trim=duration={info['seconds']:.3f},setpts=PTS-STARTPTS,"
+                         f"scale={pw}:-2,setsar=1,fps=24[k{i}]")
+            parts.append(f"[s{i}][k{i}]overlay=x={x}:y={y}:eof_action=pass{burn},format=yuv420p[{label}]")
+        else:
+            parts.append(sized + f"{burn},format=yuv420p[{label}]")
         if i in mark_input:
             parts.append(f"[{mark_input[i]}:v]scale={w}:{h},format=rgba[m{i}]")
             parts.append(f"[b{i}][m{i}]overlay=0:0:shortest=1,format=yuv420p[v{i}]")
+        snd = sounds[i] or {}
+        own = f",volume={float(snd['own']):.2f}" if "own" in snd else ""
+        mine = f"a{i}" if i not in sound_input else f"o{i}"
         if info["has_audio"]:
-            parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
+            parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo{own}[{mine}]")
         else:
-            parts.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['seconds']:.3f}[a{i}]")
+            parts.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['seconds']:.3f}[{mine}]")
+        if i in sound_input:
+            # The computer's sound under the microphone, each at its own
+            # volume, cut to the clip's length.
+            parts.append(f"[{sound_input[i]}:a]atrim=duration={info['seconds']:.3f},asetpts=PTS-STARTPTS,"
+                         f"aresample=48000,aformat=channel_layouts=stereo,"
+                         f"volume={float(snd.get('volume', 1.0)):.2f}[p{i}]")
+            parts.append(f"[o{i}][p{i}]amix=inputs=2:duration=first:normalize=0[a{i}]")
     if crossfade > 0 and n > 1:
         cf = min(crossfade, min(i["seconds"] for i in infos) / 2)
         vlast, alast, offset = "v0", "a0", infos[0]["seconds"] - cf

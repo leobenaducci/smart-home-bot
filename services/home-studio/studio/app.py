@@ -36,7 +36,7 @@ from . import analysis, media, recipes
 from .manager import Manager
 from .characters import Characters
 from .history import LABELS, History
-from .projects import ProjectError, Projects
+from .projects import ProjectError, Projects, clean_layout, clean_mix
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -493,8 +493,16 @@ def start_recording(pid: str, body: dict | None = None, me: Who = Depends(who)):
 
 
 @app.post("/api/projects/{pid}/recordings/{rid}/chunk")
-async def recording_chunk(pid: str, rid: str, n: int, request: Request, me: Who = Depends(who)):
-    """One piece of the recording, numbered in the order it was made."""
+async def recording_chunk(pid: str, rid: str, n: int, request: Request, track: str = "main",
+                          me: Who = Depends(who)):
+    """One piece of the recording, numbered in the order it was made. `track`
+    is `main` (the screen, or the camera alone, with the microphone), `cam`
+    (the camera recorded beside the screen as a recording of its own, never
+    drawn into it, so whether it shows in a corner is decided afterwards) or
+    `pc` (the computer's sound, apart from the microphone, so each can be
+    turned up or down afterwards)."""
+    if track not in ("main", "cam", "pc"):
+        _bad(ValueError("bad track"))
     d = _rec_dir(me, pid, rid)
     if not d.is_dir():
         _bad(ProjectError("no such recording"), 404)
@@ -503,21 +511,43 @@ async def recording_chunk(pid: str, rid: str, n: int, request: Request, me: Who 
         raise HTTPException(413, "too large")
     if not 0 <= n < 100000:
         _bad(ValueError("bad piece number"))
-    (d / f"part-{n:06d}.webm").write_bytes(data)
-    return {"ok": True, "n": n}
+    (d / f"{ {'main': 'part', 'cam': 'cam', 'pc': 'pc'}[track]}-{n:06d}.webm").write_bytes(data)
+    return {"ok": True, "n": n, "track": track}
 
 
 @app.post("/api/projects/{pid}/recordings/{rid}/finish")
-def finish_recording(pid: str, rid: str, me: Who = Depends(who)):
+def finish_recording(pid: str, rid: str, body: dict | None = None, me: Who = Depends(who)):
     """The pieces joined in order -- a browser recording's pieces are one
     stream cut up, so joined they are the file -- and encoded into a kept
-    clip on the CPU, beside the card's queue. The clip becomes its take."""
+    clip on the CPU, beside the card's queue. The clip becomes its take.
+
+    A camera recorded beside the screen (`cam-*` pieces) is encoded as a clip
+    of its own, lined up with the screen's by `cam_offset_ms` (how much later
+    it started), and kept on the take as `cam`. `cam_layout` is where the page
+    showed it while recording -- off, or a corner and a size -- and becomes the
+    clip's, changeable any time after. The computer's sound (`pc-*` pieces) is
+    kept the same way as `pc`, lined up by `pc_offset_ms`, with the clip's
+    volumes in `mix`."""
+    body = body or {}
     d = _rec_dir(me, pid, rid)
     parts = sorted(d.glob("part-*.webm"))
+    cam_parts = sorted(d.glob("cam-*.webm"))
+    pc_parts = sorted(d.glob("pc-*.webm"))
+
+    def offset(key: str) -> float:
+        try:
+            return max(-10.0, min(10.0, float(body.get(key) or 0) / 1000))
+        except (TypeError, ValueError):
+            return 0.0
+    cam_offset, pc_offset = offset("cam_offset_ms"), offset("pc_offset_ms")
     if not parts:
         _bad(ValueError("nothing was recorded"))
     base = projects.dir(me.login, pid)
     projects.set_item_field(me.login, pid, rid, "recording", {"state": "processing", "parts": len(parts)})
+    if cam_parts and isinstance(body.get("cam_layout"), dict):
+        projects.set_item_field(me.login, pid, rid, "cam_layout", clean_layout(body["cam_layout"]))
+    if pc_parts:
+        projects.set_item_field(me.login, pid, rid, "mix", clean_mix(body.get("mix")))
 
     def work():
         raw = d / "recording.webm"
@@ -530,9 +560,34 @@ def finish_recording(pid: str, rid: str, me: Who = Depends(who)):
             seconds = round(media.probe(clip)["seconds"], 2)
             first = media.frame(clip, take_dir / f"{rid}-first.png", "first")
             last = media.frame(clip, take_dir / f"{rid}-last.png", "last")
-            projects.add_take(me.login, pid, rid, {"file": str(clip.relative_to(base)), "kind": "recording",
-                                                   "seconds": seconds, "first": str(first.relative_to(base)),
-                                                   "last": str(last.relative_to(base))})
+            take = {"file": str(clip.relative_to(base)), "kind": "recording",
+                    "seconds": seconds, "first": str(first.relative_to(base)),
+                    "last": str(last.relative_to(base))}
+            if cam_parts:
+                # The camera, apart. Its failing costs the camera, not the
+                # recording: the screen and its sound are the take either way.
+                raw_cam = d / "camera.webm"
+                try:
+                    with open(raw_cam, "wb") as out:
+                        for part in cam_parts:
+                            out.write(part.read_bytes())
+                    cam = media.encode_camera(raw_cam, take_dir / f"{rid}-cam.mp4", cam_offset, seconds)
+                    take["cam"] = str(cam.relative_to(base))
+                except Exception as exc:                       # noqa: BLE001
+                    log.warning("recording %s: the camera track failed: %s", rid, exc)
+                    take["cam_error"] = str(exc)[:200]
+            if pc_parts:
+                raw_pc = d / "computer.webm"
+                try:
+                    with open(raw_pc, "wb") as out:
+                        for part in pc_parts:
+                            out.write(part.read_bytes())
+                    pc = media.encode_sound(raw_pc, take_dir / f"{rid}-pc.m4a", pc_offset, seconds)
+                    take["pc"] = str(pc.relative_to(base))
+                except Exception as exc:                       # noqa: BLE001
+                    log.warning("recording %s: the computer sound failed: %s", rid, exc)
+                    take["pc_error"] = str(exc)[:200]
+            projects.add_take(me.login, pid, rid, take)
             projects.set_item_field(me.login, pid, rid, "seconds", seconds)
             projects.set_item_field(me.login, pid, rid, "recording", {"state": "done"})
             shutil.rmtree(d, ignore_errors=True)
@@ -568,15 +623,30 @@ def trim_silences(pid: str, item_id: str, body: dict | None = None, me: Who = De
     def work():
         try:
             stamp = uuid.uuid4().hex[:8]
-            clip, removed = media.cut_silences(base / take["file"], base / "takes" / item_id / f"{stamp}-trim.mp4",
-                                               min_s=min_s)
+            spans, total = media.speaking_spans(base / take["file"], min_s=min_s)
+            clip = media.cut_spans(base / take["file"], base / "takes" / item_id / f"{stamp}-trim.mp4", spans)
+            removed = round(total - sum(b - a for a, b in spans), 2)
+            # The camera, cut at the same places, so it stays with the screen.
+            cam = None
+            if take.get("cam") and (base / take["cam"]).is_file():
+                cam = media.cut_spans(base / take["cam"], base / "takes" / item_id / f"{stamp}-trim-cam.mp4",
+                                      spans, sound=False)
+            # The computer sound too. Silences are found in the microphone
+            # alone -- the screen's track -- so music under a pause is not
+            # taken for speech.
+            pc = None
+            if take.get("pc") and (base / take["pc"]).is_file():
+                pc = media.cut_spans(base / take["pc"], base / "takes" / item_id / f"{stamp}-trim-pc.m4a",
+                                     spans, picture=False)
             first = media.frame(clip, clip.with_name(f"{stamp}-trim-first.png"), "first")
             last = media.frame(clip, clip.with_name(f"{stamp}-trim-last.png"), "last")
             seconds = round(media.probe(clip)["seconds"], 2)
             projects.add_take(me.login, pid, item_id, {"file": str(clip.relative_to(base)), "kind": "trimmed",
                                                        "from": take["id"], "seconds": seconds,
                                                        "first": str(first.relative_to(base)),
-                                                       "last": str(last.relative_to(base))})
+                                                       "last": str(last.relative_to(base)),
+                                                       **({"cam": str(cam.relative_to(base))} if cam else {}),
+                                                       **({"pc": str(pc.relative_to(base))} if pc else {})})
             projects.set_item_field(me.login, pid, item_id, "seconds", seconds)
             projects.set_item_field(me.login, pid, item_id, "trim", {"state": "done", "removed": removed})
         except Exception as exc:                               # noqa: BLE001
@@ -1368,9 +1438,26 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         stamp = time.strftime("%Y%m%d-%H%M%S") + ("-preview" if preview else "")
         out = base / "renders" / f"{stamp}.mp4"
         followed = []
+        def layers(s: dict, t: dict | None) -> tuple[dict | None, dict | None]:
+            """A recording's camera in its corner (when shown) and its sound
+            at its volumes, the computer's under the microphone's."""
+            if not (t and s.get("recorded")):
+                return None, None
+            pip = None
+            if t.get("cam") and (base / t["cam"]).is_file():
+                lay = clean_layout(s.get("cam_layout"))
+                pip = {"file": base / t["cam"], **lay} if lay["show"] else None
+            mix = clean_mix(s.get("mix"))
+            snd = {"own": mix["mic"]}
+            if t.get("pc") and (base / t["pc"]).is_file():
+                snd.update(file=base / t["pc"], volume=mix["pc"])
+            return pip, snd
+
         try:
             use_clips, use_lengths, use_marks = clips, lengths, None
             use_subs = [subs_of(t) for s, t in made if t]
+            use_pips = [layers(s, t)[0] for s, t in made if t]
+            use_sounds = [layers(s, t)[1] for s, t in made if t]
             if preview:
                 if clips:
                     first = media.probe(clips[0])
@@ -1378,7 +1465,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                 else:
                     w, h = (doc["settings"].get("resolution") or "832x480").split("x")
                     size = (int(w), int(h))
-                use_clips, use_lengths, use_marks, use_subs = [], [], [], []
+                use_clips, use_lengths, use_marks, use_subs, use_pips, use_sounds = [], [], [], [], [], []
                 badge = str(labels.get("preview") or "PREVIEW")[:30].upper()
 
                 def clock(t: float) -> str:
@@ -1393,6 +1480,9 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                     use_marks.append(media.watermark(badge, info, size, base / "renders" / f"{stamp}-mark{n}.png"))
                     followed.append(use_marks[-1])
                     use_subs.append(subs_of(t))
+                    pip, snd = layers(s, t)
+                    use_pips.append(pip)
+                    use_sounds.append(snd)
                     if t:
                         use_clips.append(base / t["file"])
                         use_lengths.append(length if s.get("exact") else None)
@@ -1412,7 +1502,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                         use_lengths.append(None)
             film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
                                 crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
-                                marks=use_marks, fast=preview, subs=use_subs)
+                                marks=use_marks, fast=preview, subs=use_subs, pips=use_pips, sounds=use_sounds)
             if tracks:
                 laid = []
                 for k, tr in enumerate(tracks):
