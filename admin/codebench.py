@@ -328,6 +328,19 @@ class Runner:
             self._status("idle", note="interrupted: the admin page restarted during a run")
         self.kick()
 
+    def watch(self, every: float = 30) -> None:
+        """Pick up what is queued without the page's button: an entry written
+        to queue.json by hand (or by another admin process) waited for this
+        page to restart before it ran (2026-10-02)."""
+        def loop():
+            while True:
+                time.sleep(every)
+                try:
+                    self.kick()
+                except Exception:                              # noqa: BLE001 -- keep watching
+                    pass
+        threading.Thread(target=loop, name="codebench-watch", daemon=True).start()
+
     # -- docker --
     def _docker(self, *args: str, timeout: int = 120, **kw) -> subprocess.CompletedProcess:
         try:

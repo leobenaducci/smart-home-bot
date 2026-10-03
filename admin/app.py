@@ -7419,6 +7419,7 @@ def codebench() -> "code_bench.Runner":
                 ollama_url=lambda: ML.OLLAMA_URL, build_dir=LC.build_dir, models_dir=OI.MODELS_DIR,
                 server_image=LC.IMAGE)
             threading.Thread(target=_codebench.recover, daemon=True).start()
+            _codebench.watch()
         return _codebench
 
 
