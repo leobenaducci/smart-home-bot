@@ -83,7 +83,8 @@ binary. A setup's `context` is per slot; the unit's `-c` is context x slots.
 **The model library** (`deploy/model_library.py`, the page's Library tab)
 lists what is on disk in both stores and **tests each model on each engine that
 could run it** -- loaded on the CPU with a small window, asked for one token --
-right after it arrives. It exists because two Ollama-library models applied on
+when somebody presses Test. A pull or a download only fetches; the new model is
+listed untested until then, and applying a setup on it warns. It exists because two Ollama-library models applied on
 llama.cpp did not load, and the roles on them went down. A setup's model is
 picked from the library, each marked by how it tested on the engine chosen
 beside it; one that failed there cannot be picked. "Other" takes a name the

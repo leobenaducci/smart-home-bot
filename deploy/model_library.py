@@ -10,9 +10,10 @@ A model being on disk says nothing about whether an engine can run it. On
 2026-09-24 two setups were applied on llama.cpp with models from Ollama's
 library -- qwen3.5:9b ("rope.dimension_sections has wrong array length") and
 gemma4:e4b ("wrong number of tensors; expected 2131, got 720") -- and the roles
-on them went down. So every model is *tested* on each engine that could run
-it, right after it arrives, and the page offers a setup only the models that
-passed on its engine.
+on them went down. So a model is *tested* on each engine that could run it,
+and the page warns before a setup is applied on a model untested on its
+engine. The test runs when the household presses Test, not on arrival
+(2026-10-02): a download is only a download.
 
 A test loads the model on the CPU (no card's memory is touched, nothing
 running is evicted) with a small window and asks for one token. Results go to
@@ -493,7 +494,10 @@ def run_queue(config_dir: Path, cfg: dict, ollama_blob) -> int:
             failed += 1
             continue
         doc = refresh(config_dir)
-        if op in ("pull", "download", "test", "import"):
+        # Only when asked: a test loads the model, and the household runs
+        # them when it chooses (2026-10-02). A model that has just arrived is
+        # listed untested, and a setup on it says to test it first.
+        if op == "test":
             entry = next((m for m in doc["models"] if m["id"] == model), None)
             if entry is None:
                 print(f"  {model} is not in the library")

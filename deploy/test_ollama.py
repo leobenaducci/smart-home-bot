@@ -324,6 +324,29 @@ for _bad in ({**_imp, "renderer": "{{ .Evil }}"}, {**_imp, "name": "m"}, {**_imp
         check(f"    an import with {_diff} is refused", False)
     except ML.LibraryError:
         check(f"    an import with {_diff} is refused", True)
+# A download is only a download: the test runs when somebody presses Test
+# (2026-10-02), not because a model arrived.
+_qd = pathlib.Path(tempfile.mkdtemp())
+_tested, _saved = [], {}
+_real = (ML.pull, ML.download, ML.import_to_ollama, ML.refresh, ML.test, ML.save_library)
+ML.pull = ML.download = lambda model: ""
+ML.import_to_ollama = lambda model, name, renderer: ""
+ML.refresh = lambda d: {"models": [{"id": "x:1", "engines": ["ollama"]},
+                                   {"id": "hf:a/b/c.gguf", "engines": ["llamacpp"]},
+                                   {"id": "m:q4", "engines": ["ollama"]}], "tests": {}}
+ML.test = lambda model, engines, blob: (_tested.append(model), {e: {"ok": True} for e in engines})[1]
+ML.save_library = lambda d, doc: _saved.update(doc)
+try:
+    (_qd / ML.QUEUE).write_text(json.dumps([
+        {"op": "pull", "model": "x:1"}, {"op": "download", "model": "hf:a/b/c.gguf"},
+        {"op": "import", "model": "hf:a/b/c.gguf", "name": "m:q4", "renderer": ""}]))
+    check("  a pull, a download or an import tests nothing",
+          ML.run_queue(_qd, {}, lambda m: "") == 0 and _tested == [], _tested)
+    (_qd / ML.QUEUE).write_text(json.dumps([{"op": "test", "model": "x:1"}]))
+    check("  Test does", ML.run_queue(_qd, {}, lambda m: "") == 0 and _tested == ["x:1"]
+          and _saved.get("tests", {}).get("x:1") == {"ollama": {"ok": True}}, (_tested, _saved))
+finally:
+    ML.pull, ML.download, ML.import_to_ollama, ML.refresh, ML.test, ML.save_library = _real
 _md = pathlib.Path(tempfile.mkdtemp())
 (_md / "hf/prism-ml/Bonsai-gguf").mkdir(parents=True)
 (_md / "hf/prism-ml/Bonsai-gguf/Bonsai-PQ2_0.gguf").write_bytes(b"x")
