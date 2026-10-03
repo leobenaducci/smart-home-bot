@@ -67,7 +67,8 @@
     @media (prefers-reduced-motion: reduce) { #gpu.busy .dot { animation: none; } }
 
     /* Queue drawer */
-    #queue { display: none; background: var(--paper-2); border-bottom: 1px solid var(--line); padding: 12px 20px; }
+    #queue { display: none; background: var(--paper-2); border-bottom: 1px solid var(--line); padding: 12px 20px;
+      scroll-margin-top: 48px; }   /* clear of the sticky card bar above it */
     #queue.open { display: block; }
     .qrow { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); font-size: .84rem; }
     .qrow:first-child { border-top: 0; }
@@ -369,12 +370,14 @@
         var now = q.running && stoppable(q.running) && q.running.phase !== 'pausing'
           ? '<button class="danger" data-admin="pause-now" title="' + esc(S.pause_now_about) + '">' +
             (q.status.paused ? S.pause_stop_running : S.pause_now) + '</button>' : '';
-        admin = '<div class="row" style="margin-top:8px">' + (q.status.paused
+        // First, not after the list: under 26 queued shots it was off the
+        // screen, and ⏸ seemed to do nothing (2026-10-02).
+        admin = '<div class="row" id="pause-row" style="margin-bottom:8px">' + (q.status.paused
           ? '<button data-admin="resume">' + S.resume + '</button>' + now
           : '<button data-admin="pause">' + (q.running ? S.pause_after : S.pause) + '</button>' + now) +
           (now ? '<span class="muted">' + S.pause_now_about + '</span>' : '') + '</div>';
       }
-      box.innerHTML = (rows.length ? rows.join('') : '<p class="muted">' + S.queue_empty + '</p>') + admin;
+      box.innerHTML = admin + (rows.length ? rows.join('') : '<p class="muted">' + S.queue_empty + '</p>');
     }
     // The generator's jobs can be stopped mid-way; the audio unit's cannot.
     function stoppable(j) { return ['analyze', 'repaint', 'score'].indexOf(j.kind) < 0; }
@@ -391,6 +394,8 @@
       ev.stopPropagation();
       if (this.dataset.act === 'drawer') {
         var box = $('#queue'); box.classList.add('open'); $('#gpu').setAttribute('aria-expanded', true); drawQueue();
+        var first = box.querySelector('#pause-row button');
+        if (first) { box.scrollIntoView({ block: 'start' }); first.focus(); }
         return;
       }
       try { await pauseCard(this.dataset.act); } catch (e) { toast(fmt('err', { e: e.message }), true); }

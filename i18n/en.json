@@ -1841,7 +1841,7 @@
   "studio.pause_after": "Pause after this job",
   "studio.pause_now": "Pause now, requeue this job",
   "studio.pause_stop_running": "Stop and requeue the running job",
-  "studio.pause_now_about": "Now stops the job on the card: it goes back to the queue and starts over when the Studio resumes.",
+  "studio.pause_now_about": "Pause now stops the job on the card: it goes back to the queue and starts over when the Studio resumes.",
   "studio.pause_now_confirm": "Stop {what} now? It goes back to the queue and starts over when the Studio resumes.",
   "studio.card_taken": "The card is in use outside the Studio ({gb} GB, the Programmer's model): the next job waits for it",
   "studio.card_paused_after": "the ones after it wait ({why})",

@@ -1843,7 +1843,7 @@
   "studio.pause_after": "Pausar después de este trabajo",
   "studio.pause_now": "Pausar ya y volver a encolar este trabajo",
   "studio.pause_stop_running": "Detener y volver a encolar el que está corriendo",
-  "studio.pause_now_about": "Ahora detiene el trabajo de la placa: vuelve a la cola y empieza de nuevo cuando el Studio se reanuda.",
+  "studio.pause_now_about": "«Pausar ya» detiene el trabajo de la placa: vuelve a la cola y empieza de nuevo cuando el Studio se reanuda.",
   "studio.pause_now_confirm": "¿Detener {what} ahora? Vuelve a la cola y empieza de nuevo cuando el Studio se reanude.",
   "studio.card_taken": "La placa está en uso fuera del Estudio ({gb} GB, el modelo del Programador): el próximo trabajo la espera",
   "studio.card_paused_after": "las siguientes esperan ({why})",
