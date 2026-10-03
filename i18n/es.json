@@ -266,6 +266,7 @@
   "admin.codebench.visible": "sus tests",
   "admin.codebench.hidden": "tests ocultos",
   "admin.codebench.tests_edited": "editó los tests ({files}); se calificó con los reales",
+  "admin.codebench.cut_off": "una respuesta se cortó",
   "admin.codebench.edited": "editó tests",
   "admin.codebench.timed_out": "se quedó sin tiempo",
   "admin.codebench.stopped": "detenido",

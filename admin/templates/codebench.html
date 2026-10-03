@@ -228,7 +228,8 @@
     verdict_ok: {{ t('admin.codebench.verdict_ok') | tojson }},
     verdict_fail: {{ t('admin.codebench.verdict_fail') | tojson }},
     verdict_untested: {{ t('admin.codebench.verdict_untested') | tojson }},
-    edited: {{ t('admin.codebench.edited') | tojson }}
+    edited: {{ t('admin.codebench.edited') | tojson }},
+    cut_off: {{ t('admin.codebench.cut_off') | tojson }}
   };
   function $(s) { return document.querySelector(s); }
   function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
@@ -350,7 +351,8 @@
     if (r.pass == null) return '<td><button type="button" class="cb-cell fail" data-run="' + esc(run.id) + '" data-p="' + esc(pid) + '">' +
       '<b>!</b><div class="sub">' + esc(S.failed_run) + '</div></button></td>';
     var tone = r.pass ? 'pass' : (r.visible || r.hidden) ? 'fail part' : 'fail';
-    var note = r.timed_out ? S.timed_out : r.stopped ? S.stopped : r.tests_untouched === false ? S.edited : '';
+    var note = r.timed_out ? S.timed_out : r.stopped ? S.stopped : r.tests_untouched === false ? S.edited
+      : r.cut_off ? S.cut_off : '';
     return '<td><button type="button"' + cls('cb-cell', tone) + ' data-run="' + esc(run.id) + '" data-p="' + esc(pid) + '" title="' +
       esc(S.visible + ': ' + (r.visible ? '✓' : '✗') + ' · ' + S.hidden + ': ' + (r.hidden ? '✓' : '✗')) + '">' +
       '<span class="nowrap"><b>' + (r.pass ? '✓' : r.visible ? '½' : '✗') + '</b> ' + esc(dur(r.seconds)) + '</span>' +

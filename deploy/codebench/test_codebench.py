@@ -144,10 +144,15 @@ def main() -> int:
         check("turns and tokens add up", ev.turns == 2 and ev.tokens == {
             "input": 18500, "output": 200, "reasoning": 40, "cache_read": 8000}, (ev.turns, ev.tokens))
         check("the last thing it said is kept", ev.final_text == "Fixed the cache.")
+        cut = solve.Events(0).feed(json.dumps({"type": "step_finish", "part": {"reason": "length", "tokens": {"output": 16384}}}))
+        check("a reply cut off at the output limit is a step that says so",
+              cut and cut["kind"] == "error" and "output limit" in cut["text"], cut)
         check("an unknown event or a stray line is counted, not fatal",
               ev.unknown == {"something_new": 1} and steps[-2:] == [None, None], ev.unknown)
         print("\nwhat the sandbox is given")
         cfg = solve.opencode_config("http://codebench-server:8080/v1", "bench", 32768)
+        check("a reply may be as long as the Programmer allows its local model",
+              cfg["provider"]["bench"]["models"]["bench"]["limit"]["output"] == 16384)
         check("opencode may not fetch the web or leave the repository",
               cfg["permission"]["webfetch"] == "deny" and cfg["permission"]["external_directory"] == {"*": "deny"})
     finally:

@@ -43,6 +43,11 @@ CHECK_TIMEOUT = 300
 MAX_STEPS = 400
 CLIP = 600
 DIFF_CLIP = 40_000
+# Tokens per reply: what the Programmer gives its local model (deploy.py,
+# the fallback's `limit.output`), so a model is measured as it would be used.
+# It was 8192 here, and Bonsai -- which thinks for minutes before acting --
+# was cut off mid-thought twice and ended its turn with nothing (2026-10-02).
+OUTPUT_LIMIT = 16384
 
 
 def emit(obj: dict) -> None:
@@ -72,7 +77,7 @@ def opencode_config(base_url: str, model: str, context: int) -> dict:
         "provider": {"bench": {"npm": "@ai-sdk/openai-compatible", "name": "bench",
                                "options": {"baseURL": base_url},
                                "models": {model: {"name": model, "tool_call": True,
-                                                  "limit": {"context": context, "output": 8192}}}}},
+                                                  "limit": {"context": context, "output": OUTPUT_LIMIT}}}}},
         # Nothing outside the repository, and nothing from the web: the
         # answer has to come from the model.
         "permission": {"external_directory": {"*": "deny"}, "webfetch": "deny"},
@@ -100,6 +105,7 @@ class Events:
         self.unknown: dict[str, int] = {}
         self.final_text = ""
         self.stopped = False
+        self.cut_off = 0           # replies that ended at the output limit
 
     def feed(self, line: str) -> dict | None:
         """One line of output; the step it made, if any."""
@@ -120,6 +126,12 @@ class Events:
             for k in ("input", "output", "reasoning"):
                 self.tokens[k] += int(tok.get(k) or 0)
             self.tokens["cache_read"] += int((tok.get("cache") or {}).get("read") or 0)
+            # A reply that ran out of tokens: opencode ends the turn there,
+            # which otherwise reads as the model simply stopping.
+            if str(part.get("reason") or "").lower() in ("length", "max_tokens", "max-tokens"):
+                self.cut_off += 1
+                step = {"at": at, "kind": "error",
+                        "text": f"the reply reached the output limit ({OUTPUT_LIMIT} tokens) and was cut off"}
         elif kind == "tool_use" or part.get("type") == "tool":
             state = part.get("state") or {}
             status = str(state.get("status") or "")
@@ -263,7 +275,7 @@ def attempt(job: dict) -> dict:
     graded = grade(repo, job)
     return {"ev": "result", "problem": pid, **graded, "seconds": seconds, "timed_out": timed_out,
             "stopped": events.stopped, "exit_code": proc.returncode,
-            "turns": events.turns, "tool_calls": events.tools, "tool_errors": events.tool_errors,
+            "turns": events.turns, "cut_off": events.cut_off, "tool_calls": events.tools, "tool_errors": events.tool_errors,
             "tokens": events.tokens, "errors": events.errors[:5], "unknown_events": events.unknown,
             "final_text": clip(events.final_text, 3000), "steps": events.steps,
             "log_tail": log_tail if not graded["pass"] else ""}

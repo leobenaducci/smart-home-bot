@@ -196,7 +196,8 @@ def summary(run: dict) -> dict:
             "vram_mb": run.get("vram_mb"),
             "passed": sum(1 for r in done if r.get("pass")), "graded": len(done),
             "problems": {pid: {k: r.get(k) for k in ("pass", "seconds", "turns", "tool_calls", "tool_errors",
-                                                      "timed_out", "stopped", "tests_untouched", "error")}
+                                                      "timed_out", "stopped", "tests_untouched", "error",
+                                                      "cut_off")}
                          | {"visible": (r.get("visible") or {}).get("ok"), "hidden": (r.get("hidden") or {}).get("ok"),
                             "output_tokens": (r.get("tokens") or {}).get("output")}
                          for pid, r in res.items()}}
