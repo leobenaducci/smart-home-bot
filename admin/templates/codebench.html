@@ -7,6 +7,13 @@
    problems on the Studio's card, and keeps what it did on the way. #}
 
 <style>
+  /* Wider than the other pages: the results are a run per row and a problem
+     per column, and at 1000px the last column -- ★ and ✕ -- fell off. */
+  .plate { max-width: 1320px; }
+  table.cb-matrix td.acts { white-space: nowrap; width: 1%; }
+  table.cb-matrix td.who { min-width: 20ch; max-width: 26ch; overflow-wrap: anywhere; }
+  .cb-err { max-height: 4.2em; overflow: hidden; }
+  table.cb-matrix td.acts button { padding: 6px 10px; }
   .cb-problems { list-style: none; margin: 0; padding: 0; }
   .cb-problems li { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: start;
     padding: 10px 0; border-top: 1px solid var(--edge); }
@@ -346,7 +353,7 @@
     var note = r.timed_out ? S.timed_out : r.stopped ? S.stopped : r.tests_untouched === false ? S.edited : '';
     return '<td><button type="button"' + cls('cb-cell', tone) + ' data-run="' + esc(run.id) + '" data-p="' + esc(pid) + '" title="' +
       esc(S.visible + ': ' + (r.visible ? '✓' : '✗') + ' · ' + S.hidden + ': ' + (r.hidden ? '✓' : '✗')) + '">' +
-      '<b>' + (r.pass ? '✓' : r.visible ? '½' : '✗') + '</b> ' + esc(dur(r.seconds)) +
+      '<span class="nowrap"><b>' + (r.pass ? '✓' : r.visible ? '½' : '✗') + '</b> ' + esc(dur(r.seconds)) + '</span>' +
       '<div class="sub">' + esc(r.tool_calls == null ? '' : r.tool_calls + ' ' + S.steps) + (note ? ' · ' + esc(note) : '') + '</div></button></td>';
   }
   var lastRuns = [];
@@ -359,12 +366,15 @@
       if (run.load_seconds != null) meta.push(S.load + ' ' + dur(run.load_seconds));
       if (srv.gen_tok_s) meta.push(srv.gen_tok_s + ' tok/s');
       if (srv.layers && !srv.all_on_gpu) meta.push(S.layers + ' ' + srv.layers);
-      return '<tr><td><div class="strong">' + esc(run.model) + '</div><div class="tiny muted">' + esc(meta.join(' · ')) +
-        '</div>' + (run.error ? '<div class="tiny warn">' + esc(run.error) + '</div>' : '') +
+      // A file by its name, its whole path on hover; an error in a few lines,
+      // all of it on hover and in the run's detail.
+      var name = /^(hf:|\/)/.test(run.model) ? run.model.split('/').pop().replace(/\.gguf$/i, '') : run.model;
+      return '<tr><td class="who"><div class="strong" title="' + esc(run.model) + '">' + esc(name) + '</div><div class="tiny muted">' + esc(meta.join(' · ')) +
+        '</div>' + (run.error ? '<div class="tiny warn cb-err" title="' + esc(run.error) + '">' + esc(run.error) + '</div>' : '') +
         '<div class="tiny muted">' + esc(new Date((run.started || 0) * 1000).toLocaleString()) + '</div></td>' +
         '<td class="num"><span class="cb-score">' + run.passed + '/' + Object.keys(run.problems || {}).length + '</span></td>' +
         PROBLEMS.map(function (p) { return cell(run, p.id); }).join('') +
-        '<td><div class="row-tight">' + (run.engine === 'llamacpp' && run.state !== 'running'
+        '<td class="acts"><div class="row-tight">' + (run.engine === 'llamacpp' && run.state !== 'running'
           ? '<button type="button" class="ghost" data-use="' + esc(run.id) + '" title="' + esc(S.use_for_programmer) + '">★</button>' : '') +
         (run.state === 'running' ? '' : '<button type="button" class="ghost danger" data-del="' + esc(run.id) + '" title="' + esc(S.delete_run) + '">✕</button>') + '</div></td></tr>';
     }).join('');
