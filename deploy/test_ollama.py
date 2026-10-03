@@ -347,6 +347,31 @@ try:
           and _saved.get("tests", {}).get("x:1") == {"ollama": {"ok": True}}, (_tested, _saved))
 finally:
     ML.pull, ML.download, ML.import_to_ollama, ML.refresh, ML.test, ML.save_library = _real
+# As root the test runs llama-server as the ollama user, through runuser. The
+# child's PATH has no sbin, so runuser has to be named by its full path.
+_seen = {}
+class _Stop(Exception):
+    pass
+def _popen(argv, **kw):
+    _seen["argv"], _seen["env"] = argv, kw.get("env")
+    raise _Stop
+_real_popen, _real_euid = ML.subprocess.Popen, ML.os.geteuid
+_bins = pathlib.Path(tempfile.mkdtemp()) / "bin"
+_bins.mkdir()
+(_bins / "llama-server").write_text("")
+_real_dir = ML.LC.build_dir
+ML.subprocess.Popen, ML.os.geteuid = _popen, (lambda: 0)
+ML.LC.build_dir = lambda flavor, root=None: _bins.parent
+try:
+    try:
+        ML.test_llamacpp("x.gguf", "llamacpp", "/m/x.gguf")
+    except _Stop:
+        pass
+finally:
+    ML.subprocess.Popen, ML.os.geteuid, ML.LC.build_dir = _real_popen, _real_euid, _real_dir
+check("  as root, runuser is named by its full path (the child's PATH has no sbin)",
+      _seen.get("argv", [""])[0].startswith("/") and _seen["argv"][0].endswith("runuser")
+      and _seen["argv"][1:4] == ["-u", "ollama", "--"], _seen.get("argv"))
 _md = pathlib.Path(tempfile.mkdtemp())
 (_md / "hf/prism-ml/Bonsai-gguf").mkdir(parents=True)
 (_md / "hf/prism-ml/Bonsai-gguf/Bonsai-PQ2_0.gguf").write_bytes(b"x")

@@ -396,7 +396,11 @@ def test_llamacpp(model: str, engine: str, path: str) -> dict:
     argv = [str(bin_dir / "llama-server"), "-m", path, "--host", "127.0.0.1",
             "--port", str(TEST_PORT), "-c", str(TEST_CTX), "-np", "1", "-ngl", "0", "--jinja"]
     if os.geteuid() == 0:
-        argv = ["runuser", "-u", "ollama", "--", *argv]
+        # By its full path: the PATH below is the child's, and Popen looks
+        # the program up in it -- runuser is in /usr/sbin, so every llama.cpp
+        # test failed "No such file or directory: 'runuser'" (2026-10-02).
+        runuser = shutil.which("runuser", path="/usr/sbin:/sbin:/usr/bin:/bin") or "/usr/sbin/runuser"
+        argv = [runuser, "-u", "ollama", "--", *argv]
     env = {"PATH": "/usr/bin:/bin", "LD_LIBRARY_PATH": str(bin_dir), "CUDA_VISIBLE_DEVICES": ""}
     started = time.time()
     proc = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
