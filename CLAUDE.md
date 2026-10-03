@@ -157,6 +157,8 @@ scripts, take no arguments, and run from the root under the same interpreter
 ./deploy/test_install.sh                    the installer, on a throwaway tree
 ./.venv/bin/python admin/test_templates.py  one class per tag, no bare {{ }} in a script
 ./.venv/bin/python admin/test_ollama.py     "Runs on", the servers card, the VRAM estimate
+./.venv/bin/python admin/test_codebench.py  the coding benchmark: entries, the sandbox image, results
+./.venv/bin/python deploy/codebench/test_codebench.py  each problem fails as given, passes solved
 ```
 
 Services carry their own suites and are run from inside the service directory

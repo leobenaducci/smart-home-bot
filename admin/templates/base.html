@@ -885,7 +885,7 @@ pre.out, .joblog {
     <div class="directory">
       {% for endpoint, slot, label in nav_rows %}
         <a href="{{ url_for(endpoint) }}"
-           {% if page == endpoint or (endpoint == 'members' and page == 'member_profile') or (endpoint == 'models_page' and page == 'models_catalog') %}aria-current="page"{% endif %}>
+           {% if page == endpoint or (endpoint == 'members' and page == 'member_profile') or (endpoint == 'models_page' and page in ('models_catalog', 'codebench_page')) %}aria-current="page"{% endif %}>
           <span class="slot">{{ slot }}</span>{{ label }}
           {% if endpoint == 'deploy' and pending_count %}
             <span class="tag-dot" title="{{ t('admin.deploy.pending_services', n=pending_count) }}"></span>

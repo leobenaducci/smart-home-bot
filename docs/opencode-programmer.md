@@ -203,6 +203,12 @@ than Kimi K2.7 Code; the pipeline's gates -- tests, the benchmark, the leak
 check, approvals -- are what stop a bad fix from shipping, whichever model
 wrote it.
 
+The model is picked on the admin page, in the Programmer card of **Models**
+(a local model, its window, and whether it goes first), and saving marks
+`alfred-mcp` and `home-core` for deploy. Candidates are compared on the
+**coding benchmark** (`docs/coding-benchmark.md`), whose ★ on a llama.cpp run
+sets the same thing.
+
 ### The other way round: the local model first
 
 `cloud.opencode.fallback.first: true` (the portal's `OPENCODE_LOCAL_FIRST`)

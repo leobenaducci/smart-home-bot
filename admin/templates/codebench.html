@@ -1,0 +1,450 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# The coding benchmark (admin/codebench.py). Separate from the Models page's
+   benchmark, which measures the assistant's roles through nanobot: this one
+   gives a local model the Programmer's harness, opencode, and five fixed
+   problems on the Studio's card, and keeps what it did on the way. #}
+
+<style>
+  .cb-problems { list-style: none; margin: 0; padding: 0; }
+  .cb-problems li { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: start;
+    padding: 10px 0; border-top: 1px solid var(--edge); }
+  .cb-problems li:first-child { border-top: 0; }
+  .cb-problems .lang { font-family: var(--mono); font-size: .74rem; color: var(--ink-soft); }
+  .cb-problems .about { grid-column: 2 / 3; font-size: .82rem; color: var(--ink-soft); max-width: 68ch; }
+  .cb-now { display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; }
+  .cb-now .what { font-weight: 600; }
+  .cb-now .grow { flex: 1 1 auto; }
+  .cb-steps { margin: var(--s2) 0 0; padding: 0; list-style: none; font-size: .8rem; max-height: 320px;
+    overflow-y: auto; border: 1px solid var(--edge); border-radius: var(--r); background: var(--plate); }
+  .cb-steps li { display: grid; grid-template-columns: 5.5ch 9ch 1fr; gap: 8px; padding: 5px 10px;
+    border-top: 1px solid var(--edge); }
+  .cb-steps li:first-child { border-top: 0; }
+  .cb-steps .t { font-family: var(--mono); color: var(--ink-soft); text-align: right; }
+  .cb-steps .k { font-family: var(--mono); font-weight: 600; }
+  .cb-steps .k.error, .cb-steps li.failed .k { color: var(--tag-ink); }
+  .cb-steps .k.text { color: var(--live-ink); }
+  .cb-steps .k.thinking { color: var(--ink-soft); font-weight: 400; }
+  .cb-steps .body { white-space: pre-wrap; word-break: break-word; }
+  .cb-steps .io { font-family: var(--mono); font-size: .74rem; color: var(--ink-soft); }
+  /* The matrix: a run per row, a problem per column. The verdict is the
+     thing to read across a row, so it is the only colour on the table. */
+  table.cb-matrix td, table.cb-matrix th { vertical-align: top; }
+  table.cb-matrix th.p { font-family: var(--mono); font-size: .74rem; font-weight: 600; white-space: nowrap; }
+  .cb-cell { display: block; width: 100%; min-width: 8.5ch; text-align: left; padding: 6px 8px;
+    border-radius: var(--r); border: 1px solid var(--edge); background: transparent; color: var(--ink);
+    font-size: .78rem; line-height: 1.35; cursor: pointer; }
+  .cb-cell:hover { background: var(--plate); }
+  .cb-cell b { font-size: .9rem; }
+  .cb-cell.pass { border-color: var(--live); background: color-mix(in srgb, var(--live) 12%, transparent); }
+  .cb-cell.fail { border-color: var(--tag); background: var(--tag-wash); }
+  .cb-cell.part b { color: var(--attn-ink); }
+  .cb-cell .sub { color: var(--ink-soft); font-family: var(--mono); font-size: .72rem; }
+  .cb-score { font-family: var(--mono); font-weight: 700; font-size: 1rem; }
+  dialog.cb-detail { width: min(980px, 96vw); max-height: 92vh; border: 1px solid var(--edge);
+    border-radius: var(--r); background: var(--plate-2); color: var(--ink); padding: 0; }
+  dialog.cb-detail::backdrop { background: rgba(0,0,0,.35); }
+  .cb-detail header { position: sticky; top: 0; background: var(--plate-2); padding: 16px 20px 10px;
+    border-bottom: 1px solid var(--edge); display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; }
+  .cb-detail header h2 { font-size: 1.05rem; margin: 0; flex: 1 1 auto; }
+  .cb-detail section { padding: 12px 20px; }
+  .cb-detail h3 { font-size: .86rem; margin: 0 0 6px; }
+  .cb-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 18px; font-size: .84rem; }
+  .cb-facts span { color: var(--ink-soft); display: block; font-size: .74rem; }
+  .cb-pre { font-family: var(--mono); font-size: .74rem; white-space: pre-wrap; word-break: break-word;
+    background: var(--plate); border: 1px solid var(--edge); border-radius: var(--r); padding: 8px 10px;
+    max-height: 320px; overflow: auto; margin: 0; }
+  .cb-diff .add { color: var(--live-ink); }
+  .cb-diff .del { color: var(--tag-ink); }
+  /* Live, a step is a line or two; the whole of it is in the run's detail. */
+  #cb-live .io { max-height: 4.2em; overflow: hidden; }
+  @media (max-width: 720px) {
+    .cb-problems li { grid-template-columns: auto 1fr; }
+    .cb-problems li > button { grid-column: 2; justify-self: start; }
+    .cb-steps li { grid-template-columns: 5ch 1fr; }
+    .cb-steps .k { grid-column: 2; }
+    .cb-steps .body { grid-column: 1 / -1; }
+  }
+</style>
+
+<h1>{{ t('admin.codebench.heading') }}</h1>
+<p class="intro">{{ t('admin.codebench.intro') }}</p>
+<p class="row"><a href="{{ url_for('models_page') }}">← {{ t('admin.nav.models') }}</a></p>
+
+{% if gpu is none %}
+<div class="notice">{{ t('admin.codebench.no_card') }}</div>
+{% endif %}
+
+<div class="card" id="programmer">
+  <h2>{{ t('admin.codebench.programmer_heading') }}</h2>
+  <p class="intro">{{ t('admin.codebench.programmer_intro') }}</p>
+  <div>
+    <p>{% if programmer.model %}{{ t('admin.codebench.programmer_now', model=programmer.model, k=(programmer.context // 1024)) }}
+       · {{ t('admin.codebench.programmer_first') if programmer.first else t('admin.codebench.programmer_fallback') }}
+       {% else %}{{ t('admin.codebench.programmer_none') }}{% endif %}</p>
+    <p class="row"><a href="{{ url_for('models_page') }}#code">{{ t('admin.codebench.programmer_change') }}</a>
+      <span class="tiny" id="cb-prog-msg"></span></p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.codebench.run_heading') }}</h2>
+  <form id="cb-form">
+    <div class="fields">
+      <div class="field wide">
+        <label for="cb-model">{{ t('admin.codebench.model') }}</label>
+        <select id="cb-model" name="model">
+          {% for m in models %}
+            <option value="{{ m.id }}" data-engines="{{ m.engines | join(',') }}"
+                    data-verdicts='{{ m.verdicts | tojson }}'>{{ m.id }}{% if m.gib %} · {{ m.gib }} GB{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="cb-engine">{{ t('admin.codebench.engine') }}</label>
+        <select id="cb-engine" name="engine">
+          {% for e in engines %}<option value="{{ e }}">{{ engine_labels[e] }}</option>{% endfor %}
+        </select>
+        <p class="tiny muted" id="cb-verdict"></p>
+      </div>
+      <div class="field">
+        <label for="cb-context">{{ t('admin.codebench.context') }}</label>
+        <select id="cb-context" name="context">
+          {% for c in contexts %}<option value="{{ c }}" {% if c == default_context %}selected{% endif %}>{{ (c // 1024) }}k</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <label>{{ t('admin.codebench.problems') }}</label>
+    <ul class="cb-problems">
+      {% for p in problems %}
+      <li>
+        <input type="checkbox" name="problem" value="{{ p.id }}" id="cb-p-{{ p.id }}" checked>
+        <label for="cb-p-{{ p.id }}" style="margin:0">{{ p.title }} <span class="lang">{{ p.language }} · {{ t('admin.codebench.kind_' ~ p.kind) }} · {{ p.id }}</span></label>
+        <button type="button" class="ghost" data-only="{{ p.id }}">▶ {{ t('admin.codebench.run_only') }}</button>
+        <span class="about">{{ p.about }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+
+    {% if studio_on %}
+    <label class="check-row stack-s"><input type="checkbox" name="interrupt" value="1">
+      {{ t('admin.codebench.interrupt') }}</label>
+    {% endif %}
+    <div class="row stack">
+      <button type="submit">▶ {{ t('admin.codebench.run_selected') }}</button>
+      <span class="tiny muted">{{ t('admin.codebench.run_help') }}</span>
+    </div>
+    <p class="flash error" id="cb-error" hidden></p>
+  </form>
+</div>
+
+<div class="card" id="cb-now-card">
+  <h2>{{ t('admin.codebench.now_heading') }}</h2>
+  <div>
+    <div class="cb-now">
+      <span class="what" id="cb-now">…</span>
+      <span class="grow"></span>
+      <button type="button" class="ghost danger" id="cb-stop" hidden>■ {{ t('admin.codebench.stop') }}</button>
+    </div>
+    <ol class="cb-steps" id="cb-live" hidden></ol>
+    <div id="cb-queue" class="stack-s"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{{ t('admin.codebench.results_heading') }}</h2>
+  <p class="intro">{{ t('admin.codebench.results_intro') }}</p>
+  <div class="scroll">
+    <table class="cb-matrix">
+      <thead><tr>
+        <th>{{ t('admin.codebench.model') }}</th>
+        <th class="num">{{ t('admin.codebench.score') }}</th>
+        {% for p in problems %}<th class="p" title="{{ p.title }}">{{ p.id }}</th>{% endfor %}
+        <th></th>
+      </tr></thead>
+      <tbody id="cb-runs"></tbody>
+    </table>
+  </div>
+  <p class="muted tiny" id="cb-empty" hidden>{{ t('admin.codebench.no_results') }}</p>
+</div>
+
+<dialog class="cb-detail" id="cb-detail"></dialog>
+
+<script>
+(function () {
+  var CSRF = {{ csrf_token() | tojson }};
+  var PROBLEMS = {{ problems | tojson }};
+  var LABELS = {{ engine_labels | tojson }};
+  var S = {
+    idle: {{ t('admin.codebench.state_idle') | tojson }},
+    interrupted: {{ t('admin.codebench.state_interrupted') | tojson }},
+    wait_studio: {{ t('admin.codebench.state_wait_studio') | tojson }},
+    wait_card: {{ t('admin.codebench.state_wait_card') | tojson }},
+    building: {{ t('admin.codebench.state_building') | tojson }},
+    loading: {{ t('admin.codebench.state_loading') | tojson }},
+    running: {{ t('admin.codebench.state_running') | tojson }},
+    queued: {{ t('admin.codebench.queued') | tojson }},
+    remove: {{ t('admin.codebench.remove') | tojson }},
+    pass: {{ t('admin.codebench.pass') | tojson }},
+    fail: {{ t('admin.codebench.fail') | tojson }},
+    visible: {{ t('admin.codebench.visible') | tojson }},
+    hidden: {{ t('admin.codebench.hidden') | tojson }},
+    tests_edited: {{ t('admin.codebench.tests_edited') | tojson }},
+    timed_out: {{ t('admin.codebench.timed_out') | tojson }},
+    stopped: {{ t('admin.codebench.stopped') | tojson }},
+    failed_run: {{ t('admin.codebench.failed_run') | tojson }},
+    not_run: {{ t('admin.codebench.not_run') | tojson }},
+    steps: {{ t('admin.codebench.steps') | tojson }},
+    turns: {{ t('admin.codebench.turns') | tojson }},
+    tool_calls: {{ t('admin.codebench.tool_calls') | tojson }},
+    tool_errors: {{ t('admin.codebench.tool_errors') | tojson }},
+    tokens: {{ t('admin.codebench.tokens') | tojson }},
+    time: {{ t('admin.codebench.time') | tojson }},
+    load: {{ t('admin.codebench.load') | tojson }},
+    vram: {{ t('admin.codebench.vram') | tojson }},
+    layers: {{ t('admin.codebench.layers') | tojson }},
+    speed: {{ t('admin.codebench.speed') | tojson }},
+    said: {{ t('admin.codebench.said') | tojson }},
+    diff: {{ t('admin.codebench.diff') | tojson }},
+    check_out: {{ t('admin.codebench.check_out') | tojson }},
+    log: {{ t('admin.codebench.log') | tojson }},
+    again: {{ t('admin.codebench.again') | tojson }},
+    close: {{ t('admin.codebench.close') | tojson }},
+    delete_run: {{ t('admin.codebench.delete_run') | tojson }},
+    use_for_programmer: {{ t('admin.codebench.use_for_programmer') | tojson }},
+    use_confirm: {{ t('admin.codebench.use_confirm') | tojson }},
+    programmer_saved: {{ t('admin.codebench.programmer_saved') | tojson }},
+    delete_confirm: {{ t('admin.codebench.delete_confirm') | tojson }},
+    stop_confirm: {{ t('admin.codebench.stop_confirm') | tojson }},
+    verdict_ok: {{ t('admin.codebench.verdict_ok') | tojson }},
+    verdict_fail: {{ t('admin.codebench.verdict_fail') | tojson }},
+    verdict_untested: {{ t('admin.codebench.verdict_untested') | tojson }},
+    edited: {{ t('admin.codebench.edited') | tojson }}
+  };
+  function $(s) { return document.querySelector(s); }
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function fill(tpl, o) { return tpl.replace(/\{(\w+)\}/g, function (_, k) { return o[k] == null ? '' : o[k]; }); }
+  function dur(s) {
+    if (s == null) return '–';
+    s = Math.round(s); if (s < 60) return s + 's';
+    var m = Math.floor(s / 60); return m < 60 ? m + 'm ' + (s % 60) + 's' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+  }
+  // A class list built from values, spelled so a static read of this page
+  // (admin/test_templates.py) does not take the code for class names.
+  function cls() { return ' class=' + JSON.stringify([].slice.call(arguments).filter(Boolean).join(' ')); }
+  function kfmt(n) { return n == null ? '–' : n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n); }
+  function form(fields) {
+    var fd = new FormData();
+    Object.keys(fields).forEach(function (k) {
+      [].concat(fields[k]).forEach(function (v) { fd.append(k, v); });
+    });
+    return fd;
+  }
+  async function post(url, data) {
+    var r = await fetch(url, { method: 'POST', body: form(Object.assign({ _csrf: CSRF }, data || {})) });
+    var body = {}; try { body = await r.json(); } catch (e) {}
+    if (!r.ok || body.ok === false) throw new Error(body.error || r.statusText);
+    return body;
+  }
+
+  // ── The form ───────────────────────────────────────────────────────────
+  var model = $('#cb-model'), engine = $('#cb-engine');
+  function engines() {
+    var opt = model.selectedOptions[0]; if (!opt) return;
+    var ok = (opt.dataset.engines || '').split(','), v = JSON.parse(opt.dataset.verdicts || '{}');
+    [].forEach.call(engine.options, function (o) { o.disabled = ok.indexOf(o.value) < 0; });
+    if (engine.selectedOptions[0] && engine.selectedOptions[0].disabled) {
+      var first = [].find.call(engine.options, function (o) { return !o.disabled; });
+      if (first) engine.value = first.value;
+    }
+    var state = v[engine.value] || 'untested';
+    $('#cb-verdict').textContent = S['verdict_' + state] || '';
+  }
+  model.addEventListener('change', engines); engine.addEventListener('change', engines); engines();
+  function formData(only) {
+    var f = $('#cb-form');
+    return { model: model.value, engine: engine.value, context: $('#cb-context').value,
+             problem: only ? [only] : [].map.call(f.querySelectorAll('input[name=problem]:checked'), function (c) { return c.value; }),
+             interrupt: f.interrupt && f.interrupt.checked ? '1' : '' };
+  }
+  async function start(data) {
+    $('#cb-error').hidden = true;
+    try { await post('/models/coding/start', data); poll(); }
+    catch (e) { $('#cb-error').textContent = e.message; $('#cb-error').hidden = false; }
+  }
+  $('#cb-form').addEventListener('submit', function (ev) { ev.preventDefault(); start(formData()); });
+  document.querySelectorAll('[data-only]').forEach(function (b) {
+    b.addEventListener('click', function () { start(formData(b.dataset.only)); });
+  });
+
+  // ── The Programmer's local model ───────────────────────────────────────
+  async function saveProgrammer(data) {
+    var msg = $('#cb-prog-msg');
+    try {
+      await post('/models/coding/programmer', data);
+      msg.className = 'tiny'; msg.innerHTML = S.programmer_saved;
+    } catch (e) { msg.className = 'tiny warn'; msg.textContent = e.message; }
+    $('#programmer').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  // ── Now and the queue ──────────────────────────────────────────────────
+  function stepRow(s) {
+    var kind = s.kind === 'tool' ? s.tool : s.kind;
+    var body = s.kind === 'tool'
+      ? esc(s.title || '') + (s.input ? '<div class="io">' + esc(s.input) + '</div>' : '') +
+        (s.output ? '<div class="io">→ ' + esc(s.output) + '</div>' : '')
+      : esc(s.text || '');
+    return '<li' + cls(s.status === 'error' && 'failed') + '><span class="t">' + esc(dur(s.at)) +
+      '</span><span' + cls('k', esc(s.kind)) + '>' + esc(kind) + '</span><span class="body">' + body + '</span></li>';
+  }
+  function drawNow(st, queue) {
+    var text, live = st.live || {};
+    if (st.state === 'waiting' && st.why === 'studio')
+      text = fill(S.wait_studio, { what: st.what || '', pct: st.progress != null ? Math.round(st.progress * 100) : '…' });
+    else if (st.state === 'waiting') text = fill(S.wait_card, { gb: st.used_mb != null ? (st.used_mb / 1024).toFixed(1) : '?' });
+    else if (st.state === 'building') text = S.building;
+    else if (st.state === 'loading') text = fill(S.loading, { model: st.model || '' });
+    else if (st.state === 'running') {
+      var p = PROBLEMS.find(function (x) { return x.id === st.problem; });
+      text = fill(S.running, { model: st.model || '', problem: p ? p.title : st.problem || '',
+                               t: dur(live.started ? Date.now() / 1000 - live.started : null) });
+    } else text = st.note && /interrupted/.test(st.note) ? S.interrupted : st.note ? S.idle + ' · ' + st.note : S.idle;
+    $('#cb-now').textContent = text;
+    $('#cb-stop').hidden = !(st.state && st.state !== 'idle') && !queue.length;
+    var steps = live.steps || [], box = $('#cb-live');
+    box.hidden = !(st.state === 'running' && steps.length);
+    var atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+    box.innerHTML = steps.map(stepRow).join('');
+    if (atEnd) box.scrollTop = box.scrollHeight;
+    $('#cb-queue').innerHTML = queue.length ? '<p class="tiny muted">' + S.queued + '</p>' + queue.map(function (e, i) {
+      return '<div class="row"><span class="mono tiny">' + (i + 1) + '.</span><span>' + esc(e.model) + ' · ' +
+        esc(LABELS[e.engine] || e.engine) + ' · ' + Math.round(e.context / 1024) + 'k · ' +
+        esc(e.problems.join(', ')) + '</span>' +
+        (i || st.state === 'idle' ? '<button type="button" class="ghost" data-remove="' + esc(e.id) + '">' + S.remove + '</button>' : '') +
+        '</div>';
+    }).join('') : '';
+  }
+  $('#cb-stop').addEventListener('click', async function () {
+    if (!confirm(S.stop_confirm)) return;
+    try { await post('/models/coding/stop'); } catch (e) {} poll();
+  });
+  $('#cb-queue').addEventListener('click', async function (ev) {
+    var b = ev.target.closest('[data-remove]'); if (!b) return;
+    try { await post('/models/coding/remove', { id: b.dataset.remove }); } catch (e) {} poll();
+  });
+
+  // ── Results ────────────────────────────────────────────────────────────
+  function cell(run, pid) {
+    var r = (run.problems || {})[pid];
+    if (!r) return '<td><span class="muted tiny">' + (run.state === 'running' ? '…' : '') + '</span></td>';
+    if (r.pass == null) return '<td><button type="button" class="cb-cell fail" data-run="' + esc(run.id) + '" data-p="' + esc(pid) + '">' +
+      '<b>!</b><div class="sub">' + esc(S.failed_run) + '</div></button></td>';
+    var tone = r.pass ? 'pass' : (r.visible || r.hidden) ? 'fail part' : 'fail';
+    var note = r.timed_out ? S.timed_out : r.stopped ? S.stopped : r.tests_untouched === false ? S.edited : '';
+    return '<td><button type="button"' + cls('cb-cell', tone) + ' data-run="' + esc(run.id) + '" data-p="' + esc(pid) + '" title="' +
+      esc(S.visible + ': ' + (r.visible ? '✓' : '✗') + ' · ' + S.hidden + ': ' + (r.hidden ? '✓' : '✗')) + '">' +
+      '<b>' + (r.pass ? '✓' : r.visible ? '½' : '✗') + '</b> ' + esc(dur(r.seconds)) +
+      '<div class="sub">' + esc(r.tool_calls == null ? '' : r.tool_calls + ' ' + S.steps) + (note ? ' · ' + esc(note) : '') + '</div></button></td>';
+  }
+  var lastRuns = [];
+  function drawRuns(runs) {
+    lastRuns = runs;
+    $('#cb-empty').hidden = !!runs.length;
+    $('#cb-runs').innerHTML = runs.map(function (run) {
+      var srv = run.server || {};
+      var meta = [LABELS[run.engine] || run.engine, Math.round(run.context / 1024) + 'k'];
+      if (run.load_seconds != null) meta.push(S.load + ' ' + dur(run.load_seconds));
+      if (srv.gen_tok_s) meta.push(srv.gen_tok_s + ' tok/s');
+      if (srv.layers && !srv.all_on_gpu) meta.push(S.layers + ' ' + srv.layers);
+      return '<tr><td><div class="strong">' + esc(run.model) + '</div><div class="tiny muted">' + esc(meta.join(' · ')) +
+        '</div>' + (run.error ? '<div class="tiny warn">' + esc(run.error) + '</div>' : '') +
+        '<div class="tiny muted">' + esc(new Date((run.started || 0) * 1000).toLocaleString()) + '</div></td>' +
+        '<td class="num"><span class="cb-score">' + run.passed + '/' + Object.keys(run.problems || {}).length + '</span></td>' +
+        PROBLEMS.map(function (p) { return cell(run, p.id); }).join('') +
+        '<td><div class="row-tight">' + (run.engine === 'llamacpp' && run.state !== 'running'
+          ? '<button type="button" class="ghost" data-use="' + esc(run.id) + '" title="' + esc(S.use_for_programmer) + '">★</button>' : '') +
+        (run.state === 'running' ? '' : '<button type="button" class="ghost danger" data-del="' + esc(run.id) + '" title="' + esc(S.delete_run) + '">✕</button>') + '</div></td></tr>';
+    }).join('');
+  }
+  $('#cb-runs').addEventListener('click', async function (ev) {
+    var del = ev.target.closest('[data-del]');
+    if (del) {
+      if (!confirm(S.delete_confirm)) return;
+      try { await post('/models/coding/delete', { id: del.dataset.del }); } catch (e) {}
+      return poll();
+    }
+    var use = ev.target.closest('[data-use]');
+    if (use) {
+      var run = (lastRuns || []).find(function (r) { return r.id === use.dataset.use; });
+      if (!run || !confirm(fill(S.use_confirm, { model: run.model, k: Math.round(run.context / 1024) }))) return;
+      return saveProgrammer({ model: run.model, context: Math.max(run.context, 32768) });
+    }
+    var c = ev.target.closest('[data-run]'); if (c) detail(c.dataset.run, c.dataset.p);
+  });
+  function diffHtml(text) {
+    return text.split('\n').map(function (l) {
+      var tone = /^\+(?!\+\+)/.test(l) ? 'add' : /^-(?!--)/.test(l) ? 'del' : '';
+      return tone ? '<span' + cls(tone) + '>' + esc(l) + '</span>' : esc(l);
+    }).join('\n');
+  }
+  async function detail(runId, pid) {
+    var r = await fetch('/models/coding/run/' + encodeURIComponent(runId));
+    if (!r.ok) return;
+    var run = await r.json(), res = (run.problems || {})[pid] || {}, p = PROBLEMS.find(function (x) { return x.id === pid; }) || {};
+    var tok = res.tokens || {}, srv = run.server || {};
+    var verdict = res.pass ? S.pass : S.fail;
+    var flags = [];
+    if (res.visible) flags.push(S.visible + ' ' + (res.visible.ok ? '✓' : '✗'));
+    if (res.hidden) flags.push(S.hidden + ' ' + (res.hidden.ok ? '✓' : '✗'));
+    if (res.tests_untouched === false) flags.push(fill(S.tests_edited, { files: (res.touched || []).join(', ') }));
+    if (res.timed_out) flags.push(S.timed_out);
+    if (res.stopped) flags.push(S.stopped);
+    function fact(label, value) { return '<div><span>' + esc(label) + '</span>' + esc(value) + '</div>'; }
+    var dlg = $('#cb-detail');
+    dlg.innerHTML = '<header><h2>' + esc(p.title || pid) + '</h2><span' + cls('pill', res.pass ? 'on' : 'warn') + '>' + esc(verdict) + '</span>' +
+      '<button type="button" data-again>▶ ' + esc(S.again) + '</button><button type="button" class="ghost" data-close>' + esc(S.close) + '</button></header>' +
+      '<section><p class="tiny muted">' + esc(run.model + ' · ' + (LABELS[run.engine] || run.engine) + ' · ' + Math.round(run.context / 1024) + 'k') + '</p>' +
+      '<p>' + esc(flags.join(' · ')) + '</p>' + (res.error ? '<p class="warn">' + esc(res.error) + '</p>' : '') +
+      '<div class="cb-facts">' + fact(S.time, dur(res.seconds)) + fact(S.turns, res.turns == null ? '–' : res.turns) +
+      fact(S.tool_calls, res.tool_calls == null ? '–' : res.tool_calls) + fact(S.tool_errors, res.tool_errors == null ? '–' : res.tool_errors) +
+      fact(S.tokens, kfmt(tok.input) + ' in · ' + kfmt(tok.output) + ' out') + fact(S.load, dur(run.load_seconds)) +
+      fact(S.vram, run.vram_mb != null ? (run.vram_mb / 1024).toFixed(1) + ' GB' : '–') +
+      fact(S.speed, (srv.gen_tok_s || '–') + ' / ' + (srv.prompt_tok_s || '–') + ' tok/s') +
+      (srv.layers ? fact(S.layers, srv.layers) : '') + '</div></section>' +
+      (res.final_text ? '<section><h3>' + esc(S.said) + '</h3><pre class="cb-pre">' + esc(res.final_text) + '</pre></section>' : '') +
+      '<section><h3>' + esc(S.steps) + ' (' + (res.steps || []).length + ')</h3><ol class="cb-steps">' + (res.steps || []).map(stepRow).join('') + '</ol></section>' +
+      (res.diff ? '<section><h3>' + esc(S.diff) + '</h3><pre class="cb-pre cb-diff">' + diffHtml(res.diff) + '</pre></section>' : '') +
+      ['visible', 'hidden'].map(function (k) {
+        var c = res[k]; if (!c || !c.output) return '';
+        return '<section><h3>' + esc(fill(S.check_out, { which: S[k], ok: c.ok ? '✓' : '✗' })) + '</h3><pre class="cb-pre">' + esc(c.output) + '</pre></section>';
+      }).join('') +
+      (res.log_tail ? '<section><h3>' + esc(S.log) + '</h3><pre class="cb-pre">' + esc(res.log_tail) + '</pre></section>' : '');
+    dlg.querySelector('[data-close]').onclick = function () { dlg.close(); };
+    dlg.querySelector('[data-again]').onclick = function () {
+      dlg.close();
+      start({ model: run.model, engine: run.engine, context: run.context, problem: [pid], interrupt: '' });
+    };
+    dlg.showModal();
+  }
+
+  // ── Polling ────────────────────────────────────────────────────────────
+  var timer = null;
+  async function poll() {
+    clearTimeout(timer);
+    var busy = false;
+    try {
+      var r = await fetch('/models/coding/state'); var s = await r.json();
+      drawNow(s.status || {}, s.queue || []); drawRuns(s.runs || []);
+      busy = (s.status && s.status.state && s.status.state !== 'idle') || (s.queue || []).length;
+    } catch (e) {}
+    timer = setTimeout(poll, document.hidden ? 30000 : busy ? 3000 : 15000);
+  }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
+  drawRuns({{ runs | tojson }});
+  poll();
+})();
+</script>
+{% endblock %}

@@ -41,10 +41,17 @@ except ValueError:
 sys.exit(0 if s.get("worker") or s.get("running") else 1)'
 }
 
+bench_busy() {
+    # True while the coding benchmark (admin/codebench.py) has a model on the
+    # card. It waits for this model in turn, so neither evicts the other.
+    command -v docker >/dev/null 2>&1 || return 1
+    [ -n "$(docker ps -q -f name='^codebench-server$' 2>/dev/null)" ]
+}
+
 case "${1:-}" in
     pause)
         studio pause || echo "programmer-local: the Studio did not answer the pause" >&2
-        while studio_busy; do sleep 10; done
+        while studio_busy || bench_busy; do sleep 10; done
         ;;
     run)
         model="$MODEL"
