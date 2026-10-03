@@ -310,15 +310,20 @@ class Runner:
             self._thread.start()
 
     def recover(self) -> None:
-        """After a restart of this page: containers left behind go, and a
-        Studio paused for the benchmark is given back."""
-        for name in self._docker_out("ps", "-a", "--format", "{{.Names}}").split():
-            if name == SERVER or name.startswith(RUN_PREFIX):
-                self._docker("rm", "-f", name)
+        """After a restart of this page: what *its own* interrupted run left
+        behind goes -- the containers, and a Studio it paused is given back.
+
+        Only when this state directory says a run was under way. The
+        containers' names are the same for every runner on the machine, and a
+        runner built over a scratch directory (a test rendering the page)
+        removed a live run's attempts twice before this (2026-10-02)."""
         st = self._read("status.json", {})
-        if st.get("studio_paused_by_us"):
-            self._studio("resume")
         if st.get("state") not in (None, "idle"):
+            for name in self._docker_out("ps", "-a", "--format", "{{.Names}}").split():
+                if name == SERVER or name.startswith(RUN_PREFIX):
+                    self._docker("rm", "-f", name)
+            if st.get("studio_paused_by_us"):
+                self._studio("resume")
             self._status("idle", note="interrupted: the admin page restarted during a run")
         self.kick()
 

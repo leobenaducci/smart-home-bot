@@ -138,6 +138,24 @@ with tempfile.TemporaryDirectory() as tmp:
           and not r.delete_run("../x"))
     check("and a run can be deleted", r.delete_run(run["id"]) and r.run_file(run["id"]) is None)
 
+print("\nafter a restart")
+with tempfile.TemporaryDirectory() as tmp:
+    calls = []
+    r = C.Runner(ROOT, pathlib.Path(tmp), gpu=lambda: 1, studio=lambda: ("", ""),
+                 ollama_url=lambda: "", build_dir=lambda f: pathlib.Path("/x"), models_dir="/m",
+                 server_image="img")
+    r._docker = lambda *a, **k: (calls.append(a), C.subprocess.CompletedProcess(a, 0, "codebench-server\n", ""))[1]
+    r._docker_out = lambda *a: "codebench-server\ncodebench-run-x-cpp-lru\n"
+    r.kick = lambda: None
+    r.recover()
+    check("a runner whose own state is idle removes nobody's containers",
+          not [c for c in calls if c[:1] == ("rm",)], calls)
+    r._status("running", run="x", studio_paused_by_us=False)
+    r.recover()
+    check("one whose own run was cut short removes what it left",
+          ("rm", "-f", "codebench-server") in calls and ("rm", "-f", "codebench-run-x-cpp-lru") in calls, calls)
+    check("and says so", r._read("status.json", {}).get("state") == "idle")
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))
