@@ -344,7 +344,8 @@
    while it runs, which the intro says. #}
 <div class="card wide" id="bench">
   <h2>{{ t('admin.models.bench_heading') }}</h2>
-  <p class="intro"><a href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a></p>
+  <div class="row stack-s"><a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a>
+    <span class="help">{{ t('admin.codebench.open_about') }}</span></div>
   <p class="intro">{{ t('admin.models.bench_intro') }}</p>
 
   <form id="bench-form" method="post" action="{{ url_for('bench_start') }}"
@@ -1285,7 +1286,7 @@
           {% endfor %}
           {% if code_local.model and not ns.found %}<option value="{{ code_local.model }}" selected>{{ code_local.model }}</option>{% endif %}
         </select>
-        <p class="help">{{ t('admin.models.code_local_help') }} <a href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.heading') }} →</a></p>
+        <p class="help">{{ t('admin.models.code_local_help') }}</p>
       </div>
       <div class="field">
         <label for="code-local-context">{{ t('admin.codebench.context') }}</label>
@@ -1296,7 +1297,8 @@
     </div>
     <label class="check-row"><input type="checkbox" name="code_local_first" value="1" {% if code_local.first %}checked{% endif %}>
       {{ t('admin.codebench.programmer_first_label') }}</label>
-    <p class="stack"><button type="submit">{{ t('common.save') }}</button></p>
+    <p class="stack row"><button type="submit">{{ t('common.save') }}</button>
+      <a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a></p>
   </form>
   {% else %}
   <p class="help">{{ t('admin.models.code_no_roster') }}</p>

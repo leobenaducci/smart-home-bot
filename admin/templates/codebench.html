@@ -70,7 +70,7 @@
 
 <h1>{{ t('admin.codebench.heading') }}</h1>
 <p class="intro">{{ t('admin.codebench.intro') }}</p>
-<p class="row"><a href="{{ url_for('models_page') }}">← {{ t('admin.nav.models') }}</a></p>
+<p class="row"><a class="button ghost" href="{{ url_for('models_page') }}">← {{ t('admin.nav.models') }}</a></p>
 
 {% if gpu is none %}
 <div class="notice">{{ t('admin.codebench.no_card') }}</div>
@@ -83,7 +83,7 @@
     <p>{% if programmer.model %}{{ t('admin.codebench.programmer_now', model=programmer.model, k=(programmer.context // 1024)) }}
        · {{ t('admin.codebench.programmer_first') if programmer.first else t('admin.codebench.programmer_fallback') }}
        {% else %}{{ t('admin.codebench.programmer_none') }}{% endif %}</p>
-    <p class="row"><a href="{{ url_for('models_page') }}#code">{{ t('admin.codebench.programmer_change') }}</a>
+    <p class="row"><a class="button ghost" href="{{ url_for('models_page') }}#code">{{ t('admin.codebench.programmer_change') }}</a>
       <span class="tiny" id="cb-prog-msg"></span></p>
   </div>
 </div>

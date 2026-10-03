@@ -250,8 +250,8 @@
             🔌 {{ t('admin.cloud.vps_test') }}</button>
           <span id="vps-test-out" class="help" style="margin-left:8px"></span>
         </p>
-        <p class="help">{{ t('admin.cloud.vps_test_help') }}
-          <a href="{{ url_for('access') }}">{{ t('admin.nav.access') }} &rarr;</a></p>
+        <p class="help">{{ t('admin.cloud.vps_test_help') }}</p>
+        <p><a class="button ghost" href="{{ url_for('access') }}">{{ t('admin.nav.access') }}</a></p>
       </div>
 
     {# Separate from the switch above on purpose. "There is a VPS" and "this
