@@ -1449,6 +1449,10 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     base = projects.dir(me.login, pid)
     made = [(s, Projects.chosen_take(s)) for s in doc.get("shots") or []]
     preview = bool(body.get("preview"))
+    # What the file is for: "h265" (kept, small) or "h264" (to publish), at
+    # the clips' own size or "1080"/"720".
+    codec = body.get("format") if body.get("format") in media.CODECS else "h265"
+    film_size = str(body.get("size") or "") if str(body.get("size") or "") in media.SIZES else ""
     # Subtitles burnt in, for the clips whose version has them.
     with_subs = bool(body.get("subtitles"))
 
@@ -1503,7 +1507,9 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     render_state[key] = {"state": "running", "started": time.time()}
 
     def work():
-        stamp = time.strftime("%Y%m%d-%H%M%S") + ("-preview" if preview else "")
+        stamp = (time.strftime("%Y%m%d-%H%M%S") + ("-preview" if preview else "")
+                 + ("" if preview or codec == "h265" else f"-{codec}")
+                 + (f"-{film_size}p" if film_size and not preview else ""))
         out = base / "renders" / f"{stamp}.mp4"
         followed = []
 
@@ -1612,7 +1618,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
                                 crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
                                 marks=use_marks, fast=preview, subs=use_subs, pips=use_pips, sounds=use_sounds,
-                                starts=use_starts)
+                                starts=use_starts, codec=codec, size=None if preview else (film_size or None))
             if tracks:
                 laid = []
                 for k, tr in enumerate(tracks):
@@ -1624,6 +1630,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                 media.mix(film, laid, out, keep_own=body.get("own_sound", True) is not False)
                 film.unlink(missing_ok=True)
             projects.add_render(me.login, pid, {"file": str(out.relative_to(base)), "preview": preview,
+                                                "format": "h264" if preview else codec, "size": film_size,
                                                 "seconds": round(media.probe(out)["seconds"], 1)})
             render_state[key] = {"state": "done", "file": str(out.relative_to(base))}
         except Exception as exc:                               # noqa: BLE001

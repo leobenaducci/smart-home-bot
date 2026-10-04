@@ -1574,6 +1574,32 @@ tc = tclip()
 check("  a layout and volumes are kept in bounds",
       tc["cam_layout"] == {"show": True, "corner": "br", "size": 0.5} and tc["mix"] == {"mic": 0.0, "pc": 1.0},
       (tc["cam_layout"], tc["mix"]))
+print("\n  a film to publish: H.264 at a size of its own")
+check("  a size keeps the film's shape: wide to 1920 across, tall to 1920 down",
+      media.fit_size(832, 480, "1080") == (1920, 1108) and media.fit_size(480, 832, "1080") == (1108, 1920)
+      and media.fit_size(320, 180, "720") == (1280, 720) and media.fit_size(320, 180, None) == (320, 180))
+c.post(f"/api/projects/{tp['id']}/render", json={"format": "h264", "size": "720"}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 240
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.5)
+pub = tbase / (st.get("render") or {}).get("file", "none")
+pi = media.probe(pub) if pub.is_file() else {}
+check("  the film is H.264 at 720p, its name says so, and its record too",
+      pi.get("codec") == "h264" and (pi.get("width"), pi.get("height")) == (1280, 720) and pub.name.endswith("-h264-720p.mp4")
+      and st["renders"][-1].get("format") == "h264" and st["renders"][-1].get("size") == "720", (st.get("render"), pi))
+c.post(f"/api/projects/{tp['id']}/render", json={"format": "vp9", "size": "4k"}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 240
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.5)
+kept = media.probe(tbase / st["render"]["file"])
+check("  anything else asked for is the kept film: H.265 at the clips' size",
+      kept["codec"] == "hevc" and (kept["width"], kept["height"]) == (320, 180), kept)
 print("\n  a recording cut into sections by hand, nothing cut from its files")
 tt_id = (Projects.chosen_take(tclip()) or {})["id"]
 shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]

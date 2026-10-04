@@ -22954,6 +22954,8 @@ STUDIO_UI_KEYS = (
     'help_s_mv3', 'help_s_any1', 'help_s_any2', 'help_s_any3', 'count_shot', 'count_shots', 'count_audio1',
     'count_audio', 'count_image', 'count_images', 'upload_image_btn', 'upload_voice_btn', 'ch_pick_voice_file',
     'ch_pick_pics', 'files_picked',
+    'render_format', 'render_fmt_h265', 'render_fmt_h264', 'render_fmt_h265_about', 'render_fmt_h264_about',
+    'render_size', 'render_size_own',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',

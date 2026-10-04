@@ -561,6 +561,14 @@ playback: phones, the Android app and Safari play it; Firefox and most Linux
 desktop browsers do not, and show a video that will not start. A retouch hands
 the generator an H.264 copy of the shot, never the kept file.
 
+**A film to publish.** The film dialog asks what the file is for: H.265 (the
+kept film above) or **H.264** -- High profile, 4:2:0, a keyframe every two
+seconds, AAC at 48 kHz, CRF 19: what video sites ask for, playable everywhere,
+about twice the size (`media.H264`). And at what size: the clips' own, or
+**1080p** / **720p** with the film's shape kept, so a vertical film is
+1080x1920 (`media.fit_size`). A published film's name and record carry its
+format and size (`...-h264-1080p.mp4`). The page remembers the last choice.
+
 ## Settings
 
 `services.home-studio`: `enabled`, `port` (21035), `gpu`, `gpu_device` (the

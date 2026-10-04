@@ -1377,7 +1377,9 @@
       if (renders.length) {
         html += '<h2 id="renders" style="margin-top:20px">' + S.renders + '</h2>' + renders.map(function (r) {
           return '<div class="card"><video controls preload="metadata" style="width:100%;border-radius:8px" src="' + fileUrl(p.id, r.file) + '"></video>' +
-            '<div class="row"><span class="muted">' + (r.preview ? '▶ ' + S.preview + ' · ' : '') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
+            '<div class="row"><span class="muted">' + (r.preview ? '▶ ' + S.preview + ' · ' : '') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) +
+            (!r.preview && r.format === 'h264' ? ' · <span class="pill ok">H.264' + (r.size ? ' · ' + r.size + 'p' : '') + '</span>' :
+             !r.preview && r.size ? ' · ' + r.size + 'p' : '') + '</span><span class="grow"></span>' +
             dlLink(p.id, r.file, p.name) +
             '<button class="danger" data-del-render="' + esc(r.file.replace(/^renders\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div></div>';
         }).join('');
@@ -2509,17 +2511,33 @@
           '<div class="row"><div class="grow"><label class="f">' + S.render_volume + '</label><input type="range" id="rd-v" min="0" max="150" value="' + (soundtrack ? 100 : 80) + '"></div>' +
           '<div class="grow"><label class="f">' + S.render_start + '</label><input type="number" id="rd-t" min="0" value="0"></div></div>' +
           '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-m" style="width:auto"' + (soundtrack ? ' checked' : '') + '> ' + S.mute_shots + '</label>' : '') +
+        // What the file is for: kept (H.265, small) or published (H.264, plays
+        // everywhere), at the clips' size or a standard one. Remembered.
+        '<div class="row" style="margin-top:4px"><span class="pair"><label class="f" style="margin:0" for="rd-fmt">' + S.render_format + '</label>' +
+          '<select id="rd-fmt" style="width:auto"><option value="h265">' + S.render_fmt_h265 + '</option><option value="h264">' + S.render_fmt_h264 + '</option></select></span>' +
+          '<span class="pair"><label class="f" style="margin:0" for="rd-size">' + S.render_size + '</label>' +
+          '<select id="rd-size" style="width:auto"><option value="">' + S.render_size_own + '</option><option value="1080">1080p</option><option value="720">720p</option></select></span></div>' +
+        '<p class="muted" id="rd-fmt-note" style="margin-top:6px"></p>' +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="rd-no">' + S.cancel + '</button><button class="primary" id="rd-go">' + S.render_go + '</button></div>';
       dlg.showModal();
+      var remembered = {};
+      try { remembered = JSON.parse(localStorage.getItem('studio.export') || '{}') || {}; } catch (e) { remembered = {}; }
+      if (remembered.format) $('#rd-fmt').value = remembered.format;
+      if (remembered.size != null) $('#rd-size').value = remembered.size;
+      function fmtNote() { $('#rd-fmt-note').textContent = $('#rd-fmt').value === 'h264' ? S.render_fmt_h264_about : S.render_fmt_h265_about; }
+      $('#rd-fmt').onchange = fmtNote; fmtNote();
       $('#rd-no').onclick = function () { dlg.close(); };
       $('#rd-go').onclick = async function () {
         var tracks = [], a = $('#rd-a');
         if (a && a.value) tracks.push({ item: a.value, volume: $('#rd-v').value / 100, start: Number($('#rd-t').value) || 0 });
         try {
           var mute = $('#rd-m');
+          var exp = { format: $('#rd-fmt').value, size: $('#rd-size').value };
+          try { localStorage.setItem('studio.export', JSON.stringify(exp)); } catch (e) { /* a private window */ }
           await api('projects/' + p.id + '/render', { method: 'POST', body: { crossfade: $('#rd-x').checked ? 0.5 : 0, tracks: tracks,
                                                                               subtitles: !!($('#rd-subs') && $('#rd-subs').checked),
-                                                                              own_sound: !(mute && mute.checked && tracks.length) } });
+                                                                              own_sound: !(mute && mute.checked && tracks.length),
+                                                                              format: exp.format, size: exp.size } });
           dlg.close(); current = await api('projects/' + p.id); drawTab(); watchRender();
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
       };

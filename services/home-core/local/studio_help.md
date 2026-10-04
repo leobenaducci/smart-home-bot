@@ -156,8 +156,10 @@ where the job is in the queue and you are notified when it is ready.
 
 - Video is slow: about 5 minutes of card time per second of video. A full music
   video is an overnight queue.
-- Films are saved as H.265: phones, the app and Safari play them; Firefox and
-  most Linux desktop browsers do not.
+- **🎞️ Put the film together** asks what the file is for: **H.265** (smaller,
+  to keep; phones, the app and Safari play it, Firefox and most Linux browsers
+  do not) or **H.264** (to publish on YouTube or anywhere; plays everywhere,
+  about twice the size), and its size: as the clips, **1080p** or **720p**.
 - Faces can still change between video shots; the storyboard keeps them
   closer.
 - In the clip player, fullscreen shows the screen without the camera overlay;

@@ -31,6 +31,26 @@ X265 = ["-c:v", "libx265", "-preset", "medium", "-crf", "23", "-tag:v", "hvc1",
 # preset takes seconds where H.265 takes a minute, plays in every browser,
 # and its larger file costs nothing for a file that is looked at and dropped.
 FAST = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+# A film to publish: H.264 as video sites ask for it -- High profile, 4:2:0,
+# a keyframe every two seconds (at the films' 24 fps) -- at a quality they
+# re-encode from without loss showing. Plays in every browser, unlike X265,
+# at about twice the size.
+H264 = ["-c:v", "libx264", "-preset", "slow", "-crf", "19", "-profile:v", "high", "-level", "4.2",
+        "-pix_fmt", "yuv420p", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0"]
+CODECS = {"h265": X265, "h264": H264}
+SIZES = {"1080": 1920, "720": 1280}
+
+
+def fit_size(w: int, h: int, size: str | None) -> tuple[int, int]:
+    """(w, h) for a film asked to be `size` ("1080", "720", or nothing for
+    the clips' own): its longer side set by the size, its shape kept -- so a
+    vertical film at 1080 is 1080x1920. Even, as the encoders need."""
+    long_side = SIZES.get(str(size or ""))
+    if not long_side:
+        return w, h
+    if w >= h:
+        return long_side, max(2, round(long_side * h / w / 2) * 2)
+    return max(2, round(long_side * w / h / 2) * 2), long_side
 
 
 def _run(args: list[str], timeout: int = 1800) -> str:
@@ -318,7 +338,7 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
            lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
            fast: bool = False, subs: list[Path | None] | None = None,
            pips: list[dict | None] | None = None, sounds: list[dict | None] | None = None,
-           starts: list[float | None] | None = None) -> Path:
+           starts: list[float | None] | None = None, codec: str = "h265", size: str | None = None) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
@@ -338,6 +358,10 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
     `starts`: where in each clip to begin, for a section of a recording (with
     `lengths` saying how much of it); the camera and the computer sound of a
     clip begin at the same place, so they stay with it.
+
+    `codec`: "h265" (the kept film, small) or "h264" (to publish: plays
+    everywhere); `size`: "1080" or "720" for that size, its shape kept, or
+    nothing for the first clip's own. A draft (`fast`) is H.264 regardless.
     """
     if not videos:
         raise MediaError("nothing to stitch")
@@ -361,7 +385,7 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
             args += ["-t", f"{keep - 0.25 / 24:.4f}"]
             info["seconds"] = keep
         args += ["-i", str(v)]
-    w, h = infos[0]["width"] or 832, infos[0]["height"] or 480
+    w, h = fit_size(infos[0]["width"] or 832, infos[0]["height"] or 480, size)
     # A transparent picture laid over a shot (a preview's watermark), each an
     # input of its own after the shots, looped for as long as its shot lasts.
     marks = list(marks or [None] * len(videos))
@@ -439,7 +463,7 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
         maps = ["[v]", "[a]"]
     _run([*args, "-filter_complex", ";".join(parts), "-map", maps[0], "-map", maps[1],
-          *(FAST if fast else X265), "-c:a", "aac", "-b:a", "192k",
+          *(FAST if fast else CODECS.get(codec, X265)), "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
           "-movflags", "+faststart", str(out)])
     return out
 
