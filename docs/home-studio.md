@@ -507,6 +507,21 @@ purpose: the page saves the whole project, so a page holding an older copy
 sends fewer items than there are, and a save must never be able to delete a
 file.
 
+## The helper
+
+💬 **Help** in the Studio's header opens a panel that answers questions about
+using the Studio -- where to click, what something does -- in the page's own
+words. It is the house's own model (the vision model the frames are reviewed
+with, `assistant.models.vision`, through `/studio/api/help`), given
+`services/home-core/local/studio_help.md`: a guide written for people, not for
+the code, which ships with the portal. With it go the tab and kind of project
+the person is in, the last few turns of the conversation, and a glossary of the
+page's labels from the catalogues (English, as the guide names them, beside
+what this person's page shows), so a Spanish page is answered with its Spanish
+buttons. Nothing leaves the house. **Keep the guide current when the page
+changes**: the helper knows only what it says, and says the Studio cannot do
+what the guide leaves out.
+
 ## Optional, and what off means
 
 `home-studio` is off in the example and arrives off on an upgrade

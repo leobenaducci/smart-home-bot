@@ -97,6 +97,40 @@
     details.more > summary::-webkit-details-marker { display: none; }
     details.more > summary:focus-visible, .rail button:focus-visible, .tabs button:focus-visible {
       outline: 2px solid var(--honey); outline-offset: 2px; }
+    /* Keyboard focus, everywhere a person can land. */
+    button:focus-visible, .btn:focus-visible, a:focus-visible, select:focus-visible, textarea:focus-visible,
+    input:focus-visible, .upload:focus-within { outline: 2px solid var(--honey); outline-offset: 2px; }
+    /* A checkbox is the size of a checkbox: the inputs' full width put the
+       storyboard's "redraw" box on a line of its own, away from its words. */
+    input[type=checkbox], input[type=radio] { width: auto; flex: none; accent-color: var(--olive); }
+    /* Choosing a file is a button saying what it is for, not the browser's
+       bare "Choose File / No file chosen" box. */
+    .pair { display: inline-flex; align-items: center; gap: 6px; }
+    .upload { position: relative; overflow: hidden; }
+    .upload input[type=file] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    .upload .picked { font-weight: 400; color: var(--ink-soft); max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* The helper: a margin of its own beside the page, a sheet on a phone. */
+    header button.hlink { background: transparent; color: var(--wall-fg); border-color: rgba(218,212,194,.16); cursor: pointer; }
+    header button.hlink:hover, header a.hlink:hover { color: #F3EEDF; border-color: var(--honey-lt); }
+    header .hlink + .hlink { margin-left: 0; }
+    #help { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100%); z-index: 40; display: flex; flex-direction: column;
+      background: var(--paper-2); border-left: 1px solid var(--line); box-shadow: -14px 0 34px rgba(40,44,30,.2);
+      transform: translateX(100%); visibility: hidden; transition: transform .22s ease, visibility 0s linear .22s; }
+    #help.open { transform: none; visibility: visible; transition: transform .22s ease; }
+    @media (prefers-reduced-motion: reduce) { #help, #help.open { transition: none; } }
+    #help .hhead { background: var(--wall); color: #F3EEDF; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+    #help .hhead h2 { margin: 0; color: #F3EEDF; font-size: 1.05rem; }
+    #help .hhead button { background: transparent; color: var(--wall-fg); border-color: rgba(218,212,194,.25); }
+    #help .hlog { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    #help .q { align-self: flex-end; max-width: 85%; background: var(--honey-lt); color: var(--ink); padding: 8px 12px;
+      border-radius: 14px 14px 4px 14px; font-size: .9rem; white-space: pre-wrap; }
+    #help .a { max-width: 96%; font-size: .9rem; line-height: 1.55; white-space: pre-wrap; }
+    #help .a.wait { color: var(--ink-soft); font-style: italic; }
+    #help .sugg { display: flex; flex-direction: column; gap: 6px; }
+    #help .sugg button { justify-content: flex-start; text-align: left; font-weight: 600; }
+    #help form { display: flex; gap: 8px; align-items: flex-end; padding: 12px 16px 6px; border-top: 1px solid var(--line); }
+    #help form textarea { flex: 1; min-height: 42px; max-height: 140px; resize: none; }
+    #help .hnote { padding: 0 16px 12px; font-size: .74rem; }
     details.more .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 6; display: grid; gap: 4px; min-width: 170px;
       background: var(--paper-2); border: 1px solid var(--line); border-radius: var(--r); padding: 6px; box-shadow: 0 10px 28px rgba(0,0,0,.28); }
     details.more .menu button { justify-content: flex-start; }
@@ -237,8 +271,19 @@
   <header>
     <span class="plate">🎬</span>
     <h1>{{ strings.title }}</h1>
+    {% if configured %}<button type="button" id="help-open" class="hlink" aria-controls="help" aria-expanded="false">💬 {{ strings.help_open }}</button>{% endif %}
     <a href="/chat" class="hlink">🤵 Alfred</a>
   </header>
+  {% if configured %}
+  <aside id="help" aria-label="{{ strings.help_title }}" aria-hidden="true">
+    <div class="hhead"><span aria-hidden="true">💬</span><h2>{{ strings.help_title }}</h2><span class="grow"></span>
+      <button type="button" id="help-close" aria-label="{{ strings.help_close }}">✕</button></div>
+    <div class="hlog" id="help-log" aria-live="polite"></div>
+    <form id="help-form"><textarea id="help-q" rows="1" placeholder="{{ strings.help_ph }}" aria-label="{{ strings.help_ph }}"></textarea>
+      <button class="primary" type="submit">{{ strings.help_send }}</button></form>
+    <p class="muted hnote">{{ strings.help_note }}</p>
+  </aside>
+  {% endif %}
 
   {% if not configured %}
   <main><div class="card">{{ strings.not_configured }}</div></main>
@@ -471,6 +516,12 @@
         dlg.close(); openProject(p.id);
       };
     }
+    // What a project holds, in words, leaving out what it has none of.
+    function counted(p) {
+      var parts = [[p.shots, 'count_shot', 'count_shots'], [p.audio, 'count_audio1', 'count_audio'], [p.images, 'count_image', 'count_images']]
+        .filter(function (x) { return x[0]; }).map(function (x) { return x[0] === 1 ? S[x[1]] : fmt(x[2], { n: x[0] }); });
+      return parts.length ? ' · ' + parts.join(' · ') : '';
+    }
     async function loadList() {
       var d = await api('projects');
       var html = '<div class="pcard new" data-new="1"><div class="cover">＋</div><div class="body"><div class="name">' + S.new_project + '</div></div></div>';
@@ -478,7 +529,7 @@
         var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
         html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + '</div>' +
           '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
-          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + ' · 🎬 ' + p.shots + ' · 🎵 ' + p.audio + ' · 🖼️ ' + p.images + '</div></div></div>';
+          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + counted(p) + '</div></div></div>';
       });
       $('#plist').innerHTML = html;
       if (!d.projects.length) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + S.empty_projects + '</p>');
@@ -541,14 +592,22 @@
         '<label class="f">' + S.ch_name + '</label><input id="ch-name" value="' + esc(c.name) + '">' +
         '<label class="f">' + S.ch_look + '</label><textarea id="ch-look" rows="3" placeholder="' + esc(S.ch_look_ph) + '">' + esc(c.look) + '</textarea>' +
         '<label class="f">' + S.ch_personality + '</label><textarea id="ch-pers" rows="3" placeholder="' + esc(S.ch_personality_ph) + '">' + esc(c.personality) + '</textarea>' +
-        '<label class="f">' + S.ch_voice + '</label><div class="row"><input type="file" id="ch-vfile" accept="audio/*" style="width:auto">' +
+        '<label class="f">' + S.ch_voice + '</label><div class="row"><label class="btn upload">' + S.ch_pick_voice_file +
+          ' <span class="picked" id="ch-vfile-name"></span><input type="file" id="ch-vfile" accept="audio/*"></label>' +
         '<button id="ch-rec">' + S.ch_record + '</button><span class="muted" id="ch-vstate">' + (c.voice ? '✓' : '') + '</span></div>' +
         '<label class="f">' + S.ch_voice_text + '</label><input id="ch-vtext" value="' + esc(c.voice_text || '') + '">' +
-        '<label class="f">' + S.ch_pictures + '</label><div class="row"><input type="file" id="ch-pics" accept="image/*" multiple style="width:auto">' +
+        '<label class="f">' + S.ch_pictures + '</label><div class="row"><label class="btn upload">' + S.ch_pick_pics +
+          ' <span class="picked" id="ch-pics-name"></span><input type="file" id="ch-pics" accept="image/*" multiple></label>' +
         '<button id="ch-pick-studio">🎬 ' + S.ch_pick_studio + '</button><button id="ch-pick-files">📁 ' + S.ch_pick_files + '</button></div>' +
         '<div id="ch-picked" class="row" style="flex-wrap:wrap;gap:6px"></div><div id="ch-picker" hidden></div>' +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ch-no">' + S.cancel + '</button><button class="primary" id="ch-go">' + S.ch_save + '</button></div>';
       dlg.showModal();
+      // A chosen file says its name on its button, since nothing else does.
+      [['ch-vfile', 'ch-vfile-name'], ['ch-pics', 'ch-pics-name']].forEach(function (pair) {
+        $('#' + pair[0]).addEventListener('change', function () {
+          $('#' + pair[1]).textContent = this.files.length > 1 ? fmt('files_picked', { n: this.files.length }) : (this.files[0] ? this.files[0].name : '');
+        });
+      });
       // Pictures that are already somewhere: this project's images, frames
       // and references, or the person's own Archivos. Fetched as they are
       // saved and sent like a picture from the device, so the Studio checks
@@ -979,7 +1038,7 @@
         '<details class="more"><summary aria-label="' + esc(S.more) + '">⋯</summary><div class="menu">' +
         '<button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div></details></span></div>' +
         '<div id="rail"></div>' +
-        '<div class="tabs" role="tablist">' + (p.kind === 'recording' ? [] : ['board']).concat(['video', 'audio', 'images', 'cast', 'files']).map(function (t) {
+        '<div class="tabs" role="tablist">' + tabsFor(p.kind).map(function (t) {
           return '<button role="tab" aria-selected="' + (t === tab) + '" data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
         }).join('') + '</div>' +
         '<div id="tabbody"></div>';
@@ -990,6 +1049,16 @@
     // the film -- each with what is done and what wants attention, and each
     // a door to the tab it is made in. Drawn again with every tab refresh, so
     // the counts follow the queue.
+    // The tabs in the order the project's work goes: a music video starts from
+    // its song, then the storyboard, then the video; a tutorial is its
+    // recordings. It used to be one order for every kind, which put the
+    // storyboard before the song under a progress strip that read the other
+    // way round.
+    function tabsFor(kind) {
+      if (kind === 'music_video') return ['audio', 'board', 'video', 'cast', 'images', 'files'];
+      if (kind === 'recording') return ['video', 'files', 'audio', 'images'];
+      return ['video', 'board', 'audio', 'images', 'cast', 'files'];
+    }
     function drawRail() {
       var el = $('#rail'), p = current;
       if (!el || !p) return;
@@ -1220,11 +1289,12 @@
       var p = current, shots = p.shots || [];
       var total = shots.reduce(function (a, s) { return a + (s.seconds || 5); }, 0);
       var opt = function (v, k) { return '<option value="' + v + '"' + (p.settings.resolution === v ? ' selected' : '') + '>' + S[k] + '</option>'; };
-      var html = '<div class="card"><div class="row"><label class="f" style="margin:0">' + S.resolution + '</label>' +
-        '<select id="res" style="width:auto">' + opt('832x480', 'res_wide') + opt('480x832', 'res_tall') + opt('640x640', 'res_square') + '</select>' +
-        '<label class="f" style="margin:0">' + S.language + '</label><select id="lang" style="width:auto">' +
+      // Each label stays with its control when the row wraps on a phone.
+      var html = '<div class="card"><div class="row"><span class="pair"><label class="f" style="margin:0" for="res">' + S.resolution + '</label>' +
+        '<select id="res" style="width:auto">' + opt('832x480', 'res_wide') + opt('480x832', 'res_tall') + opt('640x640', 'res_square') + '</select></span>' +
+        '<span class="pair"><label class="f" style="margin:0" for="lang">' + S.language + '</label><select id="lang" style="width:auto">' +
         '<option value="es"' + (p.settings.language === 'es' ? ' selected' : '') + '>Español</option>' +
-        '<option value="en"' + (p.settings.language === 'en' ? ' selected' : '') + '>English</option></select>' +
+        '<option value="en"' + (p.settings.language === 'en' ? ' selected' : '') + '>English</option></select></span>' +
         '<label class="row" style="margin:0;font-size:.86rem"><input type="checkbox" id="use-sb" style="width:auto"' + (useBoards() ? ' checked' : '') +
           '> 🖼️ ' + S.sb_use + '</label>' +
         '<span class="grow"></span><span class="muted">' + fmt('shots_total', { n: shots.length, s: Math.round(total) }) + '</span></div>' +
@@ -1526,11 +1596,10 @@
         }).join('') : '<p class="muted">' + S.no_files + '</p>';
       }
       return '<div class="card"><b>' + S.upload_ref + '</b><p class="muted">' + S.ref_style_intro + '</p>' + list('reference') +
-        '<div class="row" style="margin-top:8px"><input type="file" accept="image/*" data-upload="reference" style="width:auto"></div>' +
-        '<div class="row" style="margin-top:8px"><span class="muted">🎨 ' + S.upload_style + '</span>' +
-        '<input type="file" accept="image/*" data-upload="reference" data-style="1" style="width:auto"></div></div>' +
+        '<div class="row" style="margin-top:10px"><label class="btn upload">' + S.upload_image_btn + '<input type="file" accept="image/*" data-upload="reference"></label>' +
+        '<label class="btn upload">🎨 ' + S.upload_style + '<input type="file" accept="image/*" data-upload="reference" data-style="1"></label></div></div>' +
         '<div class="card"><b>' + S.upload_voice + '</b><p class="muted">' + S.voice_sample_help + '</p>' + list('voice') +
-        '<div class="row" style="margin-top:8px"><input type="file" accept="audio/*" data-upload="voice" style="width:auto"></div></div>';
+        '<div class="row" style="margin-top:10px"><label class="btn upload">' + S.upload_voice_btn + '<input type="file" accept="audio/*" data-upload="voice"></label></div></div>';
     }
 
     // ── Editing and saving ────────────────────────────────────────────────
@@ -2490,6 +2559,60 @@
         var y = window.scrollY; current = p; drawTab(); window.scrollTo(0, y);
       }
     }
+
+    // ── The helper ──────────────────────────────────────────────────────────
+    // Questions about using the Studio, answered by the house's own model
+    // from the Studio's guide (/studio/api/help): where to click, in the
+    // page's own words. The conversation lives in this page only.
+    var help = { log: [], busy: false };
+    function helpSuggestions() {
+      var k = current && current.kind;
+      var keys = k === 'recording' ? ['help_s_rec1', 'help_s_rec2', 'help_s_rec3']
+        : k === 'music_video' ? ['help_s_mv1', 'help_s_mv2', 'help_s_mv3'] : ['help_s_any1', 'help_s_any2', 'help_s_any3'];
+      return keys.map(function (x) { return S[x]; });
+    }
+    function drawHelp() {
+      var box = $('#help-log');
+      box.innerHTML = (help.log.length ? '' : '<p class="a">' + esc(S.help_hello) + '</p><div class="sugg">' +
+          helpSuggestions().map(function (q) { return '<button type="button" data-help-q="' + esc(q) + '">' + esc(q) + '</button>'; }).join('') + '</div>') +
+        help.log.map(function (m) {
+          // The model writes a little markdown: its **bold** becomes bold,
+          // after escaping, so nothing it says is ever taken as markup.
+          var body = m.role === 'user' ? esc(m.content) : esc(m.content).replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+          return '<div class="' + (m.role === 'user' ? 'q' : 'a' + (m.wait ? ' wait' : '')) + '">' + body + '</div>';
+        }).join('');
+      box.scrollTop = box.scrollHeight;
+    }
+    async function askHelp(q) {
+      q = String(q || '').trim();
+      if (!q || help.busy) return;
+      help.busy = true;
+      var history = help.log.filter(function (m) { return !m.wait; }).map(function (m) { return { role: m.role, content: m.content }; });
+      help.log.push({ role: 'user', content: q }, { role: 'assistant', content: S.help_thinking, wait: true });
+      drawHelp();
+      try {
+        var r = await api('help', { method: 'POST', body: { question: q, history: history,
+          where: { tab: current ? tab : 'projects', kind: current ? current.kind : '', project: current ? current.name : '' } } });
+        help.log[help.log.length - 1] = { role: 'assistant', content: r.answer };
+      } catch (e) {
+        help.log[help.log.length - 1] = { role: 'assistant', content: e.message || S.help_failed, wait: true };
+      }
+      help.busy = false; drawHelp();
+    }
+    function openHelp(on) {
+      var el = $('#help');
+      el.classList.toggle('open', on); el.setAttribute('aria-hidden', on ? 'false' : 'true');
+      $('#help-open').setAttribute('aria-expanded', on ? 'true' : 'false');
+      if (on) { drawHelp(); setTimeout(function () { $('#help-q').focus(); }, 60); } else $('#help-open').focus();
+    }
+    $('#help-open').addEventListener('click', function () { openHelp(!$('#help').classList.contains('open')); });
+    $('#help-close').addEventListener('click', function () { openHelp(false); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && $('#help').classList.contains('open') && !document.querySelector('dialog[open]')) openHelp(false);
+    });
+    $('#help-form').addEventListener('submit', function (e) { e.preventDefault(); var q = $('#help-q').value; $('#help-q').value = ''; askHelp(q); });
+    $('#help-q').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#help-form').requestSubmit(); } });
+    $('#help-log').addEventListener('click', function (e) { var b = e.target.closest('[data-help-q]'); if (b) askHelp(b.dataset.helpQ); });
 
     // ── Start ─────────────────────────────────────────────────────────────
     loadList();
