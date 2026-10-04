@@ -141,6 +141,11 @@ class Manager:
         # Jobs a pause stopped on the card, to go back to the queue rather
         # than end cancelled.
         self._requeue: set[str] = set()
+        # Eye contact runs as a process of its own (studio/eyes.py), not in
+        # the generator's: it is killed to cancel or pause, and a crash in
+        # LivePortrait takes only it. The command is replaceable for tests.
+        self.eyes_cmd = [sys.executable, "-m", "studio.eyes"]
+        self._eyes_proc: subprocess.Popen | None = None
         self._stop = threading.Event()
         self._wake = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="studio-manager", daemon=True)
@@ -163,6 +168,11 @@ class Manager:
         job = self.store.get(job_id)
         if not job:
             return None
+        if job["state"] == "running" and job["kind"] == "eyes" and self._eyes_proc:
+            self._cancelling.add(job_id)
+            self.store.update(job_id, phase="cancelling")
+            self._eyes_proc.kill()
+            return "running"
         if job["state"] == "running" and self.worker and self.worker.alive():
             # Remembered here, not only in the job's phase: the worker keeps
             # reporting progress until WanGP stops, and each report rewrote the
@@ -191,7 +201,10 @@ class Manager:
             return None
         self._requeue.add(job["id"])
         self.store.update(job["id"], phase="pausing")
-        if self.worker and self.worker.alive():
+        if job["kind"] == "eyes":
+            if self._eyes_proc:
+                self._eyes_proc.kill()
+        elif self.worker and self.worker.alive():
             self._cancelling.add(job["id"])
             self.worker.send(cancel=job["id"])
         return job["id"]
@@ -265,6 +278,8 @@ class Manager:
             return self._repaint(job)
         if job["kind"] == "score":
             return self._score(job)
+        if job["kind"] == "eyes":
+            return self._eyes(job)
         try:
             params = self._resolve(job)
             settings = recipes.settings_for(job["kind"], params)
@@ -441,6 +456,104 @@ class Manager:
             shutil.rmtree(work, ignore_errors=True)
             if self.audio and self.audio.url:
                 self.audio.wait_idle()
+
+    def _eyes(self, job: dict) -> None:
+        """A recording's camera with the eyes moved to the lens over the
+        stretches its owner marked (studio/eyes.py), filed as a new version
+        of the recording: the screen, the microphone and the computer sound
+        are the same files, only the camera is new. Its timing is the
+        original's, so sections, texts and stretches move to it."""
+        owner, pid, item_id = job["owner"], job["project"], job["target"]
+        p = job["params"]
+        self.store.update(job["id"], state="running", started=time.time(), progress=0.0, phase="loading")
+        # The generator holds the card while it waits for work: it goes now,
+        # and the next video job starts it again.
+        if self.worker:
+            self.worker.stop()
+            self.worker = None
+        work = self.scratch / job["id"]
+        work.mkdir(parents=True, exist_ok=True)
+        error, result = "", None
+        try:
+            doc = self.projects.load(owner, pid)
+            found = Projects.find(doc, item_id)
+            if not found:
+                raise ProjectError("the recording is gone")
+            item = found[2]
+            take = next((t for t in item.get("takes") or [] if t.get("id") == p.get("take")), None)
+            if not take or not take.get("cam"):
+                raise ProjectError("that version has no camera")
+            base = self.projects.dir(owner, pid)
+            stamp = job["id"][:8]
+            folder = base / "takes" / item_id
+            out = folder / f"{stamp}-eyes-cam.mp4"
+            spec = work / "job.json"
+            spec.write_text(json.dumps({"src": str(base / take["cam"]), "dst": str(work / "cam.mp4"),
+                                        "spans": p.get("spans") or [], "strength": p.get("strength", 1.0)}))
+            self._eyes_proc = subprocess.Popen([*self.eyes_cmd, str(spec)], stdout=subprocess.PIPE,
+                                               stderr=open(self.logs / "eyes.log", "ab"), text=True,
+                                               cwd=str(Path(__file__).resolve().parent.parent))
+            for line in self._eyes_proc.stdout:
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if "progress" in msg and job["id"] not in self._cancelling:
+                    self.store.update(job["id"], progress=float(msg["progress"]), phase=str(msg.get("phase") or "")[:60])
+                elif "error" in msg:
+                    error = str(msg["error"])
+                elif "done" in msg:
+                    result = msg["done"]
+            self._eyes_proc.wait()
+            if job["id"] in self._requeue:
+                self._requeue.discard(job["id"])
+                self._cancelling.discard(job["id"])
+                self.store.requeue(job["id"])
+                log.info("paused: %s goes back to the queue", job["id"])
+                return
+            if job["id"] in self._cancelling:
+                self._cancelling.discard(job["id"])
+                self.store.update(job["id"], state="cancelled", finished=time.time())
+                self.projects.set_item_field(owner, pid, item_id, "eyes_fix", {"state": "cancelled"})
+                return
+            if self._eyes_proc.returncode != 0 or result is None:
+                raise RuntimeError(error or "eye contact stopped unexpectedly (see eyes.log)")
+            folder.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(work / "cam.mp4"), out)
+            new = {"kind": "eyes", "from": take["id"], "seconds": take.get("seconds"),
+                   "cam": str(out.relative_to(base)),
+                   "eyes": {"spans": p.get("spans") or [], "strength": p.get("strength", 1.0),
+                            "changed": result.get("changed", 0)}}
+            for key in ("file", "first", "last", "pc"):
+                if take.get(key) and (base / take[key]).is_file():
+                    src = base / take[key]
+                    dest = folder / f"{stamp}-eyes-{key}{src.suffix}"
+                    try:
+                        os.link(src, dest)
+                    except OSError:
+                        shutil.copy2(src, dest)
+                    new[key] = str(dest.relative_to(base))
+            made = self.projects.add_take(owner, pid, item_id, new)
+            current = Projects.find(self.projects.load(owner, pid), item_id)
+            for field in ("sections_take", "callouts_take", "eyes_take"):
+                if current and current[2].get(field) == take["id"]:
+                    self.projects.set_item_field(owner, pid, item_id, field, made["id"])
+            self.projects.set_item_field(owner, pid, item_id, "eyes_fix", {"state": "done", "take": made["id"]})
+            self.store.update(job["id"], state="done", finished=time.time(), progress=1.0, phase="",
+                              files=[new["cam"]])
+            self._notify(job, ok=True)
+        except Exception as exc:                               # noqa: BLE001 -- reported on the job and the item
+            log.exception("eyes %s failed", job["id"])
+            self.store.update(job["id"], state="failed", finished=time.time(), error=str(exc)[:500])
+            try:
+                self.projects.set_item_field(owner, pid, item_id, "eyes_fix",
+                                             {"state": "failed", "error": str(exc)[:300]})
+            except ProjectError:
+                pass
+            self._notify(job, ok=False)
+        finally:
+            self._eyes_proc = None
+            shutil.rmtree(work, ignore_errors=True)
 
     def _repaint(self, job: dict) -> None:
         """Only a stretch of a song made again, on the audio unit's ACE-Step.

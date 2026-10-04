@@ -10,6 +10,7 @@ without WanGP or a GPU. What the real models do is measured by the prototype
 People are the invented household: Tomi and Mora (parents), Juana.
 """
 import os
+import re
 import shutil
 from collections import Counter
 import subprocess
@@ -1476,8 +1477,343 @@ check("  deleting a version takes its transcript with it", not srt_left.exists()
 empty = c.post(f"/api/projects/{rp['id']}/recordings", json={}, headers=h(JUANA, "Juana")).json()
 check("  a recording with nothing in it cannot be finished",
       c.post(f"/api/projects/{rp['id']}/recordings/{empty['id']}/finish", headers=h(JUANA, "Juana")).status_code == 400)
+print("\n  a tutorial: the screen, the camera and the computer's sound, each recorded apart")
+tp = c.post("/api/projects", json={"name": "Tutorial aparte", "kind": "recording"}, headers=h(JUANA, "Juana")).json()
+trec = c.post(f"/api/projects/{tp['id']}/recordings", json={"title": "Toma"}, headers=h(JUANA, "Juana")).json()
+scr, camw, pcw = tmp / "t-screen.webm", tmp / "t-cam.webm", tmp / "t-pc.webm"
+# The screen with the microphone: speech, a three-second pause, speech.
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi",
+                "-i", "aevalsrc='if(lt(t,2)+gt(t,5),sin(2*PI*300*t),0)':s=48000:d=7", "-t", "7", "-shortest",
+                "-c:v", "libvpx", "-b:v", "300k", "-c:a", "libopus", str(scr)], check=True)
+# The camera: green, no sound. The computer: a tone all through, no picture.
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=0x00ff00:s=160x120:rate=25:d=7",
+                "-c:v", "libvpx", "-b:v", "200k", str(camw)], check=True)
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:d=7", "-c:a", "libopus",
+                str(pcw)], check=True)
+for track, f in (("main", scr), ("cam", camw), ("pc", pcw)):
+    r = c.post(f"/api/projects/{tp['id']}/recordings/{trec['id']}/chunk?n=0&track={track}", content=f.read_bytes(),
+               headers={**h(JUANA, "Juana"), "Content-Type": "application/octet-stream"})
+check("  three tracks taken in, each by its name", r.status_code == 200 and r.json()["track"] == "pc", r.text)
+check("  and no fourth",
+      c.post(f"/api/projects/{tp['id']}/recordings/{trec['id']}/chunk?n=0&track=other", content=b"x",
+             headers={**h(JUANA, "Juana"), "Content-Type": "application/octet-stream"}).status_code == 400)
+c.post(f"/api/projects/{tp['id']}/recordings/{trec['id']}/finish",
+       json={"cam_offset_ms": 200, "pc_offset_ms": -100, "cam_layout": {"show": True, "corner": "tl", "size": 0.3},
+             "mix": {"mic": 1, "pc": 0.5}}, headers=h(JUANA, "Juana"))
+
+
+def tclip():
+    return next(x for x in c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+                if x["id"] == trec["id"])
+
+
+deadline = time.time() + 180
+while time.time() < deadline and tclip()["recording"]["state"] == "processing":
+    time.sleep(0.5)
+tc = tclip()
+tt = Projects.chosen_take(tc) or {}
+tbase = A.projects.dir(JUANA, tp["id"])
+check("  the camera and the computer sound are kept beside the screen, not in it",
+      tc["recording"]["state"] == "done" and tt.get("cam") and tt.get("pc")
+      and not media.probe(tbase / tt["cam"])["has_audio"] and media.probe(tbase / tt["file"])["has_audio"], (tc, tt))
+check("  each lined up with the screen, as long as it",
+      all(abs(media.probe(tbase / tt[k])["seconds"] - tc["seconds"]) < 0.25 for k in ("cam", "pc")),
+      [media.probe(tbase / tt[k])["seconds"] for k in ("cam", "pc")] + [tc["seconds"]])
+check("  where the camera was shown while recording, and the volumes, become the clip's",
+      tc.get("cam_layout") == {"show": True, "corner": "tl", "size": 0.3} and tc.get("mix") == {"mic": 1.0, "pc": 0.5},
+      (tc.get("cam_layout"), tc.get("mix")))
+
+
+def tfilm():
+    c.post(f"/api/projects/{tp['id']}/render", json={}, headers=h(JUANA, "Juana"))
+    end = time.time() + 180
+    while time.time() < end:
+        st = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+        if (st.get("render") or {}).get("state") != "running":
+            break
+        time.sleep(0.5)
+    assert st["render"]["state"] == "done", st.get("render")
+    return tbase / st["render"]["file"]
+
+
+def pixel(video, x, y, at=1.0):
+    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", str(at), "-i", str(video), "-frames:v", "1",
+                          "-vf", f"crop=2:2:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True).stdout
+    return tuple(raw[:3])
+
+
+def loudness(video, at, seconds=1.0):
+    err = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(at), "-t", str(seconds), "-i", str(video),
+                          "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+    m = re.search(r"mean_volume: (-?[\d.]+|-inf) dB", err)
+    return float(m.group(1)) if m and m.group(1) != "-inf" else -200.0
+
+
+def green(px):
+    return len(px) == 3 and px[1] > 160 and px[0] < 90 and px[2] < 90
+
+
+film1 = tfilm()
+check("  the film draws the camera in its corner, and only there",
+      green(pixel(film1, 40, 30)) and not green(pixel(film1, 300, 170)), (pixel(film1, 40, 30), pixel(film1, 300, 170)))
+check("  and the computer sound under the microphone, through the microphone's pause",
+      loudness(film1, 3.0) > -45, loudness(film1, 3.0))
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, cam_layout={"show": False, "corner": "tl", "size": 0.3},
+                                                         mix={"mic": 1, "pc": 0}) for x in shots]}, headers=h(JUANA, "Juana"))
+film2 = tfilm()
+check("  turned off afterwards, the camera is not in the film -- it was never in the recording",
+      not green(pixel(film2, 40, 30)), pixel(film2, 40, 30))
+check("  and the computer sound turned down to nothing is gone from the pause", loudness(film2, 3.0) < -60,
+      loudness(film2, 3.0))
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, cam_layout={"show": "yes", "corner": "middle", "size": 9},
+                                                         mix={"mic": -3, "pc": "x"}) for x in shots]},
+      headers=h(JUANA, "Juana"))
+tc = tclip()
+check("  a layout and volumes are kept in bounds",
+      tc["cam_layout"] == {"show": True, "corner": "br", "size": 0.5} and tc["mix"] == {"mic": 0.0, "pc": 1.0},
+      (tc["cam_layout"], tc["mix"]))
+print("\n  a film to publish: H.264 at a size of its own")
+check("  a size keeps the film's shape: wide to 1920 across, tall to 1920 down",
+      media.fit_size(832, 480, "1080") == (1920, 1108) and media.fit_size(480, 832, "1080") == (1108, 1920)
+      and media.fit_size(320, 180, "720") == (1280, 720) and media.fit_size(320, 180, None) == (320, 180))
+c.post(f"/api/projects/{tp['id']}/render", json={"format": "h264", "size": "720"}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 240
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.5)
+pub = tbase / (st.get("render") or {}).get("file", "none")
+pi = media.probe(pub) if pub.is_file() else {}
+check("  the film is H.264 at 720p, its name says so, and its record too",
+      pi.get("codec") == "h264" and (pi.get("width"), pi.get("height")) == (1280, 720) and pub.name.endswith("-h264-720p.mp4")
+      and st["renders"][-1].get("format") == "h264" and st["renders"][-1].get("size") == "720", (st.get("render"), pi))
+c.post(f"/api/projects/{tp['id']}/render", json={"format": "vp9", "size": "4k"}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 240
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.5)
+kept = media.probe(tbase / st["render"]["file"])
+check("  anything else asked for is the kept film: H.265 at the clips' size",
+      kept["codec"] == "hevc" and (kept["width"], kept["height"]) == (320, 180), kept)
+print("\n  a title card, and text over a recording")
+tt_now = Projects.chosen_take(tclip())["id"]
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [
+    {"card": {"title": "Cómo cambiar una rueda", "subtitle": "en cinco minutos", "seconds": 2, "theme": "olive"}, "prompt": ""}]
+    + [dict(x, callouts_take=tt_now, callouts=[{"start": 3, "end": 5, "text": "Aflojá las tuercas primero", "spot": "bottom"},
+                                              {"start": "x", "end": 2, "text": "?"}]) for x in shots]}, headers=h(JUANA, "Juana"))
+tdoc = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+check("  a title card is a clip of the project with its words, and a recording keeps its texts",
+      tdoc["shots"][0]["card"] == {"title": "Cómo cambiar una rueda", "subtitle": "en cinco minutos", "seconds": 2.0, "theme": "olive"}
+      and [x["text"] for x in tdoc["shots"][1]["callouts"]] == ["Aflojá las tuercas primero"], tdoc["shots"][:2])
+film5 = tfilm()
+check("  the film opens with the card, for as long as it lasts",
+      abs(media.probe(film5)["seconds"] - (2 + tc["seconds"])) < 0.5
+      and pixel(film5, 20, 20, 1.0)[:3] and abs(pixel(film5, 20, 20, 1.0)[0] - 60) < 12 and abs(pixel(film5, 20, 20, 1.0)[1] - 70) < 12,
+      (media.probe(film5)["seconds"], pixel(film5, 20, 20, 1.0)))
+
+
+def dark(px):
+    return len(px) == 3 and max(px) < 80
+
+
+# Left of the camera, which still shows large in the bottom-right corner.
+_in, _out = pixel(film5, 100, 160, 2 + 4.0), pixel(film5, 100, 160, 2 + 1.0)
+check("  and the text shows over the recording in its stretch, and only there",
+      len(_in) == 3 and sum(abs(a - b) for a, b in zip(_in, _out)) > 90, (_in, _out))
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, callouts_take="zzzzzz222222") for x in shots]},
+      headers=h(JUANA, "Juana"))
+film6 = tfilm()
+check("  texts placed on another version are not drawn on this one",
+      sum(abs(a - b) for a, b in zip(pixel(film6, 100, 160, 2 + 4.0), _in)) > 90, pixel(film6, 100, 160, 6.0))
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, callouts=[], callouts_take="") for x in shots if not x.get("card")]},
+      headers=h(JUANA, "Juana"))
+print("\n  a recording cut into sections by hand, nothing cut from its files")
+tt_id = (Projects.chosen_take(tclip()) or {})["id"]
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections_take=tt_id, sections=[
+    {"start": 0, "end": 2, "keep": True, "cam": {"show": True, "corner": "tl", "size": 0.3}},
+    {"start": 1, "end": 3, "keep": True},                       # overlaps the first: dropped
+    {"start": 2, "end": 5, "keep": False},
+    {"start": 5, "end": 7, "keep": True, "cam": {"show": False, "corner": "br", "size": 0.3}},
+    {"start": "x", "end": 9}]) for x in shots]}, headers=h(JUANA, "Juana"))
+tc = tclip()
+check("  its sections are kept in order, the overlapping and unreadable ones dropped",
+      [(x["start"], x["end"], x["keep"]) for x in tc["sections"]] == [(0, 2, True), (2, 5, False), (5, 7, True)]
+      and tc["sections"][1]["cam"] is None and tc["sections_take"] == tt_id, tc.get("sections"))
+film3 = tfilm()
+check("  the film keeps only the kept sections", 3.6 < media.probe(film3)["seconds"] < 4.4, media.probe(film3)["seconds"])
+check("  each with its own camera: in its corner in the first, hidden in the last",
+      green(pixel(film3, 40, 30, 1.0)) and not green(pixel(film3, 40, 30, 3.0))
+      and not green(pixel(film3, 300, 170, 3.0)), (pixel(film3, 40, 30, 1.0), pixel(film3, 40, 30, 3.0)))
+check("  and the files are untouched", abs(media.probe(tbase / tt["file"])["seconds"] - tc["seconds"]) < 0.2)
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections_take="zzzzzz111111") for x in
+                                                     c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]]},
+      headers=h(JUANA, "Juana"))
+film4 = tfilm()
+check("  sections drawn over another version are not this one's: the clip goes in whole",
+      media.probe(film4)["seconds"] > 6.5, media.probe(film4)["seconds"])
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections=[], sections_take="") for x in
+                                                     c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]]},
+      headers=h(JUANA, "Juana"))
+srt_in = tmp / "parts.srt"
+srt_in.write_text(media.srt([{"start": 0.5, "end": 1.5, "text": "uno"}, {"start": 2.5, "end": 4.5, "text": "dos"},
+                             {"start": 6.0, "end": 6.8, "text": "tres"}]), encoding="utf-8")
+part = media.shift_srt(srt_in, tmp / "part.srt", 2.0, 5.0).read_text()
+check("  a section's subtitles are its own lines, timed from where it starts",
+      "dos" in part and "uno" not in part and "tres" not in part and "00:00:00,500 --> 00:00:02,500" in part, part)
+print("\n  a recording's microphone cleaned: noise out, loudness evened")
+noisy = tmp / "noisy.mp4"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
+                "-i", "anoisesrc=d=4:c=white:a=0.02", "-f", "lavfi", "-i", "sine=frequency=300:d=4", "-filter_complex",
+                "[2:a]volume=0.05[v];[1:a][v]amix=inputs=2:normalize=0[a]", "-map", "0:v", "-map", "[a]", "-t", "4",
+                "-pix_fmt", "yuv420p", str(noisy)], check=True)
+cleaned = media.clean_voice(noisy, tmp / "noisy-clean.mp4")
+check("  the picture is copied as it is, the sound evened out to video level",
+      media.probe(cleaned)["codec"] == media.probe(noisy)["codec"] and -20 < loudness(cleaned, 0.5, 3) < -12,
+      (media.probe(cleaned)["codec"], loudness(noisy, 0.5, 3), loudness(cleaned, 0.5, 3)))
+try:
+    media.clean_voice(noisy, tmp / "none.mp4", denoise=False, level=False)
+    check("  asking for nothing says so", False)
+except media.MediaError:
+    check("  asking for nothing says so", True)
+before = Projects.chosen_take(tclip())
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections_take=before["id"], sections=[
+    {"start": 0, "end": 3, "keep": True}, {"start": 3, "end": 7, "keep": False}]) for x in shots]}, headers=h(JUANA, "Juana"))
+c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/clean", json={}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 120
+while time.time() < deadline and (tclip().get("clean") or {}).get("state") == "running":
+    time.sleep(0.3)
+tc = tclip()
+cl = Projects.chosen_take(tc)
+check("  a new version, its camera and computer sound kept beside it",
+      (tc.get("clean") or {}).get("state") == "done" and cl["id"] != before["id"] and cl["kind"] == "cleaned"
+      and cl.get("cam") and cl.get("pc") and (tbase / cl["cam"]).is_file(), (tc.get("clean"), cl))
+check("  sharing their files, not copies of them",
+      os.stat(tbase / cl["cam"]).st_ino == os.stat(tbase / before["cam"]).st_ino)
+check("  and the sections drawn over the old version move to it", tc["sections_take"] == cl["id"], tc["sections_take"])
+A.projects.delete_take(JUANA, tp["id"], trec["id"], cl["id"])
+check("  deleting the cleaned version leaves the original's camera in place", (tbase / before["cam"]).is_file())
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections=[], sections_take="",
+                                                          chosen=next(i for i, k in enumerate(x["takes"]) if k["id"] == before["id"]))
+                                                     for x in shots]}, headers=h(JUANA, "Juana"))
+c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/trim", json={}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 120
+while time.time() < deadline and (tclip().get("trim") or {}).get("state") == "running":
+    time.sleep(0.3)
+tc = tclip()
+tt2 = Projects.chosen_take(tc) or {}
+check("  the microphone's pause is cut from all three, so they stay together",
+      (tc.get("trim") or {}).get("state") == "done" and tt2.get("cam") and tt2.get("pc")
+      and all(abs(media.probe(tbase / tt2[k])["seconds"] - media.probe(tbase / tt2["file"])["seconds"]) < 0.3
+              for k in ("cam", "pc")) and media.probe(tbase / tt2["file"])["seconds"] < tc["seconds"] + 0.1
+      and media.probe(tbase / tt2["file"])["seconds"] < 5.2, (tc.get("trim"), tt2))
+left = [tbase / tt2[k] for k in ("file", "cam", "pc")]
+A.projects.delete_take(JUANA, tp["id"], trec["id"], tt2["id"])
+check("  deleting a version takes its camera and computer sound with it", not any(f.exists() for f in left))
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
+
+print("\n  eye contact on a recording's camera, over the stretches marked")
+import numpy as np  # noqa: E402
+from studio import eyes as EY  # noqa: E402
+check("  outside every stretch nothing applies; inside, all of it; around one it eases",
+      EY.ease_weight(1.0, [(3, 6)]) == 0 and EY.ease_weight(4.0, [(3, 6)]) == 1
+      and 0 < EY.ease_weight(2.9, [(3, 6)]) < 1 and EY.ease_weight(9.0, []) == 1)
+check("  closed or wide-open eyes are left alone, usual ones corrected",
+      EY.open_weight(0.4, 0.4) == 1 and EY.open_weight(0.18, 0.4) == 0 and EY.open_weight(0.7, 0.4) == 0
+      and 0 < EY.open_weight(0.28, 0.4) < 1)
+sm = np.array([[0.0, -0.08], [-0.07, -0.08], [0.0, -0.02], [0.3, 0.3]])
+sh = EY.shifts_for(sm.copy(), np.array([14.0, 8.0]))
+check("  a gaze already on the lens gets no shift; one beside or below it is moved back, never past the cap",
+      (sh[0] == 0).all() and sh[1, 0] > 0 and sh[1, 1] == 0 and sh[2, 1] < 0
+      and (np.abs(sh[3]) <= EY.CAP + 1e-9).all(), sh.tolist())
+check("  a direction the face barely answers in is left alone",
+      (EY.shifts_for(sm.copy(), np.array([14.0, 2.0]))[:, 1] == 0).all())
+g = np.zeros((90, 2)); g[:, 0] = -0.07; g[45, 0] = 0.4
+good = np.ones(90, bool); good[45] = False
+check("  a blink's stray pupil is not part of the smoothed gaze", abs(EY.smooth_gaze(g, good, 30)[45, 0] + 0.07) < 1e-6)
+check("  stretches: in order, inside the clip, the too-short dropped",
+      EY.clean_spans([[5, 9], [1, 2], [3, 3.1], ["x", 1]], 8) == [(1.0, 2.0), (5.0, 8.0)])
+from studio.projects import clean_eyes  # noqa: E402
+check("  the item's stretches are kept in order, overlaps joined",
+      clean_eyes([{"start": 4, "end": 6}, {"start": 1, "end": 3}, {"start": 5, "end": 8}, {"start": 2, "end": "x"}])
+      == [{"start": 1.0, "end": 3.0}, {"start": 4.0, "end": 8.0}])
+fake_eyes = tmp / "fake_eyes.py"
+fake_eyes.write_text(
+    "import json, shutil, sys, time\n"
+    "job = json.load(open(sys.argv[1]))\n"
+    "print('LivePortrait chatter', file=sys.stderr)\n"
+    "print(json.dumps({'progress': 0.5, 'phase': 'rendering'}), flush=True)\n"
+    "if job['spans'] and job['spans'][0][0] >= 3: time.sleep(30)\n"
+    "shutil.copy(job['src'], job['dst'])\n"
+    "print(json.dumps({'done': {'frames': 10, 'changed': 4}}), flush=True)\n")
+A.manager.eyes_cmd = [sys.executable, str(fake_eyes)]
+base_t = Projects.chosen_take(tclip())
+r = c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={}, headers=h(JUANA, "Juana"))
+check("  nothing marked and not the whole clip: it says what to do", r.status_code == 400, r.status_code)
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, eyes=[{"start": 1, "end": 2.5}], eyes_take=base_t["id"],
+                                                          callouts=[{"start": 0, "end": 1, "text": "hola"}],
+                                                          callouts_take=base_t["id"]) for x in shots]},
+      headers=h(JUANA, "Juana"))
+r = c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={"strength": 0.8}, headers=h(JUANA, "Juana")).json()
+ej = A.store.get(r["job"]["id"])
+check("  queued on the card with its stretches, its strength and the seconds it covers",
+      ej["kind"] == "eyes" and ej["params"]["spans"] == [[1.0, 2.5]] and ej["params"]["strength"] == 0.8
+      and ej["params"]["seconds"] == 1.5 and ej["model"] == "liveportrait", ej["params"])
+check("  asking again while it waits returns the same job",
+      c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={}, headers=h(JUANA, "Juana")).json()["job"]["id"] == ej["id"])
+A.manager._run(ej)
+tc = tclip()
+ne = Projects.chosen_take(tc)
+check("  done: a new version whose camera is new and whose screen and sounds are the same files",
+      A.store.get(ej["id"])["state"] == "done" and ne["id"] != base_t["id"] and ne["kind"] == "eyes"
+      and ne["cam"] != base_t["cam"] and (tbase / ne["cam"]).is_file()
+      and os.stat(tbase / ne["file"]).st_ino == os.stat(tbase / base_t["file"]).st_ino
+      and (not base_t.get("pc") or os.stat(tbase / ne["pc"]).st_ino == os.stat(tbase / base_t["pc"]).st_ino),
+      (A.store.get(ej["id"]), ne))
+check("  the stretches and the texts move to it, and the item says it is done",
+      tc["eyes_take"] == ne["id"] and tc["callouts_take"] == ne["id"] and tc["eyes_fix"]["state"] == "done",
+      (tc.get("eyes_take"), tc.get("eyes_fix")))
+check("  the job's own chatter stays out of its reports", "LivePortrait chatter" in (tmp / "api" / "logs" / "eyes.log").read_text()
+      if (tmp / "api" / "logs" / "eyes.log").exists() else True)
+A.projects.delete_take(JUANA, tp["id"], trec["id"], ne["id"])
+check("  deleting it leaves the original's files", (tbase / base_t["cam"]).is_file() and (tbase / base_t["file"]).is_file())
+r = c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={"whole": True, "take": base_t["id"]},
+           headers=h(JUANA, "Juana")).json()
+check("  the whole clip, when asked for: no stretches", A.store.get(r["job"]["id"])["params"]["spans"] == [])
+A.manager.cancel(r["job"]["id"])
+slow = A.store.add(owner=JUANA, owner_name="Juana", kind="eyes", model="liveportrait",
+                   params={"take": base_t["id"], "spans": [[3, 4]], "strength": 1.0, "seconds": 1},
+                   project=tp["id"], target=trec["id"])
+th = threading.Thread(target=A.manager._run, args=(slow,)); th.start()
+deadline = time.time() + 20
+while time.time() < deadline and A.store.get(slow["id"])["progress"] < 0.5:
+    time.sleep(0.1)
+A.manager.pause(now=True)
+th.join(20)
+check("  a pause now stops it on the card and puts it back in the queue",
+      not th.is_alive() and A.store.get(slow["id"])["state"] == "queued", A.store.get(slow["id"])["state"])
+A.manager.paused = False
+th = threading.Thread(target=A.manager._run, args=(A.store.get(slow["id"]),)); th.start()
+deadline = time.time() + 20
+while time.time() < deadline and A.store.get(slow["id"])["progress"] < 0.5:
+    time.sleep(0.1)
+A.manager.cancel(slow["id"])
+th.join(20)
+check("  and cancelling it ends it cancelled, with no new version",
+      not th.is_alive() and A.store.get(slow["id"])["state"] == "cancelled"
+      and Projects.chosen_take(tclip())["id"] == base_t["id"], A.store.get(slow["id"])["state"])
 
 print("\n  the shots refitted to the song")
 import json  # noqa: E402

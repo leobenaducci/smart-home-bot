@@ -97,6 +97,40 @@
     details.more > summary::-webkit-details-marker { display: none; }
     details.more > summary:focus-visible, .rail button:focus-visible, .tabs button:focus-visible {
       outline: 2px solid var(--honey); outline-offset: 2px; }
+    /* Keyboard focus, everywhere a person can land. */
+    button:focus-visible, .btn:focus-visible, a:focus-visible, select:focus-visible, textarea:focus-visible,
+    input:focus-visible, .upload:focus-within { outline: 2px solid var(--honey); outline-offset: 2px; }
+    /* A checkbox is the size of a checkbox: the inputs' full width put the
+       storyboard's "redraw" box on a line of its own, away from its words. */
+    input[type=checkbox], input[type=radio] { width: auto; flex: none; accent-color: var(--olive); }
+    /* Choosing a file is a button saying what it is for, not the browser's
+       bare "Choose File / No file chosen" box. */
+    .pair { display: inline-flex; align-items: center; gap: 6px; }
+    .upload { position: relative; overflow: hidden; }
+    .upload input[type=file] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    .upload .picked { font-weight: 400; color: var(--ink-soft); max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* The helper: a margin of its own beside the page, a sheet on a phone. */
+    header button.hlink { background: transparent; color: var(--wall-fg); border-color: rgba(218,212,194,.16); cursor: pointer; }
+    header button.hlink:hover, header a.hlink:hover { color: #F3EEDF; border-color: var(--honey-lt); }
+    header .hlink + .hlink { margin-left: 0; }
+    #help { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100%); z-index: 40; display: flex; flex-direction: column;
+      background: var(--paper-2); border-left: 1px solid var(--line); box-shadow: -14px 0 34px rgba(40,44,30,.2);
+      transform: translateX(100%); visibility: hidden; transition: transform .22s ease, visibility 0s linear .22s; }
+    #help.open { transform: none; visibility: visible; transition: transform .22s ease; }
+    @media (prefers-reduced-motion: reduce) { #help, #help.open { transition: none; } }
+    #help .hhead { background: var(--wall); color: #F3EEDF; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+    #help .hhead h2 { margin: 0; color: #F3EEDF; font-size: 1.05rem; }
+    #help .hhead button { background: transparent; color: var(--wall-fg); border-color: rgba(218,212,194,.25); }
+    #help .hlog { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    #help .q { align-self: flex-end; max-width: 85%; background: var(--honey-lt); color: var(--ink); padding: 8px 12px;
+      border-radius: 14px 14px 4px 14px; font-size: .9rem; white-space: pre-wrap; }
+    #help .a { max-width: 96%; font-size: .9rem; line-height: 1.55; white-space: pre-wrap; }
+    #help .a.wait { color: var(--ink-soft); font-style: italic; }
+    #help .sugg { display: flex; flex-direction: column; gap: 6px; }
+    #help .sugg button { justify-content: flex-start; text-align: left; font-weight: 600; }
+    #help form { display: flex; gap: 8px; align-items: flex-end; padding: 12px 16px 6px; border-top: 1px solid var(--line); }
+    #help form textarea { flex: 1; min-height: 42px; max-height: 140px; resize: none; }
+    #help .hnote { padding: 0 16px 12px; font-size: .74rem; }
     details.more .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 6; display: grid; gap: 4px; min-width: 170px;
       background: var(--paper-2); border: 1px solid var(--line); border-radius: var(--r); padding: 6px; box-shadow: 0 10px 28px rgba(0,0,0,.28); }
     details.more .menu button { justify-content: flex-start; }
@@ -139,7 +173,55 @@
     .takes button { padding: 3px 8px; font-size: .72rem; }
     .takes button.on { background: var(--olive); color: #fff; }
     .link { text-align: center; color: var(--olive-2); font-size: .72rem; margin: -6px 0 6px; }
+    /* `hidden` means hidden: the button rules' own display beat the attribute,
+       and the recorder's Start stayed on screen while it recorded. */
+    [hidden] { display: none !important; }
     .timeline { display: flex; gap: 3px; overflow-x: auto; padding: 8px 0; }
+    /* A recording's camera over its screen, and the controls under it. The
+       camera is a recording of its own, laid over here and in the film --
+       never drawn into the screen's -- so it moves and hides afterwards. */
+    .layered { position: relative; border-radius: 8px; overflow: hidden; background: #000; }
+    .layered video.main { width: 100%; display: block; }
+    .layered video.pip { position: absolute; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.45); pointer-events: none; }
+    .layer-tools { margin-top: 6px; gap: 6px; font-size: .84rem; }
+    .layer-tools button { padding: 3px 8px; min-width: 2.2em; }
+    .layer-tools button.on { border-color: var(--honey); color: var(--honey); font-weight: 700; }
+    .layer-tools input[type=range] { width: 110px; vertical-align: middle; }
+    .layer-tools label { display: inline-flex; align-items: center; gap: 4px; }
+    /* A recording's sections: each as wide as it is long, the kept ones
+       solid, the cut ones struck through, and where the clip is playing. */
+    .sections { position: relative; display: flex; gap: 2px; height: 26px; margin-top: 8px; }
+    .sections .sec { flex: 1 1 0; min-width: 6px; padding: 0; border-radius: 4px; border: 1px solid var(--line);
+      background: rgba(126,138,97,.35); font-size: .7rem; color: var(--ink-soft); overflow: hidden; }
+    .sections .sec.cut { background: repeating-linear-gradient(135deg, transparent 0 5px, rgba(172,75,54,.28) 5px 8px);
+      color: var(--clay); text-decoration: line-through; }
+    .sections .sec.sel { outline: 2px solid var(--honey); outline-offset: 1px; }
+    /* A title card's preview, in its colours; text callouts over a player. */
+    .title-card { aspect-ratio: 16 / 9; max-width: 440px; border-radius: 8px; display: flex; flex-direction: column;
+      justify-content: center; align-items: center; text-align: center; padding: 6%; gap: 6px; }
+    .title-card b { font-family: var(--sans); font-size: clamp(1rem, 3.4vw, 1.6rem); line-height: 1.15; }
+    .title-card span { font-size: clamp(.72rem, 1.6vw, .9rem); opacity: .82; }
+    .title-card.dark { background: #1E2320; color: #F3EEDF; }
+    .title-card.light { background: #F7F3EA; color: #1E2320; border: 1px solid var(--line); }
+    .title-card.olive { background: #3C4630; color: #F3EEDF; }
+    .callout-layer { position: absolute; inset: 0; pointer-events: none; }
+    .callout-layer .co { position: absolute; max-width: 70%; background: rgba(20,22,20,.85); color: #fff; font-weight: 700;
+      font-size: clamp(.7rem, 2.2vw, 1.05rem); padding: .35em .6em; border-radius: 6px; }
+    .callout-layer .co.top { top: 5%; left: 50%; transform: translateX(-50%); }
+    .callout-layer .co.bottom { bottom: 5%; left: 50%; transform: translateX(-50%); }
+    .callout-layer .co.center { top: 50%; left: 50%; transform: translate(-50%, -50%); }
+    .callout-layer .co.tl { top: 5%; left: 3%; max-width: 40%; } .callout-layer .co.tr { top: 5%; right: 3%; max-width: 40%; }
+    .callout-layer .co.bl { bottom: 5%; left: 3%; max-width: 40%; } .callout-layer .co.br { bottom: 5%; right: 3%; max-width: 40%; }
+    .co-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; font-size: .84rem; }
+    .co-row input[type=text] { flex: 1 1 200px; width: auto; }
+    .co-row .t { font-family: var(--mono); font-size: .76rem; color: var(--ink-soft); }
+    /* Eye contact: the stretches of the camera to look at the lens, over the
+       clip's length, and where it is playing. */
+    .eyes-ed { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px; }
+    .eyes-track { position: relative; height: 18px; margin: 6px 0; border-radius: 4px; background: rgba(126,138,97,.14); cursor: pointer; }
+    .eyes-track .sp { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: rgba(214,163,72,.55); border: 1px solid var(--honey); pointer-events: none; }
+    .eyes-track .head { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); pointer-events: none; }
+    .sections .head { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--honey); pointer-events: none; }
     .timeline div { flex: none; height: 38px; border-radius: 6px; background: var(--line) center/cover; border: 2px solid transparent;
       font-size: .66rem; color: #fff; display: grid; place-items: center; text-shadow: 0 1px 2px #000; cursor: pointer; }
     .timeline div.made { background-color: var(--olive-2); }
@@ -214,8 +296,19 @@
   <header>
     <span class="plate">🎬</span>
     <h1>{{ strings.title }}</h1>
+    {% if configured %}<button type="button" id="help-open" class="hlink" aria-controls="help" aria-expanded="false">💬 {{ strings.help_open }}</button>{% endif %}
     <a href="/chat" class="hlink">🤵 Alfred</a>
   </header>
+  {% if configured %}
+  <aside id="help" aria-label="{{ strings.help_title }}" aria-hidden="true">
+    <div class="hhead"><span aria-hidden="true">💬</span><h2>{{ strings.help_title }}</h2><span class="grow"></span>
+      <button type="button" id="help-close" aria-label="{{ strings.help_close }}">✕</button></div>
+    <div class="hlog" id="help-log" aria-live="polite"></div>
+    <form id="help-form"><textarea id="help-q" rows="1" placeholder="{{ strings.help_ph }}" aria-label="{{ strings.help_ph }}"></textarea>
+      <button class="primary" type="submit">{{ strings.help_send }}</button></form>
+    <p class="muted hnote">{{ strings.help_note }}</p>
+  </aside>
+  {% endif %}
 
   {% if not configured %}
   <main><div class="card">{{ strings.not_configured }}</div></main>
@@ -448,6 +541,12 @@
         dlg.close(); openProject(p.id);
       };
     }
+    // What a project holds, in words, leaving out what it has none of.
+    function counted(p) {
+      var parts = [[p.shots, 'count_shot', 'count_shots'], [p.audio, 'count_audio1', 'count_audio'], [p.images, 'count_image', 'count_images']]
+        .filter(function (x) { return x[0]; }).map(function (x) { return x[0] === 1 ? S[x[1]] : fmt(x[2], { n: x[0] }); });
+      return parts.length ? ' · ' + parts.join(' · ') : '';
+    }
     async function loadList() {
       var d = await api('projects');
       var html = '<div class="pcard new" data-new="1"><div class="cover">＋</div><div class="body"><div class="name">' + S.new_project + '</div></div></div>';
@@ -455,7 +554,7 @@
         var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
         html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + '</div>' +
           '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
-          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + ' · 🎬 ' + p.shots + ' · 🎵 ' + p.audio + ' · 🖼️ ' + p.images + '</div></div></div>';
+          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + counted(p) + '</div></div></div>';
       });
       $('#plist').innerHTML = html;
       if (!d.projects.length) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + S.empty_projects + '</p>');
@@ -518,14 +617,22 @@
         '<label class="f">' + S.ch_name + '</label><input id="ch-name" value="' + esc(c.name) + '">' +
         '<label class="f">' + S.ch_look + '</label><textarea id="ch-look" rows="3" placeholder="' + esc(S.ch_look_ph) + '">' + esc(c.look) + '</textarea>' +
         '<label class="f">' + S.ch_personality + '</label><textarea id="ch-pers" rows="3" placeholder="' + esc(S.ch_personality_ph) + '">' + esc(c.personality) + '</textarea>' +
-        '<label class="f">' + S.ch_voice + '</label><div class="row"><input type="file" id="ch-vfile" accept="audio/*" style="width:auto">' +
+        '<label class="f">' + S.ch_voice + '</label><div class="row"><label class="btn upload">' + S.ch_pick_voice_file +
+          ' <span class="picked" id="ch-vfile-name"></span><input type="file" id="ch-vfile" accept="audio/*"></label>' +
         '<button id="ch-rec">' + S.ch_record + '</button><span class="muted" id="ch-vstate">' + (c.voice ? '✓' : '') + '</span></div>' +
         '<label class="f">' + S.ch_voice_text + '</label><input id="ch-vtext" value="' + esc(c.voice_text || '') + '">' +
-        '<label class="f">' + S.ch_pictures + '</label><div class="row"><input type="file" id="ch-pics" accept="image/*" multiple style="width:auto">' +
+        '<label class="f">' + S.ch_pictures + '</label><div class="row"><label class="btn upload">' + S.ch_pick_pics +
+          ' <span class="picked" id="ch-pics-name"></span><input type="file" id="ch-pics" accept="image/*" multiple></label>' +
         '<button id="ch-pick-studio">🎬 ' + S.ch_pick_studio + '</button><button id="ch-pick-files">📁 ' + S.ch_pick_files + '</button></div>' +
         '<div id="ch-picked" class="row" style="flex-wrap:wrap;gap:6px"></div><div id="ch-picker" hidden></div>' +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="ch-no">' + S.cancel + '</button><button class="primary" id="ch-go">' + S.ch_save + '</button></div>';
       dlg.showModal();
+      // A chosen file says its name on its button, since nothing else does.
+      [['ch-vfile', 'ch-vfile-name'], ['ch-pics', 'ch-pics-name']].forEach(function (pair) {
+        $('#' + pair[0]).addEventListener('change', function () {
+          $('#' + pair[1]).textContent = this.files.length > 1 ? fmt('files_picked', { n: this.files.length }) : (this.files[0] ? this.files[0].name : '');
+        });
+      });
       // Pictures that are already somewhere: this project's images, frames
       // and references, or the person's own Archivos. Fetched as they are
       // saved and sent like a picture from the device, so the Studio checks
@@ -680,6 +787,271 @@
     }
     // What can be done with a recorded clip: its subtitles (the house's
     // speech recogniser) and taking its long silences out (a new version).
+    // A recording's camera and computer sound are recordings of their own,
+    // never drawn or mixed into the screen's: shown, moved and turned up or
+    // down here, and in the film when it is rendered (home-studio media.stitch).
+    var CORNERS = [['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']];
+    var CAM_SIZES = [[0.2, 'cam_small'], [0.28, 'cam_medium'], [0.36, 'cam_large']];
+    function camLayout(s) {
+      var l = (s && s.cam_layout) || {};
+      return { show: l.show !== false, corner: l.corner || 'br', size: +l.size || 0.28 };
+    }
+    function mixOf(s) {
+      var m = (s && s.mix) || {};
+      return { mic: m.mic == null ? 1 : +m.mic, pc: m.pc == null ? 1 : +m.pc };
+    }
+    function placeCam(el, l) {
+      if (!el) return;
+      el.style.display = l.show ? 'block' : 'none';
+      el.style.width = Math.round(l.size * 100) + '%';
+      el.style.left = /l$/.test(l.corner) ? '2%' : 'auto';
+      el.style.right = /r$/.test(l.corner) ? '2%' : 'auto';
+      el.style.top = /^t/.test(l.corner) ? '3%' : 'auto';
+      el.style.bottom = /^b/.test(l.corner) ? '3%' : 'auto';
+    }
+    // The camera and the computer sound follow the screen's video -- play,
+    // pause, seek, speed -- and are put back in step when they drift.
+    function followMain(main, others) {
+      others = others.filter(Boolean);
+      if (!others.length || main.dataset.following) return;
+      main.dataset.following = '1';
+      function sync() {
+        others.forEach(function (o) {
+          if (Math.abs((o.currentTime || 0) - main.currentTime) > 0.25) { try { o.currentTime = main.currentTime; } catch (e) {} }
+        });
+      }
+      main.addEventListener('play', function () { sync(); others.forEach(function (o) { o.play().catch(function () {}); }); });
+      main.addEventListener('pause', function () { others.forEach(function (o) { o.pause(); }); });
+      main.addEventListener('seeked', sync);
+      main.addEventListener('timeupdate', sync);
+      main.addEventListener('ratechange', function () { others.forEach(function (o) { o.playbackRate = main.playbackRate; }); });
+    }
+    // Volumes above 100% are heard in the film; a browser plays at most 100%.
+    function applyLayers(stage, s) {
+      var l = camLayout(s), m = mixOf(s), main = stage.querySelector('video.main'), pc = stage.querySelector('audio.pc');
+      placeCam(stage.querySelector('video.pip'), l);
+      if (main) main.volume = Math.min(1, m.mic);
+      if (pc) pc.volume = Math.min(1, m.pc);
+    }
+    function wireLayered() {
+      document.querySelectorAll('[data-layered]').forEach(function (stage) {
+        var s = itemById(stage.dataset.layered); if (!s) return;
+        applyLayers(stage, s);
+        followMain(stage.querySelector('video.main'), [stage.querySelector('video.pip'), stage.querySelector('audio.pc')]);
+        followSections(stage, s);
+      });
+    }
+    // A recording cut into sections by hand: each kept or cut out, each with
+    // its own camera or the clip's. Nothing is cut from the files -- the page
+    // skips the cut sections as it plays, and the film leaves them out.
+    // Sections belong to the version they were drawn over (`sections_take`).
+    var secSel = {};
+    function clipLength(s, t) { return +(t && t.seconds) || +s.seconds || 0; }
+    function sectionsOf(s, t) {
+      if (t && s.sections && s.sections.length && s.sections_take === t.id) return s.sections;
+      return [{ start: 0, end: clipLength(s, t), keep: true, cam: null }];
+    }
+    function sectionAt(secs, at) {
+      for (var i = 0; i < secs.length; i++) if (at >= secs[i].start - 0.01 && at < secs[i].end) return i;
+      return secs.length - 1;
+    }
+    function sectionsBar(s, t) {
+      var secs = sectionsOf(s, t), total = clipLength(s, t) || 1, sel = Math.min(secSel[s.id] || 0, secs.length - 1);
+      var kept = secs.reduce(function (a, x) { return a + (x.keep !== false ? x.end - x.start : 0); }, 0);
+      var cur = secs[sel], hasCam = !!(t && t.cam);
+      var html = '<div class="sections" data-sections="' + s.id + '">' + secs.map(function (x, i) {
+          return '<button class="sec' + (x.keep === false ? ' cut' : '') + (i === sel ? ' sel' : '') + '" data-sec="' + i + '" data-id="' + s.id +
+            '" style="flex-grow:' + Math.max(0.02, (x.end - x.start) / total) + '" title="' + clock(x.start) + '–' + clock(x.end) + '">' +
+            ((x.end - x.start) / total > 0.08 ? clock(x.end - x.start) : '') + '</button>';
+        }).join('') + '<span class="head" style="left:0"></span></div>';
+      html += '<div class="row layer-tools"><button data-split="' + s.id + '" title="' + esc(S.sec_help) + '">✂ ' + S.sec_split + '</button>' +
+        '<button data-sec-keep="' + s.id + '">' + (cur.keep === false ? '↺ ' + S.sec_keep : '✕ ' + S.sec_cut) + '</button>';
+      if (hasCam) {
+        var c = cur.cam, val = !c ? '' : !c.show ? 'none' : c.corner;
+        html += '<select data-sec-cam="' + s.id + '" style="width:auto" title="' + esc(S.sec_cam_help) + '"><option value="">📷 ' + S.sec_cam_clip + '</option>' +
+          '<option value="none"' + (val === 'none' ? ' selected' : '') + '>📷 ' + S.cam_off + '</option>' +
+          CORNERS.map(function (k) { return '<option value="' + k[0] + '"' + (val === k[0] ? ' selected' : '') + '>📷 ' + k[1] + ' ' + S['cam_' + k[0]] + '</option>'; }).join('') + '</select>';
+      }
+      if (sel < secs.length - 1) html += '<button data-sec-join="' + s.id + '">⇥ ' + S.sec_join + '</button>';
+      html += '<span class="grow"></span><span class="muted">' + fmt('sec_kept', { kept: clock(kept), total: clock(total) }) + '</span>' +
+        (secs.length > 1 ? '<button data-sec-reset="' + s.id + '">' + S.sec_reset + '</button>' : '') + '</div>';
+      if (t && s.sections && s.sections.length && s.sections_take !== t.id) html += '<p class="note">' + S.sec_other_version + '</p>';
+      return html;
+    }
+    function redrawSections(sid) {
+      var s = itemById(sid), t = chosen(s), box = document.querySelector('[data-sections="' + sid + '"]');
+      if (!box) return;
+      var holder = document.createElement('div'); holder.innerHTML = sectionsBar(s, t);
+      var tools = box.nextElementSibling, note = tools && tools.nextElementSibling;
+      if (note && note.classList.contains('note') && note.textContent === S.sec_other_version) note.remove();
+      tools.remove(); box.replaceWith.apply(box, Array.prototype.slice.call(holder.childNodes));
+    }
+    function setSections(s, t, secs) { s.sections = secs; s.sections_take = t.id; markDirty(); redrawSections(s.id); }
+    // Text over a recording, from one moment to another: shown over the
+    // player as it plays and drawn into the film. Like sections, they belong
+    // to the version they were placed on (`callouts_take`).
+    var SPOTS = [['bottom', 'spot_bottom'], ['top', 'spot_top'], ['center', 'spot_center'],
+                 ['tl', 'cam_tl'], ['tr', 'cam_tr'], ['bl', 'cam_bl'], ['br', 'cam_br']];
+    function calloutsOf(s, t) { return t && s.callouts_take === t.id ? (s.callouts || []) : []; }
+    function calloutsEditor(s, t) {
+      var mine = calloutsOf(s, t), html = '<div class="callouts" data-callouts="' + s.id + '">';
+      if ((s.callouts || []).length && s.callouts_take !== t.id) {
+        html += '<p class="note">' + S.co_other_version + ' <button data-co-move="' + s.id + '">' + S.co_move + '</button></p>';
+      }
+      mine.forEach(function (c, i) {
+        html += '<div class="co-row"><span class="t">' + clock(c.start) + '–' + clock(c.end) + '</span>' +
+          '<input type="text" maxlength="200" data-co="text" data-i="' + i + '" data-id="' + s.id + '" value="' + esc(c.text) + '" placeholder="' + esc(S.co_ph) + '">' +
+          '<button data-co-from="' + i + '" data-id="' + s.id + '" title="' + esc(S.co_from) + '">⏱ ' + S.co_from + '</button>' +
+          '<button data-co-to="' + i + '" data-id="' + s.id + '" title="' + esc(S.co_to) + '">⏱ ' + S.co_to + '</button>' +
+          '<select data-co="spot" data-i="' + i + '" data-id="' + s.id + '" style="width:auto">' + SPOTS.map(function (k) {
+            return '<option value="' + k[0] + '"' + (c.spot === k[0] ? ' selected' : '') + '>' + S[k[1]] + '</option>'; }).join('') + '</select>' +
+          '<button class="danger" data-co-del="' + i + '" data-id="' + s.id + '" title="' + esc(S.delete) + '">✕</button></div>';
+      });
+      return html + '<div class="row" style="margin-top:6px"><button data-co-add="' + s.id + '" title="' + esc(S.co_help) + '">' + S.co_add + '</button></div></div>';
+    }
+    function redrawCallouts(sid) {
+      var s = itemById(sid), box = document.querySelector('[data-callouts="' + sid + '"]');
+      if (!box) return;
+      var holder = document.createElement('div'); holder.innerHTML = calloutsEditor(s, chosen(s));
+      box.replaceWith(holder.firstChild);
+      var layer = document.querySelector('[data-layered="' + sid + '"] .callout-layer'); if (layer) layer.dataset.key = '';
+    }
+    function setCallouts(s, t, list) { s.callouts = list; s.callouts_take = t.id; markDirty(); redrawCallouts(s.id); }
+    function showCallouts(stage, s, at) {
+      var layer = stage.querySelector('.callout-layer'); if (!layer) return;
+      var on = calloutsOf(s, chosen(s)).filter(function (c) { return at >= c.start && at < c.end && (c.text || '').trim(); });
+      var key = on.map(function (c) { return c.start + c.spot + c.text; }).join('|');
+      if (layer.dataset.key === key) return;
+      layer.dataset.key = key;
+      layer.innerHTML = on.map(function (c) { return '<div class="co ' + esc(c.spot) + '">' + esc(c.text) + '</div>'; }).join('');
+    }
+    // Eye contact: the stretches of a recording whose camera should look at
+    // the lens, marked here and corrected on the card into a new version.
+    // Only what is marked -- looking away on purpose is part of a recording.
+    var eyeStrength = {};
+    function eyesOf(s, t) { return t && s.eyes_take === t.id ? (s.eyes || []) : []; }
+    function eyesEditor(s, t) {
+      var mine = eyesOf(s, t), total = clipLength(s, t) || 1, j = jobFor(s.id), fix = s.eyes_fix || {};
+      var job = j && j.kind === 'eyes' ? j : null, str = eyeStrength[s.id] || 1;
+      var html = '<div class="eyes-ed" data-eyes="' + s.id + '"><div class="row"><b>👁 ' + S.eye_title + '</b>' +
+        '<span class="muted" style="font-size:.8rem">' + S.eye_help + '</span></div>' +
+        '<div class="eyes-track" data-eyes-track="' + s.id + '" title="' + esc(S.eye_track) + '">' + mine.map(function (x) {
+          return '<span class="sp" style="left:' + (x.start / total * 100) + '%;width:' + Math.max(0.4, (x.end - x.start) / total * 100) + '%"></span>';
+        }).join('') + '<span class="head" style="left:0"></span></div>';
+      if ((s.eyes || []).length && s.eyes_take !== t.id) {
+        html += '<p class="note">' + S.eye_other_version + ' <button data-eye-move="' + s.id + '">' + S.co_move + '</button></p>';
+      }
+      mine.forEach(function (x, i) {
+        html += '<div class="co-row"><span class="t">' + clock(x.start) + '–' + clock(x.end) + '</span>' +
+          '<button data-eye-from="' + i + '" data-id="' + s.id + '">⏱ ' + S.co_from + '</button>' +
+          '<button data-eye-to="' + i + '" data-id="' + s.id + '">⏱ ' + S.co_to + '</button>' +
+          '<button class="danger" data-eye-del="' + i + '" data-id="' + s.id + '" title="' + esc(S.delete) + '">✕</button></div>';
+      });
+      html += '<div class="row" style="margin-top:6px"><button data-eye-add="' + s.id + '">' + S.eye_add + '</button>' +
+        '<span class="pair"><label class="f" style="margin:0">' + S.eye_strength + '</label><select data-eye-strength="' + s.id + '" style="width:auto">' +
+        [[0.6, 'eye_soft'], [0.8, 'eye_mid'], [1, 'eye_full']].map(function (k) {
+          return '<option value="' + k[0] + '"' + (Math.abs(str - k[0]) < 0.01 ? ' selected' : '') + '>' + S[k[1]] + '</option>'; }).join('') + '</select></span>' +
+        '<span class="grow"></span>';
+      if (job) {
+        html += '<span class="pill run">' + (job.state === 'running' ? fmt('eye_running', { p: Math.round((job.progress || 0) * 100) }) : S.eye_queued) + '</span>';
+      } else {
+        html += '<button class="primary" data-eye-run="' + s.id + '"' + (mine.length ? '' : ' disabled') + '>👁 ' + S.eye_run + '</button>' +
+          '<button data-eye-whole="' + s.id + '">' + S.eye_whole + '</button>';
+      }
+      html += '</div>';
+      if (!job && fix.state === 'done') html += '<p class="note">✓ ' + S.eye_done + '</p>';
+      if (!job && fix.state === 'failed') html += '<p class="note">⚠️ ' + fmt('eye_failed', { e: fix.error || '' }) + '</p>';
+      return html + '</div>';
+    }
+    function redrawEyes(sid) {
+      var s = itemById(sid), box = document.querySelector('[data-eyes="' + sid + '"]');
+      if (!box) return;
+      var holder = document.createElement('div'); holder.innerHTML = eyesEditor(s, chosen(s));
+      box.replaceWith(holder.firstChild);
+      var v = document.querySelector('[data-layered="' + sid + '"] video.main'); if (v) moveEyeHead(s, v.currentTime);
+    }
+    function moveEyeHead(s, at) {
+      var head = document.querySelector('[data-eyes-track="' + s.id + '"] .head');
+      if (head) head.style.left = Math.min(100, at / (clipLength(s, chosen(s)) || 1) * 100) + '%';
+    }
+    function setEyes(s, t, list) { s.eyes = list; s.eyes_take = t.id; markDirty(); redrawEyes(s.id); }
+
+    // A title card: words on a colour, a clip of its own in the timeline,
+    // drawn when the film is put together.
+    function cardPreview(c) {
+      return '<div class="title-card ' + esc(c.theme || 'dark') + '"><b>' + esc(c.title || S.card_title_ph) + '</b>' +
+        (c.subtitle ? '<span>' + esc(c.subtitle) + '</span>' : '') + '</div>';
+    }
+    function cardHtml(s, i) {
+      var c = s.card;
+      return '<div class="card" id="shot-' + s.id + '"><div class="row" style="margin-bottom:8px"><b>🔤 ' + S.card_label + '</b>' +
+        '<span class="muted">' + fmt('card_seconds', { s: c.seconds }) + '</span><span class="grow"></span>' +
+        '<button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
+        '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
+        '<div class="row" style="align-items:flex-start;gap:14px"><div data-card-preview="' + s.id + '" style="flex:1 1 260px">' + cardPreview(c) + '</div>' +
+        '<div style="flex:1 1 260px"><label class="f">' + S.card_title + '</label><input data-card-f="title" data-id="' + s.id + '" maxlength="120" value="' + esc(c.title) + '" placeholder="' + esc(S.card_title_ph) + '">' +
+        '<label class="f">' + S.card_subtitle + '</label><input data-card-f="subtitle" data-id="' + s.id + '" maxlength="200" value="' + esc(c.subtitle) + '">' +
+        '<div class="row"><span class="pair"><label class="f" style="margin:0">' + S.card_length + '</label><input type="range" min="1" max="15" step="0.5" data-card-f="seconds" data-id="' + s.id + '" value="' + c.seconds + '" style="width:120px"></span>' +
+        '<span class="pair"><label class="f" style="margin:0">' + S.card_theme + '</label><select data-card-f="theme" data-id="' + s.id + '" style="width:auto">' +
+          [['dark', 'theme_dark'], ['light', 'theme_light'], ['olive', 'theme_olive']].map(function (k) {
+            return '<option value="' + k[0] + '"' + (c.theme === k[0] ? ' selected' : '') + '>' + S[k[1]] + '</option>'; }).join('') + '</select></span></div></div></div></div>';
+    }
+
+    // Playing a recording: the cut sections are skipped, the camera is the
+    // section's own (or the clip's), and the bar shows where it is.
+    function followSections(stage, s) {
+      var main = stage.querySelector('video.main'); if (!main || main.dataset.sections) return;
+      main.dataset.sections = '1';
+      var raf = null;
+      function step() {
+        var t = chosen(s), secs = sectionsOf(s, t), at = main.currentTime, i = sectionAt(secs, at), sec = secs[i];
+        if (sec && sec.keep === false && !main.paused) {
+          var next = secs.slice(i + 1).find(function (x) { return x.keep !== false; });
+          if (next) main.currentTime = next.start; else { main.pause(); main.currentTime = sec.start; }
+        }
+        placeCam(stage.querySelector('video.pip'), (sec && sec.cam) || camLayout(s));
+        showCallouts(stage, s, at);
+        moveEyeHead(s, at);
+        var head = document.querySelector('[data-sections="' + s.id + '"] .head');
+        if (head) head.style.left = Math.min(100, at / (clipLength(s, t) || 1) * 100) + '%';
+        if (!main.paused) raf = requestAnimationFrame(step);
+      }
+      main.addEventListener('play', function () {
+        var t = chosen(s), secs = sectionsOf(s, t), firstKept = secs.find(function (x) { return x.keep !== false; });
+        var sec = secs[sectionAt(secs, main.currentTime)];
+        if (firstKept && (sec.keep === false || main.currentTime >= secs[secs.length - 1].end - 0.05)) main.currentTime = firstKept.start;
+        cancelAnimationFrame(raf); raf = requestAnimationFrame(step);
+      });
+      main.addEventListener('seeked', step);
+      main.addEventListener('pause', function () { cancelAnimationFrame(raf); step(); });
+    }
+
+    function layeredMedia(s, t, p) {
+      var l = camLayout(s), m = mixOf(s);
+      var html = '<div class="layered" data-layered="' + s.id + '"><video class="main" controls preload="metadata" poster="' +
+        (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '"></video>' +
+        (t.cam ? '<video class="pip" muted playsinline preload="auto" src="' + fileUrl(p.id, t.cam) + '"></video>' : '') +
+        (t.pc ? '<audio class="pc" preload="auto" src="' + fileUrl(p.id, t.pc) + '"></audio>' : '') +
+        '<div class="callout-layer"></div></div>';
+      html += '<div class="row layer-tools">';
+      if (t.cam) {
+        html += '<span title="' + esc(S.cam_help) + '">📷</span><button data-cam-corner="none" data-id="' + s.id + '"' + (l.show ? '' : ' class="on"') + '>' + S.cam_off + '</button>' +
+          CORNERS.map(function (c) {
+            return '<button data-cam-corner="' + c[0] + '" data-id="' + s.id + '" title="' + esc(S['cam_' + c[0]]) + '"' +
+              (l.show && l.corner === c[0] ? ' class="on"' : '') + '>' + c[1] + '</button>';
+          }).join('') +
+          '<select data-cam-size="' + s.id + '" style="width:auto" title="' + esc(S.cam_size) + '">' + CAM_SIZES.map(function (z) {
+            return '<option value="' + z[0] + '"' + (Math.abs(l.size - z[0]) < 0.01 ? ' selected' : '') + '>' + S[z[1]] + '</option>'; }).join('') + '</select>';
+      }
+      html += '<span class="grow"></span><label title="' + esc(S.vol_help) + '">🎤 ' + S.vol_mic +
+        ' <input type="range" min="0" max="2" step="0.05" data-vol="mic" data-id="' + s.id + '" value="' + m.mic + '"><span class="muted">' + Math.round(m.mic * 100) + '%</span></label>';
+      if (t.pc) html += '<label title="' + esc(S.vol_help) + '">🔊 ' + S.vol_pc +
+        ' <input type="range" min="0" max="2" step="0.05" data-vol="pc" data-id="' + s.id + '" value="' + m.pc + '"><span class="muted">' + Math.round(m.pc * 100) + '%</span></label>';
+      html += '</div>';
+      if (t.cam_error || t.pc_error) html += '<p class="note">⚠️ ' + esc(S.rec_track_failed) + '</p>';
+      return html + sectionsBar(s, t) + calloutsEditor(s, t) + (t.cam ? eyesEditor(s, t) : '');
+    }
+
     function recordingTools(s, t, p, i) {
       var tr = t.transcript || {}, trim = s.trim || {}, html = '';
       if (tr.state === 'running') html += '<span class="pill run">' + S.rec_subs_running + '</span>';
@@ -691,7 +1063,32 @@
       else html += '<button data-trim="' + s.id + '">' + S.rec_trim + '</button>' +
         (trim.state === 'done' ? '<span class="muted">' + fmt('rec_trim_done', { s: Math.round(trim.removed || 0) }) + '</span>' :
          trim.state === 'failed' ? '<span class="muted">' + fmt('rec_trim_failed', { e: esc(trim.error || '') }) + '</span>' : '');
+      var cln = s.clean || {};
+      if (cln.state === 'running') html += '<span class="pill run">' + S.clean_running + '</span>';
+      else html += '<button data-clean="' + s.id + '" title="' + esc(S.clean_help) + '">🎚 ' + S.clean_button + '</button>' +
+        (cln.state === 'failed' ? '<span class="muted">' + fmt('clean_failed', { e: esc(cln.error || '') }) + '</span>' : '');
       return html;
+    }
+    // The microphone cleaned into a new version: background noise out and
+    // the loudness evened out to what video sites play at. The picture and
+    // the camera and computer sound are kept as they are.
+    function cleanDialog(sid) {
+      var p = current, dlg = $('#dlg');
+      dlg.innerHTML = '<h2>🎚 ' + S.clean_button + '</h2><p class="muted" style="font-size:.86rem">' + S.clean_help + '</p>' +
+        '<label class="choice"><input type="checkbox" id="cl-noise" checked> <span><b>' + S.clean_noise + '</b><br><span class="muted">' + S.clean_noise_about + '</span></span></label>' +
+        '<label class="choice"><input type="checkbox" id="cl-level" checked> <span><b>' + S.clean_level + '</b><br><span class="muted">' + S.clean_level_about + '</span></span></label>' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="cl-no">' + S.cancel + '</button><button class="primary" id="cl-go">🎚 ' + S.clean_go + '</button></div>';
+      dlg.showModal();
+      $('#cl-no').onclick = function () { dlg.close(); };
+      $('#cl-go').onclick = async function () {
+        var body = { denoise: $('#cl-noise').checked, level: $('#cl-level').checked };
+        if (!body.denoise && !body.level) { toast(S.clean_nothing, true); return; }
+        try {
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + sid + '/clean', { method: 'POST', body: body });
+          dlg.close(); current = await api('projects/' + p.id); drawTab();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
     }
     function transcriptView(t, s) {
       var tr = t.transcript || {}, html = '';
@@ -779,7 +1176,7 @@
         '<details class="more"><summary aria-label="' + esc(S.more) + '">⋯</summary><div class="menu">' +
         '<button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div></details></span></div>' +
         '<div id="rail"></div>' +
-        '<div class="tabs" role="tablist">' + (p.kind === 'recording' ? [] : ['board']).concat(['video', 'audio', 'images', 'cast', 'files']).map(function (t) {
+        '<div class="tabs" role="tablist">' + tabsFor(p.kind).map(function (t) {
           return '<button role="tab" aria-selected="' + (t === tab) + '" data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
         }).join('') + '</div>' +
         '<div id="tabbody"></div>';
@@ -790,10 +1187,20 @@
     // the film -- each with what is done and what wants attention, and each
     // a door to the tab it is made in. Drawn again with every tab refresh, so
     // the counts follow the queue.
+    // The tabs in the order the project's work goes: a music video starts from
+    // its song, then the storyboard, then the video; a tutorial is its
+    // recordings. It used to be one order for every kind, which put the
+    // storyboard before the song under a progress strip that read the other
+    // way round.
+    function tabsFor(kind) {
+      if (kind === 'music_video') return ['audio', 'board', 'video', 'cast', 'images', 'files'];
+      if (kind === 'recording') return ['video', 'files', 'audio', 'images'];
+      return ['video', 'board', 'audio', 'images', 'cast', 'files'];
+    }
     function drawRail() {
       var el = $('#rail'), p = current;
       if (!el || !p) return;
-      var shots = (p.shots || []).filter(function (s) { return !s.recorded; });
+      var shots = (p.shots || []).filter(function (s) { return !s.recorded && !s.card; });
       var song = fitSong();
       if (p.kind === 'recording' || (!shots.length && !song && p.kind !== 'music_video' && p.kind !== 'short_film')) { el.innerHTML = ''; return; }
       var steps = [];
@@ -833,7 +1240,7 @@
       var body = $('#tabbody');
       if (tab === 'cast') { body.innerHTML = castTab(); return; }
       if (tab === 'board') { body.innerHTML = boardTab(); loadSung(); return; }
-      if (tab === 'video') body.innerHTML = videoTab();
+      if (tab === 'video') { body.innerHTML = videoTab(); wireLayered(); }
       else if (tab === 'audio') body.innerHTML = audioTab();
       else if (tab === 'images') body.innerHTML = imagesTab();
       else body.innerHTML = filesTab();
@@ -987,7 +1394,7 @@
           esc(S.sb_correct_help) + '">✏️ ' + S.sb_correct + '</button></div></div>' +
         '<p class="sb-note">' + S.sb_help + ' ' + (useBoards() ? S.sb_to_video : S.sb_to_video_off) + '</p><div class="sb-grid">';
       (p.shots || []).forEach(function (s, i) {
-        if (s.recorded) return;
+        if (s.recorded || s.card) return;
         var b = chosenBoard(s), j = boardJob(s), t = chosen(s), words = shotSung(s);
         var frame = j && j.state === 'running' && j.preview ? livePreview(s)
           : b ? '<img src="' + fileUrl(p.id, b.file) + '" alt="" loading="lazy">'
@@ -1020,11 +1427,12 @@
       var p = current, shots = p.shots || [];
       var total = shots.reduce(function (a, s) { return a + (s.seconds || 5); }, 0);
       var opt = function (v, k) { return '<option value="' + v + '"' + (p.settings.resolution === v ? ' selected' : '') + '>' + S[k] + '</option>'; };
-      var html = '<div class="card"><div class="row"><label class="f" style="margin:0">' + S.resolution + '</label>' +
-        '<select id="res" style="width:auto">' + opt('832x480', 'res_wide') + opt('480x832', 'res_tall') + opt('640x640', 'res_square') + '</select>' +
-        '<label class="f" style="margin:0">' + S.language + '</label><select id="lang" style="width:auto">' +
+      // Each label stays with its control when the row wraps on a phone.
+      var html = '<div class="card"><div class="row"><span class="pair"><label class="f" style="margin:0" for="res">' + S.resolution + '</label>' +
+        '<select id="res" style="width:auto">' + opt('832x480', 'res_wide') + opt('480x832', 'res_tall') + opt('640x640', 'res_square') + '</select></span>' +
+        '<span class="pair"><label class="f" style="margin:0" for="lang">' + S.language + '</label><select id="lang" style="width:auto">' +
         '<option value="es"' + (p.settings.language === 'es' ? ' selected' : '') + '>Español</option>' +
-        '<option value="en"' + (p.settings.language === 'en' ? ' selected' : '') + '>English</option></select>' +
+        '<option value="en"' + (p.settings.language === 'en' ? ' selected' : '') + '>English</option></select></span>' +
         '<label class="row" style="margin:0;font-size:.86rem"><input type="checkbox" id="use-sb" style="width:auto"' + (useBoards() ? ' checked' : '') +
           '> 🖼️ ' + S.sb_use + '</label>' +
         '<span class="grow"></span><span class="muted">' + fmt('shots_total', { n: shots.length, s: Math.round(total) }) + '</span></div>' +
@@ -1035,6 +1443,7 @@
         }).join('') + '</div></div>';
       shots.forEach(function (s, i) {
         var t = chosen(s);
+        if (s.card) { if (i > 0) html += '<div class="link">✂</div>'; html += cardHtml(s, i); return; }
         if (s.recorded) {
           // A clip the person recorded: what it is, not how to make it.
           var rs = (s.recording || {}).state;
@@ -1045,8 +1454,7 @@
             (rs === 'failed' ? '<button data-rec-retry="' + s.id + '">' + S.rec_retry + '</button>' : '') +
             '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
             '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
-            (t && t.file ? '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>' +
-              takesRow(s) +
+            (t && t.file ? layeredMedia(s, t, p) + takesRow(s) +
               '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) +
               recordingTools(s, t, p, i) +
               (s.description || (s.chapters || []).length ? '<button data-copy-chapters="' + s.id + '">' + S.rec_desc_copy + '</button>' : '') +
@@ -1093,7 +1501,7 @@
           '</div></div></div>';
       });
       html += '<div class="row">' + (p.kind === 'recording' || p.kind === 'free' ? '<button class="primary" id="rec">🔴 ' + S.rec_title + '</button>' : '') +
-        '<button id="add-shot">＋ ' + S.add_shot + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
+        '<button id="add-shot">＋ ' + S.add_shot + '</button><button id="add-card">🔤 ' + S.add_card + '</button><button id="long-scene">⛓ ' + S.long_scene + '</button>' +
         (fitSong() && shots.length ? '<button id="fit-song" title="' + esc(S.fit_help) + '">🎵 ' + S.fit_button + '</button>' : '') +
         '<span class="grow"></span>' +
         (shots.some(function (s) { return !(s.boards || []).length && s.prompt; })
@@ -1108,7 +1516,9 @@
       if (renders.length) {
         html += '<h2 id="renders" style="margin-top:20px">' + S.renders + '</h2>' + renders.map(function (r) {
           return '<div class="card"><video controls preload="metadata" style="width:100%;border-radius:8px" src="' + fileUrl(p.id, r.file) + '"></video>' +
-            '<div class="row"><span class="muted">' + (r.preview ? '▶ ' + S.preview + ' · ' : '') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + '</span><span class="grow"></span>' +
+            '<div class="row"><span class="muted">' + (r.preview ? '▶ ' + S.preview + ' · ' : '') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) +
+            (!r.preview && r.format === 'h264' ? ' · <span class="pill ok">H.264' + (r.size ? ' · ' + r.size + 'p' : '') + '</span>' :
+             !r.preview && r.size ? ' · ' + r.size + 'p' : '') + '</span><span class="grow"></span>' +
             dlLink(p.id, r.file, p.name) +
             '<button class="danger" data-del-render="' + esc(r.file.replace(/^renders\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div></div>';
         }).join('');
@@ -1327,11 +1737,10 @@
         }).join('') : '<p class="muted">' + S.no_files + '</p>';
       }
       return '<div class="card"><b>' + S.upload_ref + '</b><p class="muted">' + S.ref_style_intro + '</p>' + list('reference') +
-        '<div class="row" style="margin-top:8px"><input type="file" accept="image/*" data-upload="reference" style="width:auto"></div>' +
-        '<div class="row" style="margin-top:8px"><span class="muted">🎨 ' + S.upload_style + '</span>' +
-        '<input type="file" accept="image/*" data-upload="reference" data-style="1" style="width:auto"></div></div>' +
+        '<div class="row" style="margin-top:10px"><label class="btn upload">' + S.upload_image_btn + '<input type="file" accept="image/*" data-upload="reference"></label>' +
+        '<label class="btn upload">🎨 ' + S.upload_style + '<input type="file" accept="image/*" data-upload="reference" data-style="1"></label></div></div>' +
         '<div class="card"><b>' + S.upload_voice + '</b><p class="muted">' + S.voice_sample_help + '</p>' + list('voice') +
-        '<div class="row" style="margin-top:8px"><input type="file" accept="audio/*" data-upload="voice" style="width:auto"></div></div>';
+        '<div class="row" style="margin-top:10px"><label class="btn upload">' + S.upload_voice_btn + '<input type="file" accept="audio/*" data-upload="voice"></label></div></div>';
     }
 
     // ── Editing and saving ────────────────────────────────────────────────
@@ -1367,6 +1776,28 @@
       if (el.id === 'sb-correct-text') { correctDraft = el.value; return; }
       if (el.id === 'sb-correct-redraw') { correctRedraw = el.checked; return; }
       if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
+      if (el.dataset.eyeStrength) { eyeStrength[el.dataset.eyeStrength] = Number(el.value); return; }
+      if (el.dataset.cardF) {
+        var cs3 = itemById(el.dataset.id); if (!cs3 || !cs3.card) return;
+        cs3.card[el.dataset.cardF] = el.dataset.cardF === 'seconds' ? Number(el.value) : el.value;
+        var pv3 = document.querySelector('[data-card-preview="' + cs3.id + '"]'); if (pv3) pv3.innerHTML = cardPreview(cs3.card);
+        var len3 = document.querySelector('#shot-' + cs3.id + ' .muted'); if (len3) len3.textContent = fmt('card_seconds', { s: cs3.card.seconds });
+        markDirty(); return;
+      }
+      if (el.dataset.co) {
+        var os = itemById(el.dataset.id), ot = chosen(os), list = calloutsOf(os, ot).map(function (x) { return Object.assign({}, x); });
+        if (!list[+el.dataset.i]) return;
+        list[+el.dataset.i][el.dataset.co] = el.value; os.callouts = list; os.callouts_take = ot.id; markDirty();
+        var ol = document.querySelector('[data-layered="' + os.id + '"] .callout-layer'); if (ol) ol.dataset.key = '';
+        return;
+      }
+      if (el.dataset.vol) {
+        var vs = itemById(el.dataset.id); if (!vs) return;
+        vs.mix = Object.assign(mixOf(vs), {}); vs.mix[el.dataset.vol] = Number(el.value);
+        el.nextElementSibling.textContent = Math.round(Number(el.value) * 100) + '%';
+        var vstage = document.querySelector('[data-layered="' + vs.id + '"]'); if (vstage) applyLayers(vstage, vs);
+        markDirty(); return;
+      }
       if (!el.dataset.f) return;
       var item = itemById(el.dataset.id); if (!item) return;
       var v = el.type === 'checkbox' ? el.checked : el.type === 'range' || el.type === 'number' ? Number(el.value) : el.value;
@@ -1381,6 +1812,19 @@
       if (el.id === 'use-sb') { current.settings.use_storyboard = el.checked; markDirty(); drawTab(); return; }
       if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
       if (el.dataset.f === 'continuity') { drawTab(); return; }
+      if (el.dataset.secCam) {
+        var cs2 = itemById(el.dataset.secCam), ct2 = chosen(cs2);
+        var lst = sectionsOf(cs2, ct2).map(function (x) { return Object.assign({}, x); }), k2 = Math.min(secSel[cs2.id] || 0, lst.length - 1);
+        lst[k2].cam = !el.value ? null : el.value === 'none' ? Object.assign(camLayout(cs2), { show: false })
+          : Object.assign(camLayout(cs2), { show: true, corner: el.value });
+        setSections(cs2, ct2, lst); return;
+      }
+      if (el.dataset.camSize) {
+        var zs = itemById(el.dataset.camSize); if (!zs) return;
+        zs.cam_layout = Object.assign(camLayout(zs), { size: Number(el.value) });
+        var zstage = document.querySelector('[data-layered="' + zs.id + '"]'); if (zstage) applyLayers(zstage, zs);
+        markDirty(); return;
+      }
       if (el.dataset.upload && el.files.length) {
         var fd = new FormData(); fd.append('file', el.files[0]); fd.append('kind', el.dataset.upload);
         if (el.dataset.style) fd.append('style', '1');
@@ -1398,6 +1842,14 @@
     function newItem(fields) { return Object.assign({ id: 'new' + Math.random().toString(36).slice(2, 10), takes: [], chosen: -1 }, fields); }
 
     $('#v-edit').addEventListener('click', async function (ev) {
+      // The eye-contact track: a click seeks the recording to that moment.
+      var track = ev.target.closest('[data-eyes-track]');
+      if (track && current) {
+        var ts = itemById(track.dataset.eyesTrack), tv = document.querySelector('[data-layered="' + ts.id + '"] video.main');
+        var r = track.getBoundingClientRect();
+        if (tv) tv.currentTime = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * (clipLength(ts, chosen(ts)) || 0);
+        return;
+      }
       var b = ev.target.closest('button, [data-jump]'); if (!b || !current) return;
       var p = current, d = b.dataset;
       try {
@@ -1449,7 +1901,7 @@
         if (d.gen) { await saveNow(); return generate([d.gen]); }
         if (b.id === 'gen-pending') {
           await saveNow();
-          var ids = p.shots.filter(function (s) { return !(s.takes || []).length && !jobFor(s.id); }).map(function (s) { return s.id; });
+          var ids = p.shots.filter(function (s) { return !(s.takes || []).length && !jobFor(s.id) && !s.card && !s.recorded; }).map(function (s) { return s.id; });
           if (ids.length) generate(ids);
           return;
         }
@@ -1474,6 +1926,88 @@
         }
         if (b.id === 'preview') return previewPlayer();
         if (b.id === 'rec') return recorder();
+        if (d.sec != null && d.id && b.classList.contains('sec')) {
+          var ss = itemById(d.id), st0 = chosen(ss); secSel[ss.id] = Number(d.sec);
+          var mv = document.querySelector('[data-layered="' + ss.id + '"] video.main');
+          if (mv) mv.currentTime = sectionsOf(ss, st0)[Number(d.sec)].start + 0.01;
+          redrawSections(ss.id); return;
+        }
+        if (d.split) {
+          var sp = itemById(d.split), tp = chosen(sp), vm = document.querySelector('[data-layered="' + sp.id + '"] video.main');
+          var at = vm ? vm.currentTime : 0, secs = sectionsOf(sp, tp).map(function (x) { return Object.assign({}, x); });
+          var i = sectionAt(secs, at), cur = secs[i];
+          if (at - cur.start < 0.3 || cur.end - at < 0.3) { toast(S.sec_too_close, true); return; }
+          secs.splice(i, 1, Object.assign({}, cur, { end: +at.toFixed(3) }), Object.assign({}, cur, { start: +at.toFixed(3) }));
+          secSel[sp.id] = i + 1; setSections(sp, tp, secs); return;
+        }
+        if (d.secKeep || d.secJoin || d.secReset) {
+          var sk = itemById(d.secKeep || d.secJoin || d.secReset), tk = chosen(sk);
+          if (d.secReset) { secSel[sk.id] = 0; sk.sections = []; sk.sections_take = ''; markDirty(); redrawSections(sk.id); return; }
+          var list = sectionsOf(sk, tk).map(function (x) { return Object.assign({}, x); }), at2 = Math.min(secSel[sk.id] || 0, list.length - 1);
+          if (d.secKeep) list[at2].keep = list[at2].keep === false;
+          else if (at2 < list.length - 1) { list[at2].end = list[at2 + 1].end; list.splice(at2 + 1, 1); }
+          setSections(sk, tk, list); return;
+        }
+        if (d.clean) return cleanDialog(d.clean);
+        if (d.eyeAdd || d.eyeFrom != null || d.eyeTo != null || d.eyeDel != null || d.eyeMove) {
+          var eid = d.eyeAdd || d.eyeMove || d.id, es = itemById(eid), et = chosen(es);
+          if (d.eyeMove) { es.eyes_take = et.id; markDirty(); redrawEyes(es.id); return; }
+          var evid = document.querySelector('[data-layered="' + es.id + '"] video.main'), enow = evid ? +evid.currentTime.toFixed(2) : 0;
+          var elen = clipLength(es, et), el5 = eyesOf(es, et).map(function (x) { return Object.assign({}, x); });
+          if (d.eyeAdd) el5.push({ start: enow, end: Math.min(elen || enow + 10, enow + 10) });
+          else if (d.eyeDel != null) el5.splice(+d.eyeDel, 1);
+          else {
+            var e5 = el5[+(d.eyeFrom != null ? d.eyeFrom : d.eyeTo)];
+            if (d.eyeFrom != null) { e5.start = enow; if (e5.end <= enow + 0.2) e5.end = Math.min(elen || enow + 10, enow + 10); }
+            else { if (enow <= e5.start + 0.2) { toast(S.co_bad_end, true); return; } e5.end = enow; }
+          }
+          el5.sort(function (x, y) { return x.start - y.start; });
+          setEyes(es, et, el5); return;
+        }
+        if (d.eyeRun || d.eyeWhole) {
+          var rid = d.eyeRun || d.eyeWhole, rs5 = itemById(rid), rt5 = chosen(rs5);
+          try {
+            if (dirty) await saveNow();
+            await api('projects/' + p.id + '/items/' + rid + '/eyes', { method: 'POST',
+              body: { take: rt5.id, whole: !!d.eyeWhole, strength: eyeStrength[rid] || 1 } });
+            toast(S.eye_sent);
+            var y5 = window.scrollY; current = await api('projects/' + p.id); drawTab(); window.scrollTo(0, y5);
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          return;
+        }
+        if (b.id === 'add-card') {
+          p.shots.push({ card: { title: '', subtitle: '', seconds: 3, theme: 'dark' }, prompt: '', takes: [], chosen: -1 });
+          await saveNow(); drawTab();
+          var made = p.shots[p.shots.length - 1], el2 = made && document.getElementById('shot-' + made.id);
+          if (el2) el2.scrollIntoView({ block: 'center' });
+          return;
+        }
+        if (d.coAdd || d.coFrom != null || d.coTo != null || d.coDel != null || d.coMove) {
+          var cid = d.coAdd || d.coMove || d.id, cs4 = itemById(cid), ct4 = chosen(cs4);
+          if (d.coMove) { cs4.callouts_take = ct4.id; markDirty(); redrawCallouts(cs4.id); return; }
+          var cv = document.querySelector('[data-layered="' + cs4.id + '"] video.main'), now = cv ? +cv.currentTime.toFixed(2) : 0;
+          var len4 = clipLength(cs4, ct4), lst4 = calloutsOf(cs4, ct4).map(function (x) { return Object.assign({}, x); });
+          if (d.coAdd) lst4.push({ start: now, end: Math.min(len4 || now + 4, now + 4), text: '', spot: 'bottom' });
+          else if (d.coDel != null) lst4.splice(+d.coDel, 1);
+          else {
+            var c4 = lst4[+(d.coFrom != null ? d.coFrom : d.coTo)];
+            if (d.coFrom != null) { c4.start = now; if (c4.end <= now) c4.end = Math.min(len4 || now + 4, now + 4); }
+            else { if (now <= c4.start) { toast(S.co_bad_end, true); return; } c4.end = now; }
+          }
+          lst4.sort(function (x, y) { return x.start - y.start; });
+          setCallouts(cs4, ct4, lst4); return;
+        }
+        if (d.camCorner) {
+          var cs = itemById(d.id); if (!cs) return;
+          var was = camLayout(cs);
+          cs.cam_layout = d.camCorner === 'none' ? Object.assign(was, { show: false }) : Object.assign(was, { show: true, corner: d.camCorner });
+          var cstage = document.querySelector('[data-layered="' + cs.id + '"]');
+          if (cstage) applyLayers(cstage, cs);
+          b.parentNode.querySelectorAll('[data-cam-corner]').forEach(function (x) {
+            x.classList.toggle('on', cs.cam_layout.show ? x.dataset.camCorner === cs.cam_layout.corner : x.dataset.camCorner === 'none');
+          });
+          markDirty(); return;
+        }
         if (d.describe) return describeClip(d.describe, b);
         if (d.recRetry) {
           await api('projects/' + p.id + '/recordings/' + d.recRetry + '/finish', { method: 'POST' });
@@ -1912,25 +2446,55 @@
       };
     }
 
-    // Recording yourself: the screen, the camera, or both -- the camera in a
-    // corner over the screen, like a stream -- with the microphone. Pieces
-    // go up as they are made (a closed tab loses seconds, not the take), and
-    // stopping asks the Studio to join them into a clip of the project.
+    // Recording yourself: the screen, the camera, or both, with the
+    // microphone and -- from the screen -- the computer's sound. Each is a
+    // recording of its own: the screen with the microphone, the camera, and
+    // the computer's sound, never drawn or mixed into one another, so where
+    // the camera sits (or whether it shows) and how loud each sound is are
+    // decided afterwards, on the clip. The page shows the camera where it
+    // will start out. Pieces go up as they are made (a closed tab loses
+    // seconds, not the take), and stopping asks the Studio to join them.
     function recorder() {
       var p = current, dlg = $('#dlg'), canScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
-      var st = { rec: null, rid: null, n: 0, sent: 0, queue: Promise.resolve(), streams: [], ticker: null, t0: 0, paused: 0, pauseAt: 0 };
+      var st = { recs: [], rid: null, counts: { main: 0, cam: 0, pc: 0 }, n: 0, sent: 0, queue: Promise.resolve(), streams: [],
+                 t0: 0, paused: 0, pauseAt: 0, started: {}, layout: { show: true, corner: 'br', size: 0.28 } };
       dlg.classList.add('wide');
+      var box = function (id, label, on, extra) {
+        return '<label class="row" style="font-size:.9rem"><input type="checkbox" id="' + id + '" style="width:auto"' + (on ? ' checked' : '') + (extra || '') + '> ' + label + '</label>';
+      };
       dlg.innerHTML = '<h2>🔴 ' + S.rec_title + '</h2>' +
-        '<div class="row"><label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-screen" style="width:auto"' + (canScreen ? ' checked' : ' disabled') + '> ' + S.rec_screen + '</label>' +
-        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-cam" style="width:auto" checked> ' + S.rec_cam + '</label>' +
-        '<label class="row" style="font-size:.9rem"><input type="checkbox" id="rc-mic" style="width:auto" checked> ' + S.rec_mic + '</label></div>' +
+        '<div class="row">' + box('rc-screen', S.rec_screen, canScreen, canScreen ? '' : ' disabled') + box('rc-cam', S.rec_cam, true) +
+        box('rc-mic', S.rec_mic, true) + box('rc-pc', S.rec_pc, canScreen, canScreen ? '' : ' disabled') + '</div>' +
         (canScreen ? '' : '<p class="muted">' + S.rec_no_screen + '</p>') +
-        '<video id="rc-view" muted playsinline autoplay style="width:100%;background:#000;border-radius:8px;margin-top:8px"></video>' +
+        '<div class="row layer-tools" id="rc-where"><span>📷</span><button data-rc-corner="none">' + S.cam_off + '</button>' +
+          CORNERS.map(function (c) { return '<button data-rc-corner="' + c[0] + '" title="' + esc(S['cam_' + c[0]]) + '">' + c[1] + '</button>'; }).join('') +
+          '<select id="rc-size" style="width:auto">' + CAM_SIZES.map(function (z) { return '<option value="' + z[0] + '"' + (z[0] === 0.28 ? ' selected' : '') + '>' + S[z[1]] + '</option>'; }).join('') + '</select></div>' +
+        '<p class="muted" style="font-size:.82rem;margin:4px 0 0">' + S.rec_apart + '</p>' +
+        '<div class="layered" style="margin-top:8px"><video id="rc-view" class="main" muted playsinline autoplay></video>' +
+        '<video id="rc-camview" class="pip" muted playsinline autoplay style="display:none"></video></div>' +
         '<div class="row" style="margin-top:10px"><button class="primary" id="rc-start">' + S.rec_start + '</button>' +
         '<button id="rc-pause" hidden>' + S.rec_pause + '</button><button class="danger" id="rc-stop" hidden>' + S.rec_stop + '</button>' +
         '<span class="muted" id="rc-time"></span><span class="grow"></span><span class="muted" id="rc-up"></span>' +
         '<button id="rc-no">' + S.cancel + '</button></div>';
       dlg.showModal();
+      function where() {
+        var both = $('#rc-screen').checked && $('#rc-cam').checked;
+        $('#rc-where').style.display = both ? '' : 'none';
+        $('#rc-pc').disabled = !canScreen || !$('#rc-screen').checked;
+        dlg.querySelectorAll('[data-rc-corner]').forEach(function (b) {
+          b.classList.toggle('on', st.layout.show ? b.dataset.rcCorner === st.layout.corner : b.dataset.rcCorner === 'none');
+        });
+        if ($('#rc-camview').srcObject) placeCam($('#rc-camview'), st.layout);
+      }
+      ['rc-screen', 'rc-cam'].forEach(function (id) { $('#' + id).onchange = where; });
+      dlg.querySelectorAll('[data-rc-corner]').forEach(function (b) {
+        b.onclick = function () {
+          st.layout = b.dataset.rcCorner === 'none' ? Object.assign(st.layout, { show: false }) : Object.assign(st.layout, { show: true, corner: b.dataset.rcCorner });
+          where();
+        };
+      });
+      $('#rc-size').onchange = function () { st.layout.size = Number(this.value); where(); };
+      where();
       function clockNow() {
         var sec = Math.max(0, ((st.pauseAt || Date.now()) - st.t0 - st.paused) / 1000);
         $('#rc-time').textContent = '● ' + clock(sec);
@@ -1938,89 +2502,92 @@
       function upState() { $('#rc-up').textContent = st.sent < st.n ? fmt('rec_uploading', { n: st.n - st.sent }) : (st.n ? S.rec_saved : ''); }
       function release() {
         st.streams.forEach(function (m) { m.getTracks().forEach(function (t) { t.stop(); }); });
-        if (st.ticker) st.ticker.terminate();
         clearInterval(st.clock); dlg.classList.remove('wide');
       }
-      function send(blob) {
-        var n = st.n++; upState();
+      function send(blob, track) {
+        var n = st.counts[track]++; st.n++; upState();
         st.queue = st.queue.then(async function () {
           for (var attempt = 0; attempt < 5; attempt++) {
             try {
-              var r = await fetch('/studio/api/projects/' + p.id + '/recordings/' + st.rid + '/chunk?n=' + n, {
+              var r = await fetch('/studio/api/projects/' + p.id + '/recordings/' + st.rid + '/chunk?n=' + n + '&track=' + track, {
                 method: 'POST', body: blob, headers: { 'X-CSRF-Token': CSRF, 'Content-Type': 'application/octet-stream' } });
               if (r.ok) { st.sent++; upState(); return; }
             } catch (e) { /* the network again, a moment later */ }
             await new Promise(function (ok) { setTimeout(ok, 2000 * (attempt + 1)); });
           }
-          toast(fmt('err', { e: 'piece ' + n }), true);
+          toast(fmt('err', { e: track + ' ' + n }), true);
         });
       }
-      $('#rc-no').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); release(); dlg.close(); };
+      function recording() { return st.recs.some(function (r) { return r.rec.state !== 'inactive'; }); }
+      $('#rc-no').onclick = function () { st.recs.forEach(function (r) { if (r.rec.state !== 'inactive') r.rec.stop(); }); release(); dlg.close(); };
       $('#rc-start').onclick = async function () {
         var wantScreen = $('#rc-screen').checked, wantCam = $('#rc-cam').checked, wantMic = $('#rc-mic').checked;
+        var wantPc = wantScreen && $('#rc-pc').checked;
         if (!wantScreen && !wantCam) { toast(S.rec_need_source, true); return; }
         var screen = null, cam = null, mic = null;
         try {
-          if (wantScreen) { screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false }); st.streams.push(screen); }
+          // The computer's sound comes with the screen, when the browser's
+          // dialog is told to share it.
+          if (wantScreen) { screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: wantPc }); st.streams.push(screen); }
           if (wantCam) { cam = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }); st.streams.push(cam); }
           if (wantMic) { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); st.streams.push(mic); }
         } catch (e) { release(); toast(fmt('rec_denied', { e: e.message }), true); return; }
-        var video;
-        if (screen && cam) {
-          // One picture: the screen, and the camera in the bottom-right corner.
-          // Drawn on a worker's clock -- a page's own timers are slowed to a
-          // crawl while the person is in the window being recorded.
-          var sv = document.createElement('video'), cv = document.createElement('video');
-          sv.srcObject = screen; cv.srcObject = cam; sv.muted = cv.muted = true; sv.play(); cv.play();
-          var canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
-          var g = canvas.getContext('2d');
-          st.ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(0)},33)'], { type: 'text/javascript' })));
-          st.ticker.onmessage = function () {
-            g.fillStyle = '#000'; g.fillRect(0, 0, 1280, 720);
-            if (sv.videoWidth) {
-              var k = Math.min(1280 / sv.videoWidth, 720 / sv.videoHeight), w = sv.videoWidth * k, h = sv.videoHeight * k;
-              g.drawImage(sv, (1280 - w) / 2, (720 - h) / 2, w, h);
-            }
-            if (cv.videoWidth) {
-              var cw = 320, ch = cw * cv.videoHeight / cv.videoWidth;
-              g.drawImage(cv, 1280 - cw - 20, 720 - ch - 20, cw, ch);
-            }
-          };
-          video = canvas.captureStream(30).getVideoTracks()[0];
-        } else {
-          video = (screen || cam).getVideoTracks()[0];
-        }
+        var pcTrack = screen && screen.getAudioTracks()[0];
+        if (wantPc && !pcTrack) toast(S.rec_pc_none);
+        // The screen's recording carries the microphone; without a screen,
+        // the camera's does. A camera beside a screen is a recording of its
+        // own, and so is the computer's sound.
+        var main = new MediaStream([(screen || cam).getVideoTracks()[0]].concat(mic ? mic.getAudioTracks() : []));
+        var tracks = [{ track: 'main', stream: main, video: true }];
+        if (screen && cam) tracks.push({ track: 'cam', stream: new MediaStream(cam.getVideoTracks()), video: true });
+        if (pcTrack) tracks.push({ track: 'pc', stream: new MediaStream([pcTrack]), video: false });
+        $('#rc-view').srcObject = main;
+        if (screen && cam) { $('#rc-camview').srcObject = cam; placeCam($('#rc-camview'), st.layout); }
         // Sharing stopped from the browser's own bar ends the recording too.
-        if (screen) screen.getVideoTracks()[0].onended = function () { if (st.rec && st.rec.state !== 'inactive') $('#rc-stop').click(); };
-        var tracks = [video].concat(mic ? mic.getAudioTracks() : []);
-        var out = new MediaStream(tracks);
-        $('#rc-view').srcObject = out;
-        var type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(function (t) {
-          return window.MediaRecorder && MediaRecorder.isTypeSupported(t); });
+        if (screen) screen.getVideoTracks()[0].onended = function () { if (recording()) $('#rc-stop').click(); };
+        var pick = function (types) { return types.find(function (t) { return window.MediaRecorder && MediaRecorder.isTypeSupported(t); }); };
+        var vtype = pick(['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']);
+        var ctype = pick(['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']);
+        var atype = pick(['audio/webm;codecs=opus', 'audio/webm']);
         try {
           var n = (p.shots || []).filter(function (x) { return x.recorded; }).length + 1;
           st.rid = (await api('projects/' + p.id + '/recordings', { method: 'POST', body: { title: fmt('rec_default_title', { n: n }) } })).id;
-          st.rec = new MediaRecorder(out, { mimeType: type, videoBitsPerSecond: 2500000 });
+          st.recs = tracks.map(function (t) {
+            var opts = t.track === 'main' ? { mimeType: vtype, videoBitsPerSecond: 2500000 }
+              : t.track === 'cam' ? { mimeType: ctype, videoBitsPerSecond: 1200000 } : { mimeType: atype, audioBitsPerSecond: 160000 };
+            return { track: t.track, rec: new MediaRecorder(t.stream, opts) };
+          });
         } catch (e) { release(); toast(fmt('err', { e: e.message }), true); return; }
-        st.rec.ondataavailable = function (e) { if (e.data && e.data.size) send(e.data); };
-        st.rec.onstop = async function () {
+        var stopped = st.recs.map(function (r) {
+          r.rec.ondataavailable = function (e) { if (e.data && e.data.size) send(e.data, r.track); };
+          // When each actually started: the camera and the computer sound
+          // are lined up with the screen by these.
+          r.rec.onstart = function () { st.started[r.track] = performance.now(); };
+          return new Promise(function (ok) { r.rec.onstop = ok; });
+        });
+        Promise.all(stopped).then(async function () {
           $('#rc-stop').disabled = true; $('#rc-pause').hidden = true;
           await st.queue;
-          try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST' }); }
+          var t0 = st.started.main || 0, body = { cam_layout: st.layout, mix: { mic: 1, pc: 1 } };
+          if (st.started.cam) body.cam_offset_ms = Math.round(st.started.cam - t0);
+          if (st.started.pc) body.pc_offset_ms = Math.round(st.started.pc - t0);
+          try { await api('projects/' + p.id + '/recordings/' + st.rid + '/finish', { method: 'POST', body: body }); }
           catch (e) { toast(fmt('err', { e: e.message }), true); }
           release(); dlg.close();
           current = await api('projects/' + p.id); drawTab();
-        };
-        st.rec.start(5000);
+        });
+        st.recs.forEach(function (r) { r.rec.start(5000); });
         st.t0 = Date.now(); st.clock = setInterval(clockNow, 500);
         $('#rc-start').hidden = true; $('#rc-pause').hidden = false; $('#rc-stop').hidden = false; $('#rc-no').hidden = true;
-        ['rc-screen', 'rc-cam', 'rc-mic'].forEach(function (id) { $('#' + id).disabled = true; });
+        ['rc-screen', 'rc-cam', 'rc-mic', 'rc-pc'].forEach(function (id) { $('#' + id).disabled = true; });
       };
       $('#rc-pause').onclick = function () {
-        if (st.rec.state === 'recording') { st.rec.pause(); st.pauseAt = Date.now(); this.textContent = S.rec_resume; }
-        else { st.rec.resume(); st.paused += Date.now() - st.pauseAt; st.pauseAt = 0; this.textContent = S.rec_pause; }
+        var on = st.recs.some(function (r) { return r.rec.state === 'recording'; });
+        st.recs.forEach(function (r) { if (on && r.rec.state === 'recording') r.rec.pause(); else if (!on && r.rec.state === 'paused') r.rec.resume(); });
+        if (on) { st.pauseAt = Date.now(); this.textContent = S.rec_resume; }
+        else { st.paused += Date.now() - st.pauseAt; st.pauseAt = 0; this.textContent = S.rec_pause; }
       };
-      $('#rc-stop').onclick = function () { if (st.rec && st.rec.state !== 'inactive') st.rec.stop(); };
+      $('#rc-stop').onclick = function () { st.recs.forEach(function (r) { if (r.rec.state !== 'inactive') r.rec.stop(); }); };
     }
 
     // The video as it stands, in the browser: each chosen take in order, a
@@ -2034,8 +2601,26 @@
       (p.shots || []).forEach(function (s, i) {
         var t = chosen(s), len = s.exact ? +s.seconds : ((t && t.seconds) || s.seconds || 5);
         var bd = chosenBoard(s);
+        if (s.card) {
+          segs.push({ n: i + 1, card: s.card, file: '', board: '', prompt: '', start: at, len: +s.card.seconds || 3 });
+          at += +s.card.seconds || 3;
+          return;
+        }
+        if (s.recorded && t && t.file && s.sections && s.sections.length && s.sections_take === t.id) {
+          s.sections.forEach(function (x) {
+            if (x.keep === false) return;
+            segs.push({ n: i + 1, file: fileUrl(p.id, t.file), board: '', prompt: '', start: at, from: x.start, len: x.end - x.start,
+                        cam: t.cam ? fileUrl(p.id, t.cam) : '', pc: t.pc ? fileUrl(p.id, t.pc) : '',
+                        layout: x.cam || camLayout(s), mix: mixOf(s) });
+            at += x.end - x.start;
+          });
+          return;
+        }
         segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', board: bd ? fileUrl(p.id, bd.file) : '',
-                    prompt: s.prompt || '', start: at, len: len });
+                    prompt: s.prompt || '', start: at, len: len,
+                    // A recording's camera and computer sound, as the clip has them.
+                    cam: t && t.cam ? fileUrl(p.id, t.cam) : '', pc: t && t.pc ? fileUrl(p.id, t.pc) : '',
+                    layout: camLayout(s), mix: s.recorded ? mixOf(s) : null });
         at += len;
       });
       dlg.classList.add('wide');
@@ -2043,6 +2628,8 @@
       dlg.innerHTML = '<h2>▶ ' + S.preview + '</h2>' +
         '<div id="pv-stage" style="position:relative;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">' +
         '<video id="pv-v" playsinline style="width:100%;height:100%;object-fit:contain"></video>' +
+        '<video id="pv-pip" class="pip" muted playsinline style="position:absolute;display:none;border-radius:8px"></video>' +
+        '<audio id="pv-pc"></audio>' +
         '<div id="pv-card" style="position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:16px;color:#eee;font-size:.9rem;background:#222"></div></div>' +
         '<div class="row" style="margin-top:8px"><span id="pv-at" class="muted"></span><span class="grow"></span>' +
         (tracks.length ? '<label class="f" style="margin:0">' + S.soundtrack + '</label><select id="pv-a" style="width:auto"><option value="">' + S.none + '</option>' +
@@ -2052,8 +2639,10 @@
         '<button id="pv-dl">⬇ ' + S.preview_download + '</button><button id="pv-no">' + S.preview_close + '</button></div>';
       dlg.showModal();
       var v = $('#pv-v'), card = $('#pv-card'), audio = new Audio(), idx = 0, timer = null, playing = false;
+      var pip = $('#pv-pip'), pcs = $('#pv-pc');
+      followMain(v, [pip, pcs]);
       function song() { var sel = $('#pv-a'); var a = sel && sel.value ? itemById(sel.value) : null; return a ? fileUrl(p.id, chosen(a).file) : ''; }
-      function stop() { playing = false; clearTimeout(timer); v.pause(); audio.pause(); $('#pv-play').textContent = '▶'; }
+      function stop() { playing = false; clearTimeout(timer); v.pause(); audio.pause(); pip.pause(); pcs.pause(); $('#pv-play').textContent = '▶'; }
       function show(i) {
         clearTimeout(timer);
         if (i >= segs.length) { stop(); idx = 0; return; }
@@ -2069,13 +2658,25 @@
           // style.display, not `hidden`: the card's own inline `display` beat
           // the attribute, and it covered every shot (2026-09-28).
           card.style.display = 'none'; v.style.visibility = 'visible'; v.muted = $('#pv-m').checked;
-          v.src = seg.file; v.play().catch(function () {});
+          // The camera over it where the clip puts it, and the computer
+          // sound under it, each following the clip's video.
+          if (seg.cam) { pip.src = seg.cam; placeCam(pip, seg.layout); } else { pip.removeAttribute('src'); pip.style.display = 'none'; }
+          if (seg.pc) { pcs.src = seg.pc; pcs.volume = Math.min(1, seg.mix.pc); pcs.muted = $('#pv-m').checked; } else pcs.removeAttribute('src');
+          v.volume = seg.mix ? Math.min(1, seg.mix.mic) : 1;
+          // A section starts inside its clip: the same file, from its start.
+          var from = seg.from || 0;
+          if (v.src.indexOf(seg.file) < 0) v.src = seg.file;
+          if (from) { if (v.readyState >= 1) v.currentTime = from; else v.addEventListener('loadedmetadata', function once() { v.removeEventListener('loadedmetadata', once); v.currentTime = from; }); }
+          else if (Math.abs(v.currentTime) > 0.3 && v.readyState >= 1) v.currentTime = 0;
+          v.play().catch(function () {});
           v.onended = function () { if (playing) show(idx + 1); };
           // A shot made long for its cut is shown only up to the cut.
-          v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
+          v.ontimeupdate = function () { if (playing && v.currentTime >= (seg.from || 0) + seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
         } else {
-          v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex';
-          card.innerHTML = seg.board
+          v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex'; pip.style.display = 'none'; pcs.pause();
+          card.innerHTML = seg.card
+            ? '<div style="position:absolute;inset:0;display:flex">' + cardPreview(seg.card).replace('class="title-card', 'style="max-width:none;width:100%;border-radius:0" class="title-card') + '</div>'
+            : seg.board
             ? '<img src="' + seg.board + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">' +
               '<span class="pill" style="position:absolute;left:8px;top:8px">🖼️ ' + S.storyboard + ' · ' + S.shot + ' ' + seg.n + '</span>'
             : '<b>' + S.shot + ' ' + seg.n + ' · ' + S.preview_missing + '</b><p style="margin-top:8px">' + esc(seg.prompt) + '</p>';
@@ -2086,7 +2687,7 @@
         if (playing) return stop();
         playing = true; this.textContent = '⏸'; show(idx);
       };
-      $('#pv-m').onchange = function () { v.muted = this.checked; };
+      $('#pv-m').onchange = function () { v.muted = this.checked; pcs.muted = this.checked; };
       // The same video as a file: every shot in place -- the ones not made
       // yet as a card -- with the song under it, and a preview watermark
       // saying which shot, where in the song and which version each is.
@@ -2127,17 +2728,33 @@
           '<div class="row"><div class="grow"><label class="f">' + S.render_volume + '</label><input type="range" id="rd-v" min="0" max="150" value="' + (soundtrack ? 100 : 80) + '"></div>' +
           '<div class="grow"><label class="f">' + S.render_start + '</label><input type="number" id="rd-t" min="0" value="0"></div></div>' +
           '<label class="row" style="font-size:.86rem"><input type="checkbox" id="rd-m" style="width:auto"' + (soundtrack ? ' checked' : '') + '> ' + S.mute_shots + '</label>' : '') +
+        // What the file is for: kept (H.265, small) or published (H.264, plays
+        // everywhere), at the clips' size or a standard one. Remembered.
+        '<div class="row" style="margin-top:4px"><span class="pair"><label class="f" style="margin:0" for="rd-fmt">' + S.render_format + '</label>' +
+          '<select id="rd-fmt" style="width:auto"><option value="h265">' + S.render_fmt_h265 + '</option><option value="h264">' + S.render_fmt_h264 + '</option></select></span>' +
+          '<span class="pair"><label class="f" style="margin:0" for="rd-size">' + S.render_size + '</label>' +
+          '<select id="rd-size" style="width:auto"><option value="">' + S.render_size_own + '</option><option value="1080">1080p</option><option value="720">720p</option></select></span></div>' +
+        '<p class="muted" id="rd-fmt-note" style="margin-top:6px"></p>' +
         '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="rd-no">' + S.cancel + '</button><button class="primary" id="rd-go">' + S.render_go + '</button></div>';
       dlg.showModal();
+      var remembered = {};
+      try { remembered = JSON.parse(localStorage.getItem('studio.export') || '{}') || {}; } catch (e) { remembered = {}; }
+      if (remembered.format) $('#rd-fmt').value = remembered.format;
+      if (remembered.size != null) $('#rd-size').value = remembered.size;
+      function fmtNote() { $('#rd-fmt-note').textContent = $('#rd-fmt').value === 'h264' ? S.render_fmt_h264_about : S.render_fmt_h265_about; }
+      $('#rd-fmt').onchange = fmtNote; fmtNote();
       $('#rd-no').onclick = function () { dlg.close(); };
       $('#rd-go').onclick = async function () {
         var tracks = [], a = $('#rd-a');
         if (a && a.value) tracks.push({ item: a.value, volume: $('#rd-v').value / 100, start: Number($('#rd-t').value) || 0 });
         try {
           var mute = $('#rd-m');
+          var exp = { format: $('#rd-fmt').value, size: $('#rd-size').value };
+          try { localStorage.setItem('studio.export', JSON.stringify(exp)); } catch (e) { /* a private window */ }
           await api('projects/' + p.id + '/render', { method: 'POST', body: { crossfade: $('#rd-x').checked ? 0.5 : 0, tracks: tracks,
                                                                               subtitles: !!($('#rd-subs') && $('#rd-subs').checked),
-                                                                              own_sound: !(mute && mute.checked && tracks.length) } });
+                                                                              own_sound: !(mute && mute.checked && tracks.length),
+                                                                              format: exp.format, size: exp.size } });
           dlg.close(); current = await api('projects/' + p.id); drawTab(); watchRender();
         } catch (e) { toast(fmt('err', { e: e.message }), true); }
       };
@@ -2154,6 +2771,11 @@
     var lastSig = '';
     async function syncJobs() {
       if (!current || dirty || saving || busy || document.querySelector('dialog[open]')) return;
+      // Nor while something in the tab is playing: a redraw replaces every
+      // player, and stopped a recording being watched to cut it into
+      // sections. It catches up on the next round after the pause.
+      if (Array.prototype.some.call(document.querySelectorAll('#tabbody video, #tabbody audio'),
+          function (m) { return !m.paused && !m.ended; })) return;
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
       var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),
@@ -2161,7 +2783,7 @@
         // encoded) has no job to watch, so its state is part of what is
         // compared -- the tab redraws when it finishes, under the same guards.
         ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) {
-          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.recording || {}).state,
+          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.clean || {}).state, (i.eyes_fix || {}).state, (i.recording || {}).state,
                   ((chosen(i) || {}).transcript || {}).state, ((chosen(i) || {}).score || {}).state,
                   (((chosenBoard(i) || {}).review) || {}).state, (((chosenBoard(i) || {}).review) || {}).score].join(':'); }); })]);
       if (sig !== lastSig) {
@@ -2172,6 +2794,60 @@
         var y = window.scrollY; current = p; drawTab(); window.scrollTo(0, y);
       }
     }
+
+    // ── The helper ──────────────────────────────────────────────────────────
+    // Questions about using the Studio, answered by the house's own model
+    // from the Studio's guide (/studio/api/help): where to click, in the
+    // page's own words. The conversation lives in this page only.
+    var help = { log: [], busy: false };
+    function helpSuggestions() {
+      var k = current && current.kind;
+      var keys = k === 'recording' ? ['help_s_rec1', 'help_s_rec2', 'help_s_rec3']
+        : k === 'music_video' ? ['help_s_mv1', 'help_s_mv2', 'help_s_mv3'] : ['help_s_any1', 'help_s_any2', 'help_s_any3'];
+      return keys.map(function (x) { return S[x]; });
+    }
+    function drawHelp() {
+      var box = $('#help-log');
+      box.innerHTML = (help.log.length ? '' : '<p class="a">' + esc(S.help_hello) + '</p><div class="sugg">' +
+          helpSuggestions().map(function (q) { return '<button type="button" data-help-q="' + esc(q) + '">' + esc(q) + '</button>'; }).join('') + '</div>') +
+        help.log.map(function (m) {
+          // The model writes a little markdown: its **bold** becomes bold,
+          // after escaping, so nothing it says is ever taken as markup.
+          var body = m.role === 'user' ? esc(m.content) : esc(m.content).replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+          return '<div class="' + (m.role === 'user' ? 'q' : 'a' + (m.wait ? ' wait' : '')) + '">' + body + '</div>';
+        }).join('');
+      box.scrollTop = box.scrollHeight;
+    }
+    async function askHelp(q) {
+      q = String(q || '').trim();
+      if (!q || help.busy) return;
+      help.busy = true;
+      var history = help.log.filter(function (m) { return !m.wait; }).map(function (m) { return { role: m.role, content: m.content }; });
+      help.log.push({ role: 'user', content: q }, { role: 'assistant', content: S.help_thinking, wait: true });
+      drawHelp();
+      try {
+        var r = await api('help', { method: 'POST', body: { question: q, history: history,
+          where: { tab: current ? tab : 'projects', kind: current ? current.kind : '', project: current ? current.name : '' } } });
+        help.log[help.log.length - 1] = { role: 'assistant', content: r.answer };
+      } catch (e) {
+        help.log[help.log.length - 1] = { role: 'assistant', content: e.message || S.help_failed, wait: true };
+      }
+      help.busy = false; drawHelp();
+    }
+    function openHelp(on) {
+      var el = $('#help');
+      el.classList.toggle('open', on); el.setAttribute('aria-hidden', on ? 'false' : 'true');
+      $('#help-open').setAttribute('aria-expanded', on ? 'true' : 'false');
+      if (on) { drawHelp(); setTimeout(function () { $('#help-q').focus(); }, 60); } else $('#help-open').focus();
+    }
+    $('#help-open').addEventListener('click', function () { openHelp(!$('#help').classList.contains('open')); });
+    $('#help-close').addEventListener('click', function () { openHelp(false); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && $('#help').classList.contains('open') && !document.querySelector('dialog[open]')) openHelp(false);
+    });
+    $('#help-form').addEventListener('submit', function (e) { e.preventDefault(); var q = $('#help-q').value; $('#help-q').value = ''; askHelp(q); });
+    $('#help-q').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#help-form').requestSubmit(); } });
+    $('#help-log').addEventListener('click', function (e) { var b = e.target.closest('[data-help-q]'); if (b) askHelp(b.dataset.helpQ); });
 
     // ── Start ─────────────────────────────────────────────────────────────
     loadList();

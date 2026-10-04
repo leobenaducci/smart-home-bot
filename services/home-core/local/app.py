@@ -22943,6 +22943,24 @@ STUDIO_UI_KEYS = (
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
     'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_paused_bench', 'card_taken', 'card_paused_after', 'rec_retry',
     'pause_after', 'pause_now', 'pause_stop_running', 'pause_now_about', 'pause_now_confirm',
+    'rec_pc', 'rec_apart', 'rec_pc_none', 'rec_track_failed', 'cam_off', 'cam_tl', 'cam_tr', 'cam_bl', 'cam_br',
+    'cam_size', 'cam_small', 'cam_medium', 'cam_large', 'cam_help', 'vol_mic', 'vol_pc', 'vol_help',
+    'sec_split', 'sec_keep', 'sec_cut', 'sec_cam_clip', 'sec_cam_help', 'sec_join', 'sec_reset', 'sec_kept',
+    'sec_other_version', 'sec_help', 'sec_too_close',
+    'clean_button', 'clean_running', 'clean_help', 'clean_noise', 'clean_noise_about', 'clean_level',
+    'clean_level_about', 'clean_go', 'clean_nothing', 'clean_failed',
+    'help_open', 'help_title', 'help_close', 'help_hello', 'help_ph', 'help_send', 'help_thinking', 'help_note',
+    'help_empty', 'help_off', 'help_failed', 'help_s_rec1', 'help_s_rec2', 'help_s_rec3', 'help_s_mv1', 'help_s_mv2',
+    'help_s_mv3', 'help_s_any1', 'help_s_any2', 'help_s_any3', 'count_shot', 'count_shots', 'count_audio1',
+    'count_audio', 'count_image', 'count_images', 'upload_image_btn', 'upload_voice_btn', 'ch_pick_voice_file',
+    'ch_pick_pics', 'files_picked',
+    'render_format', 'render_fmt_h265', 'render_fmt_h264', 'render_fmt_h265_about', 'render_fmt_h264_about',
+    'render_size', 'render_size_own',
+    'add_card', 'card_label', 'card_title', 'card_title_ph', 'card_subtitle', 'card_length', 'card_seconds',
+    'card_theme', 'theme_dark', 'theme_light', 'theme_olive', 'co_add', 'co_ph', 'co_from', 'co_to', 'spot_top',
+    'spot_bottom', 'spot_center', 'co_other_version', 'co_move', 'co_help', 'co_bad_end',
+    'eye_title', 'eye_help', 'eye_track', 'eye_add', 'eye_strength', 'eye_soft', 'eye_mid', 'eye_full', 'eye_run',
+    'eye_whole', 'eye_queued', 'eye_running', 'eye_sent', 'eye_done', 'eye_failed', 'eye_other_version',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',
@@ -24002,6 +24020,89 @@ def _studio_parse_description(text):
         chapters[0]['start'] = 0.0
     return {'title': str(raw['title']).strip()[:100], 'description': str(raw.get('description') or '').strip()[:2000],
             'chapters': chapters}
+
+
+# The Studio's helper: questions about using the Studio, answered by the
+# house's own model (the one that looks at the frames, on this house's card)
+# from studio_help.md, the guide written for people rather than for the
+# code. Read once; it ships with the portal.
+STUDIO_HELP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'studio_help.md')
+STUDIO_HELP_TIMEOUT_S = 120
+_studio_help_text = None
+# The buttons and places the guide names, by their catalogue keys.
+STUDIO_HELP_LABELS = (
+    'new_project', 'tab_video', 'tab_board', 'tab_cast', 'tab_audio', 'tab_images', 'tab_files', 'hist_button',
+    'rec_title', 'rec_screen', 'rec_cam', 'rec_mic', 'rec_pc', 'rec_start', 'rec_pause', 'rec_stop',
+    'cam_off', 'cam_size', 'vol_mic', 'vol_pc', 'sec_split', 'sec_cut', 'sec_keep', 'sec_cam_clip', 'sec_join',
+    'sec_reset', 'rec_trim', 'clean_button', 'rec_subs', 'rec_describe', 'write_lyrics', 'mv_go', 'preview',
+    'preview_download', 'render', 'sb_refine', 'sb_redraw_changed', 'score_make', 'ch_widen_person',
+    'pause', 'resume', 'pause_after', 'pause_now', 'queue', 'cancel')
+
+
+def _studio_help_guide():
+    global _studio_help_text
+    if _studio_help_text is None:
+        try:
+            with open(STUDIO_HELP_FILE, encoding='utf-8') as fh:
+                _studio_help_text = fh.read()
+        except OSError:
+            _studio_help_text = ''
+    return _studio_help_text
+
+
+@app.route('/studio/api/help', methods=['POST'])
+@api_login_required
+def studio_help():
+    """One answer from the Studio's helper. `question`, the conversation so
+    far (`history`, a few turns) and where the person is (`where`: the tab and
+    the project's kind) go to the house's model with the guide; the answer
+    comes back as text. Local: nothing leaves the house."""
+    if not _studio_reachable():
+        abort(404)
+    d = request.get_json(silent=True) or {}
+    question = str(d.get('question') or '').strip()[:1000]
+    if not question:
+        return jsonify(error=t_for(session['user'], 'studio.help_empty')), 400
+    if not (STUDIO_VISION_URL and STUDIO_VISION_MODEL):
+        return jsonify(error=t_for(session['user'], 'studio.help_off')), 503
+    where = d.get('where') if isinstance(d.get('where'), dict) else {}
+    context = ', '.join(f'{k}: {str(v)[:60]}' for k, v in where.items() if k in ('tab', 'kind', 'project') and v)
+    system = ("You are the helper inside the house's Studio, a page for making video, pictures, songs and "
+              "screen-recorded tutorials. Answer questions about using it, from the guide below and nothing else. "
+              "Be short and practical: say which tab and which button, in steps when there are steps, and name "
+              "buttons exactly as the guide does. If the guide does not cover something, say the Studio does not "
+              "do it (yet) rather than guessing. Answer in the language of the question. Plain text, no "
+              "markdown headings.\n\n=== The guide ===\n" + _studio_help_guide()
+              + (f"\n\n=== Where the person is now ===\n{context}" if context else ""))
+    # The page's labels in the person's language: the guide names buttons in
+    # English, and the model quoted them so to a Spanish page (2026-10-03).
+    user = session['user']
+    pairs = [(_translator(f'studio.{k}', locale='en') if _translator else '', t_for(user, f'studio.{k}'))
+             for k in STUDIO_HELP_LABELS]
+    pairs = [(en, own) for en, own in pairs if own and own != en and not own.startswith('studio.')]
+    if pairs:
+        system += ("\n\n=== The page's labels as this person sees them (English in the guide → on their page) ===\n"
+                   + "\n".join(f'{en} → {own}' for en, own in pairs)
+                   + "\nName buttons as they appear on their page.")
+    messages = [{'role': 'system', 'content': system}]
+    turns = [x for x in (d.get('history') or [])[-40:]
+             if isinstance(x, dict) and x.get('role') in ('user', 'assistant') and x.get('content')]
+    for turn in turns[-8:]:
+        messages.append({'role': turn['role'], 'content': str(turn['content'])[:2000]})
+    messages.append({'role': 'user', 'content': question})
+    headers = {'Authorization': f'Bearer {STUDIO_VISION_KEY}'} if STUDIO_VISION_KEY else {}
+    if 'opencode.ai' in STUDIO_VISION_URL.lower():
+        headers['x-opencode-session'] = secrets.token_hex(16)
+    body = {'model': STUDIO_VISION_MODEL, 'stream': False, 'temperature': 0.3, 'max_tokens': 700,
+            'reasoning_effort': 'none', 'messages': messages}
+    try:
+        r = requests.post(STUDIO_VISION_URL, json=body, headers=headers, timeout=STUDIO_HELP_TIMEOUT_S)
+        r.raise_for_status()
+        answer = str(r.json()['choices'][0]['message']['content'] or '').strip()
+    except (requests.RequestException, ValueError, KeyError, IndexError) as exc:
+        app.logger.warning('studio helper: %s', exc)
+        return jsonify(error=t_for(session['user'], 'studio.help_failed')), 502
+    return jsonify(answer=answer[:4000])
 
 
 @app.route('/studio/api/describe', methods=['POST'])

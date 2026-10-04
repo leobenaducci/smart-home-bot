@@ -31,6 +31,26 @@ X265 = ["-c:v", "libx265", "-preset", "medium", "-crf", "23", "-tag:v", "hvc1",
 # preset takes seconds where H.265 takes a minute, plays in every browser,
 # and its larger file costs nothing for a file that is looked at and dropped.
 FAST = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+# A film to publish: H.264 as video sites ask for it -- High profile, 4:2:0,
+# a keyframe every two seconds (at the films' 24 fps) -- at a quality they
+# re-encode from without loss showing. Plays in every browser, unlike X265,
+# at about twice the size.
+H264 = ["-c:v", "libx264", "-preset", "slow", "-crf", "19", "-profile:v", "high", "-level", "4.2",
+        "-pix_fmt", "yuv420p", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0"]
+CODECS = {"h265": X265, "h264": H264}
+SIZES = {"1080": 1920, "720": 1280}
+
+
+def fit_size(w: int, h: int, size: str | None) -> tuple[int, int]:
+    """(w, h) for a film asked to be `size` ("1080", "720", or nothing for
+    the clips' own): its longer side set by the size, its shape kept -- so a
+    vertical film at 1080 is 1080x1920. Even, as the encoders need."""
+    long_side = SIZES.get(str(size or ""))
+    if not long_side:
+        return w, h
+    if w >= h:
+        return long_side, max(2, round(long_side * h / w / 2) * 2)
+    return max(2, round(long_side * w / h / 2) * 2), long_side
 
 
 def _run(args: list[str], timeout: int = 1800) -> str:
@@ -107,6 +127,40 @@ def encode_recording(src: Path, out: Path) -> Path:
     return out
 
 
+def encode_camera(src: Path, out: Path, offset: float, seconds: float) -> Path:
+    """The camera, recorded beside the screen as a track of its own, kept as a
+    clip that lines up with the screen's frame for frame: *offset* is how much
+    later than the screen it started (negative: earlier), so it is padded or
+    cut by that much, and it is as long as the screen's clip. No sound -- the
+    microphone is on the screen's track. Kept apart so whether it is shown,
+    and in which corner, can be decided after (`stitch`'s `pips`)."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pre = ["-ss", f"{-offset:.3f}"] if offset < 0 else []
+    pad = f"tpad=start_duration={offset:.3f}:start_mode=clone," if offset > 0 else ""
+    _run(["-fflags", "+genpts", *pre, "-i", str(src), "-map", "0:v:0", "-an",
+          "-vf", f"{pad}scale='min(1280,iw)':-2,fps=30", "-t", f"{seconds:.3f}",
+          *X265, "-movflags", "+faststart", str(out)], timeout=7200)
+    if probe(out)["seconds"] <= 0:
+        raise MediaError("the camera could not be read")
+    return out
+
+
+def encode_sound(src: Path, out: Path, offset: float, seconds: float) -> Path:
+    """The computer's sound, recorded beside the screen as a track of its own,
+    kept lined up with the screen's clip (*offset*: how much later it started;
+    negative, earlier) and as long as it: AAC, stereo. Apart from the
+    microphone, so each can be turned up, down or off afterwards."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pre = ["-ss", f"{-offset:.3f}"] if offset < 0 else []
+    delay = f"adelay=delays={int(offset * 1000)}:all=1," if offset > 0 else ""
+    _run(["-fflags", "+genpts", *pre, "-i", str(src), "-map", "0:a:0", "-vn",
+          "-af", f"{delay}aresample=48000,apad", "-t", f"{seconds:.3f}",
+          "-c:a", "aac", "-b:a", "160k", "-ac", "2", str(out)], timeout=7200)
+    if probe(out)["seconds"] <= 0:
+        raise MediaError("the computer sound could not be read")
+    return out
+
+
 def silences(src: Path, noise_db: float = -35.0, min_s: float = 1.2) -> list[tuple[float, float]]:
     """Stretches of *src* quieter than *noise_db* for at least *min_s*."""
     done = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(src), "-vn",
@@ -124,10 +178,11 @@ def silences(src: Path, noise_db: float = -35.0, min_s: float = 1.2) -> list[tup
     return out
 
 
-def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1.2,
-                 keep: float = 0.3) -> tuple[Path, float]:
-    """*src* without its long silences, `keep` seconds of each left either side
-    so a word is never clipped. Returns the new clip and the seconds removed."""
+def speaking_spans(src: Path, noise_db: float = -35.0, min_s: float = 1.2,
+                   keep: float = 0.3) -> tuple[list[tuple[float, float]], float]:
+    """The stretches of *src* to keep when its long silences are taken out --
+    `keep` seconds of each silence left either side so a word is never
+    clipped -- and its whole length."""
     total = probe(src)["seconds"]
     gaps = [(a + keep, b - keep) for a, b in silences(src, noise_db, min_s) if b - a - 2 * keep > 0.2]
     if not gaps:
@@ -139,12 +194,52 @@ def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1
         t = b
     if total - t > 0.05:
         spans.append((t, total))
+    return spans, total
+
+
+def cut_spans(src: Path, out: Path, spans: list[tuple[float, float]], sound: bool = True,
+              picture: bool = True) -> Path:
+    """*src* with only *spans* kept, joined. The same spans on a recording's
+    camera (no sound) and computer sound (no picture) keep them with the
+    screen."""
     expr = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in spans)
     out.parent.mkdir(parents=True, exist_ok=True)
-    _run(["-i", str(src), "-vf", f"select='{expr}',setpts=N/FRAME_RATE/TB",
-          "-af", f"aselect='{expr}',asetpts=N/SR/TB", *X265, "-c:a", "aac", "-b:a", "160k",
-          "-movflags", "+faststart", str(out)], timeout=7200)
+    audio = (["-af", f"aselect='{expr}',asetpts=N/SR/TB", "-c:a", "aac", "-b:a", "160k"] if sound else ["-an"])
+    video = (["-vf", f"select='{expr}',setpts=N/FRAME_RATE/TB", *X265] if picture else ["-vn"])
+    _run(["-i", str(src), *video, *audio, *(["-movflags", "+faststart"] if picture else []), str(out)],
+         timeout=7200)
+    return out
+
+
+def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1.2,
+                 keep: float = 0.3) -> tuple[Path, float]:
+    """*src* without its long silences, `keep` seconds of each left either side
+    so a word is never clipped. Returns the new clip and the seconds removed."""
+    spans, total = speaking_spans(src, noise_db, min_s, keep)
+    cut_spans(src, out, spans)
     return out, round(total - sum(b - a for a, b in spans), 2)
+
+
+def clean_voice(src: Path, out: Path, denoise: bool = True, level: bool = True) -> Path:
+    """*src* with its microphone cleaned: a low rumble and steady background
+    noise taken out (`denoise`: a high-pass at 80 Hz, then FFT denoising that
+    learns the noise as it goes), and its loudness evened out to what video
+    sites play at (`level`: EBU R128, -16 LUFS). Only the sound is
+    re-encoded; the picture is copied as it is, so it is quick and loses
+    nothing."""
+    if not probe(src)["has_audio"]:
+        raise MediaError("this recording has no microphone")
+    chain = []
+    if denoise:
+        chain += ["highpass=f=80", "afftdn=nr=12:nf=-35:tn=1"]
+    if level:
+        chain += ["loudnorm=I=-16:TP=-1.5:LRA=11"]
+    if not chain:
+        raise MediaError("nothing to clean")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-i", str(src), "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", ",".join(chain),
+          "-ar", "48000", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)], timeout=7200)
+    return out
 
 
 def compress_video(src: Path) -> Path:
@@ -194,6 +289,27 @@ def srt(segments: list[dict]) -> str:
     return "\n".join(blocks)
 
 
+def shift_srt(src: Path, out: Path, start: float, end: float) -> Path:
+    """The subtitles of a stretch of a clip, timed from its start: the lines
+    inside [start, end], moved back by `start` and cut to the stretch."""
+    def secs(stamp: str) -> float:
+        hms, ms = stamp.strip().split(",")
+        h, m_, s_ = hms.split(":")
+        return int(h) * 3600 + int(m_) * 60 + int(s_) + int(ms) / 1000
+    lines = []
+    for block in src.read_text(encoding="utf-8").strip().split("\n\n"):
+        rows = block.strip().splitlines()
+        if len(rows) < 3 or "-->" not in rows[1]:
+            continue
+        a, b = (secs(x) for x in rows[1].split("-->"))
+        if b <= start or a >= end:
+            continue
+        lines.append({"start": max(0.0, a - start), "end": min(end, b) - start, "text": " ".join(rows[2:])})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(srt(lines), encoding="utf-8")
+    return out
+
+
 def mix_audio(srcs: list[Path], out: Path) -> Path:
     """Several stems of one song summed back into one track, as MP3 -- the
     song without a part (a minus-one to play along with), or the part alone.
@@ -220,13 +336,37 @@ def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
 
 def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
            lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
-           fast: bool = False, subs: list[Path | None] | None = None) -> Path:
+           fast: bool = False, subs: list[Path | None] | None = None,
+           pips: list[dict | None] | None = None, sounds: list[dict | None] | None = None,
+           starts: list[float | None] | None = None, codec: str = "h265", size: str | None = None,
+           overlays: list[list[dict] | None] | None = None) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
     shots come from one model but a retake can differ in a stream parameter,
     and the demuxer then produces a file that plays wrong without failing.
     A crossfade blends the join (video xfade, audio acrossfade).
+
+    `pips`: a recording's camera, drawn in a corner of its clip -- `{"file",
+    "corner": tl|tr|bl|br, "size": share of the width}` -- or None. The camera
+    is kept as a track of its own (`encode_camera`), lined up with its clip,
+    so whether and where it shows is decided here, at render time.
+
+    `sounds`: a recording's volumes and computer sound -- `{"own": volume of
+    the clip's own sound (the microphone), "file": the computer sound, or
+    absent, "volume": its volume}` -- or None for the clip as it is.
+
+    `starts`: where in each clip to begin, for a section of a recording (with
+    `lengths` saying how much of it); the camera and the computer sound of a
+    clip begin at the same place, so they stay with it.
+
+    `overlays`: pictures laid over a stretch of a clip -- `[{"png", "start",
+    "end"}]`, times in the clip as it is used -- for a recording's text
+    callouts.
+
+    `codec`: "h265" (the kept film, small) or "h264" (to publish: plays
+    everywhere); `size`: "1080" or "720" for that size, its shape kept, or
+    nothing for the first clip's own. A draft (`fast`) is H.264 regardless.
     """
     if not videos:
         raise MediaError("nothing to stitch")
@@ -236,8 +376,13 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
     # read only up to its cut, so the film lands on the song's beats and ends
     # with it. `-t` before the input limits what is read of it.
     lengths = list(lengths or [None] * len(videos))
+    starts = list(starts or [None] * len(videos))
     args: list[str] = []
-    for v, info, keep in zip(videos, infos, lengths):
+    for v, info, keep, begin in zip(videos, infos, lengths, starts):
+        if begin:
+            # Accurate, not to the keyframe: the clip is re-encoded anyway.
+            args += ["-ss", f"{begin:.3f}"]
+            info["seconds"] = max(0.04, info["seconds"] - begin)
         if keep and keep < info["seconds"] - 0.5 / 24:
             # A quarter frame short of the cut: `-t` keeps every frame that
             # starts before it, and the frame that starts *on* the cut is the
@@ -245,7 +390,7 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
             args += ["-t", f"{keep - 0.25 / 24:.4f}"]
             info["seconds"] = keep
         args += ["-i", str(v)]
-    w, h = infos[0]["width"] or 832, infos[0]["height"] or 480
+    w, h = fit_size(infos[0]["width"] or 832, infos[0]["height"] or 480, size)
     # A transparent picture laid over a shot (a preview's watermark), each an
     # input of its own after the shots, looped for as long as its shot lasts.
     marks = list(marks or [None] * len(videos))
@@ -254,6 +399,26 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         if mark:
             mark_input[i] = len(videos) + len(mark_input)
             args += ["-loop", "1", "-framerate", "24", "-i", str(mark)]
+    pips = list(pips or [None] * len(videos))
+    pip_input = {}
+    for i, pip in enumerate(pips):
+        if pip and pip.get("file"):
+            pip_input[i] = len(videos) + len(mark_input) + len(pip_input)
+            args += (["-ss", f"{starts[i]:.3f}"] if starts[i] else []) + ["-i", str(pip["file"])]
+    sounds = list(sounds or [None] * len(videos))
+    sound_input = {}
+    for i, snd in enumerate(sounds):
+        if snd and snd.get("file"):
+            sound_input[i] = len(videos) + len(mark_input) + len(pip_input) + len(sound_input)
+            args += (["-ss", f"{starts[i]:.3f}"] if starts[i] else []) + ["-i", str(snd["file"])]
+    overlays = list(overlays or [None] * len(videos))
+    over_input: dict[int, list[tuple[int, dict]]] = {}
+    next_input = len(videos) + len(mark_input) + len(pip_input) + len(sound_input)
+    for i, ovs in enumerate(overlays):
+        for ov in ovs or []:
+            over_input.setdefault(i, []).append((next_input, ov))
+            next_input += 1
+            args += ["-loop", "1", "-framerate", "24", "-i", str(ov["png"])]
     parts, n = [], len(videos)
     for i, info in enumerate(infos):
         label = f"b{i}" if i in mark_input else f"v{i}"
@@ -263,29 +428,66 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         sub = (subs or [None] * len(videos))[i] if subs else None
         burn = (f",subtitles=filename={sub}:force_style='FontName=DejaVu Sans,FontSize=18,"
                 f"Outline=2,Shadow=0,MarginV=22'") if sub else ""
-        parts.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24{burn},format=yuv420p[{label}]")
+        sized = (f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                 f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24")
+        if i in pip_input:
+            # The camera over the clip, before the subtitles so they are not
+            # under it: sized to its share of the width, a margin from the
+            # edges, and cut to the clip's length so the clip ends on time.
+            pip = pips[i]
+            pw = max(64, int(w * min(0.5, max(0.1, float(pip.get("size") or 0.28))) / 2) * 2)
+            m = max(8, int(w * 0.02))
+            corner = pip.get("corner") if pip.get("corner") in ("tl", "tr", "bl", "br") else "br"
+            x = f"{m}" if corner in ("tl", "bl") else f"W-w-{m}"
+            y = f"{m}" if corner in ("tl", "tr") else f"H-h-{m}"
+            parts.append(sized + f"[s{i}]")
+            parts.append(f"[{pip_input[i]}:v]trim=duration={info['seconds']:.3f},setpts=PTS-STARTPTS,"
+                         f"scale={pw}:-2,setsar=1,fps=24[k{i}]")
+            parts.append(f"[s{i}][k{i}]overlay=x={x}:y={y}:eof_action=pass{burn},format=yuv420p[{label}]")
+        else:
+            parts.append(sized + f"{burn},format=yuv420p[{label}]")
         if i in mark_input:
             parts.append(f"[{mark_input[i]}:v]scale={w}:{h},format=rgba[m{i}]")
             parts.append(f"[b{i}][m{i}]overlay=0:0:shortest=1,format=yuv420p[v{i}]")
+        snd = sounds[i] or {}
+        own = f",volume={float(snd['own']):.2f}" if "own" in snd else ""
+        mine = f"a{i}" if i not in sound_input else f"o{i}"
         if info["has_audio"]:
-            parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
+            parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo{own}[{mine}]")
         else:
-            parts.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['seconds']:.3f}[a{i}]")
+            parts.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['seconds']:.3f}[{mine}]")
+        if i in sound_input:
+            # The computer's sound under the microphone, each at its own
+            # volume, cut to the clip's length.
+            parts.append(f"[{sound_input[i]}:a]atrim=duration={info['seconds']:.3f},asetpts=PTS-STARTPTS,"
+                         f"aresample=48000,aformat=channel_layouts=stereo,"
+                         f"volume={float(snd.get('volume', 1.0)):.2f}[p{i}]")
+            parts.append(f"[o{i}][p{i}]amix=inputs=2:duration=first:normalize=0[a{i}]")
+    # Each clip's text callouts, over its finished picture, each shown only
+    # in its stretch. `fin` is what the joins below take from each clip.
+    fin = [f"v{i}" for i in range(n)]
+    for i, ovs in over_input.items():
+        cur = fin[i]
+        for k, (idx, ov) in enumerate(ovs):
+            parts.append(f"[{idx}:v]scale={w}:{h},format=rgba[c{i}_{k}]")
+            parts.append(f"[{cur}][c{i}_{k}]overlay=0:0:shortest=1:"
+                         f"enable='between(t,{float(ov['start']):.3f},{float(ov['end']):.3f})',format=yuv420p[o{i}_{k}]")
+            cur = f"o{i}_{k}"
+        fin[i] = cur
     if crossfade > 0 and n > 1:
         cf = min(crossfade, min(i["seconds"] for i in infos) / 2)
-        vlast, alast, offset = "v0", "a0", infos[0]["seconds"] - cf
+        vlast, alast, offset = fin[0], "a0", infos[0]["seconds"] - cf
         for i in range(1, n):
-            parts.append(f"[{vlast}][v{i}]xfade=transition=fade:duration={cf:.3f}:offset={offset:.3f}[vx{i}]")
+            parts.append(f"[{vlast}][{fin[i]}]xfade=transition=fade:duration={cf:.3f}:offset={offset:.3f}[vx{i}]")
             parts.append(f"[{alast}][a{i}]acrossfade=d={cf:.3f}[ax{i}]")
             vlast, alast = f"vx{i}", f"ax{i}"
             offset += infos[i]["seconds"] - cf
         maps = [f"[{vlast}]", f"[{alast}]"]
     else:
-        parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
+        parts.append("".join(f"[{fin[i]}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
         maps = ["[v]", "[a]"]
     _run([*args, "-filter_complex", ";".join(parts), "-map", maps[0], "-map", maps[1],
-          *(FAST if fast else X265), "-c:a", "aac", "-b:a", "192k",
+          *(FAST if fast else CODECS.get(codec, X265)), "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
           "-movflags", "+faststart", str(out)])
     return out
 
@@ -332,6 +534,89 @@ def placeholder(title: str, text: str, seconds: float, size: tuple[int, int], ou
           "-t", f"{seconds:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
           "-c:a", "aac", "-shortest", str(out)])
     still.unlink(missing_ok=True)
+    return out
+
+
+CARD_THEMES = {"dark": ((30, 35, 32), (243, 238, 223), (190, 184, 168)),
+               "light": ((247, 243, 234), (30, 35, 32), (102, 97, 79)),
+               "olive": ((60, 70, 48), (243, 238, 223), (218, 212, 194))}
+CALLOUT_SPOTS = ("top", "bottom", "center", "tl", "tr", "bl", "br")
+
+
+def _font(name: str, px: int):
+    from PIL import ImageFont  # noqa: PLC0415
+    try:
+        return ImageFont.truetype(str(FONT_DIR / name), px)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _wrap(draw, text: str, font, width: int) -> list[str]:
+    lines, line = [], ""
+    for word in (text or "").split():
+        trial = f"{line} {word}".strip()
+        if line and draw.textlength(trial, font=font) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    return lines + ([line] if line else [])
+
+
+def title_card(title: str, subtitle: str, seconds: float, size: tuple[int, int], out: Path,
+               theme: str = "dark") -> Path:
+    """A title card as a silent clip: the title large and the subtitle under
+    it, centred, on the theme's colour, for *seconds*. Drawn when the film is
+    put together, so editing the words costs nothing until then."""
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+    w, h = size
+    bg, fg, soft = CARD_THEMES.get(theme, CARD_THEMES["dark"])
+    img = Image.new("RGB", (w, h), bg)
+    draw = ImageDraw.Draw(img)
+    big, small = _font("DejaVuSans-Bold.ttf", max(18, h // 9)), _font("DejaVuSans.ttf", max(12, h // 22))
+    width = int(w * 0.82)
+    tl, sl = _wrap(draw, title, big, width)[:3], _wrap(draw, subtitle, small, width)[:3]
+    th, sh = int(max(18, h // 9) * 1.2), int(max(12, h // 22) * 1.45)
+    y = (h - (len(tl) * th + (sh // 2 if sl else 0) + len(sl) * sh)) // 2
+    for line in tl:
+        draw.text(((w - draw.textlength(line, font=big)) / 2, y), line, font=big, fill=fg)
+        y += th
+    y += sh // 2 if sl else 0
+    for line in sl:
+        draw.text(((w - draw.textlength(line, font=small)) / 2, y), line, font=small, fill=soft)
+        y += sh
+    png = out.with_suffix(".png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(png)
+    _run(["-loop", "1", "-framerate", "24", "-i", str(png), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+          "-t", f"{seconds:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-shortest", str(out)])
+    png.unlink(missing_ok=True)
+    return out
+
+
+def callout(text: str, spot: str, size: tuple[int, int], out: Path) -> Path:
+    """A text box laid over a stretch of a clip: white on a dark translucent
+    box, at a spot of the frame (top, bottom, centre or a corner). A
+    transparent PNG the size of the frame, for `stitch`'s `overlays`."""
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+    w, h = size
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    px = max(13, h // 22)
+    font = _font("DejaVuSans-Bold.ttf", px)
+    corner = spot in ("tl", "tr", "bl", "br")
+    lines = _wrap(draw, text, font, int(w * (0.4 if corner else 0.7)))[:4] or [""]
+    pad, gap, margin = px // 2, int(px * 1.3), max(10, h // 18)
+    bw = int(max(draw.textlength(x, font=font) for x in lines)) + 2 * pad
+    bh = len(lines) * gap + 2 * pad - (gap - px)
+    x = {"tl": margin, "bl": margin, "tr": w - bw - margin, "br": w - bw - margin}.get(spot, (w - bw) // 2)
+    y = {"top": margin, "tl": margin, "tr": margin, "center": (h - bh) // 2}.get(spot, h - bh - margin)
+    draw.rounded_rectangle([x, y, x + bw, y + bh], radius=max(4, px // 3), fill=(20, 22, 20, 218))
+    for i, line in enumerate(lines):
+        draw.text((x + pad, y + pad + i * gap), line, font=font, fill=(255, 255, 255, 255))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out)
     return out
 
 

@@ -263,19 +263,56 @@ with the character's.
 
 ## Recording (the Recording kind)
 
-🔴 in a Recording (or free) project: the screen, the camera or both -- the
-camera in a corner over the screen, drawn on a worker's clock because a
-page's own timers crawl while the person is in the window being recorded --
-with the microphone. The browser's recorder hands over a piece every five
-seconds, and each goes up as it is made (`/recordings/<id>/chunk?n=`, retried),
-so a closed tab or a dropped network loses seconds, not the take. Finishing
-joins the pieces in order -- they are one stream cut up -- and encodes the clip
-on the CPU (H.265, 30 fps), beside the card's queue; a clip that fails to
-encode keeps its pieces. Each recording is a clip of the project, in the same
-timeline as generated shots, so the preview, the film and the downloads work
-on it unchanged. Screen recording is a computer's browser only; in the
-Android app the camera also needs the app to grant it (it grants only the
-microphone today).
+🔴 in a Recording (or free) project: the screen, the camera or both, with the
+microphone and -- from the screen -- the computer's sound. Made for tutorials:
+show the screen, talk over it, and decide afterwards whether your face is in a
+corner.
+
+**Each source is a recording of its own.** With the screen and the camera both
+on, the page runs up to three recorders at once: the screen with the
+microphone (`main`), the camera (`cam`) and the computer's sound (`pc`, what the
+browser's "Share audio" hands over). Nothing is drawn into or mixed with
+anything else. Each sends its own pieces (`/recordings/<id>/chunk?n=&track=`),
+and finishing tells the Studio when the camera and the computer sound started
+relative to the screen (`cam_offset_ms`, `pc_offset_ms`), so each is encoded
+lined up with the screen's clip and as long as it (`media.encode_camera`,
+`media.encode_sound`) and kept on the take as `cam` and `pc`. A camera or
+computer sound that fails to encode costs that track, not the recording.
+
+**Decided afterwards, on the clip.** The camera's place is the clip's
+`cam_layout` -- shown or hidden, a corner (`tl`, `tr`, `bl`, `br`), a share of the
+width -- and the sounds' volumes are its `mix` (`mic`, `pc`, 0-200%). The page
+lays the camera over the screen and plays the computer sound under it, each
+following the screen's video (play, pause, seek, speed), so a change is seen
+and heard at once; the recorder shows the camera where it will start out. The
+film and the preview's download draw the camera in its corner and mix the
+sounds at their volumes when they are rendered (`media.stitch`'s `pips` and
+`sounds`); hiding the camera afterwards takes it out of the film, because it was
+never in the recording. A browser plays at most 100%; louder is heard in the
+film.
+
+**Cut into sections by hand.** ✂ under a recording splits it at the playhead;
+each section can be cut out, or given a camera of its own (hidden, or a
+corner) instead of the clip's. Sections are the clip's `sections` -- start,
+end, kept, camera -- over the version named by `sections_take` (a section
+drawn over one version means nothing on another, which then plays whole).
+Nothing is cut from the files: the page skips the cut sections as it plays and
+switches the camera at each boundary, the preview plays each kept section from
+the clip, and the film puts in only the kept ones (`stitch`'s `starts`), each
+with its camera and its stretch of the subtitles (`media.shift_srt`). Taking a
+section out is undone by putting it back. While anything in the tab is
+playing, the page does not redraw it under you.
+
+The pieces go up as they are made, so a closed tab or a dropped network loses
+seconds, not the take; finishing joins each track's pieces in order and
+encodes them on the CPU (H.265, 30 fps; the computer sound as AAC), beside the
+card's queue. A clip that fails to encode keeps its pieces. Each recording is
+a clip of the project, in the same timeline as generated shots, so the
+preview, the film and the downloads work on it unchanged. Screen recording is
+a computer's browser only (and the computer's sound is whatever that browser
+can share: a tab's sound everywhere, the whole system's on Windows and
+ChromeOS); in the Android app the camera also needs the app to grant it (it
+grants only the microphone today).
 
 What a recording gets afterwards, each on the CPU pool beside the card:
 **subtitles** -- its speech sent to the house's speech recogniser (faster-whisper,
@@ -284,6 +321,73 @@ instead), kept on the version as a transcript and SubRip `.srt`, downloadable
 and burnt into a film when asked (libass, DejaVu Sans) -- and **taking out its
 long silences**: stretches below -35 dB for over 1.2 s are cut, leaving 0.3 s
 either side so no word is clipped, as a new version with the original kept.
+The silences are found in the microphone alone, and the camera and the
+computer sound are cut at the same places, so the three stay together.
+
+**Title cards and text callouts.** 🔤 Title adds a card to the timeline: a
+title, a subtitle, a length (1-30 s) and colours (dark, light, olive); the
+item's `card`. It has no versions and nothing is stored -- the film draws it
+as a silent clip at the film's frame size when it is put together
+(`media.title_card`), and the page's preview shows it as it will look. Video
+generation, the storyboard and the progress counts leave cards out. A
+recording's `callouts` are text boxes over stretches of it -- words, start and
+end, and a spot (top, bottom, centre, a corner) -- placed with "＋ Text here" at
+the playhead and "From here"/"To here"; the page shows them over the player as
+it plays, and the film draws each as an overlay in its stretch
+(`media.callout`, `stitch`'s `overlays`), within each kept section. Like
+sections they belong to the version they were placed on (`callouts_take`):
+cleaning the microphone keeps the timing and moves them, taking out silences
+does not, and the page offers to move them.
+
+👁 **Eye contact.** A recording's camera can have its eyes moved to the lens
+over stretches its owner marks under the player (the item's `eyes`, on the
+version they were marked on, `eyes_take`), or over the whole clip when asked;
+never on its own -- looking away on purpose, at the keyboard or at somebody in
+the room, is part of a recording. It is the card's work, queued like the rest
+(kind `eyes`, model `liveportrait`), and run by the manager as a process of its
+own (`studio/eyes.py`) that a cancel or a pause kills: a pause requeues it. The
+result is a new version whose camera is new and whose screen, microphone and
+computer sound are the same files (hard links); sections, texts and stretches
+move to it.
+
+How: LivePortrait (KwaiVGI, pinned in the Dockerfile; weights, ~630 MB,
+downloaded on first use onto the checkpoints volume) renders the face crop with
+only the eyes' expression keypoints (11, 15) shifted, and only the eyes are
+pasted back -- the rest of the face is the recording's pixels. The gaze is
+measured per frame (the pupils, landmarks 197/198, against their eyes' corners,
+in eye widths), smoothed over ~0.25 s so reading's quick movements stay, and
+the shift brings that to where a face looking into the lens has its pupils
+(`LOOK`, the median of twelve clips: centred, 0.08 eye widths above the
+corners' line). How far the pupils move per unit of shift is probed on a few
+of the clip's own frames. Measured 2026-10-03 on GPU 1, about 5 frames a
+second at 720p (a ten-minute camera track whole is about an hour; stretches
+cost only their own length):
+
+| case | gaze before | after |
+|---|---|---|
+| looking beside the camera (s18) | x −0.071 | x −0.001 |
+| looking a little below it | y +0.018 | y −0.101 |
+| already at the lens | — | barely moved (dead band 0.012) |
+
+What went wrong on the way, and is guarded: one shift for the whole clip
+pushed frames that already looked at the lens past it into staring eyes, so
+the shift is per frame; moving the pupils of eyes nearly shut opened them into
+a cartoon's, so blinks, half-shut eyes and eyes opened much wider than the
+person's usual are left as recorded; a direction the face barely answers in
+(probe gain under 4) is not corrected; the shift is capped. The render is
+512 px for the face crop, so corrected eyes are a little softer than the
+original on a large face; an unsharp mask and a tighter crop (1.8, against
+LivePortrait's 2.3) give back some of it. Two passes stream the file -- a
+camera track held whole is ~50 GB at 720p.
+
+🎚 **Cleaning the microphone** makes another version with the voice cleaned
+-- background noise taken out (a high-pass at 80 Hz, then FFT denoising that
+learns the noise as it goes) and the loudness evened out to what video sites
+play at (EBU R128, -16 LUFS) -- each optional (`media.clean_voice`). Only the
+sound is re-encoded; the picture is copied, and the camera, the computer sound
+and the frames are hard links to the original's files, so the version costs
+the sound's size and deleting either leaves the other whole. Its timing is
+the original's, so sections drawn over that version move to it.
 A trimmed version needs its own subtitles; the transcript belongs to the
 version it was made from.
 
@@ -459,6 +563,21 @@ purpose: the page saves the whole project, so a page holding an older copy
 sends fewer items than there are, and a save must never be able to delete a
 file.
 
+## The helper
+
+💬 **Help** in the Studio's header opens a panel that answers questions about
+using the Studio -- where to click, what something does -- in the page's own
+words. It is the house's own model (the vision model the frames are reviewed
+with, `assistant.models.vision`, through `/studio/api/help`), given
+`services/home-core/local/studio_help.md`: a guide written for people, not for
+the code, which ships with the portal. With it go the tab and kind of project
+the person is in, the last few turns of the conversation, and a glossary of the
+page's labels from the catalogues (English, as the guide names them, beside
+what this person's page shows), so a Spanish page is answered with its Spanish
+buttons. Nothing leaves the house. **Keep the guide current when the page
+changes**: the helper knows only what it says, and says the Studio cannot do
+what the guide leaves out.
+
 ## Optional, and what off means
 
 `home-studio` is off in the example and arrives off on an upgrade
@@ -497,6 +616,14 @@ once at start-up), and every shot and film as H.265 (`X265`, CRF 23, tagged
 playback: phones, the Android app and Safari play it; Firefox and most Linux
 desktop browsers do not, and show a video that will not start. A retouch hands
 the generator an H.264 copy of the shot, never the kept file.
+
+**A film to publish.** The film dialog asks what the file is for: H.265 (the
+kept film above) or **H.264** -- High profile, 4:2:0, a keyframe every two
+seconds, AAC at 48 kHz, CRF 19: what video sites ask for, playable everywhere,
+about twice the size (`media.H264`). And at what size: the clips' own, or
+**1080p** / **720p** with the film's shape kept, so a vertical film is
+1080x1920 (`media.fit_size`). A published film's name and record carry its
+format and size (`...-h264-1080p.mp4`). The page remembers the last choice.
 
 ## Settings
 

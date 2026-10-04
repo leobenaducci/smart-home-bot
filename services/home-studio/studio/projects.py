@@ -40,8 +40,18 @@ EDITABLE = {
     # chosen storyboard frame is not here: it has its own call (choose_board),
     # so a page holding an older copy cannot undo a frame just drawn.
     # `description`, `chapters`: a recording's, written with the assistant.
+    # `cam_layout`, `mix`: a recording's camera (shown or not, which corner,
+    # how big) and the volumes of its microphone and its computer sound --
+    # each recorded apart, so these are decided after (`clean_layout`).
+    # `sections`: a recording cut into parts by hand -- each kept or cut out,
+    # each with its own camera or the clip's -- over the version named by
+    # `sections_take`; nothing is cut from the files (`clean_sections`).
+    # `card`: a title card -- words on a colour, drawn when the film is put
+    # together (`clean_card`). `callouts`: text boxes over a recording's
+    # stretches, over the version named by `callouts_take` (`clean_callouts`).
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "cast", "description", "chapters"),
+              "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take",
+              "card", "callouts", "callouts_take", "eyes", "eyes_take"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -55,8 +65,113 @@ REMOVED_DIR = ".history-removed"
 PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
 
 
+CORNERS = ("tl", "tr", "bl", "br")
+
+
 class ProjectError(ValueError):
     pass
+
+
+def clean_layout(value: Any) -> dict:
+    """A recording's camera as the page sets it: shown or not, in which
+    corner, at what share of the picture's width."""
+    value = value if isinstance(value, dict) else {}
+    try:
+        size = max(0.12, min(0.5, round(float(value.get("size", 0.28)), 3)))
+    except (TypeError, ValueError):
+        size = 0.28
+    return {"show": bool(value.get("show", True)),
+            "corner": value.get("corner") if value.get("corner") in CORNERS else "br", "size": size}
+
+
+def clean_sections(value: Any) -> list[dict]:
+    """A recording's sections as the page sets them: in order, each a stretch
+    of the clip (`start`, `end`, seconds), kept or cut out, and its camera --
+    a layout of its own, or None for the clip's. Overlapping or unreadable
+    ones are dropped; the page always sends them end to end."""
+    out = []
+    for sec in (value or [])[:200] if isinstance(value, list) else []:
+        try:
+            a, b = float(sec.get("start")), float(sec.get("end"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a < b <= 86400:
+            continue
+        cam = sec.get("cam")
+        out.append({"start": round(a, 3), "end": round(b, 3), "keep": sec.get("keep") is not False,
+                    "cam": clean_layout(cam) if isinstance(cam, dict) else None})
+    out.sort(key=lambda x: x["start"])
+    kept = []
+    for sec in out:
+        if kept and sec["start"] < kept[-1]["end"] - 0.001:
+            continue
+        kept.append(sec)
+    return kept
+
+
+CARD_THEMES = ("dark", "light", "olive")
+CALLOUT_SPOTS = ("top", "bottom", "center", "tl", "tr", "bl", "br")
+
+
+def clean_card(value: Any) -> dict | None:
+    """A title card as the page sets it: a title, a subtitle, how long it
+    shows (1-30 s) and its colours. None when it is not a card."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        seconds = max(1.0, min(30.0, round(float(value.get("seconds", 3)), 2)))
+    except (TypeError, ValueError):
+        seconds = 3.0
+    return {"title": str(value.get("title") or "")[:120], "subtitle": str(value.get("subtitle") or "")[:200],
+            "seconds": seconds, "theme": value.get("theme") if value.get("theme") in CARD_THEMES else "dark"}
+
+
+def clean_callouts(value: Any) -> list[dict]:
+    """A recording's text callouts: each a stretch (`start`, `end`), its words
+    and where in the frame it shows. In order; unreadable ones dropped."""
+    out = []
+    for c in (value or [])[:50] if isinstance(value, list) else []:
+        try:
+            a, b = float(c.get("start")), float(c.get("end"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a < b <= 86400:
+            continue
+        out.append({"start": round(a, 2), "end": round(b, 2), "text": str(c.get("text") or "")[:200],
+                    "spot": c.get("spot") if c.get("spot") in CALLOUT_SPOTS else "bottom"})
+    return sorted(out, key=lambda c: c["start"])
+
+
+def clean_eyes(value: Any) -> list[dict]:
+    """The stretches of a recording whose camera should look at the lens
+    (`start`, `end`), in order and not overlapping. Empty: none marked."""
+    out: list[dict] = []
+    for c in sorted((value or [])[:50] if isinstance(value, list) else [],
+                    key=lambda c: float(c.get("start") or 0) if isinstance(c, dict) else 0):
+        try:
+            a, b = float(c.get("start")), float(c.get("end"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a < b <= 86400 or b - a < 0.2:
+            continue
+        if out and a <= out[-1]["end"]:
+            out[-1]["end"] = max(out[-1]["end"], round(b, 2))
+            continue
+        out.append({"start": round(a, 2), "end": round(b, 2)})
+    return out
+
+
+def clean_mix(value: Any) -> dict:
+    """A recording's volumes: its microphone and its computer sound, each 0
+    (off) to 2 (twice as loud)."""
+    value = value if isinstance(value, dict) else {}
+    out = {}
+    for key in ("mic", "pc"):
+        try:
+            out[key] = max(0.0, min(2.0, round(float(value.get(key, 1.0)), 2)))
+        except (TypeError, ValueError):
+            out[key] = 1.0
+    return out
 
 
 def _new_id() -> str:
@@ -241,7 +356,7 @@ class Projects:
 
     def interrupt_running(self) -> int:
         """Mark what was running beside the queue as failed: a transcript, a
-        silence trim, a recording being encoded. Called at start-up -- that
+        silence trim, a microphone being cleaned, a recording being encoded. Called at start-up -- that
         work lived in the stopped process, and a state left "running" never
         showed its button again. A recording's pieces are still on disk, so
         encoding it can simply be asked for again."""
@@ -257,9 +372,10 @@ class Projects:
                     continue
                 changed = False
                 for item in doc.get("shots") or []:
-                    if (item.get("trim") or {}).get("state") == "running":
-                        item["trim"] = {"state": "failed", "error": "interrupted"}
-                        changed = True
+                    for work in ("trim", "clean"):
+                        if (item.get(work) or {}).get("state") == "running":
+                            item[work] = {"state": "failed", "error": "interrupted"}
+                            changed = True
                     if (item.get("recording") or {}).get("state") == "processing":
                         item["recording"] = {"state": "failed", "error": "interrupted"}
                         changed = True
@@ -518,7 +634,9 @@ class Projects:
             if isinstance(chosen, int) and chosen >= 0:
                 item["chosen"] = -1 if chosen == idx else chosen - (1 if chosen > idx else 0)
             base = self.dir(owner, pid)
-            for key in ("file", "first", "last"):
+            # `cam`, `pc`: a recording's camera and computer sound, recorded
+            # apart from the screen and kept beside it.
+            for key in ("file", "first", "last", "cam", "pc"):
                 self._unlink_inside(base, str(take.get(key) or ""))
             self._unlink_inside(base, str((take.get("analysis") or {}).get("file") or ""))
             for key in ("file", "srt"):
@@ -751,6 +869,20 @@ class Projects:
 
 def _clean(key: str, value: Any, item: dict) -> Any:
     """One editable field, shaped: text trimmed, numbers bounded."""
+    if key == "cam_layout":
+        return clean_layout(value)
+    if key == "mix":
+        return clean_mix(value)
+    if key == "sections":
+        return clean_sections(value)
+    if key in ("sections_take", "callouts_take", "eyes_take"):
+        return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
+    if key == "card":
+        return clean_card(value)
+    if key == "callouts":
+        return clean_callouts(value)
+    if key == "eyes":
+        return clean_eyes(value)
     if key == "seconds":
         try:
             return max(1.0, min(600.0, round(float(value), 4)))

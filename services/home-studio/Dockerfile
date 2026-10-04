@@ -25,6 +25,14 @@ RUN git clone https://github.com/deepbeepmeep/Wan2GP.git /opt/wangp && \
     git -C /opt/wangp checkout -q ${WANGP_REF} && rm -rf /opt/wangp/.git
 RUN uv pip install -r /opt/wangp/requirements.txt --index-strategy unsafe-best-match && \
     uv pip install "fastapi>=0.115" "uvicorn>=0.30" requests python-multipart
+# LivePortrait, for eye contact on a recording's camera (studio/eyes.py): its
+# code only -- what it imports WanGP's requirements already bring. Its weights
+# (~630 MB) download on first use onto the checkpoints volume, beside WanGP's.
+ARG LIVEPORTRAIT_REF=9b294b3d0536135442ea73cb01e6cb3ca7029dd3
+RUN git clone -q https://github.com/KwaiVGI/LivePortrait.git /opt/liveportrait && \
+    git -C /opt/liveportrait checkout -q ${LIVEPORTRAIT_REF} && rm -rf /opt/liveportrait/.git \
+        /opt/liveportrait/assets/examples /opt/liveportrait/assets/docs /opt/liveportrait/pretrained_weights && \
+    ln -s /opt/wangp/ckpts/liveportrait /opt/liveportrait/pretrained_weights
 # WanGP's settings for this house: Triton INT8 kernels (Comfy Kitchen's refuse
 # ACE-Step's layer shapes on this card), checkpoints on the mounted volume.
 COPY wgp_config.json /opt/wangp/wgp_config.json
