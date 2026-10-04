@@ -1723,6 +1723,98 @@ check("  deleting a version takes its camera and computer sound with it", not an
 check("  nobody else can ask for someone's song",
       c.post(f"/api/projects/{pj['id']}/items/{sng['id']}/analyze", json={}, headers=h(TOMI, "Tomi")).status_code == 404)
 
+print("\n  eye contact on a recording's camera, over the stretches marked")
+import numpy as np  # noqa: E402
+from studio import eyes as EY  # noqa: E402
+check("  outside every stretch nothing applies; inside, all of it; around one it eases",
+      EY.ease_weight(1.0, [(3, 6)]) == 0 and EY.ease_weight(4.0, [(3, 6)]) == 1
+      and 0 < EY.ease_weight(2.9, [(3, 6)]) < 1 and EY.ease_weight(9.0, []) == 1)
+check("  closed or wide-open eyes are left alone, usual ones corrected",
+      EY.open_weight(0.4, 0.4) == 1 and EY.open_weight(0.18, 0.4) == 0 and EY.open_weight(0.7, 0.4) == 0
+      and 0 < EY.open_weight(0.28, 0.4) < 1)
+sm = np.array([[0.0, -0.08], [-0.07, -0.08], [0.0, -0.02], [0.3, 0.3]])
+sh = EY.shifts_for(sm.copy(), np.array([14.0, 8.0]))
+check("  a gaze already on the lens gets no shift; one beside or below it is moved back, never past the cap",
+      (sh[0] == 0).all() and sh[1, 0] > 0 and sh[1, 1] == 0 and sh[2, 1] < 0
+      and (np.abs(sh[3]) <= EY.CAP + 1e-9).all(), sh.tolist())
+check("  a direction the face barely answers in is left alone",
+      (EY.shifts_for(sm.copy(), np.array([14.0, 2.0]))[:, 1] == 0).all())
+g = np.zeros((90, 2)); g[:, 0] = -0.07; g[45, 0] = 0.4
+good = np.ones(90, bool); good[45] = False
+check("  a blink's stray pupil is not part of the smoothed gaze", abs(EY.smooth_gaze(g, good, 30)[45, 0] + 0.07) < 1e-6)
+check("  stretches: in order, inside the clip, the too-short dropped",
+      EY.clean_spans([[5, 9], [1, 2], [3, 3.1], ["x", 1]], 8) == [(1.0, 2.0), (5.0, 8.0)])
+from studio.projects import clean_eyes  # noqa: E402
+check("  the item's stretches are kept in order, overlaps joined",
+      clean_eyes([{"start": 4, "end": 6}, {"start": 1, "end": 3}, {"start": 5, "end": 8}, {"start": 2, "end": "x"}])
+      == [{"start": 1.0, "end": 3.0}, {"start": 4.0, "end": 8.0}])
+fake_eyes = tmp / "fake_eyes.py"
+fake_eyes.write_text(
+    "import json, shutil, sys, time\n"
+    "job = json.load(open(sys.argv[1]))\n"
+    "print('LivePortrait chatter', file=sys.stderr)\n"
+    "print(json.dumps({'progress': 0.5, 'phase': 'rendering'}), flush=True)\n"
+    "if job['spans'] and job['spans'][0][0] >= 3: time.sleep(30)\n"
+    "shutil.copy(job['src'], job['dst'])\n"
+    "print(json.dumps({'done': {'frames': 10, 'changed': 4}}), flush=True)\n")
+A.manager.eyes_cmd = [sys.executable, str(fake_eyes)]
+base_t = Projects.chosen_take(tclip())
+r = c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={}, headers=h(JUANA, "Juana"))
+check("  nothing marked and not the whole clip: it says what to do", r.status_code == 400, r.status_code)
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, eyes=[{"start": 1, "end": 2.5}], eyes_take=base_t["id"],
+                                                          callouts=[{"start": 0, "end": 1, "text": "hola"}],
+                                                          callouts_take=base_t["id"]) for x in shots]},
+      headers=h(JUANA, "Juana"))
+r = c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={"strength": 0.8}, headers=h(JUANA, "Juana")).json()
+ej = A.store.get(r["job"]["id"])
+check("  queued on the card with its stretches, its strength and the seconds it covers",
+      ej["kind"] == "eyes" and ej["params"]["spans"] == [[1.0, 2.5]] and ej["params"]["strength"] == 0.8
+      and ej["params"]["seconds"] == 1.5 and ej["model"] == "liveportrait", ej["params"])
+check("  asking again while it waits returns the same job",
+      c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={}, headers=h(JUANA, "Juana")).json()["job"]["id"] == ej["id"])
+A.manager._run(ej)
+tc = tclip()
+ne = Projects.chosen_take(tc)
+check("  done: a new version whose camera is new and whose screen and sounds are the same files",
+      A.store.get(ej["id"])["state"] == "done" and ne["id"] != base_t["id"] and ne["kind"] == "eyes"
+      and ne["cam"] != base_t["cam"] and (tbase / ne["cam"]).is_file()
+      and os.stat(tbase / ne["file"]).st_ino == os.stat(tbase / base_t["file"]).st_ino
+      and (not base_t.get("pc") or os.stat(tbase / ne["pc"]).st_ino == os.stat(tbase / base_t["pc"]).st_ino),
+      (A.store.get(ej["id"]), ne))
+check("  the stretches and the texts move to it, and the item says it is done",
+      tc["eyes_take"] == ne["id"] and tc["callouts_take"] == ne["id"] and tc["eyes_fix"]["state"] == "done",
+      (tc.get("eyes_take"), tc.get("eyes_fix")))
+check("  the job's own chatter stays out of its reports", "LivePortrait chatter" in (tmp / "api" / "logs" / "eyes.log").read_text()
+      if (tmp / "api" / "logs" / "eyes.log").exists() else True)
+A.projects.delete_take(JUANA, tp["id"], trec["id"], ne["id"])
+check("  deleting it leaves the original's files", (tbase / base_t["cam"]).is_file() and (tbase / base_t["file"]).is_file())
+r = c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/eyes", json={"whole": True, "take": base_t["id"]},
+           headers=h(JUANA, "Juana")).json()
+check("  the whole clip, when asked for: no stretches", A.store.get(r["job"]["id"])["params"]["spans"] == [])
+A.manager.cancel(r["job"]["id"])
+slow = A.store.add(owner=JUANA, owner_name="Juana", kind="eyes", model="liveportrait",
+                   params={"take": base_t["id"], "spans": [[3, 4]], "strength": 1.0, "seconds": 1},
+                   project=tp["id"], target=trec["id"])
+th = threading.Thread(target=A.manager._run, args=(slow,)); th.start()
+deadline = time.time() + 20
+while time.time() < deadline and A.store.get(slow["id"])["progress"] < 0.5:
+    time.sleep(0.1)
+A.manager.pause(now=True)
+th.join(20)
+check("  a pause now stops it on the card and puts it back in the queue",
+      not th.is_alive() and A.store.get(slow["id"])["state"] == "queued", A.store.get(slow["id"])["state"])
+A.manager.paused = False
+th = threading.Thread(target=A.manager._run, args=(A.store.get(slow["id"]),)); th.start()
+deadline = time.time() + 20
+while time.time() < deadline and A.store.get(slow["id"])["progress"] < 0.5:
+    time.sleep(0.1)
+A.manager.cancel(slow["id"])
+th.join(20)
+check("  and cancelling it ends it cancelled, with no new version",
+      not th.is_alive() and A.store.get(slow["id"])["state"] == "cancelled"
+      and Projects.chosen_take(tclip())["id"] == base_t["id"], A.store.get(slow["id"])["state"])
+
 print("\n  the shots refitted to the song")
 import json  # noqa: E402
 rt = c.post("/api/projects", json={"name": "A la canción"}, headers=h(JUANA, "Juana")).json()

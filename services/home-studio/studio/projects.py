@@ -51,7 +51,7 @@ EDITABLE = {
     # stretches, over the version named by `callouts_take` (`clean_callouts`).
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
               "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take",
-              "card", "callouts", "callouts_take"),
+              "card", "callouts", "callouts_take", "eyes", "eyes_take"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -140,6 +140,25 @@ def clean_callouts(value: Any) -> list[dict]:
         out.append({"start": round(a, 2), "end": round(b, 2), "text": str(c.get("text") or "")[:200],
                     "spot": c.get("spot") if c.get("spot") in CALLOUT_SPOTS else "bottom"})
     return sorted(out, key=lambda c: c["start"])
+
+
+def clean_eyes(value: Any) -> list[dict]:
+    """The stretches of a recording whose camera should look at the lens
+    (`start`, `end`), in order and not overlapping. Empty: none marked."""
+    out: list[dict] = []
+    for c in sorted((value or [])[:50] if isinstance(value, list) else [],
+                    key=lambda c: float(c.get("start") or 0) if isinstance(c, dict) else 0):
+        try:
+            a, b = float(c.get("start")), float(c.get("end"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a < b <= 86400 or b - a < 0.2:
+            continue
+        if out and a <= out[-1]["end"]:
+            out[-1]["end"] = max(out[-1]["end"], round(b, 2))
+            continue
+        out.append({"start": round(a, 2), "end": round(b, 2)})
+    return out
 
 
 def clean_mix(value: Any) -> dict:
@@ -856,12 +875,14 @@ def _clean(key: str, value: Any, item: dict) -> Any:
         return clean_mix(value)
     if key == "sections":
         return clean_sections(value)
-    if key in ("sections_take", "callouts_take"):
+    if key in ("sections_take", "callouts_take", "eyes_take"):
         return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
     if key == "card":
         return clean_card(value)
     if key == "callouts":
         return clean_callouts(value)
+    if key == "eyes":
+        return clean_eyes(value)
     if key == "seconds":
         try:
             return max(1.0, min(600.0, round(float(value), 4)))

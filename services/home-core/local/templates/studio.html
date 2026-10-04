@@ -215,6 +215,12 @@
     .co-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; font-size: .84rem; }
     .co-row input[type=text] { flex: 1 1 200px; width: auto; }
     .co-row .t { font-family: var(--mono); font-size: .76rem; color: var(--ink-soft); }
+    /* Eye contact: the stretches of the camera to look at the lens, over the
+       clip's length, and where it is playing. */
+    .eyes-ed { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px; }
+    .eyes-track { position: relative; height: 18px; margin: 6px 0; border-radius: 4px; background: rgba(126,138,97,.14); cursor: pointer; }
+    .eyes-track .sp { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: rgba(214,163,72,.55); border: 1px solid var(--honey); pointer-events: none; }
+    .eyes-track .head { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); pointer-events: none; }
     .sections .head { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--honey); pointer-events: none; }
     .timeline div { flex: none; height: 38px; border-radius: 6px; background: var(--line) center/cover; border: 2px solid transparent;
       font-size: .66rem; color: #fff; display: grid; place-items: center; text-shadow: 0 1px 2px #000; cursor: pointer; }
@@ -919,6 +925,57 @@
       layer.dataset.key = key;
       layer.innerHTML = on.map(function (c) { return '<div class="co ' + esc(c.spot) + '">' + esc(c.text) + '</div>'; }).join('');
     }
+    // Eye contact: the stretches of a recording whose camera should look at
+    // the lens, marked here and corrected on the card into a new version.
+    // Only what is marked -- looking away on purpose is part of a recording.
+    var eyeStrength = {};
+    function eyesOf(s, t) { return t && s.eyes_take === t.id ? (s.eyes || []) : []; }
+    function eyesEditor(s, t) {
+      var mine = eyesOf(s, t), total = clipLength(s, t) || 1, j = jobFor(s.id), fix = s.eyes_fix || {};
+      var job = j && j.kind === 'eyes' ? j : null, str = eyeStrength[s.id] || 1;
+      var html = '<div class="eyes-ed" data-eyes="' + s.id + '"><div class="row"><b>👁 ' + S.eye_title + '</b>' +
+        '<span class="muted" style="font-size:.8rem">' + S.eye_help + '</span></div>' +
+        '<div class="eyes-track" data-eyes-track="' + s.id + '" title="' + esc(S.eye_track) + '">' + mine.map(function (x) {
+          return '<span class="sp" style="left:' + (x.start / total * 100) + '%;width:' + Math.max(0.4, (x.end - x.start) / total * 100) + '%"></span>';
+        }).join('') + '<span class="head" style="left:0"></span></div>';
+      if ((s.eyes || []).length && s.eyes_take !== t.id) {
+        html += '<p class="note">' + S.eye_other_version + ' <button data-eye-move="' + s.id + '">' + S.co_move + '</button></p>';
+      }
+      mine.forEach(function (x, i) {
+        html += '<div class="co-row"><span class="t">' + clock(x.start) + '–' + clock(x.end) + '</span>' +
+          '<button data-eye-from="' + i + '" data-id="' + s.id + '">⏱ ' + S.co_from + '</button>' +
+          '<button data-eye-to="' + i + '" data-id="' + s.id + '">⏱ ' + S.co_to + '</button>' +
+          '<button class="danger" data-eye-del="' + i + '" data-id="' + s.id + '" title="' + esc(S.delete) + '">✕</button></div>';
+      });
+      html += '<div class="row" style="margin-top:6px"><button data-eye-add="' + s.id + '">' + S.eye_add + '</button>' +
+        '<span class="pair"><label class="f" style="margin:0">' + S.eye_strength + '</label><select data-eye-strength="' + s.id + '" style="width:auto">' +
+        [[0.6, 'eye_soft'], [0.8, 'eye_mid'], [1, 'eye_full']].map(function (k) {
+          return '<option value="' + k[0] + '"' + (Math.abs(str - k[0]) < 0.01 ? ' selected' : '') + '>' + S[k[1]] + '</option>'; }).join('') + '</select></span>' +
+        '<span class="grow"></span>';
+      if (job) {
+        html += '<span class="pill run">' + (job.state === 'running' ? fmt('eye_running', { p: Math.round((job.progress || 0) * 100) }) : S.eye_queued) + '</span>';
+      } else {
+        html += '<button class="primary" data-eye-run="' + s.id + '"' + (mine.length ? '' : ' disabled') + '>👁 ' + S.eye_run + '</button>' +
+          '<button data-eye-whole="' + s.id + '">' + S.eye_whole + '</button>';
+      }
+      html += '</div>';
+      if (!job && fix.state === 'done') html += '<p class="note">✓ ' + S.eye_done + '</p>';
+      if (!job && fix.state === 'failed') html += '<p class="note">⚠️ ' + fmt('eye_failed', { e: fix.error || '' }) + '</p>';
+      return html + '</div>';
+    }
+    function redrawEyes(sid) {
+      var s = itemById(sid), box = document.querySelector('[data-eyes="' + sid + '"]');
+      if (!box) return;
+      var holder = document.createElement('div'); holder.innerHTML = eyesEditor(s, chosen(s));
+      box.replaceWith(holder.firstChild);
+      var v = document.querySelector('[data-layered="' + sid + '"] video.main'); if (v) moveEyeHead(s, v.currentTime);
+    }
+    function moveEyeHead(s, at) {
+      var head = document.querySelector('[data-eyes-track="' + s.id + '"] .head');
+      if (head) head.style.left = Math.min(100, at / (clipLength(s, chosen(s)) || 1) * 100) + '%';
+    }
+    function setEyes(s, t, list) { s.eyes = list; s.eyes_take = t.id; markDirty(); redrawEyes(s.id); }
+
     // A title card: words on a colour, a clip of its own in the timeline,
     // drawn when the film is put together.
     function cardPreview(c) {
@@ -954,6 +1011,7 @@
         }
         placeCam(stage.querySelector('video.pip'), (sec && sec.cam) || camLayout(s));
         showCallouts(stage, s, at);
+        moveEyeHead(s, at);
         var head = document.querySelector('[data-sections="' + s.id + '"] .head');
         if (head) head.style.left = Math.min(100, at / (clipLength(s, t) || 1) * 100) + '%';
         if (!main.paused) raf = requestAnimationFrame(step);
@@ -991,7 +1049,7 @@
         ' <input type="range" min="0" max="2" step="0.05" data-vol="pc" data-id="' + s.id + '" value="' + m.pc + '"><span class="muted">' + Math.round(m.pc * 100) + '%</span></label>';
       html += '</div>';
       if (t.cam_error || t.pc_error) html += '<p class="note">⚠️ ' + esc(S.rec_track_failed) + '</p>';
-      return html + sectionsBar(s, t) + calloutsEditor(s, t);
+      return html + sectionsBar(s, t) + calloutsEditor(s, t) + (t.cam ? eyesEditor(s, t) : '');
     }
 
     function recordingTools(s, t, p, i) {
@@ -1718,6 +1776,7 @@
       if (el.id === 'sb-correct-text') { correctDraft = el.value; return; }
       if (el.id === 'sb-correct-redraw') { correctRedraw = el.checked; return; }
       if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
+      if (el.dataset.eyeStrength) { eyeStrength[el.dataset.eyeStrength] = Number(el.value); return; }
       if (el.dataset.cardF) {
         var cs3 = itemById(el.dataset.id); if (!cs3 || !cs3.card) return;
         cs3.card[el.dataset.cardF] = el.dataset.cardF === 'seconds' ? Number(el.value) : el.value;
@@ -1783,6 +1842,14 @@
     function newItem(fields) { return Object.assign({ id: 'new' + Math.random().toString(36).slice(2, 10), takes: [], chosen: -1 }, fields); }
 
     $('#v-edit').addEventListener('click', async function (ev) {
+      // The eye-contact track: a click seeks the recording to that moment.
+      var track = ev.target.closest('[data-eyes-track]');
+      if (track && current) {
+        var ts = itemById(track.dataset.eyesTrack), tv = document.querySelector('[data-layered="' + ts.id + '"] video.main');
+        var r = track.getBoundingClientRect();
+        if (tv) tv.currentTime = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * (clipLength(ts, chosen(ts)) || 0);
+        return;
+      }
       var b = ev.target.closest('button, [data-jump]'); if (!b || !current) return;
       var p = current, d = b.dataset;
       try {
@@ -1882,6 +1949,32 @@
           setSections(sk, tk, list); return;
         }
         if (d.clean) return cleanDialog(d.clean);
+        if (d.eyeAdd || d.eyeFrom != null || d.eyeTo != null || d.eyeDel != null || d.eyeMove) {
+          var eid = d.eyeAdd || d.eyeMove || d.id, es = itemById(eid), et = chosen(es);
+          if (d.eyeMove) { es.eyes_take = et.id; markDirty(); redrawEyes(es.id); return; }
+          var evid = document.querySelector('[data-layered="' + es.id + '"] video.main'), enow = evid ? +evid.currentTime.toFixed(2) : 0;
+          var elen = clipLength(es, et), el5 = eyesOf(es, et).map(function (x) { return Object.assign({}, x); });
+          if (d.eyeAdd) el5.push({ start: enow, end: Math.min(elen || enow + 10, enow + 10) });
+          else if (d.eyeDel != null) el5.splice(+d.eyeDel, 1);
+          else {
+            var e5 = el5[+(d.eyeFrom != null ? d.eyeFrom : d.eyeTo)];
+            if (d.eyeFrom != null) { e5.start = enow; if (e5.end <= enow + 0.2) e5.end = Math.min(elen || enow + 10, enow + 10); }
+            else { if (enow <= e5.start + 0.2) { toast(S.co_bad_end, true); return; } e5.end = enow; }
+          }
+          el5.sort(function (x, y) { return x.start - y.start; });
+          setEyes(es, et, el5); return;
+        }
+        if (d.eyeRun || d.eyeWhole) {
+          var rid = d.eyeRun || d.eyeWhole, rs5 = itemById(rid), rt5 = chosen(rs5);
+          try {
+            if (dirty) await saveNow();
+            await api('projects/' + p.id + '/items/' + rid + '/eyes', { method: 'POST',
+              body: { take: rt5.id, whole: !!d.eyeWhole, strength: eyeStrength[rid] || 1 } });
+            toast(S.eye_sent);
+            var y5 = window.scrollY; current = await api('projects/' + p.id); drawTab(); window.scrollTo(0, y5);
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          return;
+        }
         if (b.id === 'add-card') {
           p.shots.push({ card: { title: '', subtitle: '', seconds: 3, theme: 'dark' }, prompt: '', takes: [], chosen: -1 });
           await saveNow(); drawTab();
@@ -2690,7 +2783,7 @@
         // encoded) has no job to watch, so its state is part of what is
         // compared -- the tab redraws when it finishes, under the same guards.
         ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) {
-          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.clean || {}).state, (i.recording || {}).state,
+          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.clean || {}).state, (i.eyes_fix || {}).state, (i.recording || {}).state,
                   ((chosen(i) || {}).transcript || {}).state, ((chosen(i) || {}).score || {}).state,
                   (((chosenBoard(i) || {}).review) || {}).state, (((chosenBoard(i) || {}).review) || {}).score].join(':'); }); })]);
       if (sig !== lastSig) {

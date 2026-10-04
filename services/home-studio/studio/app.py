@@ -36,8 +36,8 @@ from . import analysis, media, recipes
 from .manager import Manager
 from .characters import Characters
 from .history import LABELS, History
-from .projects import (ProjectError, Projects, clean_callouts, clean_card, clean_layout, clean_mix,
-                       clean_sections)
+from .projects import (ProjectError, Projects, clean_callouts, clean_card, clean_eyes, clean_layout,
+                       clean_mix, clean_sections)
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -704,7 +704,7 @@ def clean_voice(pid: str, item_id: str, body: dict | None = None, me: Who = Depe
                     new[key] = _share_file(base, take[key], folder / f"{stamp}{suffix}")
             made = projects.add_take(me.login, pid, item_id, new)
             current = Projects.find(projects.load(me.login, pid), item_id)
-            for field in ("sections_take", "callouts_take"):
+            for field in ("sections_take", "callouts_take", "eyes_take"):
                 if current and current[2].get(field) == take["id"]:
                     projects.set_item_field(me.login, pid, item_id, field, made["id"])
             projects.set_item_field(me.login, pid, item_id, "clean", {"state": "done", **new["cleaned"]})
@@ -714,6 +714,39 @@ def clean_voice(pid: str, item_id: str, body: dict | None = None, me: Who = Depe
 
     renders.submit(work)
     return {"ok": True, "state": "running"}
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/eyes")
+def eye_contact(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """Queue eye contact on a recording's camera: the eyes moved to the lens
+    over the stretches marked on that version (the item's `eyes`, or the
+    whole clip when `whole`), as a new version. It is the card's work and
+    waits its turn with the rest (manager._eyes)."""
+    body = body or {}
+    _doc, item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    if not item.get("recorded") or not take.get("cam"):
+        _bad(ValueError("eye contact is for a recording with its camera"))
+    for job in store.active():
+        if job["kind"] == "eyes" and job["target"] == item_id:
+            return {"job": _public(job, me)}
+    length = float(take.get("seconds") or 0) or media.probe(projects.dir(me.login, pid) / take["cam"])["seconds"]
+    if body.get("whole"):
+        spans = []
+    else:
+        marked = item.get("eyes") if item.get("eyes_take") == take["id"] else []
+        spans = [[s["start"], min(s["end"], length)] for s in clean_eyes(marked) if s["start"] < length]
+        if not spans:
+            _bad(ValueError("mark the stretches to correct first, or ask for the whole clip"))
+    try:
+        strength = max(0.3, min(1.0, float(body.get("strength") or 1.0)))
+    except (TypeError, ValueError):
+        strength = 1.0
+    seconds = sum(b - a for a, b in spans) if spans else length
+    job = _enqueue(me, "eyes", {"take": take["id"], "spans": spans, "strength": strength,
+                                "seconds": round(max(1.0, seconds), 2)}, pid, item_id,
+                   title=item.get("title") or "")
+    projects.set_item_field(me.login, pid, item_id, "eyes_fix", {"state": "queued"})
+    return {"job": _public(store.get(job["id"]) or job, me)}
 
 
 @app.post("/api/projects/{pid}/items/{item_id}/transcribe")

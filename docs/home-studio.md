@@ -339,6 +339,47 @@ sections they belong to the version they were placed on (`callouts_take`):
 cleaning the microphone keeps the timing and moves them, taking out silences
 does not, and the page offers to move them.
 
+👁 **Eye contact.** A recording's camera can have its eyes moved to the lens
+over stretches its owner marks under the player (the item's `eyes`, on the
+version they were marked on, `eyes_take`), or over the whole clip when asked;
+never on its own -- looking away on purpose, at the keyboard or at somebody in
+the room, is part of a recording. It is the card's work, queued like the rest
+(kind `eyes`, model `liveportrait`), and run by the manager as a process of its
+own (`studio/eyes.py`) that a cancel or a pause kills: a pause requeues it. The
+result is a new version whose camera is new and whose screen, microphone and
+computer sound are the same files (hard links); sections, texts and stretches
+move to it.
+
+How: LivePortrait (KwaiVGI, pinned in the Dockerfile; weights, ~630 MB,
+downloaded on first use onto the checkpoints volume) renders the face crop with
+only the eyes' expression keypoints (11, 15) shifted, and only the eyes are
+pasted back -- the rest of the face is the recording's pixels. The gaze is
+measured per frame (the pupils, landmarks 197/198, against their eyes' corners,
+in eye widths), smoothed over ~0.25 s so reading's quick movements stay, and
+the shift brings that to where a face looking into the lens has its pupils
+(`LOOK`, the median of twelve clips: centred, 0.08 eye widths above the
+corners' line). How far the pupils move per unit of shift is probed on a few
+of the clip's own frames. Measured 2026-10-03 on GPU 1, about 5 frames a
+second at 720p (a ten-minute camera track whole is about an hour; stretches
+cost only their own length):
+
+| case | gaze before | after |
+|---|---|---|
+| looking beside the camera (s18) | x −0.071 | x −0.001 |
+| looking a little below it | y +0.018 | y −0.101 |
+| already at the lens | — | barely moved (dead band 0.012) |
+
+What went wrong on the way, and is guarded: one shift for the whole clip
+pushed frames that already looked at the lens past it into staring eyes, so
+the shift is per frame; moving the pupils of eyes nearly shut opened them into
+a cartoon's, so blinks, half-shut eyes and eyes opened much wider than the
+person's usual are left as recorded; a direction the face barely answers in
+(probe gain under 4) is not corrected; the shift is capped. The render is
+512 px for the face crop, so corrected eyes are a little softer than the
+original on a large face; an unsharp mask and a tighter crop (1.8, against
+LivePortrait's 2.3) give back some of it. Two passes stream the file -- a
+camera track held whole is ~50 GB at 720p.
+
 🎚 **Cleaning the microphone** makes another version with the voice cleaned
 -- background noise taken out (a high-pass at 80 Hz, then FFT denoising that
 learns the noise as it goes) and the loudness evened out to what video sites

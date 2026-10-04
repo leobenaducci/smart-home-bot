@@ -94,6 +94,22 @@ Under a recording is a bar of its sections.
 - Texts belong to the version they were placed on; after taking out silences
   the page offers **Use them on this version** (check their times).
 
+### Eye contact: looking at the lens
+
+When you read the screen, the camera shows you looking away. Under a recording
+with a camera, **👁 Eye contact** moves your eyes to the lens, only where you ask:
+
+- **＋ Stretch here** marks 10 seconds from the playhead; **⏱ From here** /
+  **⏱ To here** adjust it (move the player first). The bar shows the stretches
+  over the clip; click it to jump there. ✕ removes one.
+- Choose the **Strength** (soft, medium, full), then **Correct the stretches**,
+  or **The whole recording**. It waits in the card's queue like a video; a
+  minute of marked camera takes about 6 minutes of card, and you are notified
+  when it is ready.
+- The result is a **new version**; the original stays in Versions (⭐ to go
+  back). Blinks and moments with the eyes half shut or wide open are left as
+  they were, and so is looking away outside the stretches.
+
 ### Cleaning up a recording
 
 - **✂️ Take out silences** makes a new version without long pauses (more than

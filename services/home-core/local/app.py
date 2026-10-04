@@ -22959,6 +22959,8 @@ STUDIO_UI_KEYS = (
     'add_card', 'card_label', 'card_title', 'card_title_ph', 'card_subtitle', 'card_length', 'card_seconds',
     'card_theme', 'theme_dark', 'theme_light', 'theme_olive', 'co_add', 'co_ph', 'co_from', 'co_to', 'spot_top',
     'spot_bottom', 'spot_center', 'co_other_version', 'co_move', 'co_help', 'co_bad_end',
+    'eye_title', 'eye_help', 'eye_track', 'eye_add', 'eye_strength', 'eye_soft', 'eye_mid', 'eye_full', 'eye_run',
+    'eye_whole', 'eye_queued', 'eye_running', 'eye_sent', 'eye_done', 'eye_failed', 'eye_other_version',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',

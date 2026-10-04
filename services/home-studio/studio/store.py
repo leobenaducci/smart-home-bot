@@ -28,15 +28,15 @@ ACTIVE = ("queued", "running")
 # (docs/home-studio.md). Replaced by the median of what each kind really took.
 DEFAULT_SECONDS = {"image": 60, "song": 330, "instrumental": 300, "voice": 90,
                    "video_shot": 1800, "edit": 1800, "analyze": 60, "repaint": 120, "board": 60, "portrait": 60,
-                   "score": 120}
+                   "score": 120, "eyes": 40}
 # Kinds whose time grows with the seconds they make: estimated per second of
 # video, so a 20-second shot is not promised in the time of a 5-second one --
 # a music video queues dozens of them.
-PER_SECOND = ("video_shot", "edit")
+PER_SECOND = ("video_shot", "edit", "eyes")
 # A model load that is not needed when the same model ran last.
 LOAD_SECONDS = {"image": 10, "song": 60, "instrumental": 60, "voice": 30,
                 "video_shot": 240, "edit": 240, "analyze": 0, "repaint": 30, "board": 10, "portrait": 10,
-                "score": 0}
+                "score": 0, "eyes": 15}
 
 
 class Store:
