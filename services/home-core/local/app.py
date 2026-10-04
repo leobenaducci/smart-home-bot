@@ -22945,6 +22945,8 @@ STUDIO_UI_KEYS = (
     'pause_after', 'pause_now', 'pause_stop_running', 'pause_now_about', 'pause_now_confirm',
     'rec_pc', 'rec_apart', 'rec_pc_none', 'rec_track_failed', 'cam_off', 'cam_tl', 'cam_tr', 'cam_bl', 'cam_br',
     'cam_size', 'cam_small', 'cam_medium', 'cam_large', 'cam_help', 'vol_mic', 'vol_pc', 'vol_help',
+    'sec_split', 'sec_keep', 'sec_cut', 'sec_cam_clip', 'sec_cam_help', 'sec_join', 'sec_reset', 'sec_kept',
+    'sec_other_version', 'sec_help', 'sec_too_close',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',

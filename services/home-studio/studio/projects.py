@@ -43,8 +43,11 @@ EDITABLE = {
     # `cam_layout`, `mix`: a recording's camera (shown or not, which corner,
     # how big) and the volumes of its microphone and its computer sound --
     # each recorded apart, so these are decided after (`clean_layout`).
+    # `sections`: a recording cut into parts by hand -- each kept or cut out,
+    # each with its own camera or the clip's -- over the version named by
+    # `sections_take`; nothing is cut from the files (`clean_sections`).
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "cast", "description", "chapters", "cam_layout", "mix"),
+              "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -75,6 +78,31 @@ def clean_layout(value: Any) -> dict:
         size = 0.28
     return {"show": bool(value.get("show", True)),
             "corner": value.get("corner") if value.get("corner") in CORNERS else "br", "size": size}
+
+
+def clean_sections(value: Any) -> list[dict]:
+    """A recording's sections as the page sets them: in order, each a stretch
+    of the clip (`start`, `end`, seconds), kept or cut out, and its camera --
+    a layout of its own, or None for the clip's. Overlapping or unreadable
+    ones are dropped; the page always sends them end to end."""
+    out = []
+    for sec in (value or [])[:200] if isinstance(value, list) else []:
+        try:
+            a, b = float(sec.get("start")), float(sec.get("end"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a < b <= 86400:
+            continue
+        cam = sec.get("cam")
+        out.append({"start": round(a, 3), "end": round(b, 3), "keep": sec.get("keep") is not False,
+                    "cam": clean_layout(cam) if isinstance(cam, dict) else None})
+    out.sort(key=lambda x: x["start"])
+    kept = []
+    for sec in out:
+        if kept and sec["start"] < kept[-1]["end"] - 0.001:
+            continue
+        kept.append(sec)
+    return kept
 
 
 def clean_mix(value: Any) -> dict:
@@ -788,6 +816,10 @@ def _clean(key: str, value: Any, item: dict) -> Any:
         return clean_layout(value)
     if key == "mix":
         return clean_mix(value)
+    if key == "sections":
+        return clean_sections(value)
+    if key == "sections_take":
+        return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
     if key == "seconds":
         try:
             return max(1.0, min(600.0, round(float(value), 4)))

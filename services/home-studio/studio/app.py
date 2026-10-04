@@ -36,7 +36,7 @@ from . import analysis, media, recipes
 from .manager import Manager
 from .characters import Characters
 from .history import LABELS, History
-from .projects import ProjectError, Projects, clean_layout, clean_mix
+from .projects import ProjectError, Projects, clean_layout, clean_mix, clean_sections
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -1398,9 +1398,17 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     def subs_of(t):
         rel = ((t or {}).get("transcript") or {}).get("srt") if with_subs else None
         return base / rel if rel and (base / rel).is_file() else None
+    def sections_of(s: dict, t: dict | None) -> list[tuple[float, float, dict | None]] | None:
+        """A recording's kept sections over its chosen version -- (start, end,
+        its own camera or None) -- or None to use the clip whole. Sections
+        drawn over another version are not this one's, and are ignored."""
+        secs = s.get("sections") or []
+        if not (t and s.get("recorded") and secs and s.get("sections_take") == t.get("id")):
+            return None
+        total = float(t.get("seconds") or 0) or 86400.0
+        return [(sec["start"], min(sec["end"], total), sec["cam"]) for sec in clean_sections(secs)
+                if sec["keep"] and min(sec["end"], total) - sec["start"] >= 0.1]
     clips = [base / t["file"] for s, t in made if t]
-    # A shot cut to the music is read only up to its cut.
-    lengths = [float(s["seconds"]) if s.get("exact") and s.get("seconds") else None for s, t in made if t]
     # The preview's download is the whole video: a shot not made yet is a
     # placeholder card for its length (in the page's words), so the song runs
     # under it unbroken, the way the page's preview plays it.
@@ -1409,7 +1417,10 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     # at the length they will have.
     segments, pos = [], 0.0
     for s, t in made:
-        if s.get("exact") and s.get("seconds"):
+        secs = sections_of(s, t)
+        if secs is not None:
+            length = sum(b - a for a, b, _cam in secs)
+        elif s.get("exact") and s.get("seconds"):
             length = float(s["seconds"])
         elif t and t.get("seconds"):
             length = float(t["seconds"])
@@ -1438,6 +1449,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         stamp = time.strftime("%Y%m%d-%H%M%S") + ("-preview" if preview else "")
         out = base / "renders" / f"{stamp}.mp4"
         followed = []
+
         def layers(s: dict, t: dict | None) -> tuple[dict | None, dict | None]:
             """A recording's camera in its corner (when shown) and its sound
             at its volumes, the computer's under the microphone's."""
@@ -1453,11 +1465,41 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                 snd.update(file=base / t["pc"], volume=mix["pc"])
             return pip, snd
 
+        def pieces(s: dict, t: dict, n: int) -> list[dict]:
+            """What a made item puts in the film: the clip whole, or -- a
+            recording cut into sections -- each kept section, from where it
+            starts for as long as it lasts, with its own camera (or the
+            clip's) and its stretch of the subtitles."""
+            pip, snd = layers(s, t)
+            sub = subs_of(t)
+            secs = sections_of(s, t)
+            if secs is None:
+                return [{"file": base / t["file"], "start": None, "pip": pip, "sound": snd, "subs": sub,
+                         "length": float(s["seconds"]) if s.get("exact") and s.get("seconds") else None}]
+            out_pieces = []
+            for j, (a, b, cam) in enumerate(secs):
+                own = pip
+                if cam is not None and t.get("cam") and (base / t["cam"]).is_file():
+                    own = {"file": base / t["cam"], **cam} if cam["show"] else None
+                part_sub = None
+                if sub:
+                    part_sub = media.shift_srt(sub, base / "renders" / f"{stamp}-sub{n}-{j}.srt", a, b)
+                    followed.append(part_sub)
+                out_pieces.append({"file": base / t["file"], "start": a or None, "length": b - a,
+                                   "pip": own, "sound": snd, "subs": part_sub})
+            return out_pieces
+
         try:
-            use_clips, use_lengths, use_marks = clips, lengths, None
-            use_subs = [subs_of(t) for s, t in made if t]
-            use_pips = [layers(s, t)[0] for s, t in made if t]
-            use_sounds = [layers(s, t)[1] for s, t in made if t]
+            all_pieces = [pc for n, (s, t) in enumerate(made, 1) if t for pc in pieces(s, t, n)]
+            if not all_pieces and not preview:
+                raise media.MediaError("every section of every clip is cut out")
+            use_clips = [pc["file"] for pc in all_pieces]
+            use_lengths = [pc["length"] for pc in all_pieces]
+            use_starts = [pc["start"] for pc in all_pieces]
+            use_subs = [pc["subs"] for pc in all_pieces]
+            use_pips = [pc["pip"] for pc in all_pieces]
+            use_sounds = [pc["sound"] for pc in all_pieces]
+            use_marks = None
             if preview:
                 if clips:
                     first = media.probe(clips[0])
@@ -1466,6 +1508,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                     w, h = (doc["settings"].get("resolution") or "832x480").split("x")
                     size = (int(w), int(h))
                 use_clips, use_lengths, use_marks, use_subs, use_pips, use_sounds = [], [], [], [], [], []
+                use_starts = []
                 badge = str(labels.get("preview") or "PREVIEW")[:30].upper()
 
                 def clock(t: float) -> str:
@@ -1477,16 +1520,26 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                         takes = s.get("takes") or []
                         k = next((i for i, x in enumerate(takes) if x is t), len(takes) - 1) + 1
                         info += f" · {str(labels.get('version') or 'version')[:30]} {k}/{len(takes)}"
-                    use_marks.append(media.watermark(badge, info, size, base / "renders" / f"{stamp}-mark{n}.png"))
-                    followed.append(use_marks[-1])
-                    use_subs.append(subs_of(t))
-                    pip, snd = layers(s, t)
-                    use_pips.append(pip)
-                    use_sounds.append(snd)
+                    mark = media.watermark(badge, info, size, base / "renders" / f"{stamp}-mark{n}.png")
+                    followed.append(mark)
                     if t:
-                        use_clips.append(base / t["file"])
-                        use_lengths.append(length if s.get("exact") else None)
-                    elif Projects.chosen_board(s):
+                        # Its pieces -- the clip, or a recording's kept
+                        # sections -- each under the same watermark.
+                        for pc in pieces(s, t, n):
+                            use_marks.append(mark)
+                            use_subs.append(pc["subs"])
+                            use_pips.append(pc["pip"])
+                            use_sounds.append(pc["sound"])
+                            use_clips.append(pc["file"])
+                            use_lengths.append(pc["length"])
+                            use_starts.append(pc["start"])
+                        continue
+                    use_marks.append(mark)
+                    use_subs.append(None)
+                    use_pips.append(None)
+                    use_sounds.append(None)
+                    use_starts.append(None)
+                    if Projects.chosen_board(s):
                         # Not made yet but drawn: the storyboard frame, held for
                         # the shot's length -- an animatic of what is coming.
                         card = media.still(base / Projects.chosen_board(s)["file"], length, size,
@@ -1496,17 +1549,18 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                                                  f"{str(labels.get('missing') or 'not made yet')[:60]}",
                                                  str(s.get("prompt") or "")[:600], length, size,
                                                  base / "renders" / f"{stamp}-card{n}.mp4")
-                    if not t:
-                        followed.append(card)
-                        use_clips.append(card)
-                        use_lengths.append(None)
+                    followed.append(card)
+                    use_clips.append(card)
+                    use_lengths.append(None)
             film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
                                 crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
-                                marks=use_marks, fast=preview, subs=use_subs, pips=use_pips, sounds=use_sounds)
+                                marks=use_marks, fast=preview, subs=use_subs, pips=use_pips, sounds=use_sounds,
+                                starts=use_starts)
             if tracks:
                 laid = []
                 for k, tr in enumerate(tracks):
-                    cut = media.follow(tr["file"], segments, base / "renders" / f"{stamp}-song{k}.wav",
+                    cut = media.follow(tr["file"], [sg for sg in segments if sg[1] > 0],
+                                       base / "renders" / f"{stamp}-song{k}.wav",
                                        delay=float(tr.get("start") or 0))
                     followed.append(cut)
                     laid.append({**tr, "file": cut, "start": 0})

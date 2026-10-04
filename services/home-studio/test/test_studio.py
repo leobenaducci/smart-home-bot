@@ -1574,6 +1574,40 @@ tc = tclip()
 check("  a layout and volumes are kept in bounds",
       tc["cam_layout"] == {"show": True, "corner": "br", "size": 0.5} and tc["mix"] == {"mic": 0.0, "pc": 1.0},
       (tc["cam_layout"], tc["mix"]))
+print("\n  a recording cut into sections by hand, nothing cut from its files")
+tt_id = (Projects.chosen_take(tclip()) or {})["id"]
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections_take=tt_id, sections=[
+    {"start": 0, "end": 2, "keep": True, "cam": {"show": True, "corner": "tl", "size": 0.3}},
+    {"start": 1, "end": 3, "keep": True},                       # overlaps the first: dropped
+    {"start": 2, "end": 5, "keep": False},
+    {"start": 5, "end": 7, "keep": True, "cam": {"show": False, "corner": "br", "size": 0.3}},
+    {"start": "x", "end": 9}]) for x in shots]}, headers=h(JUANA, "Juana"))
+tc = tclip()
+check("  its sections are kept in order, the overlapping and unreadable ones dropped",
+      [(x["start"], x["end"], x["keep"]) for x in tc["sections"]] == [(0, 2, True), (2, 5, False), (5, 7, True)]
+      and tc["sections"][1]["cam"] is None and tc["sections_take"] == tt_id, tc.get("sections"))
+film3 = tfilm()
+check("  the film keeps only the kept sections", 3.6 < media.probe(film3)["seconds"] < 4.4, media.probe(film3)["seconds"])
+check("  each with its own camera: in its corner in the first, hidden in the last",
+      green(pixel(film3, 40, 30, 1.0)) and not green(pixel(film3, 40, 30, 3.0))
+      and not green(pixel(film3, 300, 170, 3.0)), (pixel(film3, 40, 30, 1.0), pixel(film3, 40, 30, 3.0)))
+check("  and the files are untouched", abs(media.probe(tbase / tt["file"])["seconds"] - tc["seconds"]) < 0.2)
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections_take="zzzzzz111111") for x in
+                                                     c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]]},
+      headers=h(JUANA, "Juana"))
+film4 = tfilm()
+check("  sections drawn over another version are not this one's: the clip goes in whole",
+      media.probe(film4)["seconds"] > 6.5, media.probe(film4)["seconds"])
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections=[], sections_take="") for x in
+                                                     c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]]},
+      headers=h(JUANA, "Juana"))
+srt_in = tmp / "parts.srt"
+srt_in.write_text(media.srt([{"start": 0.5, "end": 1.5, "text": "uno"}, {"start": 2.5, "end": 4.5, "text": "dos"},
+                             {"start": 6.0, "end": 6.8, "text": "tres"}]), encoding="utf-8")
+part = media.shift_srt(srt_in, tmp / "part.srt", 2.0, 5.0).read_text()
+check("  a section's subtitles are its own lines, timed from where it starts",
+      "dos" in part and "uno" not in part and "tres" not in part and "00:00:00,500 --> 00:00:02,500" in part, part)
 c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/trim", json={}, headers=h(JUANA, "Juana"))
 deadline = time.time() + 120
 while time.time() < deadline and (tclip().get("trim") or {}).get("state") == "running":

@@ -291,6 +291,18 @@ sounds at their volumes when they are rendered (`media.stitch`'s `pips` and
 never in the recording. A browser plays at most 100%; louder is heard in the
 film.
 
+**Cut into sections by hand.** ✂ under a recording splits it at the playhead;
+each section can be cut out, or given a camera of its own (hidden, or a
+corner) instead of the clip's. Sections are the clip's `sections` -- start,
+end, kept, camera -- over the version named by `sections_take` (a section
+drawn over one version means nothing on another, which then plays whole).
+Nothing is cut from the files: the page skips the cut sections as it plays and
+switches the camera at each boundary, the preview plays each kept section from
+the clip, and the film puts in only the kept ones (`stitch`'s `starts`), each
+with its camera and its stretch of the subtitles (`media.shift_srt`). Taking a
+section out is undone by putting it back. While anything in the tab is
+playing, the page does not redraw it under you.
+
 The pieces go up as they are made, so a closed tab or a dropped network loses
 seconds, not the take; finishing joins each track's pieces in order and
 encodes them on the CPU (H.265, 30 fps; the computer sound as AAC), beside the

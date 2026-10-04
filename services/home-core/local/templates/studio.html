@@ -154,6 +154,15 @@
     .layer-tools button.on { border-color: var(--honey); color: var(--honey); font-weight: 700; }
     .layer-tools input[type=range] { width: 110px; vertical-align: middle; }
     .layer-tools label { display: inline-flex; align-items: center; gap: 4px; }
+    /* A recording's sections: each as wide as it is long, the kept ones
+       solid, the cut ones struck through, and where the clip is playing. */
+    .sections { position: relative; display: flex; gap: 2px; height: 26px; margin-top: 8px; }
+    .sections .sec { flex: 1 1 0; min-width: 6px; padding: 0; border-radius: 4px; border: 1px solid var(--line);
+      background: rgba(126,138,97,.35); font-size: .7rem; color: var(--ink-soft); overflow: hidden; }
+    .sections .sec.cut { background: repeating-linear-gradient(135deg, transparent 0 5px, rgba(172,75,54,.28) 5px 8px);
+      color: var(--clay); text-decoration: line-through; }
+    .sections .sec.sel { outline: 2px solid var(--honey); outline-offset: 1px; }
+    .sections .head { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--honey); pointer-events: none; }
     .timeline div { flex: none; height: 38px; border-radius: 6px; background: var(--line) center/cover; border: 2px solid transparent;
       font-size: .66rem; color: #fff; display: grid; place-items: center; text-shadow: 0 1px 2px #000; cursor: pointer; }
     .timeline div.made { background-color: var(--olive-2); }
@@ -745,8 +754,82 @@
         var s = itemById(stage.dataset.layered); if (!s) return;
         applyLayers(stage, s);
         followMain(stage.querySelector('video.main'), [stage.querySelector('video.pip'), stage.querySelector('audio.pc')]);
+        followSections(stage, s);
       });
     }
+    // A recording cut into sections by hand: each kept or cut out, each with
+    // its own camera or the clip's. Nothing is cut from the files -- the page
+    // skips the cut sections as it plays, and the film leaves them out.
+    // Sections belong to the version they were drawn over (`sections_take`).
+    var secSel = {};
+    function clipLength(s, t) { return +(t && t.seconds) || +s.seconds || 0; }
+    function sectionsOf(s, t) {
+      if (t && s.sections && s.sections.length && s.sections_take === t.id) return s.sections;
+      return [{ start: 0, end: clipLength(s, t), keep: true, cam: null }];
+    }
+    function sectionAt(secs, at) {
+      for (var i = 0; i < secs.length; i++) if (at >= secs[i].start - 0.01 && at < secs[i].end) return i;
+      return secs.length - 1;
+    }
+    function sectionsBar(s, t) {
+      var secs = sectionsOf(s, t), total = clipLength(s, t) || 1, sel = Math.min(secSel[s.id] || 0, secs.length - 1);
+      var kept = secs.reduce(function (a, x) { return a + (x.keep !== false ? x.end - x.start : 0); }, 0);
+      var cur = secs[sel], hasCam = !!(t && t.cam);
+      var html = '<div class="sections" data-sections="' + s.id + '">' + secs.map(function (x, i) {
+          return '<button class="sec' + (x.keep === false ? ' cut' : '') + (i === sel ? ' sel' : '') + '" data-sec="' + i + '" data-id="' + s.id +
+            '" style="flex-grow:' + Math.max(0.02, (x.end - x.start) / total) + '" title="' + clock(x.start) + '–' + clock(x.end) + '">' +
+            ((x.end - x.start) / total > 0.08 ? clock(x.end - x.start) : '') + '</button>';
+        }).join('') + '<span class="head" style="left:0"></span></div>';
+      html += '<div class="row layer-tools"><button data-split="' + s.id + '" title="' + esc(S.sec_help) + '">✂ ' + S.sec_split + '</button>' +
+        '<button data-sec-keep="' + s.id + '">' + (cur.keep === false ? '↺ ' + S.sec_keep : '✕ ' + S.sec_cut) + '</button>';
+      if (hasCam) {
+        var c = cur.cam, val = !c ? '' : !c.show ? 'none' : c.corner;
+        html += '<select data-sec-cam="' + s.id + '" style="width:auto" title="' + esc(S.sec_cam_help) + '"><option value="">📷 ' + S.sec_cam_clip + '</option>' +
+          '<option value="none"' + (val === 'none' ? ' selected' : '') + '>📷 ' + S.cam_off + '</option>' +
+          CORNERS.map(function (k) { return '<option value="' + k[0] + '"' + (val === k[0] ? ' selected' : '') + '>📷 ' + k[1] + ' ' + S['cam_' + k[0]] + '</option>'; }).join('') + '</select>';
+      }
+      if (sel < secs.length - 1) html += '<button data-sec-join="' + s.id + '">⇥ ' + S.sec_join + '</button>';
+      html += '<span class="grow"></span><span class="muted">' + fmt('sec_kept', { kept: clock(kept), total: clock(total) }) + '</span>' +
+        (secs.length > 1 ? '<button data-sec-reset="' + s.id + '">' + S.sec_reset + '</button>' : '') + '</div>';
+      if (t && s.sections && s.sections.length && s.sections_take !== t.id) html += '<p class="note">' + S.sec_other_version + '</p>';
+      return html;
+    }
+    function redrawSections(sid) {
+      var s = itemById(sid), t = chosen(s), box = document.querySelector('[data-sections="' + sid + '"]');
+      if (!box) return;
+      var holder = document.createElement('div'); holder.innerHTML = sectionsBar(s, t);
+      var tools = box.nextElementSibling, note = tools && tools.nextElementSibling;
+      if (note && note.classList.contains('note') && note.textContent === S.sec_other_version) note.remove();
+      tools.remove(); box.replaceWith.apply(box, Array.prototype.slice.call(holder.childNodes));
+    }
+    function setSections(s, t, secs) { s.sections = secs; s.sections_take = t.id; markDirty(); redrawSections(s.id); }
+    // Playing a recording: the cut sections are skipped, the camera is the
+    // section's own (or the clip's), and the bar shows where it is.
+    function followSections(stage, s) {
+      var main = stage.querySelector('video.main'); if (!main || main.dataset.sections) return;
+      main.dataset.sections = '1';
+      var raf = null;
+      function step() {
+        var t = chosen(s), secs = sectionsOf(s, t), at = main.currentTime, i = sectionAt(secs, at), sec = secs[i];
+        if (sec && sec.keep === false && !main.paused) {
+          var next = secs.slice(i + 1).find(function (x) { return x.keep !== false; });
+          if (next) main.currentTime = next.start; else { main.pause(); main.currentTime = sec.start; }
+        }
+        placeCam(stage.querySelector('video.pip'), (sec && sec.cam) || camLayout(s));
+        var head = document.querySelector('[data-sections="' + s.id + '"] .head');
+        if (head) head.style.left = Math.min(100, at / (clipLength(s, t) || 1) * 100) + '%';
+        if (!main.paused) raf = requestAnimationFrame(step);
+      }
+      main.addEventListener('play', function () {
+        var t = chosen(s), secs = sectionsOf(s, t), firstKept = secs.find(function (x) { return x.keep !== false; });
+        var sec = secs[sectionAt(secs, main.currentTime)];
+        if (firstKept && (sec.keep === false || main.currentTime >= secs[secs.length - 1].end - 0.05)) main.currentTime = firstKept.start;
+        cancelAnimationFrame(raf); raf = requestAnimationFrame(step);
+      });
+      main.addEventListener('seeked', step);
+      main.addEventListener('pause', function () { cancelAnimationFrame(raf); step(); });
+    }
+
     function layeredMedia(s, t, p) {
       var l = camLayout(s), m = mixOf(s);
       var html = '<div class="layered" data-layered="' + s.id + '"><video class="main" controls preload="metadata" poster="' +
@@ -769,7 +852,7 @@
         ' <input type="range" min="0" max="2" step="0.05" data-vol="pc" data-id="' + s.id + '" value="' + m.pc + '"><span class="muted">' + Math.round(m.pc * 100) + '%</span></label>';
       html += '</div>';
       if (t.cam_error || t.pc_error) html += '<p class="note">⚠️ ' + esc(S.rec_track_failed) + '</p>';
-      return html;
+      return html + sectionsBar(s, t);
     }
 
     function recordingTools(s, t, p, i) {
@@ -1137,9 +1220,7 @@
             (rs === 'failed' ? '<button data-rec-retry="' + s.id + '">' + S.rec_retry + '</button>' : '') +
             '<span class="grow"></span><button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
             '<button class="danger" data-remove="shots" data-id="' + s.id + '">✕</button></div>' +
-            (t && t.file ? (t.cam || t.pc ? layeredMedia(s, t, p)
-                : '<video controls preload="metadata" poster="' + (t.first ? fileUrl(p.id, t.first) : '') + '" src="' + fileUrl(p.id, t.file) + '" style="width:100%;border-radius:8px"></video>') +
-              takesRow(s) +
+            (t && t.file ? layeredMedia(s, t, p) + takesRow(s) +
               '<div class="row" style="margin-top:6px">' + dlLink(p.id, t.file, p.name + ' - ' + (s.title || S.shot + ' ' + (i + 1))) +
               recordingTools(s, t, p, i) +
               (s.description || (s.chapters || []).length ? '<button data-copy-chapters="' + s.id + '">' + S.rec_desc_copy + '</button>' : '') +
@@ -1481,6 +1562,13 @@
       if (el.id === 'use-sb') { current.settings.use_storyboard = el.checked; markDirty(); drawTab(); return; }
       if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
       if (el.dataset.f === 'continuity') { drawTab(); return; }
+      if (el.dataset.secCam) {
+        var cs2 = itemById(el.dataset.secCam), ct2 = chosen(cs2);
+        var lst = sectionsOf(cs2, ct2).map(function (x) { return Object.assign({}, x); }), k2 = Math.min(secSel[cs2.id] || 0, lst.length - 1);
+        lst[k2].cam = !el.value ? null : el.value === 'none' ? Object.assign(camLayout(cs2), { show: false })
+          : Object.assign(camLayout(cs2), { show: true, corner: el.value });
+        setSections(cs2, ct2, lst); return;
+      }
       if (el.dataset.camSize) {
         var zs = itemById(el.dataset.camSize); if (!zs) return;
         zs.cam_layout = Object.assign(camLayout(zs), { size: Number(el.value) });
@@ -1580,6 +1668,28 @@
         }
         if (b.id === 'preview') return previewPlayer();
         if (b.id === 'rec') return recorder();
+        if (d.sec != null && d.id && b.classList.contains('sec')) {
+          var ss = itemById(d.id), st0 = chosen(ss); secSel[ss.id] = Number(d.sec);
+          var mv = document.querySelector('[data-layered="' + ss.id + '"] video.main');
+          if (mv) mv.currentTime = sectionsOf(ss, st0)[Number(d.sec)].start + 0.01;
+          redrawSections(ss.id); return;
+        }
+        if (d.split) {
+          var sp = itemById(d.split), tp = chosen(sp), vm = document.querySelector('[data-layered="' + sp.id + '"] video.main');
+          var at = vm ? vm.currentTime : 0, secs = sectionsOf(sp, tp).map(function (x) { return Object.assign({}, x); });
+          var i = sectionAt(secs, at), cur = secs[i];
+          if (at - cur.start < 0.3 || cur.end - at < 0.3) { toast(S.sec_too_close, true); return; }
+          secs.splice(i, 1, Object.assign({}, cur, { end: +at.toFixed(3) }), Object.assign({}, cur, { start: +at.toFixed(3) }));
+          secSel[sp.id] = i + 1; setSections(sp, tp, secs); return;
+        }
+        if (d.secKeep || d.secJoin || d.secReset) {
+          var sk = itemById(d.secKeep || d.secJoin || d.secReset), tk = chosen(sk);
+          if (d.secReset) { secSel[sk.id] = 0; sk.sections = []; sk.sections_take = ''; markDirty(); redrawSections(sk.id); return; }
+          var list = sectionsOf(sk, tk).map(function (x) { return Object.assign({}, x); }), at2 = Math.min(secSel[sk.id] || 0, list.length - 1);
+          if (d.secKeep) list[at2].keep = list[at2].keep === false;
+          else if (at2 < list.length - 1) { list[at2].end = list[at2 + 1].end; list.splice(at2 + 1, 1); }
+          setSections(sk, tk, list); return;
+        }
         if (d.camCorner) {
           var cs = itemById(d.id); if (!cs) return;
           var was = camLayout(cs);
@@ -2184,6 +2294,16 @@
       (p.shots || []).forEach(function (s, i) {
         var t = chosen(s), len = s.exact ? +s.seconds : ((t && t.seconds) || s.seconds || 5);
         var bd = chosenBoard(s);
+        if (s.recorded && t && t.file && s.sections && s.sections.length && s.sections_take === t.id) {
+          s.sections.forEach(function (x) {
+            if (x.keep === false) return;
+            segs.push({ n: i + 1, file: fileUrl(p.id, t.file), board: '', prompt: '', start: at, from: x.start, len: x.end - x.start,
+                        cam: t.cam ? fileUrl(p.id, t.cam) : '', pc: t.pc ? fileUrl(p.id, t.pc) : '',
+                        layout: x.cam || camLayout(s), mix: mixOf(s) });
+            at += x.end - x.start;
+          });
+          return;
+        }
         segs.push({ n: i + 1, file: t && t.file ? fileUrl(p.id, t.file) : '', board: bd ? fileUrl(p.id, bd.file) : '',
                     prompt: s.prompt || '', start: at, len: len,
                     // A recording's camera and computer sound, as the clip has them.
@@ -2231,10 +2351,15 @@
           if (seg.cam) { pip.src = seg.cam; placeCam(pip, seg.layout); } else { pip.removeAttribute('src'); pip.style.display = 'none'; }
           if (seg.pc) { pcs.src = seg.pc; pcs.volume = Math.min(1, seg.mix.pc); pcs.muted = $('#pv-m').checked; } else pcs.removeAttribute('src');
           v.volume = seg.mix ? Math.min(1, seg.mix.mic) : 1;
-          v.src = seg.file; v.play().catch(function () {});
+          // A section starts inside its clip: the same file, from its start.
+          var from = seg.from || 0;
+          if (v.src.indexOf(seg.file) < 0) v.src = seg.file;
+          if (from) { if (v.readyState >= 1) v.currentTime = from; else v.addEventListener('loadedmetadata', function once() { v.removeEventListener('loadedmetadata', once); v.currentTime = from; }); }
+          else if (Math.abs(v.currentTime) > 0.3 && v.readyState >= 1) v.currentTime = 0;
+          v.play().catch(function () {});
           v.onended = function () { if (playing) show(idx + 1); };
           // A shot made long for its cut is shown only up to the cut.
-          v.ontimeupdate = function () { if (playing && v.currentTime >= seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
+          v.ontimeupdate = function () { if (playing && v.currentTime >= (seg.from || 0) + seg.len - 0.02) { v.ontimeupdate = null; show(idx + 1); } };
         } else {
           v.pause(); v.style.visibility = 'hidden'; card.style.display = 'flex'; pip.style.display = 'none'; pcs.pause();
           card.innerHTML = seg.board
@@ -2316,6 +2441,11 @@
     var lastSig = '';
     async function syncJobs() {
       if (!current || dirty || saving || busy || document.querySelector('dialog[open]')) return;
+      // Nor while something in the tab is playing: a redraw replaces every
+      // player, and stopped a recording being watched to cut it into
+      // sections. It catches up on the next round after the pause.
+      if (Array.prototype.some.call(document.querySelectorAll('#tabbody video, #tabbody audio'),
+          function (m) { return !m.paused && !m.ended; })) return;
       var active = document.activeElement;
       var p = await api('projects/' + current.id);
       var sig = JSON.stringify([p.jobs.map(function (j) { return [j.id, j.state, Math.round(j.progress * 20), !!j.preview]; }),

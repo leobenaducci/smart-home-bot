@@ -247,6 +247,27 @@ def srt(segments: list[dict]) -> str:
     return "\n".join(blocks)
 
 
+def shift_srt(src: Path, out: Path, start: float, end: float) -> Path:
+    """The subtitles of a stretch of a clip, timed from its start: the lines
+    inside [start, end], moved back by `start` and cut to the stretch."""
+    def secs(stamp: str) -> float:
+        hms, ms = stamp.strip().split(",")
+        h, m_, s_ = hms.split(":")
+        return int(h) * 3600 + int(m_) * 60 + int(s_) + int(ms) / 1000
+    lines = []
+    for block in src.read_text(encoding="utf-8").strip().split("\n\n"):
+        rows = block.strip().splitlines()
+        if len(rows) < 3 or "-->" not in rows[1]:
+            continue
+        a, b = (secs(x) for x in rows[1].split("-->"))
+        if b <= start or a >= end:
+            continue
+        lines.append({"start": max(0.0, a - start), "end": min(end, b) - start, "text": " ".join(rows[2:])})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(srt(lines), encoding="utf-8")
+    return out
+
+
 def mix_audio(srcs: list[Path], out: Path) -> Path:
     """Several stems of one song summed back into one track, as MP3 -- the
     song without a part (a minus-one to play along with), or the part alone.
@@ -274,7 +295,8 @@ def to_wav(src: Path, out: Path, rate: int = 44100, channels: int = 2) -> Path:
 def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
            lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
            fast: bool = False, subs: list[Path | None] | None = None,
-           pips: list[dict | None] | None = None, sounds: list[dict | None] | None = None) -> Path:
+           pips: list[dict | None] | None = None, sounds: list[dict | None] | None = None,
+           starts: list[float | None] | None = None) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
@@ -290,6 +312,10 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
     `sounds`: a recording's volumes and computer sound -- `{"own": volume of
     the clip's own sound (the microphone), "file": the computer sound, or
     absent, "volume": its volume}` -- or None for the clip as it is.
+
+    `starts`: where in each clip to begin, for a section of a recording (with
+    `lengths` saying how much of it); the camera and the computer sound of a
+    clip begin at the same place, so they stay with it.
     """
     if not videos:
         raise MediaError("nothing to stitch")
@@ -299,8 +325,13 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
     # read only up to its cut, so the film lands on the song's beats and ends
     # with it. `-t` before the input limits what is read of it.
     lengths = list(lengths or [None] * len(videos))
+    starts = list(starts or [None] * len(videos))
     args: list[str] = []
-    for v, info, keep in zip(videos, infos, lengths):
+    for v, info, keep, begin in zip(videos, infos, lengths, starts):
+        if begin:
+            # Accurate, not to the keyframe: the clip is re-encoded anyway.
+            args += ["-ss", f"{begin:.3f}"]
+            info["seconds"] = max(0.04, info["seconds"] - begin)
         if keep and keep < info["seconds"] - 0.5 / 24:
             # A quarter frame short of the cut: `-t` keeps every frame that
             # starts before it, and the frame that starts *on* the cut is the
@@ -322,13 +353,13 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
     for i, pip in enumerate(pips):
         if pip and pip.get("file"):
             pip_input[i] = len(videos) + len(mark_input) + len(pip_input)
-            args += ["-i", str(pip["file"])]
+            args += (["-ss", f"{starts[i]:.3f}"] if starts[i] else []) + ["-i", str(pip["file"])]
     sounds = list(sounds or [None] * len(videos))
     sound_input = {}
     for i, snd in enumerate(sounds):
         if snd and snd.get("file"):
             sound_input[i] = len(videos) + len(mark_input) + len(pip_input) + len(sound_input)
-            args += ["-i", str(snd["file"])]
+            args += (["-ss", f"{starts[i]:.3f}"] if starts[i] else []) + ["-i", str(snd["file"])]
     parts, n = [], len(videos)
     for i, info in enumerate(infos):
         label = f"b{i}" if i in mark_input else f"v{i}"
