@@ -22947,6 +22947,8 @@ STUDIO_UI_KEYS = (
     'cam_size', 'cam_small', 'cam_medium', 'cam_large', 'cam_help', 'vol_mic', 'vol_pc', 'vol_help',
     'sec_split', 'sec_keep', 'sec_cut', 'sec_cam_clip', 'sec_cam_help', 'sec_join', 'sec_reset', 'sec_kept',
     'sec_other_version', 'sec_help', 'sec_too_close',
+    'clean_button', 'clean_running', 'clean_help', 'clean_noise', 'clean_noise_about', 'clean_level',
+    'clean_level_about', 'clean_go', 'clean_nothing', 'clean_failed',
     'queue_empty', 'starts_in', 'starts_now', 'takes_about', 'position', 'yours', 'cancel',
     'cancel_confirm', 'pause', 'resume', 'raise', 'state_queued', 'state_running',
     'state_done', 'state_failed', 'state_cancelled', 'waiting_on', 'queued_note', 'made_with',

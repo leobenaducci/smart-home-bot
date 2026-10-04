@@ -200,6 +200,28 @@ def cut_silences(src: Path, out: Path, noise_db: float = -35.0, min_s: float = 1
     return out, round(total - sum(b - a for a, b in spans), 2)
 
 
+def clean_voice(src: Path, out: Path, denoise: bool = True, level: bool = True) -> Path:
+    """*src* with its microphone cleaned: a low rumble and steady background
+    noise taken out (`denoise`: a high-pass at 80 Hz, then FFT denoising that
+    learns the noise as it goes), and its loudness evened out to what video
+    sites play at (`level`: EBU R128, -16 LUFS). Only the sound is
+    re-encoded; the picture is copied as it is, so it is quick and loses
+    nothing."""
+    if not probe(src)["has_audio"]:
+        raise MediaError("this recording has no microphone")
+    chain = []
+    if denoise:
+        chain += ["highpass=f=80", "afftdn=nr=12:nf=-35:tn=1"]
+    if level:
+        chain += ["loudnorm=I=-16:TP=-1.5:LRA=11"]
+    if not chain:
+        raise MediaError("nothing to clean")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-i", str(src), "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", ",".join(chain),
+          "-ar", "48000", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)], timeout=7200)
+    return out
+
+
 def compress_video(src: Path) -> Path:
     """*src* re-encoded to H.265 in place: same name, same sound, so nothing
     that points at it has to change. Replaced only once the new file reads back

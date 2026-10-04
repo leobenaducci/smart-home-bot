@@ -657,6 +657,63 @@ def trim_silences(pid: str, item_id: str, body: dict | None = None, me: Who = De
     return {"ok": True, "state": "running"}
 
 
+def _share_file(base: Path, rel: str, dest: Path) -> str:
+    """Another name for a file a new version keeps as it is (the camera, the
+    computer sound, a frame): a hard link, so it costs no space and deleting
+    either version leaves the other's file in place. A copy where a link is
+    not possible."""
+    src = base / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.unlink(missing_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+    return str(dest.relative_to(base))
+
+
+@app.post("/api/projects/{pid}/items/{item_id}/clean")
+def clean_voice(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
+    """A new version of a recording with its microphone cleaned -- background
+    noise taken out, loudness evened out -- and everything else as it was: the
+    picture copied, the camera and the computer sound kept. Its timing is the
+    original's, so sections drawn over that version move to this one. On the
+    CPU pool beside the queue; the item says where it is."""
+    body = body or {}
+    _doc, item, take = _item_take(me, pid, item_id, str(body.get("take") or ""))
+    if not item.get("recorded"):
+        _bad(ValueError("the microphone is cleaned on recordings"))
+    denoise, level = body.get("denoise", True) is not False, body.get("level", True) is not False
+    if not (denoise or level):
+        _bad(ValueError("nothing to clean"))
+    base = projects.dir(me.login, pid)
+    projects.set_item_field(me.login, pid, item_id, "clean", {"state": "running"})
+
+    def work():
+        try:
+            stamp = uuid.uuid4().hex[:8]
+            folder = base / "takes" / item_id
+            clip = media.clean_voice(base / take["file"], folder / f"{stamp}-clean.mp4", denoise=denoise, level=level)
+            new = {"file": str(clip.relative_to(base)), "kind": "cleaned", "from": take["id"],
+                   "seconds": take.get("seconds") or round(media.probe(clip)["seconds"], 2),
+                   "cleaned": {"denoise": denoise, "level": level}}
+            for key, suffix in (("first", "-clean-first.png"), ("last", "-clean-last.png"),
+                                ("cam", "-clean-cam.mp4"), ("pc", "-clean-pc.m4a")):
+                if take.get(key) and (base / take[key]).is_file():
+                    new[key] = _share_file(base, take[key], folder / f"{stamp}{suffix}")
+            made = projects.add_take(me.login, pid, item_id, new)
+            current = Projects.find(projects.load(me.login, pid), item_id)
+            if current and current[2].get("sections_take") == take["id"]:
+                projects.set_item_field(me.login, pid, item_id, "sections_take", made["id"])
+            projects.set_item_field(me.login, pid, item_id, "clean", {"state": "done", **new["cleaned"]})
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("clean %s failed: %s", item_id, exc)
+            projects.set_item_field(me.login, pid, item_id, "clean", {"state": "failed", "error": str(exc)[:300]})
+
+    renders.submit(work)
+    return {"ok": True, "state": "running"}
+
+
 @app.post("/api/projects/{pid}/items/{item_id}/transcribe")
 def transcribe(pid: str, item_id: str, body: dict | None = None, me: Who = Depends(who)):
     """What is said in a clip, with its times: the house's speech recogniser

@@ -1608,6 +1608,43 @@ srt_in.write_text(media.srt([{"start": 0.5, "end": 1.5, "text": "uno"}, {"start"
 part = media.shift_srt(srt_in, tmp / "part.srt", 2.0, 5.0).read_text()
 check("  a section's subtitles are its own lines, timed from where it starts",
       "dos" in part and "uno" not in part and "tres" not in part and "00:00:00,500 --> 00:00:02,500" in part, part)
+print("\n  a recording's microphone cleaned: noise out, loudness evened")
+noisy = tmp / "noisy.mp4"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x96:rate=24", "-f", "lavfi",
+                "-i", "anoisesrc=d=4:c=white:a=0.02", "-f", "lavfi", "-i", "sine=frequency=300:d=4", "-filter_complex",
+                "[2:a]volume=0.05[v];[1:a][v]amix=inputs=2:normalize=0[a]", "-map", "0:v", "-map", "[a]", "-t", "4",
+                "-pix_fmt", "yuv420p", str(noisy)], check=True)
+cleaned = media.clean_voice(noisy, tmp / "noisy-clean.mp4")
+check("  the picture is copied as it is, the sound evened out to video level",
+      media.probe(cleaned)["codec"] == media.probe(noisy)["codec"] and -20 < loudness(cleaned, 0.5, 3) < -12,
+      (media.probe(cleaned)["codec"], loudness(noisy, 0.5, 3), loudness(cleaned, 0.5, 3)))
+try:
+    media.clean_voice(noisy, tmp / "none.mp4", denoise=False, level=False)
+    check("  asking for nothing says so", False)
+except media.MediaError:
+    check("  asking for nothing says so", True)
+before = Projects.chosen_take(tclip())
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections_take=before["id"], sections=[
+    {"start": 0, "end": 3, "keep": True}, {"start": 3, "end": 7, "keep": False}]) for x in shots]}, headers=h(JUANA, "Juana"))
+c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/clean", json={}, headers=h(JUANA, "Juana"))
+deadline = time.time() + 120
+while time.time() < deadline and (tclip().get("clean") or {}).get("state") == "running":
+    time.sleep(0.3)
+tc = tclip()
+cl = Projects.chosen_take(tc)
+check("  a new version, its camera and computer sound kept beside it",
+      (tc.get("clean") or {}).get("state") == "done" and cl["id"] != before["id"] and cl["kind"] == "cleaned"
+      and cl.get("cam") and cl.get("pc") and (tbase / cl["cam"]).is_file(), (tc.get("clean"), cl))
+check("  sharing their files, not copies of them",
+      os.stat(tbase / cl["cam"]).st_ino == os.stat(tbase / before["cam"]).st_ino)
+check("  and the sections drawn over the old version move to it", tc["sections_take"] == cl["id"], tc["sections_take"])
+A.projects.delete_take(JUANA, tp["id"], trec["id"], cl["id"])
+check("  deleting the cleaned version leaves the original's camera in place", (tbase / before["cam"]).is_file())
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, sections=[], sections_take="",
+                                                          chosen=next(i for i, k in enumerate(x["takes"]) if k["id"] == before["id"]))
+                                                     for x in shots]}, headers=h(JUANA, "Juana"))
 c.post(f"/api/projects/{tp['id']}/items/{trec['id']}/trim", json={}, headers=h(JUANA, "Juana"))
 deadline = time.time() + 120
 while time.time() < deadline and (tclip().get("trim") or {}).get("state") == "running":

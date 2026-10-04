@@ -866,7 +866,32 @@
       else html += '<button data-trim="' + s.id + '">' + S.rec_trim + '</button>' +
         (trim.state === 'done' ? '<span class="muted">' + fmt('rec_trim_done', { s: Math.round(trim.removed || 0) }) + '</span>' :
          trim.state === 'failed' ? '<span class="muted">' + fmt('rec_trim_failed', { e: esc(trim.error || '') }) + '</span>' : '');
+      var cln = s.clean || {};
+      if (cln.state === 'running') html += '<span class="pill run">' + S.clean_running + '</span>';
+      else html += '<button data-clean="' + s.id + '" title="' + esc(S.clean_help) + '">🎚 ' + S.clean_button + '</button>' +
+        (cln.state === 'failed' ? '<span class="muted">' + fmt('clean_failed', { e: esc(cln.error || '') }) + '</span>' : '');
       return html;
+    }
+    // The microphone cleaned into a new version: background noise out and
+    // the loudness evened out to what video sites play at. The picture and
+    // the camera and computer sound are kept as they are.
+    function cleanDialog(sid) {
+      var p = current, dlg = $('#dlg');
+      dlg.innerHTML = '<h2>🎚 ' + S.clean_button + '</h2><p class="muted" style="font-size:.86rem">' + S.clean_help + '</p>' +
+        '<label class="choice"><input type="checkbox" id="cl-noise" checked> <span><b>' + S.clean_noise + '</b><br><span class="muted">' + S.clean_noise_about + '</span></span></label>' +
+        '<label class="choice"><input type="checkbox" id="cl-level" checked> <span><b>' + S.clean_level + '</b><br><span class="muted">' + S.clean_level_about + '</span></span></label>' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="cl-no">' + S.cancel + '</button><button class="primary" id="cl-go">🎚 ' + S.clean_go + '</button></div>';
+      dlg.showModal();
+      $('#cl-no').onclick = function () { dlg.close(); };
+      $('#cl-go').onclick = async function () {
+        var body = { denoise: $('#cl-noise').checked, level: $('#cl-level').checked };
+        if (!body.denoise && !body.level) { toast(S.clean_nothing, true); return; }
+        try {
+          await flushSave();
+          await api('projects/' + p.id + '/items/' + sid + '/clean', { method: 'POST', body: body });
+          dlg.close(); current = await api('projects/' + p.id); drawTab();
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
     }
     function transcriptView(t, s) {
       var tr = t.transcript || {}, html = '';
@@ -1690,6 +1715,7 @@
           else if (at2 < list.length - 1) { list[at2].end = list[at2 + 1].end; list.splice(at2 + 1, 1); }
           setSections(sk, tk, list); return;
         }
+        if (d.clean) return cleanDialog(d.clean);
         if (d.camCorner) {
           var cs = itemById(d.id); if (!cs) return;
           var was = camLayout(cs);
@@ -2453,7 +2479,7 @@
         // encoded) has no job to watch, so its state is part of what is
         // compared -- the tab redraws when it finishes, under the same guards.
         ['shots', 'audio', 'images'].map(function (k) { return p[k].map(function (i) {
-          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.recording || {}).state,
+          return [(i.takes || []).length, (i.boards || []).length, (i.trim || {}).state, (i.clean || {}).state, (i.recording || {}).state,
                   ((chosen(i) || {}).transcript || {}).state, ((chosen(i) || {}).score || {}).state,
                   (((chosenBoard(i) || {}).review) || {}).state, (((chosenBoard(i) || {}).review) || {}).score].join(':'); }); })]);
       if (sig !== lastSig) {

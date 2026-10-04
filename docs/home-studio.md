@@ -323,6 +323,15 @@ long silences**: stretches below -35 dB for over 1.2 s are cut, leaving 0.3 s
 either side so no word is clipped, as a new version with the original kept.
 The silences are found in the microphone alone, and the camera and the
 computer sound are cut at the same places, so the three stay together.
+
+🎚 **Cleaning the microphone** makes another version with the voice cleaned
+-- background noise taken out (a high-pass at 80 Hz, then FFT denoising that
+learns the noise as it goes) and the loudness evened out to what video sites
+play at (EBU R128, -16 LUFS) -- each optional (`media.clean_voice`). Only the
+sound is re-encoded; the picture is copied, and the camera, the computer sound
+and the frames are hard links to the original's files, so the version costs
+the sound's size and deleting either leaves the other whole. Its timing is
+the original's, so sections drawn over that version move to it.
 A trimmed version needs its own subtitles; the transcript belongs to the
 version it was made from.
 

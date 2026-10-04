@@ -300,7 +300,7 @@ class Projects:
 
     def interrupt_running(self) -> int:
         """Mark what was running beside the queue as failed: a transcript, a
-        silence trim, a recording being encoded. Called at start-up -- that
+        silence trim, a microphone being cleaned, a recording being encoded. Called at start-up -- that
         work lived in the stopped process, and a state left "running" never
         showed its button again. A recording's pieces are still on disk, so
         encoding it can simply be asked for again."""
@@ -316,9 +316,10 @@ class Projects:
                     continue
                 changed = False
                 for item in doc.get("shots") or []:
-                    if (item.get("trim") or {}).get("state") == "running":
-                        item["trim"] = {"state": "failed", "error": "interrupted"}
-                        changed = True
+                    for work in ("trim", "clean"):
+                        if (item.get(work) or {}).get("state") == "running":
+                            item[work] = {"state": "failed", "error": "interrupted"}
+                            changed = True
                     if (item.get("recording") or {}).get("state") == "processing":
                         item["recording"] = {"state": "failed", "error": "interrupted"}
                         changed = True
