@@ -1600,6 +1600,41 @@ while time.time() < deadline:
 kept = media.probe(tbase / st["render"]["file"])
 check("  anything else asked for is the kept film: H.265 at the clips' size",
       kept["codec"] == "hevc" and (kept["width"], kept["height"]) == (320, 180), kept)
+print("\n  a title card, and text over a recording")
+tt_now = Projects.chosen_take(tclip())["id"]
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [
+    {"card": {"title": "Cómo cambiar una rueda", "subtitle": "en cinco minutos", "seconds": 2, "theme": "olive"}, "prompt": ""}]
+    + [dict(x, callouts_take=tt_now, callouts=[{"start": 3, "end": 5, "text": "Aflojá las tuercas primero", "spot": "bottom"},
+                                              {"start": "x", "end": 2, "text": "?"}]) for x in shots]}, headers=h(JUANA, "Juana"))
+tdoc = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+check("  a title card is a clip of the project with its words, and a recording keeps its texts",
+      tdoc["shots"][0]["card"] == {"title": "Cómo cambiar una rueda", "subtitle": "en cinco minutos", "seconds": 2.0, "theme": "olive"}
+      and [x["text"] for x in tdoc["shots"][1]["callouts"]] == ["Aflojá las tuercas primero"], tdoc["shots"][:2])
+film5 = tfilm()
+check("  the film opens with the card, for as long as it lasts",
+      abs(media.probe(film5)["seconds"] - (2 + tc["seconds"])) < 0.5
+      and pixel(film5, 20, 20, 1.0)[:3] and abs(pixel(film5, 20, 20, 1.0)[0] - 60) < 12 and abs(pixel(film5, 20, 20, 1.0)[1] - 70) < 12,
+      (media.probe(film5)["seconds"], pixel(film5, 20, 20, 1.0)))
+
+
+def dark(px):
+    return len(px) == 3 and max(px) < 80
+
+
+# Left of the camera, which still shows large in the bottom-right corner.
+_in, _out = pixel(film5, 100, 160, 2 + 4.0), pixel(film5, 100, 160, 2 + 1.0)
+check("  and the text shows over the recording in its stretch, and only there",
+      len(_in) == 3 and sum(abs(a - b) for a, b in zip(_in, _out)) > 90, (_in, _out))
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, callouts_take="zzzzzz222222") for x in shots]},
+      headers=h(JUANA, "Juana"))
+film6 = tfilm()
+check("  texts placed on another version are not drawn on this one",
+      sum(abs(a - b) for a, b in zip(pixel(film6, 100, 160, 2 + 4.0), _in)) > 90, pixel(film6, 100, 160, 6.0))
+shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
+c.put(f"/api/projects/{tp['id']}", json={"shots": [dict(x, callouts=[], callouts_take="") for x in shots if not x.get("card")]},
+      headers=h(JUANA, "Juana"))
 print("\n  a recording cut into sections by hand, nothing cut from its files")
 tt_id = (Projects.chosen_take(tclip()) or {})["id"]
 shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]

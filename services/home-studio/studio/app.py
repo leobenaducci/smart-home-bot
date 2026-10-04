@@ -36,7 +36,8 @@ from . import analysis, media, recipes
 from .manager import Manager
 from .characters import Characters
 from .history import LABELS, History
-from .projects import ProjectError, Projects, clean_layout, clean_mix, clean_sections
+from .projects import (ProjectError, Projects, clean_callouts, clean_card, clean_layout, clean_mix,
+                       clean_sections)
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -703,8 +704,9 @@ def clean_voice(pid: str, item_id: str, body: dict | None = None, me: Who = Depe
                     new[key] = _share_file(base, take[key], folder / f"{stamp}{suffix}")
             made = projects.add_take(me.login, pid, item_id, new)
             current = Projects.find(projects.load(me.login, pid), item_id)
-            if current and current[2].get("sections_take") == take["id"]:
-                projects.set_item_field(me.login, pid, item_id, "sections_take", made["id"])
+            for field in ("sections_take", "callouts_take"):
+                if current and current[2].get(field) == take["id"]:
+                    projects.set_item_field(me.login, pid, item_id, field, made["id"])
             projects.set_item_field(me.login, pid, item_id, "clean", {"state": "done", **new["cleaned"]})
         except Exception as exc:                               # noqa: BLE001
             log.warning("clean %s failed: %s", item_id, exc)
@@ -1479,7 +1481,10 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
     segments, pos = [], 0.0
     for s, t in made:
         secs = sections_of(s, t)
-        if secs is not None:
+        card = clean_card(s.get("card")) if not t else None
+        if card:
+            length = card["seconds"]
+        elif secs is not None:
             length = sum(b - a for a, b, _cam in secs)
         elif s.get("exact") and s.get("seconds"):
             length = float(s["seconds"])
@@ -1487,11 +1492,12 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             length = float(t["seconds"])
         else:
             length = recipes.h3_frames(float(s.get("seconds") or 5)) / recipes.FPS
-        if t or preview:
+        if t or card or preview:
             segments.append((pos, length))
         pos += length
     # A preview of frames alone is an animatic, and fine; a film needs shots.
-    if not clips and not (preview and any(Projects.chosen_board(s) or s.get("prompt") for s, _t in made)):
+    if not clips and not any(clean_card(s.get("card")) for s, _t in made) \
+            and not (preview and any(Projects.chosen_board(s) or s.get("prompt") for s, _t in made)):
         _bad(ValueError("no shot has a take yet"))
     # One render of a project at a time: the page follows the project's one
     # render state, and a second would hand it the first one's file.
@@ -1528,17 +1534,54 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                 snd.update(file=base / t["pc"], volume=mix["pc"])
             return pip, snd
 
-        def pieces(s: dict, t: dict, n: int) -> list[dict]:
+        # The frame a title card or a callout is drawn at: the first clip's,
+        # or the project's own size when there is none yet.
+        frame = None
+        for _s, _t in made:
+            if _t and (base / _t["file"]).is_file():
+                _first = media.probe(base / _t["file"])
+                frame = (_first["width"] or 832, _first["height"] or 480)
+                break
+        if frame is None:
+            _w, _h = (doc["settings"].get("resolution") or "832x480").split("x")
+            frame = (int(_w), int(_h))
+
+        def callouts_of(s: dict, t: dict, n: int, a: float, b: float) -> list[dict]:
+            """A recording's callouts that fall in [a, b] of its clip, as
+            overlays timed from a: drawn once each, kept for the cleanup."""
+            if not (s.get("recorded") and s.get("callouts") and s.get("callouts_take") == t.get("id")):
+                return []
+            out_overlays = []
+            for k, c in enumerate(clean_callouts(s["callouts"])):
+                if c["end"] <= a or c["start"] >= b or not c["text"].strip():
+                    continue
+                png = media.callout(c["text"], c["spot"], frame,
+                                    base / "renders" / f"{stamp}-callout{n}-{k}-{int(a * 1000)}.png")
+                followed.append(png)
+                out_overlays.append({"png": png, "start": max(0.0, c["start"] - a), "end": min(b, c["end"]) - a})
+            return out_overlays
+
+        def pieces(s: dict, t: dict | None, n: int) -> list[dict]:
             """What a made item puts in the film: the clip whole, or -- a
             recording cut into sections -- each kept section, from where it
             starts for as long as it lasts, with its own camera (or the
-            clip's) and its stretch of the subtitles."""
+            clip's) and its stretch of the subtitles. A title card is its
+            own clip, drawn now."""
+            card = clean_card(s.get("card")) if not t else None
+            if card:
+                clip = media.title_card(card["title"], card["subtitle"], card["seconds"], frame,
+                                        base / "renders" / f"{stamp}-title{n}.mp4", card["theme"])
+                followed.append(clip)
+                return [{"file": clip, "start": None, "length": None, "pip": None, "sound": None, "subs": None,
+                         "overlays": None}]
             pip, snd = layers(s, t)
             sub = subs_of(t)
             secs = sections_of(s, t)
             if secs is None:
+                whole = float(t.get("seconds") or 0) or 86400.0
                 return [{"file": base / t["file"], "start": None, "pip": pip, "sound": snd, "subs": sub,
-                         "length": float(s["seconds"]) if s.get("exact") and s.get("seconds") else None}]
+                         "length": float(s["seconds"]) if s.get("exact") and s.get("seconds") else None,
+                         "overlays": callouts_of(s, t, n, 0.0, whole) or None}]
             out_pieces = []
             for j, (a, b, cam) in enumerate(secs):
                 own = pip
@@ -1549,11 +1592,13 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                     part_sub = media.shift_srt(sub, base / "renders" / f"{stamp}-sub{n}-{j}.srt", a, b)
                     followed.append(part_sub)
                 out_pieces.append({"file": base / t["file"], "start": a or None, "length": b - a,
-                                   "pip": own, "sound": snd, "subs": part_sub})
+                                   "pip": own, "sound": snd, "subs": part_sub,
+                                   "overlays": callouts_of(s, t, n, a, b) or None})
             return out_pieces
 
         try:
-            all_pieces = [pc for n, (s, t) in enumerate(made, 1) if t for pc in pieces(s, t, n)]
+            all_pieces = [pc for n, (s, t) in enumerate(made, 1) if t or clean_card(s.get("card"))
+                          for pc in pieces(s, t, n)]
             if not all_pieces and not preview:
                 raise media.MediaError("every section of every clip is cut out")
             use_clips = [pc["file"] for pc in all_pieces]
@@ -1562,6 +1607,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             use_subs = [pc["subs"] for pc in all_pieces]
             use_pips = [pc["pip"] for pc in all_pieces]
             use_sounds = [pc["sound"] for pc in all_pieces]
+            use_overlays = [pc.get("overlays") for pc in all_pieces]
             use_marks = None
             if preview:
                 if clips:
@@ -1571,7 +1617,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                     w, h = (doc["settings"].get("resolution") or "832x480").split("x")
                     size = (int(w), int(h))
                 use_clips, use_lengths, use_marks, use_subs, use_pips, use_sounds = [], [], [], [], [], []
-                use_starts = []
+                use_starts, use_overlays = [], []
                 badge = str(labels.get("preview") or "PREVIEW")[:30].upper()
 
                 def clock(t: float) -> str:
@@ -1585,10 +1631,11 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                         info += f" · {str(labels.get('version') or 'version')[:30]} {k}/{len(takes)}"
                     mark = media.watermark(badge, info, size, base / "renders" / f"{stamp}-mark{n}.png")
                     followed.append(mark)
-                    if t:
-                        # Its pieces -- the clip, or a recording's kept
-                        # sections -- each under the same watermark.
+                    if t or clean_card(s.get("card")):
+                        # Its pieces -- the clip, a recording's kept sections,
+                        # or a title card -- each under the same watermark.
                         for pc in pieces(s, t, n):
+                            use_overlays.append(pc.get("overlays"))
                             use_marks.append(mark)
                             use_subs.append(pc["subs"])
                             use_pips.append(pc["pip"])
@@ -1602,6 +1649,7 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
                     use_pips.append(None)
                     use_sounds.append(None)
                     use_starts.append(None)
+                    use_overlays.append(None)
                     if Projects.chosen_board(s):
                         # Not made yet but drawn: the storyboard frame, held for
                         # the shot's length -- an animatic of what is coming.
@@ -1618,7 +1666,8 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
             film = media.stitch(use_clips, out if not tracks else base / "renders" / f"{stamp}-video.mp4",
                                 crossfade=float(body.get("crossfade") or 0), lengths=use_lengths,
                                 marks=use_marks, fast=preview, subs=use_subs, pips=use_pips, sounds=use_sounds,
-                                starts=use_starts, codec=codec, size=None if preview else (film_size or None))
+                                starts=use_starts, codec=codec, size=None if preview else (film_size or None),
+                                overlays=use_overlays)
             if tracks:
                 laid = []
                 for k, tr in enumerate(tracks):

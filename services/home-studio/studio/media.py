@@ -338,7 +338,8 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
            lengths: list[float | None] | None = None, marks: list[Path | None] | None = None,
            fast: bool = False, subs: list[Path | None] | None = None,
            pips: list[dict | None] | None = None, sounds: list[dict | None] | None = None,
-           starts: list[float | None] | None = None, codec: str = "h265", size: str | None = None) -> Path:
+           starts: list[float | None] | None = None, codec: str = "h265", size: str | None = None,
+           overlays: list[list[dict] | None] | None = None) -> Path:
     """One film from shots, in order, video and sound.
 
     Re-encoded through the concat filter rather than the concat demuxer: the
@@ -358,6 +359,10 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
     `starts`: where in each clip to begin, for a section of a recording (with
     `lengths` saying how much of it); the camera and the computer sound of a
     clip begin at the same place, so they stay with it.
+
+    `overlays`: pictures laid over a stretch of a clip -- `[{"png", "start",
+    "end"}]`, times in the clip as it is used -- for a recording's text
+    callouts.
 
     `codec`: "h265" (the kept film, small) or "h264" (to publish: plays
     everywhere); `size`: "1080" or "720" for that size, its shape kept, or
@@ -406,6 +411,14 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
         if snd and snd.get("file"):
             sound_input[i] = len(videos) + len(mark_input) + len(pip_input) + len(sound_input)
             args += (["-ss", f"{starts[i]:.3f}"] if starts[i] else []) + ["-i", str(snd["file"])]
+    overlays = list(overlays or [None] * len(videos))
+    over_input: dict[int, list[tuple[int, dict]]] = {}
+    next_input = len(videos) + len(mark_input) + len(pip_input) + len(sound_input)
+    for i, ovs in enumerate(overlays):
+        for ov in ovs or []:
+            over_input.setdefault(i, []).append((next_input, ov))
+            next_input += 1
+            args += ["-loop", "1", "-framerate", "24", "-i", str(ov["png"])]
     parts, n = [], len(videos)
     for i, info in enumerate(infos):
         label = f"b{i}" if i in mark_input else f"v{i}"
@@ -450,17 +463,28 @@ def stitch(videos: list[Path], out: Path, crossfade: float = 0.0,
                          f"aresample=48000,aformat=channel_layouts=stereo,"
                          f"volume={float(snd.get('volume', 1.0)):.2f}[p{i}]")
             parts.append(f"[o{i}][p{i}]amix=inputs=2:duration=first:normalize=0[a{i}]")
+    # Each clip's text callouts, over its finished picture, each shown only
+    # in its stretch. `fin` is what the joins below take from each clip.
+    fin = [f"v{i}" for i in range(n)]
+    for i, ovs in over_input.items():
+        cur = fin[i]
+        for k, (idx, ov) in enumerate(ovs):
+            parts.append(f"[{idx}:v]scale={w}:{h},format=rgba[c{i}_{k}]")
+            parts.append(f"[{cur}][c{i}_{k}]overlay=0:0:shortest=1:"
+                         f"enable='between(t,{float(ov['start']):.3f},{float(ov['end']):.3f})',format=yuv420p[o{i}_{k}]")
+            cur = f"o{i}_{k}"
+        fin[i] = cur
     if crossfade > 0 and n > 1:
         cf = min(crossfade, min(i["seconds"] for i in infos) / 2)
-        vlast, alast, offset = "v0", "a0", infos[0]["seconds"] - cf
+        vlast, alast, offset = fin[0], "a0", infos[0]["seconds"] - cf
         for i in range(1, n):
-            parts.append(f"[{vlast}][v{i}]xfade=transition=fade:duration={cf:.3f}:offset={offset:.3f}[vx{i}]")
+            parts.append(f"[{vlast}][{fin[i]}]xfade=transition=fade:duration={cf:.3f}:offset={offset:.3f}[vx{i}]")
             parts.append(f"[{alast}][a{i}]acrossfade=d={cf:.3f}[ax{i}]")
             vlast, alast = f"vx{i}", f"ax{i}"
             offset += infos[i]["seconds"] - cf
         maps = [f"[{vlast}]", f"[{alast}]"]
     else:
-        parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
+        parts.append("".join(f"[{fin[i]}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
         maps = ["[v]", "[a]"]
     _run([*args, "-filter_complex", ";".join(parts), "-map", maps[0], "-map", maps[1],
           *(FAST if fast else CODECS.get(codec, X265)), "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
@@ -510,6 +534,89 @@ def placeholder(title: str, text: str, seconds: float, size: tuple[int, int], ou
           "-t", f"{seconds:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
           "-c:a", "aac", "-shortest", str(out)])
     still.unlink(missing_ok=True)
+    return out
+
+
+CARD_THEMES = {"dark": ((30, 35, 32), (243, 238, 223), (190, 184, 168)),
+               "light": ((247, 243, 234), (30, 35, 32), (102, 97, 79)),
+               "olive": ((60, 70, 48), (243, 238, 223), (218, 212, 194))}
+CALLOUT_SPOTS = ("top", "bottom", "center", "tl", "tr", "bl", "br")
+
+
+def _font(name: str, px: int):
+    from PIL import ImageFont  # noqa: PLC0415
+    try:
+        return ImageFont.truetype(str(FONT_DIR / name), px)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _wrap(draw, text: str, font, width: int) -> list[str]:
+    lines, line = [], ""
+    for word in (text or "").split():
+        trial = f"{line} {word}".strip()
+        if line and draw.textlength(trial, font=font) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    return lines + ([line] if line else [])
+
+
+def title_card(title: str, subtitle: str, seconds: float, size: tuple[int, int], out: Path,
+               theme: str = "dark") -> Path:
+    """A title card as a silent clip: the title large and the subtitle under
+    it, centred, on the theme's colour, for *seconds*. Drawn when the film is
+    put together, so editing the words costs nothing until then."""
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+    w, h = size
+    bg, fg, soft = CARD_THEMES.get(theme, CARD_THEMES["dark"])
+    img = Image.new("RGB", (w, h), bg)
+    draw = ImageDraw.Draw(img)
+    big, small = _font("DejaVuSans-Bold.ttf", max(18, h // 9)), _font("DejaVuSans.ttf", max(12, h // 22))
+    width = int(w * 0.82)
+    tl, sl = _wrap(draw, title, big, width)[:3], _wrap(draw, subtitle, small, width)[:3]
+    th, sh = int(max(18, h // 9) * 1.2), int(max(12, h // 22) * 1.45)
+    y = (h - (len(tl) * th + (sh // 2 if sl else 0) + len(sl) * sh)) // 2
+    for line in tl:
+        draw.text(((w - draw.textlength(line, font=big)) / 2, y), line, font=big, fill=fg)
+        y += th
+    y += sh // 2 if sl else 0
+    for line in sl:
+        draw.text(((w - draw.textlength(line, font=small)) / 2, y), line, font=small, fill=soft)
+        y += sh
+    png = out.with_suffix(".png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(png)
+    _run(["-loop", "1", "-framerate", "24", "-i", str(png), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+          "-t", f"{seconds:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-shortest", str(out)])
+    png.unlink(missing_ok=True)
+    return out
+
+
+def callout(text: str, spot: str, size: tuple[int, int], out: Path) -> Path:
+    """A text box laid over a stretch of a clip: white on a dark translucent
+    box, at a spot of the frame (top, bottom, centre or a corner). A
+    transparent PNG the size of the frame, for `stitch`'s `overlays`."""
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+    w, h = size
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    px = max(13, h // 22)
+    font = _font("DejaVuSans-Bold.ttf", px)
+    corner = spot in ("tl", "tr", "bl", "br")
+    lines = _wrap(draw, text, font, int(w * (0.4 if corner else 0.7)))[:4] or [""]
+    pad, gap, margin = px // 2, int(px * 1.3), max(10, h // 18)
+    bw = int(max(draw.textlength(x, font=font) for x in lines)) + 2 * pad
+    bh = len(lines) * gap + 2 * pad - (gap - px)
+    x = {"tl": margin, "bl": margin, "tr": w - bw - margin, "br": w - bw - margin}.get(spot, (w - bw) // 2)
+    y = {"top": margin, "tl": margin, "tr": margin, "center": (h - bh) // 2}.get(spot, h - bh - margin)
+    draw.rounded_rectangle([x, y, x + bw, y + bh], radius=max(4, px // 3), fill=(20, 22, 20, 218))
+    for i, line in enumerate(lines):
+        draw.text((x + pad, y + pad + i * gap), line, font=font, fill=(255, 255, 255, 255))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out)
     return out
 
 

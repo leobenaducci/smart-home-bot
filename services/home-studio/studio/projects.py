@@ -46,8 +46,12 @@ EDITABLE = {
     # `sections`: a recording cut into parts by hand -- each kept or cut out,
     # each with its own camera or the clip's -- over the version named by
     # `sections_take`; nothing is cut from the files (`clean_sections`).
+    # `card`: a title card -- words on a colour, drawn when the film is put
+    # together (`clean_card`). `callouts`: text boxes over a recording's
+    # stretches, over the version named by `callouts_take` (`clean_callouts`).
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
-              "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take"),
+              "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take",
+              "card", "callouts", "callouts_take"),
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
     "images": ("prompt", "size", "chosen", "title"),
 }
@@ -103,6 +107,39 @@ def clean_sections(value: Any) -> list[dict]:
             continue
         kept.append(sec)
     return kept
+
+
+CARD_THEMES = ("dark", "light", "olive")
+CALLOUT_SPOTS = ("top", "bottom", "center", "tl", "tr", "bl", "br")
+
+
+def clean_card(value: Any) -> dict | None:
+    """A title card as the page sets it: a title, a subtitle, how long it
+    shows (1-30 s) and its colours. None when it is not a card."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        seconds = max(1.0, min(30.0, round(float(value.get("seconds", 3)), 2)))
+    except (TypeError, ValueError):
+        seconds = 3.0
+    return {"title": str(value.get("title") or "")[:120], "subtitle": str(value.get("subtitle") or "")[:200],
+            "seconds": seconds, "theme": value.get("theme") if value.get("theme") in CARD_THEMES else "dark"}
+
+
+def clean_callouts(value: Any) -> list[dict]:
+    """A recording's text callouts: each a stretch (`start`, `end`), its words
+    and where in the frame it shows. In order; unreadable ones dropped."""
+    out = []
+    for c in (value or [])[:50] if isinstance(value, list) else []:
+        try:
+            a, b = float(c.get("start")), float(c.get("end"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a < b <= 86400:
+            continue
+        out.append({"start": round(a, 2), "end": round(b, 2), "text": str(c.get("text") or "")[:200],
+                    "spot": c.get("spot") if c.get("spot") in CALLOUT_SPOTS else "bottom"})
+    return sorted(out, key=lambda c: c["start"])
 
 
 def clean_mix(value: Any) -> dict:
@@ -819,8 +856,12 @@ def _clean(key: str, value: Any, item: dict) -> Any:
         return clean_mix(value)
     if key == "sections":
         return clean_sections(value)
-    if key == "sections_take":
+    if key in ("sections_take", "callouts_take"):
         return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
+    if key == "card":
+        return clean_card(value)
+    if key == "callouts":
+        return clean_callouts(value)
     if key == "seconds":
         try:
             return max(1.0, min(600.0, round(float(value), 4)))

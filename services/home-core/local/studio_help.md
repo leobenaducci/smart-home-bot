@@ -81,6 +81,19 @@ Under a recording is a bar of its sections.
 - Sections belong to the version they were made on; on another version the
   clip plays whole.
 
+### Text over a recording, and title cards
+
+- **＋ Text here** (under a recording) adds a text box at the playhead, shown
+  for 4 seconds; type its words, then **⏱ From here** / **⏱ To here** set when
+  it starts and ends (move the player first), and choose where it shows (top,
+  bottom, centre or a corner). It shows over the player as it plays, and in
+  the film. ✕ removes it.
+- **🔤 Title** (at the bottom of the Video tab) adds a title card: a title, an
+  optional subtitle, how long it shows and its colours. Move it with ↑ ↓ (for
+  example to the start, as an intro).
+- Texts belong to the version they were placed on; after taking out silences
+  the page offers **Use them on this version** (check their times).
+
 ### Cleaning up a recording
 
 - **✂️ Take out silences** makes a new version without long pauses (more than

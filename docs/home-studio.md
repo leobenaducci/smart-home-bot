@@ -324,6 +324,21 @@ either side so no word is clipped, as a new version with the original kept.
 The silences are found in the microphone alone, and the camera and the
 computer sound are cut at the same places, so the three stay together.
 
+**Title cards and text callouts.** 🔤 Title adds a card to the timeline: a
+title, a subtitle, a length (1-30 s) and colours (dark, light, olive); the
+item's `card`. It has no versions and nothing is stored -- the film draws it
+as a silent clip at the film's frame size when it is put together
+(`media.title_card`), and the page's preview shows it as it will look. Video
+generation, the storyboard and the progress counts leave cards out. A
+recording's `callouts` are text boxes over stretches of it -- words, start and
+end, and a spot (top, bottom, centre, a corner) -- placed with "＋ Text here" at
+the playhead and "From here"/"To here"; the page shows them over the player as
+it plays, and the film draws each as an overlay in its stretch
+(`media.callout`, `stitch`'s `overlays`), within each kept section. Like
+sections they belong to the version they were placed on (`callouts_take`):
+cleaning the microphone keeps the timing and moves them, taking out silences
+does not, and the page offers to move them.
+
 🎚 **Cleaning the microphone** makes another version with the voice cleaned
 -- background noise taken out (a high-pass at 80 Hz, then FFT denoising that
 learns the noise as it goes) and the loudness evened out to what video sites
