@@ -18,6 +18,16 @@ the top of the Studio answers questions about using it.
 - **🕘 History** lists every change to the project's words (descriptions,
   lyrics, looks); any change can be undone alone, or the whole project taken
   back to how it was then.
+- **Collections** gather projects under a name ("Nico", "Birthdays"). On the
+  projects page, **＋ New collection** makes one; **📁** on a project's card (or
+  **📁 Add to collection…** in a project's ⋯ menu) adds the project to one,
+  or to a new one made there. A project can be in several collections. Open a
+  collection to see its projects; **＋ New project** inside it makes the new one
+  there. **✕** on a card in a collection (or **Remove from …** in the ⋯ menu)
+  takes the project out of that collection only. **✏️ Rename** and **🗑 Delete
+  collection** are at the top of an open collection; deleting a collection
+  keeps its projects. Projects in no collection are listed beside the
+  collections.
 - Every item keeps all its versions. A new version never deletes the old one.
   ⭐ marks the version to use. 🗑 on a version deletes that version's file. ✕ on
   a card takes the item out of the project (its files stay until the project is

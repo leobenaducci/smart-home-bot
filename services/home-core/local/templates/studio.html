@@ -83,6 +83,17 @@
     .pcard .body { padding: 10px 12px; }
     .pcard .name { font-weight: 800; }
     .pcard.new .cover { background: var(--paper); color: var(--olive); }
+    .pcard { position: relative; }
+    .pcard .cover { position: relative; }
+    .pcard .pc-act { position: absolute; top: 6px; right: 6px; padding: 4px 8px; background: var(--paper); }
+    .pcard.coll .cover { background: var(--paper); color: var(--olive); }
+    .pcard .mosaic { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; gap: 2px; }
+    .pcard .mosaic i { background: var(--wall) center/cover no-repeat; }
+    .pcard .mosaic.n1 { grid-template-columns: 1fr; }
+    .pcard .mosaic.n3 i:first-child { grid-row: span 2; }
+    #phead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .ed-colls { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 10px; }
+    .ed-colls button { padding: 3px 10px; font-size: .74rem; }
 
     /* Editor: the title, where the project is in its making, and its tabs. */
     .ed-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -322,7 +333,8 @@
 
   <main>
     <section id="v-list">
-      <h2>{{ strings.projects }}</h2>
+      <h2 id="ptitle">{{ strings.projects }}</h2>
+      <div id="phead" hidden></div>
       <div class="grid" id="plist"></div>
     </section>
     <section id="v-edit" hidden></section>
@@ -526,7 +538,9 @@
     function newProjectDialog() {
       var dlg = $('#dlg');
       dlg.innerHTML = '<h2>' + S.new_project + '</h2><label class="f">' + S.new_project_name + '</label>' +
-        '<input id="np-name" value="' + esc(S.untitled) + '"><label class="f">' + S.new_project_kind + '</label>' +
+        '<input id="np-name" value="' + esc(S.untitled) + '">' +
+        (collOpen() ? '<p class="muted">📁 ' + esc(fmt('coll_inside', { c: collOpen().name })) + '</p>' : '') +
+        '<label class="f">' + S.new_project_kind + '</label>' +
         KINDS.map(function (k) {
           return '<label class="choice"' + (k.ready ? '' : ' style="opacity:.55"') + '><input type="radio" name="np-kind" value="' + k.id + '"' +
             (k.id === 'music_video' ? ' checked' : '') + (k.ready ? '' : ' disabled') + '> ' + k.icon + ' <span><b>' + S['pkind_' + k.id] + '</b>' +
@@ -537,7 +551,8 @@
       $('#np-no').onclick = function () { dlg.close(); };
       $('#np-go').onclick = async function () {
         var kind = dlg.querySelector('input[name="np-kind"]:checked').value;
-        var p = await api('projects', { method: 'POST', body: { name: $('#np-name').value.trim() || S.untitled, kind: kind } });
+        var p = await api('projects', { method: 'POST', body: { name: $('#np-name').value.trim() || S.untitled, kind: kind,
+                                                                collection: collOpen() ? openColl : '' } });
         dlg.close(); openProject(p.id);
       };
     }
@@ -547,22 +562,123 @@
         .filter(function (x) { return x[0]; }).map(function (x) { return x[0] === 1 ? S[x[1]] : fmt(x[2], { n: x[0] }); });
       return parts.length ? ' · ' + parts.join(' · ') : '';
     }
+    // ── Collections ────────────────────────────────────────────────────────
+    // A person's projects gathered under names they choose. A project can be
+    // in several collections or none: the top level shows the collections
+    // and the projects in none, and a collection shows its own. Which
+    // collection is open survives opening one of its projects, so ← Back
+    // returns to it.
+    var openColl = '', listData = { projects: [], collections: [] };
+    function collOpen() { return openColl ? listData.collections.find(function (c) { return c.id === openColl; }) : null; }
+    function collName(id) { var c = listData.collections.find(function (x) { return x.id === id; }); return c ? c.name : ''; }
+    function projectCard(p, inColl) {
+      var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
+      var act = inColl
+        ? '<button class="pc-act" data-rmfrom="' + p.id + '" title="' + esc(S.coll_remove_here) + '" aria-label="' + esc(S.coll_remove_here) + '">✕</button>'
+        : '<button class="pc-act" data-addto="' + p.id + '" title="' + esc(S.coll_add) + '" aria-label="' + esc(S.coll_add) + '">📁</button>';
+      return '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + act + '</div>' +
+        '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
+        '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + counted(p) + '</div></div></div>';
+    }
+    function collCard(c) {
+      var covers = listData.projects.filter(function (p) { return p.cover && p.collections.indexOf(c.id) >= 0; }).slice(0, 4);
+      var cover = covers.length ? '<div class="mosaic n' + covers.length + '">' + covers.map(function (p) {
+        return '<i style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"></i>';
+      }).join('') + '</div>' : '📁';
+      return '<div class="pcard coll" data-coll="' + c.id + '"><div class="cover">' + cover + '</div>' +
+        '<div class="body"><div class="name">📁 ' + esc(c.name) + '</div><div class="muted">' +
+        (c.count === 1 ? S.coll_count1 : fmt('coll_count', { n: c.count })) + '</div></div></div>';
+    }
     async function loadList() {
-      var d = await api('projects');
+      listData = await api('projects');
+      var gone = $('#pempty'); if (gone) gone.remove();
+      if (openColl && !collOpen()) openColl = '';
+      var col = collOpen(), head = $('#phead');
       var html = '<div class="pcard new" data-new="1"><div class="cover">＋</div><div class="body"><div class="name">' + S.new_project + '</div></div></div>';
-      d.projects.forEach(function (p) {
-        var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
-        html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + '</div>' +
-          '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
-          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + counted(p) + '</div></div></div>';
-      });
+      var shown;
+      if (col) {
+        $('#ptitle').textContent = '📁 ' + col.name;
+        head.innerHTML = '<button id="coll-up">← ' + esc(S.projects) + '</button><span class="grow"></span>' +
+          '<button id="coll-ren">✏️ ' + esc(S.coll_rename) + '</button><button id="coll-del" class="danger">🗑 ' + esc(S.coll_delete) + '</button>';
+        head.hidden = false;
+        shown = listData.projects.filter(function (p) { return p.collections.indexOf(col.id) >= 0; });
+      } else {
+        $('#ptitle').textContent = S.projects;
+        head.hidden = true; head.innerHTML = '';
+        html += '<div class="pcard new" data-new-coll="1"><div class="cover">📁</div><div class="body"><div class="name">＋ ' + S.coll_new + '</div></div></div>';
+        listData.collections.forEach(function (c) { html += collCard(c); });
+        shown = listData.projects.filter(function (p) { return !p.collections.length; });
+      }
+      shown.forEach(function (p) { html += projectCard(p, !!col); });
       $('#plist').innerHTML = html;
-      if (!d.projects.length) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + S.empty_projects + '</p>');
+      var empty = col && !shown.length ? S.coll_empty : !listData.projects.length ? S.empty_projects : '';
+      if (empty) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + esc(empty) + '</p>');
+    }
+    async function newCollection() {
+      var name = prompt(S.coll_name); if (!name || !name.trim()) return null;
+      return api('collections', { method: 'POST', body: { name: name.trim() } });
+    }
+    // "Add to collection": the collections the project is not in yet, and a
+    // new one made on the spot. *after* redraws whatever asked.
+    function addToDialog(pid, pname, inIds, after) {
+      var dlg = $('#dlg'), free = listData.collections.filter(function (c) { return inIds.indexOf(c.id) < 0; });
+      dlg.innerHTML = '<h2>📁 ' + esc(fmt('coll_add_title', { p: pname })) + '</h2>' +
+        (free.length ? '<div class="row" style="flex-wrap:wrap">' + free.map(function (c) {
+          return '<button data-pick="' + c.id + '">📁 ' + esc(c.name) + '</button>';
+        }).join('') + '</div>' : '<p class="muted">' + esc(listData.collections.length ? S.coll_add_none : S.coll_none_yet) + '</p>') +
+        '<label class="f">' + S.coll_new + '</label><div class="row"><input id="coll-new-name" class="grow" placeholder="' + esc(S.coll_name) + '">' +
+        '<button id="coll-new-go">' + S.coll_create_add + '</button></div>' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="coll-close">' + S.cancel + '</button></div>';
+      dlg.showModal();
+      dlg.addEventListener('close', function () { dlg.onclick = null; }, { once: true });
+      async function add(cid, name) {
+        await api('collections/' + cid + '/projects', { method: 'POST', body: { project: pid } });
+        dlg.close(); toast(fmt('coll_added', { c: name })); await after();
+      }
+      dlg.onclick = async function (ev) {
+        var b = ev.target.closest('button'); if (!b) return;
+        try {
+          if (b.id === 'coll-close') return dlg.close();
+          if (b.dataset.pick) return add(b.dataset.pick, collName(b.dataset.pick));
+          if (b.id === 'coll-new-go') {
+            var name = $('#coll-new-name').value.trim(); if (!name) return $('#coll-new-name').focus();
+            var c = await api('collections', { method: 'POST', body: { name: name } });
+            listData.collections.push(Object.assign({ count: 0 }, c));
+            return add(c.id, c.name);
+          }
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
     }
     $('#plist').addEventListener('click', async function (ev) {
-      var c = ev.target.closest('.pcard'); if (!c) return;
-      if (c.dataset.new) newProjectDialog();
-      else openProject(c.dataset.id);
+      try {
+        var b = ev.target.closest('button[data-addto], button[data-rmfrom]');
+        if (b) {
+          var pid = b.dataset.addto || b.dataset.rmfrom, proj = listData.projects.find(function (x) { return x.id === pid; });
+          if (b.dataset.addto) return addToDialog(pid, proj ? proj.name : '', proj ? proj.collections : [], loadList);
+          await api('collections/' + openColl + '/projects/' + pid, { method: 'DELETE' });
+          toast(fmt('coll_removed', { c: collName(openColl) })); return loadList();
+        }
+        var c = ev.target.closest('.pcard'); if (!c) return;
+        if (c.dataset.new) newProjectDialog();
+        else if (c.dataset.newColl) { var made = await newCollection(); if (made) { openColl = made.id; loadList(); } }
+        else if (c.dataset.coll) { openColl = c.dataset.coll; loadList(); window.scrollTo(0, 0); }
+        else openProject(c.dataset.id);
+      } catch (e) { toast(fmt('err', { e: e.message }), true); }
+    });
+    $('#phead').addEventListener('click', async function (ev) {
+      var b = ev.target.closest('button'); if (!b) return;
+      var col = collOpen(); if (!col) return;
+      try {
+        if (b.id === 'coll-up') { openColl = ''; return loadList(); }
+        if (b.id === 'coll-ren') {
+          var name = prompt(S.coll_name, col.name); if (!name || !name.trim() || name.trim() === col.name) return;
+          await api('collections/' + col.id, { method: 'PUT', body: { name: name.trim() } }); return loadList();
+        }
+        if (b.id === 'coll-del') {
+          if (!confirm(fmt('coll_delete_confirm', { c: col.name }))) return;
+          await api('collections/' + col.id, { method: 'DELETE' }); openColl = ''; return loadList();
+        }
+      } catch (e) { toast(fmt('err', { e: e.message }), true); }
     });
 
     // ── The editor ─────────────────────────────────────────────────────────
@@ -1174,7 +1290,14 @@
         '<span class="muted" id="saved">' + S.saved + '</span>' +
         '<span class="ed-actions"><button id="hist">🕘 ' + S.hist_button + '</button>' +
         '<details class="more"><summary aria-label="' + esc(S.more) + '">⋯</summary><div class="menu">' +
+        '<button id="addto">📁 ' + S.coll_add + '</button>' +
+        (p.in_collections || []).map(function (c) {
+          return '<button data-rmfrom-ed="' + c.id + '">✕ ' + esc(fmt('coll_remove', { c: c.name })) + '</button>';
+        }).join('') +
         '<button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div></details></span></div>' +
+        ((p.in_collections || []).length ? '<div class="ed-colls">' + p.in_collections.map(function (c) {
+          return '<button data-gocoll="' + c.id + '" title="' + esc(S.coll_open) + '">📁 ' + esc(c.name) + '</button>';
+        }).join('') + '</div>' : '') +
         '<div id="rail"></div>' +
         '<div class="tabs" role="tablist">' + tabsFor(p.kind).map(function (t) {
           return '<button role="tab" aria-selected="' + (t === tab) + '" data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
@@ -1860,6 +1983,18 @@
           return;
         }
         if (b.id === 'hist') { await flushSave(); return historyDialog(); }
+        if (b.id === 'addto') {
+          await flushSave();
+          if (!listData.collections.length) listData = await api('projects');
+          return addToDialog(p.id, p.name, (p.in_collections || []).map(function (c) { return c.id; }),
+                             async function () { current = await api('projects/' + p.id); drawEditor(); });
+        }
+        if (d.rmfromEd) {
+          var cname = ((p.in_collections || []).find(function (c) { return c.id === d.rmfromEd; }) || {}).name || '';
+          await api('collections/' + d.rmfromEd + '/projects/' + p.id, { method: 'DELETE' });
+          toast(fmt('coll_removed', { c: cname })); current = await api('projects/' + p.id); drawEditor(); return;
+        }
+        if (d.gocoll) { openColl = d.gocoll; return closeProject(); }
         if (b.id === 'dup') { await flushSave(); var np = await api('projects/' + p.id + '/duplicate', { method: 'POST', body: {} }); return openProject(np.id); }
         if (b.id === 'del') { if (!confirm(S.delete_confirm)) return; await api('projects/' + p.id, { method: 'DELETE' }); current = null; return closeProject(); }
         if (d.jump) { var el = document.getElementById('shot-' + d.jump); if (el) el.scrollIntoView({ behavior: 'smooth' }); return; }

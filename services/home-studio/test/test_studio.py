@@ -1897,6 +1897,54 @@ check("  at the size nearest the one asked for", imgs[-1]["prompt"] == "a red bo
 check("  and nobody else's default project is involved",
       c.get("/api/default-project", headers=h(TOMI, "Tomi")).json()["id"] != d1["id"])
 
+print("\ncollections: a person's projects gathered under a name")
+HJ, HT = h(JUANA, "Juana"), h(TOMI, "Tomi")
+check("  a collection needs a name", c.post("/api/collections", json={"name": "  "}, headers=HJ).status_code == 400)
+nico = c.post("/api/collections", json={"name": "Nico"}, headers=HJ).json()
+cumple = c.post("/api/collections", json={"name": "Cumples"}, headers=HJ).json()
+inside = c.post("/api/projects", json={"name": "Pirata", "kind": "free", "collection": nico["id"]}, headers=HJ).json()
+check("  a project made inside a collection is in it",
+      next(x for x in c.get("/api/projects", headers=HJ).json()["projects"] if x["id"] == inside["id"])["collections"]
+      == [nico["id"]])
+check("  an unknown collection makes no project",
+      c.post("/api/projects", json={"name": "x", "collection": "zzzzzzzz"}, headers=HJ).status_code == 404
+      and not any(x["name"] == "x" for x in c.get("/api/projects", headers=HJ).json()["projects"]))
+c.post(f"/api/collections/{cumple['id']}/projects", json={"project": inside["id"]}, headers=HJ)
+c.post(f"/api/collections/{cumple['id']}/projects", json={"project": inside["id"]}, headers=HJ)
+c.post(f"/api/collections/{nico['id']}/projects", json={"project": d1["id"]}, headers=HJ)
+lst = c.get("/api/projects", headers=HJ).json()
+mine = {x["id"]: x["collections"] for x in lst["projects"]}
+check("  added to a second collection, once however often it is asked",
+      mine[inside["id"]] == [nico["id"], cumple["id"]], mine)
+check("  each collection counts its projects",
+      {x["name"]: x["count"] for x in lst["collections"]} == {"Nico": 2, "Cumples": 1}, lst["collections"])
+check("  Tomi sees none of Juana's collections, and cannot add to them",
+      c.get("/api/projects", headers=HT).json()["collections"] == []
+      and c.post(f"/api/collections/{nico['id']}/projects", json={"project": inside["id"]}, headers=HT).status_code == 404)
+tomis = c.post("/api/projects", json={"name": "De Tomi"}, headers=HT).json()
+check("  nor can Juana file Tomi's project in hers",
+      c.post(f"/api/collections/{nico['id']}/projects", json={"project": tomis["id"]}, headers=HJ).status_code == 404)
+c.delete(f"/api/collections/{cumple['id']}/projects/{inside['id']}", headers=HJ)
+check("  removed from one collection, it stays in the other and the project stays",
+      next(x for x in c.get("/api/projects", headers=HJ).json()["projects"] if x["id"] == inside["id"])["collections"]
+      == [nico["id"]])
+c.put(f"/api/collections/{nico['id']}", json={"name": "Nico pirata"}, headers=HJ)
+copy = c.post(f"/api/projects/{inside['id']}/duplicate", json={}, headers=HJ).json()
+lst = c.get("/api/projects", headers=HJ).json()
+check("  renamed; and a copy sits where its original does",
+      [x["name"] for x in lst["collections"] if x["id"] == nico["id"]] == ["Nico pirata"]
+      and next(x for x in lst["projects"] if x["id"] == copy["id"])["collections"] == [nico["id"]])
+hist = c.get(f"/api/projects/{inside['id']}/history", headers=HJ).json()
+check("  filing a project is not a change to it: its history does not grow",
+      not any("ollection" in json.dumps(r) for r in (hist.get("revisions") or hist.get("log") or [])), hist)
+c.delete(f"/api/projects/{copy['id']}", headers=HJ)
+c.delete(f"/api/collections/{nico['id']}", headers=HJ)
+lst = c.get("/api/projects", headers=HJ).json()
+check("  a deleted collection takes no project with it",
+      [x["name"] for x in lst["collections"]] == ["Cumples"]
+      and all(x["collections"] == [] for x in lst["projects"]) and any(x["id"] == inside["id"] for x in lst["projects"]),
+      lst)
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")
 raise SystemExit(1 if failures else 0)

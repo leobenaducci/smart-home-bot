@@ -25,6 +25,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -324,14 +325,57 @@ def admin(action: str, body: dict | None = None, me: Who = Depends(who)):
 # -- projects -------------------------------------------------------------------
 @app.get("/api/projects")
 def list_projects(me: Who = Depends(who)):
-    return {"projects": projects.list(me.login)}
+    listed = projects.list(me.login)
+    count = Counter(c for p in listed for c in p["collections"])
+    return {"projects": listed,
+            "collections": [{**c, "count": count[c["id"]]} for c in projects.collections(me.login)["collections"]]}
 
 
 @app.post("/api/projects")
 def new_project(body: dict, me: Who = Depends(who)):
-    doc = projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"))
+    try:
+        doc = projects.create(me.login, str(body.get("name") or ""), str(body.get("kind") or "free"),
+                              str(body.get("collection") or ""))
+    except ProjectError as exc:
+        _bad(exc, 404)
     _remember(me, doc["id"])
     return doc
+
+
+# -- collections: a person's projects gathered under a name ----------------------
+def _collections_call(fn):
+    try:
+        return fn()
+    except ProjectError as exc:
+        _bad(exc, 404 if "no such" in str(exc) else 400)
+
+
+@app.post("/api/collections")
+def new_collection(body: dict, me: Who = Depends(who)):
+    return _collections_call(lambda: projects.create_collection(me.login, str(body.get("name") or "")))
+
+
+@app.put("/api/collections/{cid}")
+def rename_collection(cid: str, body: dict, me: Who = Depends(who)):
+    return _collections_call(lambda: projects.rename_collection(me.login, cid, str(body.get("name") or "")))
+
+
+@app.delete("/api/collections/{cid}")
+def delete_collection(cid: str, me: Who = Depends(who)):
+    _collections_call(lambda: projects.delete_collection(me.login, cid))
+    return {"ok": True}
+
+
+@app.post("/api/collections/{cid}/projects")
+def add_to_collection(cid: str, body: dict, me: Who = Depends(who)):
+    _collections_call(lambda: projects.add_to_collection(me.login, cid, str(body.get("project") or "")))
+    return {"ok": True}
+
+
+@app.delete("/api/collections/{cid}/projects/{pid}")
+def remove_from_collection(cid: str, pid: str, me: Who = Depends(who)):
+    _collections_call(lambda: projects.remove_from_collection(me.login, cid, pid))
+    return {"ok": True}
 
 
 # -- characters ----------------------------------------------------------------
@@ -877,7 +921,12 @@ def get_project(pid: str, me: Who = Depends(who)):
     except ProjectError as exc:
         _bad(exc, 404)
     active = [j for j in store.active() if j["owner"] == me.login and j["project"] == pid]
-    return {**doc, "jobs": [_public(j, me) for j in active], "render": render_state.get(f"{me.login}/{pid}")}
+    # The collections it is filed in, by name, for the page's header; not
+    # part of the project, so never saved back into it.
+    cols = projects.collections(me.login)
+    names = {c["id"]: c["name"] for c in cols["collections"]}
+    return {**doc, "jobs": [_public(j, me) for j in active], "render": render_state.get(f"{me.login}/{pid}"),
+            "in_collections": [{"id": c, "name": names[c]} for c in cols["of"].get(pid, [])]}
 
 
 @app.put("/api/projects/{pid}")

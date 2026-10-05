@@ -93,6 +93,24 @@ own process, so one process decides what is on the card at any moment.
 - **The GGUF Q2_K text encoder** (`config: gguf_q2_k`): 8.5 GB of RAM instead
   of ~65 GB for BF16.
 
+## Collections
+
+A person's projects gathered under names they choose; a project can be in
+several, or in none. They live in `<owner>/.collections.json` beside the
+projects -- `{"collections": [{id, name, created}], "of": {project: [collections]}}`
+-- and not in each `project.json`: where somebody files a project is not a
+change to it, so it stays out of the project's history, and a revision brought
+back never moves a project between collections. Entries naming a deleted
+project or collection are dropped on read. A copy of a project joins its
+original's collections; deleting a collection keeps its projects.
+
+The projects page shows the collections and the projects in none; a collection
+shows its own, and a project made inside it is filed there. The routes are
+`POST/PUT/DELETE /api/collections[/{id}]` and `POST
+/api/collections/{id}/projects` / `DELETE .../projects/{pid}`;
+`GET /api/projects` carries each project's `collections` and each collection's
+`count`, and `GET /api/projects/{pid}` its `in_collections` by name.
+
 ## Kinds of project
 
 A project says what it is for (`kind`: music video, short film, explainer,
