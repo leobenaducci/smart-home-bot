@@ -371,7 +371,7 @@ else:
         def separate_vocals(self, song, work):
             return song
 
-        def align(self, vocals, text, language, work):
+        def align_mono(self, mono, text, language):
             # Two words a second from 3 s, a three-second break after the verse
             # (12 words), so the song has an intro, a break and an outro.
             out, t = [], 3.0
@@ -392,6 +392,54 @@ else:
     check("  sections come out in time, with the unsung stretches marked",
           names[0] == ("Instrumental", False) and ("Verso", True) in names and ("Coro", True) in names
           and names[-1] == ("Instrumental", False), names)
+
+    # A long song, followed a window at a time: the aligner here refuses more
+    # than 90 s, places what is really sung in the window, and squeezes any
+    # lines it was given beyond that into the window's last two seconds --
+    # what too much text does to a forced aligner.
+    truth, t = [], 6.0
+    for n in range(44):
+        if n == 28:
+            t += 25.0                                   # a guitar solo
+        truth.append((t, t + 3.2))
+        t += 4.6
+    long_lines = [{"text": f"linea {n} palabra{n}", "section": "Verse", "section_index": 0} for n in range(44)]
+    calls = []
+
+    def fake_window(start, end, some):
+        assert end - start <= 90.0, ("refused", start, end)
+        calls.append((round(start, 1), round(end, 1), len(some)))
+        out, crowd = [], end - 2.0
+        for line in some:
+            n = int(line["text"].split()[1])
+            a, b = truth[n]
+            if a >= start and b <= end:
+                out += [{"word": "linea", "start": a, "end": a + 1.5}, {"word": str(n), "start": a + 1.5, "end": a + 2.0},
+                        {"word": f"palabra{n}", "start": a + 2.0, "end": b}]
+            else:
+                out += [{"word": w, "start": crowd, "end": crowd + 0.05} for w in ("linea", str(n), f"palabra{n}")]
+                crowd += 0.05
+        return out
+    song_len = truth[-1][1] + 8.0
+    gaps = [(truth[n][1], truth[n + 1][0]) for n in range(43)]
+    got = analysis.align_windows(fake_window, long_lines, song_len, gaps)
+    check(f"  a {song_len:.0f} s song is followed in windows the aligner takes",
+          len(calls) >= 3 and all(e - s_ <= 90 for s_, e, _k in calls), calls)
+    wrong = [n for n, l in enumerate(got) if abs(l.get("start", -99) - truth[n][0]) > 0.01]
+    check("  and every line lands where it is sung, the solo included", not wrong,
+          [(n, got[n].get("start"), truth[n][0]) for n in wrong][:6])
+    check("  each window ends in a pause, so no word is cut in two",
+          all(any(abs(e - (a + b) / 2) < 0.01 for a, b in gaps) or e == round(song_len, 1) for _s, e, _k in calls), calls)
+    held = analysis.end_at_pauses([{"text": "y su caballo", "start": 59.25, "end": 67.73,
+                                    "words": [{"word": "y", "start": 59.25, "end": 59.5},
+                                              {"word": "caballo", "start": 61.0, "end": 67.73}]},
+                                   {"text": "otra", "start": 67.81, "end": 70.6}],
+                                  [(63.9, 67.8), (70.7, 70.9)])
+    check("  a line held on through a pause ends where the pause begins; a short pause changes nothing",
+          held[0]["end"] == 63.9 and held[1]["end"] == 70.6, held)
+    nothing = analysis.align_windows(lambda a, b, s_: [], long_lines[:3], 200.0)
+    check("  an aligner that finds nothing leaves the lines unplaced, not the analysis broken",
+          len(nothing) == 3 and not any("start" in l for l in nothing), nothing)
     check("  the beats are found (120 bpm clicks)", 100 < an["tempo"] < 140 and len(an["beats"]) >= 12, (an["tempo"], len(an["beats"])))
     gaps = [b - a for a, b in zip(an["beats"], an["beats"][1:])]
     check("  on a steady grid: one tempo, every beat the same distance apart",
@@ -2052,6 +2100,22 @@ check("  with one, it is said in that character's voice",
       r.status_code == 200 and job.get("kind") == "voice" and job["params"].get("voice_char") == bru["id"]
       and not job["params"].get("voice_upload"), (r.status_code, r.text[:200], job.get("params")))
 A.manager.cancel(job["id"]) if job else None
+
+print("\n  a song whose words could not be followed before is listened to again, once")
+an_take = Projects.chosen_take(Projects.find(A.projects.load(JUANA, sp["id"]), intro)[2])
+(spdir / "takes" / "old-analysis.json").write_text(json.dumps(
+    {"aligned": False, "error": "could not follow the words: 500 Server Error", "lines": []}), encoding="utf-8")
+A.projects.set_take_field(JUANA, sp["id"], intro, an_take["id"], "analysis",
+                          {"file": "takes/old-analysis.json", "aligned": False})
+r = c.post(f"/api/projects/{sp['id']}/items/{intro}/analyze", json={}, headers=HJ).json()
+check("  an analysis from before the windows, without words, is queued again", bool(r.get("job")), r)
+A.manager.cancel(r["job"]["id"]) if r.get("job") else None
+(spdir / "takes" / "old-analysis.json").write_text(json.dumps(
+    {"aligned": False, "error": "could not follow the words: 500", "lines": [], "version": analysis.VERSION}),
+    encoding="utf-8")
+r = c.post(f"/api/projects/{sp['id']}/items/{intro}/analyze", json={}, headers=HJ).json()
+check("  but a current one is served as it is, so asking again does not loop",
+      not r.get("job") and r.get("analysis"), r)
 
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")

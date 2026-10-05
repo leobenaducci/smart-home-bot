@@ -47,6 +47,26 @@ NOTES_MODEL = "muscriptor_small_f32"
 MUSIC_MODEL = "ace_step_turbo_q8_0"
 ALIGN_MODEL = "qwen3_forced_aligner_0_6b_q8_0"
 TAG_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+# The aligner refuses more audio than its encoder takes -- "Qwen3 ASR audio
+# encoder token count exceeds max_source_positions": 90 s was followed, 120 s
+# refused (measured 2026-10-05) -- so a longer song is followed a window at a
+# time (`align_windows`). WINDOW stays under the limit with room; a window
+# ends in a pause in the singing when there is one in its last MIN_CUT share.
+WINDOW = 80.0
+# What `analyze` writes. 2: songs longer than the aligner's limit followed in
+# windows -- an analysis from before, whose words could not be followed, is
+# listened to again when asked (app.analyze_song).
+VERSION = 2
+MIN_CUT = 0.6
+# A line ending this close to a window's end (not the song's) may have had the
+# words after it squeezed in behind it -- the window is given more lines than
+# it can hold, on purpose -- so it is aligned again in the next window.
+KEEP = 10.0
+# How many lines a window is offered: what it could hold at the pace sung so
+# far, times SLACK. Too few would stretch them over the whole window; too many
+# only crowd its end, which KEEP throws away.
+SLACK = 1.6
+FIRST_PACE = 4.0          # seconds a line takes, before any is placed
 # Shot lengths, in seconds. H3 makes up to 20 s; under ~2.5 s a shot is a
 # flash, and cutting that often is a decision the person should make, not us.
 MIN_SHOT, MAX_SHOT = 2.5, 20.0
@@ -100,6 +120,80 @@ def place_lines(lines: list[dict], words: list[dict]) -> list[dict]:
             entry["words"] = [{"word": w["word"], "start": round(float(w["start"]), 3),
                                "end": round(float(w["end"]), 3)} for w in found]
         out.append(entry)
+    return out
+
+
+def _cut_point(t0: float, duration: float, gaps: list[tuple[float, float]]) -> float:
+    """Where the window from *t0* ends: the song's end when it is near, else
+    the middle of the last pause in the singing in the window's last part,
+    else the window's full length."""
+    end = t0 + WINDOW
+    if end >= duration:
+        return duration
+    inside = [(a + b) / 2 for a, b in gaps if t0 + WINDOW * MIN_CUT <= (a + b) / 2 <= end]
+    return max(inside) if inside else end
+
+
+def align_windows(align, lines: list[dict], duration: float,
+                  gaps: list[tuple[float, float]] | None = None) -> list[dict]:
+    """The lines placed on a song too long for one request.
+
+    *align(start, end, lines)* follows *lines* on the vocals from *start* to
+    *end* and returns the aligner's words with times in the song. Each window
+    is offered more lines than it probably holds; the lines placed well
+    before its end are kept, and the next window starts after the last of
+    them with the first line not kept. The last window takes every line left.
+    A window that keeps nothing -- a long stretch with no singing -- moves on
+    without placing any."""
+    placed = [dict(l) for l in lines]
+    t0, i, pace, rounds = 0.0, 0, FIRST_PACE, 0
+    first_start = None
+    while i < len(lines) and t0 < duration - 0.5 and rounds < 200:
+        rounds += 1
+        end = _cut_point(t0, duration, gaps or [])
+        last = end >= duration - 0.05
+        k = len(lines) - i if last else min(len(lines) - i, math.ceil((end - t0) / pace * SLACK) + 1)
+        got = place_lines(lines[i:i + k], align(t0, end, lines[i:i + k]))
+        keep = []
+        for line in got:
+            if "start" in line and not last and line["end"] > end - KEEP:
+                break
+            keep.append(line)
+        while keep and "start" not in keep[-1] and not last:
+            keep.pop()                     # an unplaced line is decided by the next window
+        if not keep:
+            t0 = max(t0 + 1.0, end - KEEP)
+            continue
+        for j, line in enumerate(keep):
+            placed[i + j] = line
+        i += len(keep)
+        ends = [l for l in keep if "start" in l]
+        if not ends:                       # the last window, and nothing in it found
+            break
+        if first_start is None:
+            first_start = ends[0]["start"]
+        t0 = max(t0 + 1.0, ends[-1]["end"] + 0.05)
+        done = [l for l in placed[:i] if "start" in l]
+        if len(done) >= 2:
+            pace = max(1.5, (done[-1]["end"] - first_start) / len(done))
+    return placed
+
+
+def end_at_pauses(lines: list[dict], gaps: list[tuple[float, float]], longest: float = 1.5) -> list[dict]:
+    """A line that runs on into a pause in the singing of *longest* seconds or
+    more ends where the pause begins. Measured on a 270 s song: a held line at
+    the start of a window was stretched four seconds over the silence after
+    it; nothing is sung in a pause, so no line lasts through one."""
+    out = []
+    for line in lines:
+        line = dict(line)
+        if "start" in line:
+            for a, b in gaps:
+                if b - a >= longest and line["start"] + 0.5 < a < line["end"]:
+                    line["end"] = round(a, 3)
+                    line["words"] = [w for w in line.get("words") or [] if w["start"] < a] or line.get("words")
+                    break
+        out.append(line)
     return out
 
 
@@ -242,6 +336,11 @@ class AudioServer:
 
     def align(self, vocals: Path, text: str, language: str, work: Path) -> list[dict]:
         mono = media.to_wav(vocals, work / "vocals16.wav", rate=16000, channels=1)
+        return self.align_mono(mono, text, language)
+
+    def align_mono(self, mono: Path, text: str, language: str) -> list[dict]:
+        """*text* followed on *mono*, 16 kHz mono already (given 44.1 kHz the
+        aligner reports seconds at the wrong rate)."""
         with open(mono, "rb") as fh:
             r = requests.post(f"{self.url}/v1/audio/alignments", timeout=900,
                               files={"file": ("vocals.wav", fh, "audio/wav")},
@@ -296,8 +395,19 @@ def analyze(song: Path, lyrics: str, language: str, server: AudioServer | None,
             progress("separating", 0.2)
             vocals = server.separate_vocals(song, work)
             progress("aligning", 0.6)
-            words = server.align(vocals, "\n".join(l["text"] for l in lines), language, work)
-            lines = place_lines(lines, words)
+            mono = media.to_wav(vocals, work / "vocals16.wav", rate=16000, channels=1)
+            sung = media.probe(mono)["seconds"]
+            if sung <= WINDOW:
+                lines = place_lines(lines, server.align_mono(mono, "\n".join(l["text"] for l in lines), language))
+            else:
+                def align(start, end, some):
+                    piece = work / f"vocals-{int(start * 1000)}.wav"
+                    media.cut_audio(mono, piece, start, end - start)
+                    words = server.align_mono(piece, "\n".join(l["text"] for l in some), language)
+                    piece.unlink(missing_ok=True)
+                    return [{**w, "start": float(w["start"]) + start, "end": float(w["end"]) + start} for w in words]
+                pauses = media.silences(mono, -35.0, 0.4)
+                lines = end_at_pauses(align_windows(align, lines, sung, pauses), pauses)
             aligned = any("start" in l for l in lines)
         except (requests.RequestException, RuntimeError, media.MediaError, ValueError) as exc:
             error = f"could not follow the words: {exc}"
@@ -308,7 +418,7 @@ def analyze(song: Path, lyrics: str, language: str, server: AudioServer | None,
     return {"duration": round(duration, 3), "tempo": round(tempo, 2), "beats": beats, "grid": 2,
             "bars": bars_from(beats, [s["start"] for s in sections if s["start"] > 0]),
             "lines": lines, "sections": sections, "aligned": aligned, "error": error,
-            "language": language}
+            "language": language, "version": VERSION}
 
 
 def regrid(an: dict, song: Path) -> dict:

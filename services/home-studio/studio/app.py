@@ -1060,13 +1060,18 @@ def analyze_song(pid: str, item_id: str, body: dict | None = None, me: Who = Dep
     _doc, item, take = _item_take(me, pid, item_id, str((body or {}).get("take") or ""))
     if (take.get("analysis") or {}).get("file"):
         # With each sung line's time, for a retouch that redoes only a line.
-        lines = []
+        lines, an = [], {}
         try:
             an = json.loads(projects.file(me.login, pid, take["analysis"]["file"]).read_text())
             lines = [{k: l.get(k) for k in ("text", "section", "start", "end")} for l in an.get("lines") or []]
         except (ProjectError, OSError, ValueError):
             pass
-        return {"take": take["id"], "analysis": take["analysis"], "lines": lines}
+        # Its words could not be followed by an older analysis -- every song
+        # over the aligner's limit, before analysis.VERSION 2 -- so it is
+        # listened to again, once: a failure now is the current one, served.
+        stale = an.get("error") and not an.get("aligned") and int(an.get("version") or 1) < analysis.VERSION
+        if not stale:
+            return {"take": take["id"], "analysis": take["analysis"], "lines": lines}
     for job in store.active():
         if job["owner"] == me.login and job["kind"] == "analyze" and job["target"] == item_id \
                 and job["params"].get("take") == take["id"]:

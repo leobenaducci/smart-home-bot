@@ -459,6 +459,17 @@ commands, heard one wrong line for the whole song. On the separated vocals,
 every line boundary the aligner gave fell inside a measured pause in the
 singing.
 
+**A song longer than about a minute and a half is followed in windows.** The
+aligner refuses more audio than its encoder takes ("audio encoder token count
+exceeds max_source_positions": 90 s followed, 120 s refused), and until
+2026-10-05 every longer song came back with the beat and no words -- both
+270-second songs made here, without a word placed. `align_windows` follows
+80 seconds at a time, each window ending in a pause in the singing; a window is
+offered more lines than it can hold at the pace sung so far, keeps the lines
+placed more than ten seconds before its end (a forced aligner squeezes text it
+has no audio for into the end, so those are not trusted), and the next window
+starts after the last line kept. The last window takes every line left.
+
 The cuts then fall on the music (`plan_cuts`): a part of the song starting
 within reach wins, then the nearest bar, then the nearest beat. Every cut is a
 frame, the last is the song's end, and each shot is generated at least as long
