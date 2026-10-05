@@ -1,6 +1,6 @@
 ---
 name: studio
-description: "Invoke with JSON: {\"skill\":\"studio\",\"action\":\"...\"}. The house Studio: generate on the house's own card -- make_image(prompt, [size]) | make_song(lyrics, style, [seconds], [language]) | make_instrumental(style, [seconds]) | make_video(description, [seconds], [dialogue], [sound]) | studio_queue() | my_projects() | project_details(project) | create_character(project, name, look, [personality], [portrait]) | song_timing(project, [song], [shot_seconds]) | set_storyboard(project, shots, [song], [shot_seconds], [look], [replace]) | make_shot_videos(project, [without_frames]). Use it when a message asks to make, draw, generate or compose a picture, a photo, a song, music, a jingle or a video, or to work on a Studio project by name: its characters, its storyboard, its music video. Loose requests go into the person's default Studio project."
+description: "Invoke with JSON: {\"skill\":\"studio\",\"action\":\"...\"}. The house Studio: generate on the house's own card -- make_image(prompt, [size]) | make_song(lyrics, style, [seconds], [language]) | make_instrumental(style, [seconds]) | make_video(description, [seconds], [dialogue], [sound]) | studio_queue() | my_projects() | project_details(project) | clone_project(project, [name]) | create_character(project, name, look, [personality], [portrait]) | edit_character(project, character, [name], [look], [personality], [voice_text]) | song_timing(project, [song], [shot_seconds]) | set_storyboard(project, shots, [song], [shot_seconds], [look], [replace]) | make_shot_videos(project, [without_frames]). Use it when a message asks to make, draw, generate or compose a picture, a photo, a song, music, a jingle or a video, or to work on a Studio project by name: its characters, its storyboard, its music video. Loose requests go into the person's default Studio project."
 # On demand: the description carries the invocation and the API.
 metadata: {"nanobot":{"translatable":true}}
 ---
@@ -50,6 +50,8 @@ that project** with its own tools -- never a document, never a loose
 ```json
 {"skill": "studio", "action": "project_details", "project": "Faro Zorro"}
 {"skill": "studio", "action": "create_character", "project": "Faro Zorro", "name": "Bruma", "look": "An anthropomorphic red fox, white chest and tail tip, yellow rain slicker and blue knitted cap, a brass lantern in one paw", "personality": "Calm, curious, hums while she works", "portrait": true}
+{"skill": "studio", "action": "clone_project", "project": "Faro Zorro", "name": "Faro Zorro - versión 2"}
+{"skill": "studio", "action": "edit_character", "project": "Faro Zorro", "character": "Bruma", "look": "An anthropomorphic red fox wearing a yellow rain slicker and a brass lantern in one paw"}
 {"skill": "studio", "action": "song_timing", "project": "Faro Zorro", "shot_seconds": 8}
 {"skill": "studio", "action": "set_storyboard", "project": "Faro Zorro", "shot_seconds": 8, "replace": true, "shots": [{"prompt": "Wide shot at dusk: Bruma climbs the spiral stairs of a white lighthouse, lantern swinging, waves below", "cast": ["Bruma"], "continues": false}]}
 ```
@@ -58,6 +60,11 @@ that project** with its own tools -- never a document, never a loose
   one fixed English description (body, clothes, colours, props) -- it goes
   into every frame and shot the character is cast in, so write it once and
   well. `portrait: true` draws a reference picture of it.
+- **Clone a project** to make a copy of it with its own takes and characters;
+  the original is left untouched.
+- **Edit a character** by name to change its `look`, `personality`, `voice_text`
+  or `name`. The character is matched by exact name, or by partial name when
+  only one matches.
 - **A storyboard that fits the song**: call `song_timing` first. It answers
   with the cuts -- each shot's time, its section and the words sung in it
   (the first time, the Studio has to listen for a minute: say so and call it

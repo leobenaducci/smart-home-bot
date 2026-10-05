@@ -146,6 +146,43 @@ def create_character(project, name, look, personality="", portrait=False):
         out["portrait"] = "queued" if not r.get("error") and not r.get("detail") else r
     return out
 
+def clone_project(project, name=""):
+    """A copy of an existing project, with its shots, audio, pictures and characters."""
+    doc, err = _project(project)
+    if err:
+        return err
+    pid = doc["id"]
+    body = {"name": name.strip()[:80]} if name and str(name).strip() else {}
+    copy = _curl("POST", f"projects/{pid}/duplicate", body)
+    if not copy.get("id"):
+        return copy
+    return {"cloned": doc["name"], "new_project": copy["name"], "id": copy["id"],
+            "open": f"/studio?project={copy['id']}",
+            "note": "The copy has its own characters and takes; changing it does not change the original."}
+
+def edit_character(project, character, **fields):
+    """Change a character's name, look, personality or voice text."""
+    doc, err = _project(project)
+    if err:
+        return err
+    pid = doc["id"]
+    chars = _curl("GET", f"projects/{pid}/characters").get("characters") or []
+    want = str(character or "").strip().lower()
+    found = [c for c in chars if c["name"].strip().lower() == want]
+    if not found:
+        found = [c for c in chars if want and want in c["name"].lower()]
+    if len(found) != 1:
+        return {"error": ("no character called that" if not found else "several characters match"),
+                "characters": [c["name"] for c in chars[:15]]}
+    cid = found[0]["id"]
+    allowed = {"name", "look", "personality", "voice_text", "portrait", "look_from"}
+    clean = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    updated = _curl("PUT", f"projects/{pid}/characters/{cid}", clean)
+    if not updated.get("id"):
+        return updated
+    return {"updated": updated["name"], "open": f"/studio?project={pid}",
+            "note": "The change is in the project's Characters tab."}
+
 def song_timing(project, song="", shot_seconds=8):
     """Where the cuts fall on the song and the words sung in each. The Studio
     listens once (about a minute on the card); until then this says so."""
