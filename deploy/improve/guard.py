@@ -140,7 +140,12 @@ def require_approval(state: Path, rid: str, wt: Path, what: str) -> None:
     who = request_of(state, rid)
     if not who:
         raise W.WorkError(f"fix request #{rid} has no conversation to read an approval from")
-    last_commit = int(W._git(wt, "log", "-1", "--format=%ct", check=False) or 0) * 1000
+    # When the fix was written (author date), not when it was last applied:
+    # publishing rebases a fix whose checkout moved on, which re-dates every
+    # commit, and the person's yes to the change would then read as given
+    # "before" it -- a second yes for the same fix. What a rebase changes is
+    # what it was tested with, and publish asks for the tests again for that.
+    last_commit = int(W._git(wt, "log", "-1", "--format=%at", check=False) or 0) * 1000
     if not approved(state, who[0], who[1], last_commit, what):
         word = "publish" if what == "publish" else "deploy"
         raise W.WorkError(f"not asked to {word}: the person has not asked for it in #{rid}'s "

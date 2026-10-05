@@ -482,6 +482,21 @@ check("and a yes after it is",
 say(tmp, "14", ("user", "Fix request #14, asked of Alfred:\n\n> la luz\n\nPublish and deploy only when I say so."))
 check("nor is the opening of one Alfred filed",
       not G.approved(tmp, "999000111", 1790000000014, 0, "publish"))
+rb = tmp / "rebased-wt"
+rb.mkdir()
+_now = int(_time.time())
+for cmd, env in ((["init", "-q"], {}), (["config", "user.email", "dueno@example.org"], {}),
+                 (["config", "user.name", "Dueño"], {}),
+                 (["commit", "-q", "--allow-empty", "-m", "the fix, rebased after the yes"],
+                  {"GIT_AUTHOR_DATE": f"{_now - 3600} +0000", "GIT_COMMITTER_DATE": f"{_now + 3600} +0000"})):
+    subprocess.run(["git", "-C", str(rb), *cmd], check=True, env={**os.environ, **env})
+say(tmp, "15", ("bot", "Listo, commiteado. ¿Lo publico?"), ("user", "Sí"))
+try:
+    G.require_approval(tmp, "15", rb, "publish")
+    check("a yes given before publish rebased the fix still counts: it was given after the fix was written", True)
+except W.WorkError as exc:
+    check("a yes given before publish rebased the fix still counts: it was given after the fix was written",
+          False, str(exc))
 check("the Programmer's own words are never an approval",
       not G.approved(tmp, "999000111", 1790000000099, 0, "publish"))
 check("code without a test is refused, a test without code is fine",
