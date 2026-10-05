@@ -979,6 +979,21 @@ async def proxy_account(request: Request, rest: str):
         request, _upstream_url("/account", rest, request.url.query), user)
 
 
+@app.api_route("/static{rest:path}", methods=["GET", "HEAD"])
+async def proxy_static(request: Request, rest: str):
+    """HomeCore's own files: the house font every page links (house.css), KaTeX
+    for the chat's maths, the Studio's practice player, i18n.js. Unrouted, the
+    app got a 404 for each -- pages drew in the fallback font and an answer's
+    formulas stayed as raw TeX, while the LAN looked right. Read only, and
+    behind the login like the pages that link them; the proxy's own login page
+    links none of them."""
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/static", rest, request.url.query), user)
+
+
 @app.api_route("/credentials{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_credentials(request: Request, rest: str):
     """Las credenciales que usan esos proyectos."""

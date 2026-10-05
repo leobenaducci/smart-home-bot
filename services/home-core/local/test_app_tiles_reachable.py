@@ -140,6 +140,19 @@ for top in sorted(fetched):
           f"add `@app.api_route(\"/{top}{{rest:path}}\", ...)` to the proxy's server/main.py, "
           "or the page's calls 404 in the app")
 
+# And the files a page loads by an absolute path -- the house font, KaTeX --
+# which 404'd in the app the same way: every page in the fallback font there.
+print("\nand every file a page loads")
+loaded = {}
+for tpl in sorted((HERE / "templates").glob("*.html")):
+    for top in re.findall(r"""(?:src|href)=['"]/([\w-]+)/""", tpl.read_text(encoding="utf-8")):
+        loaded.setdefault(top, set()).add(tpl.name)
+check("there are files to check", bool(loaded), loaded)
+for top in sorted(loaded):
+    check(f"/{top}/ ({len(loaded[top])} page(s))", top in routed,
+          f"add `@app.api_route(\"/{top}{{rest:path}}\", ...)` to the proxy's server/main.py, "
+          "or those pages load without it in the app")
+
 # Two of those tiles are routed *and* deliberately refused off the VPN, which
 # the loop above cannot tell apart from a working one. Pin both halves, so the
 # guard cannot be dropped on either side and leave this file still passing.
