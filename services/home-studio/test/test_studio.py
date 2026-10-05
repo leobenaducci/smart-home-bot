@@ -67,6 +67,12 @@ check("  and the job is filed under the model it will run on",
 s = recipes.settings_for("song", {"lyrics": "[Verse]\nla la", "style": "pop", "seconds": 60})
 check("  a song: lyrics are the prompt, style the caption, Spanish by default",
       s["prompt"].startswith("[Verse]") and s["alt_prompt"] == "pop" and s["custom_settings"]["language"] == "es", s)
+check("  audio asks for the audio profile, whole on the card; a video keeps the session's",
+      s["override_profile"] == recipes.AUDIO_PROFILE
+      and recipes.settings_for("instrumental", {"style": "rock"})["override_profile"] == recipes.AUDIO_PROFILE
+      and recipes.settings_for("voice", {"text": "hola", "voice_file": "/v.wav"})["override_profile"] == recipes.AUDIO_PROFILE
+      and "override_profile" not in recipes.settings_for("video_shot", {"prompt": "x"})
+      and "override_profile" not in recipes.settings_for("image", {"prompt": "x"}), s)
 try:
     recipes.settings_for("voice", {"text": "hola"})
     check("  a voice without a sample is refused", False)
