@@ -557,6 +557,11 @@ check("newest first, and only that person's when asked",
       [q["id"] for q in cli.requests(state, "999000111")] == [3, 1]
       and [q["id"] for q in cli.requests(state)] == [3, 2, 1])
 check("and no database is no requests, not an error", cli.requests(tmp / "nada") == [])
+check("a worktree starts only for a request the portal filed",
+      cli.filed(state, "3") and not cli.filed(state, "11") and not cli.filed(state, "x; rm")
+      and not cli.filed(tmp / "nada", "3"))
+check("and the refusal says how to get one",
+      "Make it a fix request" in cli.NOT_FILED and "#{rid}" in cli.NOT_FILED)
 
 print("\nwhen the checkout moved on while the fix was made")
 mv_wt = W.start(imp, [lrepo], "15", "luces2")
