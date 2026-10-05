@@ -33,7 +33,7 @@ import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import analysis, media, recipes
+from . import analysis, media, recipes, story
 from .manager import Manager
 from .characters import Characters
 from .history import LABELS, History
@@ -1412,10 +1412,21 @@ def generate(pid: str, body: dict, me: Who = Depends(who)):
             kind = kind_of(item)
             params = {k: item.get(k) for k in ("prompt", "lyrics", "style", "seconds", "bpm", "text", "size")}
             params["language"] = item.get("language") or doc["settings"].get("language", "es")
-            if kind == "voice":
+            if kind == "voice" and item.get("speaker"):
+                # Said by one of the cast: its own sample is cloned (the
+                # manager reads it when the job runs) and its words for it.
+                try:
+                    ch = characters.get(item["speaker"], me.login, pid)
+                except ProjectError:
+                    _bad(ValueError(f"{item.get('title') or kind}: that character is gone"))
+                if not ch.get("voice"):
+                    _bad(ValueError(f"{item.get('title') or kind}: {ch.get('name')} has no voice sample yet"))
+                params.update(voice_char=ch["id"], voice_text=ch.get("voice_text") or "")
+            elif kind == "voice":
                 params["voice_upload"] = item.get("voice")
             try:
-                recipes.settings_for(kind, {**params, "voice_file": "x" if kind == "voice" and item.get("voice") else None})
+                recipes.settings_for(kind, {**params, "voice_file": "x" if kind == "voice" and (
+                    item.get("voice") or params.get("voice_char")) else None})
             except recipes.RecipeError as exc:
                 _bad(ValueError(f"{item.get('title') or kind}: {exc}"))
             queued.append(_enqueue(me, kind, params, pid, item["id"], item.get("title") or doc["name"])["id"])
@@ -1773,6 +1784,64 @@ def render(pid: str, body: dict | None = None, me: Who = Depends(who)):
         finally:
             for f in followed:
                 f.unlink(missing_ok=True)
+
+    renders.submit(work)
+    return {"ok": True, "render": render_state[key]}
+
+
+@app.post("/api/projects/{pid}/story")
+def put_story_together(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """An audio story as one file: its voices and songs in order, its
+    instrumentals under the voices that follow (story.plan). `format` "audio"
+    is an M4A with the cover as its artwork; "video" the cover held over the
+    sound, for sites that take video only. On the CPU, beside the queue."""
+    body = body or {}
+    try:
+        doc = projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    base = projects.dir(me.login, pid)
+    fmt_ = "video" if body.get("format") == "video" else "audio"
+    items = []
+    for a in doc.get("audio") or []:
+        take = Projects.chosen_take(a)
+        if take and take.get("file") and (base / take["file"]).is_file():
+            items.append((a.get("kind") or "song", base / take["file"]))
+    if not items:
+        _bad(ValueError("no voice or music has a version yet"))
+    cover = None
+    named = doc["settings"].get("cover")
+    for im in doc.get("images") or []:
+        take = Projects.chosen_take(im) if im.get("id") == named else None
+        if take and take.get("file") and (base / take["file"]).is_file():
+            cover = base / take["file"]
+    if fmt_ == "video" and not cover:
+        _bad(ValueError("a video of the story needs its cover: draw it first"))
+    key = f"{me.login}/{pid}"
+    if (render_state.get(key) or {}).get("state") == "running":
+        _bad(ValueError("this project is already being put together"), 409)
+    render_state[key] = {"state": "running", "started": time.time()}
+
+    def work():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        wav = base / "renders" / f"{stamp}-story.wav"
+        out = base / "renders" / f"{stamp}-story.{'mp4' if fmt_ == 'video' else 'm4a'}"
+        try:
+            placements, _total = story.plan([(k, str(f), media.probe(f)["seconds"]) for k, f in items])
+            media.story_mix(placements, wav)
+            if fmt_ == "video":
+                media.story_video(wav, cover, out)
+            else:
+                media.story_audio(wav, out, cover, doc.get("name") or "")
+            projects.add_render(me.login, pid, {"file": str(out.relative_to(base)), "story": True,
+                                                "format": "mp4" if fmt_ == "video" else "m4a",
+                                                "seconds": round(media.probe(out)["seconds"], 1)})
+            render_state[key] = {"state": "done", "file": str(out.relative_to(base))}
+        except Exception as exc:                               # noqa: BLE001 -- as the film's render
+            log.warning("story %s failed: %s", key, exc)
+            render_state[key] = {"state": "failed", "error": str(exc) or exc.__class__.__name__}
+        finally:
+            wav.unlink(missing_ok=True)
 
     renders.submit(work)
     return {"ok": True, "render": render_state[key]}

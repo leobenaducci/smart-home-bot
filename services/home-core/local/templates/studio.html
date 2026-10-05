@@ -94,6 +94,14 @@
     #phead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
     .ed-colls { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 10px; }
     .ed-colls button { padding: 3px 10px; font-size: .74rem; }
+    /* An audio story's cover, square, beside what it shows. */
+    .story-cover .cover-art { width: 160px; aspect-ratio: 1; border-radius: var(--r-lg); background: var(--wall);
+      display: grid; place-items: center; font-size: 2.6rem; overflow: hidden; flex: none; }
+    .story-cover .cover-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .story-take { display: flex; gap: 10px; align-items: center; }
+    .story-take img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--r); flex: none; }
+    .story-take audio { flex: 1 1 auto; min-width: 0; width: 100%; }
+    @media (max-width: 520px) { .story-cover .cover-art { width: 100%; max-width: 260px; } }
 
     /* Editor: the title, where the project is in its making, and its tabs. */
     .ed-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -533,6 +541,7 @@
     // with. The ones not built yet are shown, and said to be coming.
     var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️' },
                  { id: 'explainer', icon: '🎓' }, { id: 'podcast', icon: '🎙️' }, { id: 'recording', icon: '🔴', ready: true },
+                 { id: 'audio_story', icon: '📻', ready: true },
                  { id: 'free', icon: '✨', ready: true }];
     function kindIcon(k) { var f = KINDS.find(function (x) { return x.id === k; }); return f ? f.icon : '✨'; }
     function newProjectDialog() {
@@ -850,6 +859,7 @@
         if (!shotsNow.length) tab = current.kind === 'music_video' ? 'audio' : tab;
         else if (!shotsNow.some(function (sh) { return (sh.takes || []).length; })) tab = 'board';
       }
+      if (tabsFor(current.kind).indexOf(tab) < 0) tab = tabsFor(current.kind)[0];
       history.replaceState(null, '', '/studio?project=' + pid);
       $('#v-list').hidden = true; $('#v-edit').hidden = false;
       drawEditor();
@@ -1300,7 +1310,8 @@
         }).join('') + '</div>' : '') +
         '<div id="rail"></div>' +
         '<div class="tabs" role="tablist">' + tabsFor(p.kind).map(function (t) {
-          return '<button role="tab" aria-selected="' + (t === tab) + '" data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
+          return '<button role="tab" aria-selected="' + (t === tab) + '" data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' +
+            S[t === 'audio' && p.kind === 'audio_story' ? 'tab_story' : 'tab_' + t] + '</button>';
         }).join('') + '</div>' +
         '<div id="tabbody"></div>';
       $('#v-edit').innerHTML = html;
@@ -1318,6 +1329,9 @@
     function tabsFor(kind) {
       if (kind === 'music_video') return ['audio', 'board', 'video', 'cast', 'images', 'files'];
       if (kind === 'recording') return ['video', 'files', 'audio', 'images'];
+      // An audio story is heard, not seen: its voices and music, who says
+      // them, and the one picture it has -- its cover, drawn in the story tab.
+      if (kind === 'audio_story') return ['audio', 'cast', 'images', 'files'];
       return ['video', 'board', 'audio', 'images', 'cast', 'files'];
     }
     function drawRail() {
@@ -1651,9 +1665,10 @@
 
     // Music & voices
     function audioTab() {
-      var p = current, items = p.audio || [];
+      var p = current, items = p.audio || [], story = p.kind === 'audio_story';
       var uploads = (p.uploads || []).filter(function (u) { return u.kind === 'voice'; });
-      var html = '';
+      var voiced = cast.filter(function (c) { return c.voice; });
+      var html = story ? coverBox() + '<p class="muted" style="margin:4px 0 12px">' + esc(S.story_help) + '</p>' : '';
       items.forEach(function (a) {
         var t = chosen(a), kind = a.kind || 'song';
         html += '<div class="card" id="audio-' + a.id + '"><div class="row" style="margin-bottom:6px"><b>' + S['kind_' + kind] + '</b>' + statusPill(a) +
@@ -1671,20 +1686,66 @@
           html += '<label class="f">' + S.style + '</label><textarea rows="2" data-f="style" data-id="' + a.id + '" placeholder="' + esc(S.inst_ph) + '">' + esc(a.style) + '</textarea>' +
             '<label class="f">' + S.seconds + '</label><input type="number" min="5" max="380" data-f="seconds" data-id="' + a.id + '" value="' + (a.seconds || 30) + '">';
         } else {
-          html += '<label class="f">' + S.voice_sample + '</label><select data-f="voice" data-id="' + a.id + '"><option value="">' + S.none + '</option>' +
+          // Who says it: one of the cast with a voice sample, in that voice,
+          // or a sample from the files as before.
+          if (voiced.length || story) {
+            html += '<label class="f">' + S.voice_speaker + '</label><select data-f="speaker" data-id="' + a.id + '"><option value="">' + S.voice_speaker_sample + '</option>' +
+              voiced.map(function (c) { return '<option value="' + c.id + '"' + (a.speaker === c.id ? ' selected' : '') + '>🗣️ ' + esc(c.name) + '</option>'; }).join('') + '</select>' +
+              (voiced.length ? '' : '<p class="muted" style="margin-top:4px">' + S.voice_speaker_none + '</p>');
+          }
+          if (!a.speaker) html += '<label class="f">' + S.voice_sample + '</label><select data-f="voice" data-id="' + a.id + '"><option value="">' + S.none + '</option>' +
             uploads.map(function (u) { return '<option value="' + esc(u.file) + '"' + (a.voice === u.file ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' +
-            '<p class="muted" style="margin-top:4px">' + S.voice_sample_help + '</p>' +
-            '<label class="f">' + S.voice_text + '</label><textarea rows="4" data-f="text" data-id="' + a.id + '" placeholder="' + esc(S.voice_text_ph) + '">' + esc(a.text) + '</textarea>';
+            '<p class="muted" style="margin-top:4px">' + S.voice_sample_help + '</p>';
+          html += '<label class="f">' + S.voice_text + '</label><textarea rows="4" data-f="text" data-id="' + a.id + '" placeholder="' + esc(S.voice_text_ph) + '">' + esc(a.text) + '</textarea>';
         }
         html += (t && t.file ? '<audio controls preload="none" src="' + fileUrl(p.id, t.file) + '"></audio>' : '') + takesRow(a) +
           '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
           (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) +
-            '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>' +
+            (story ? '' : '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>') +
             (kind === 'song' ? '<button data-rs="' + a.id + '">✏️ ' + S.rs_button + '</button>' : '') +
             (kind !== 'voice' ? scoreButton(a, t) : '') : '') + '</div></div>';
       });
       html += '<div class="row"><button data-add-audio="song">＋ 🎤 ' + S.add_song + '</button><button data-add-audio="instrumental">＋ 🎹 ' + S.add_instrumental + '</button>' +
         '<button data-add-audio="voice">＋ 🗣️ ' + S.add_voice + '</button></div>';
+      return html + (story ? storyBox() : '');
+    }
+    // An audio story's cover: the picture item `settings.cover` names, drawn
+    // from what the person says it shows and the project's look.
+    // What is being typed for the cover, kept across the redraws the queue
+    // causes (it is not an item's field until the cover is drawn).
+    var coverDraft = {};
+    function coverItem() {
+      var id = (current.settings || {}).cover;
+      return id ? (current.images || []).find(function (x) { return x.id === id; }) || null : null;
+    }
+    function coverBox() {
+      var p = current, cov = coverItem(), t = cov && chosen(cov), live = cov && livePreview(cov);
+      return '<div class="card story-cover"><div class="row" style="align-items:flex-start;flex-wrap:wrap;gap:14px">' +
+        '<div class="cover-art">' + (t && t.file ? '<img src="' + fileUrl(p.id, t.file) + '" alt="' + esc(S.story_cover) + '">' : live || '📻') + '</div>' +
+        '<div class="grow" style="min-width:220px"><div class="row"><b>' + S.story_cover + '</b>' + (cov ? statusPill(cov) : '') + '</div>' +
+        '<textarea id="cover-prompt" rows="3" placeholder="' + esc(S.story_cover_ph) + '">' + esc(coverDraft[p.id] != null ? coverDraft[p.id] : cov ? cov.prompt : '') + '</textarea>' +
+        '<div class="row" style="margin-top:6px"><button class="primary" id="cover-draw">🎨 ' + (t ? S.story_cover_redraw : S.story_cover_draw) + '</button>' +
+        (t && t.file ? dlLink(p.id, t.file, p.name + ' - ' + S.story_cover) : '') + '</div></div></div></div>';
+    }
+    // The story as one file: voices and songs in order, music under them.
+    function storyBox() {
+      var p = current, cov = coverItem(), ct = cov && chosen(cov);
+      var made = (p.audio || []).some(function (a) { var t = chosen(a); return t && t.file; });
+      var html = '<div class="row" style="margin-top:16px;flex-wrap:wrap"><button class="primary" data-story="audio"' + (made ? '' : ' disabled') + '>🎧 ' + S.story_go_audio + '</button>' +
+        '<button data-story="video" title="' + esc(S.story_video_help) + '"' + (made && ct && ct.file ? '' : ' disabled') + '>🎞️ ' + S.story_go_video + '</button></div>' +
+        (made ? '' : '<p class="muted" style="margin-top:4px">' + S.story_nothing + '</p>');
+      if (p.render && p.render.state === 'running') html += '<div class="note">' + S.story_running + '</div>';
+      if (p.render && p.render.state === 'failed') html += '<div class="note err">' + S.story_failed + ': ' + esc(p.render.error) + '</div>';
+      var mine = (p.renders || []).filter(function (r) { return r.story; }).slice().reverse();
+      if (mine.length) html += '<h2 style="margin-top:20px">' + S.story_versions + '</h2>' + mine.map(function (r) {
+        var src = fileUrl(p.id, r.file);
+        return '<div class="card">' + (r.format === 'mp4'
+          ? '<video controls preload="metadata" style="width:100%;max-width:420px;border-radius:8px" src="' + src + '"></video>'
+          : '<div class="story-take">' + (ct && ct.file ? '<img src="' + fileUrl(p.id, ct.file) + '" alt="">' : '') + '<audio controls preload="none" src="' + src + '"></audio></div>') +
+          '<div class="row" style="margin-top:6px"><span class="muted">' + (r.format === 'mp4' ? '🎞️ ' : '🎧 ') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) +
+          '</span><span class="grow"></span>' + dlLink(p.id, r.file, p.name) +
+          '<button class="danger" data-del-render="' + esc(r.file.replace(/^renders\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div></div>';
+      }).join('');
       return html;
     }
 
@@ -1899,6 +1960,7 @@
       if (el.id === 'sb-correct-text') { correctDraft = el.value; return; }
       if (el.id === 'sb-correct-redraw') { correctRedraw = el.checked; return; }
       if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
+      if (el.id === 'cover-prompt') { coverDraft[current.id] = el.value; return; }
       if (el.dataset.eyeStrength) { eyeStrength[el.dataset.eyeStrength] = Number(el.value); return; }
       if (el.dataset.cardF) {
         var cs3 = itemById(el.dataset.id); if (!cs3 || !cs3.card) return;
@@ -1934,7 +1996,7 @@
       if (!current) return;
       if (el.id === 'use-sb') { current.settings.use_storyboard = el.checked; markDirty(); drawTab(); return; }
       if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
-      if (el.dataset.f === 'continuity') { drawTab(); return; }
+      if (el.dataset.f === 'continuity' || el.dataset.f === 'speaker') { drawTab(); return; }
       if (el.dataset.secCam) {
         var cs2 = itemById(el.dataset.secCam), ct2 = chosen(cs2);
         var lst = sectionsOf(cs2, ct2).map(function (x) { return Object.assign({}, x); }), k2 = Math.min(secSel[cs2.id] || 0, lst.length - 1);
@@ -2034,6 +2096,25 @@
         }
         if (d.choose) { itemById(d.choose).chosen = Number(d.i); await saveNow(); drawTab(); return; }
         if (d.gen) { await saveNow(); return generate([d.gen]); }
+        if (b.id === 'cover-draw') {
+          // What the person says the cover shows, else the story's name; the
+          // look follows, as the storyboard's frames carry it.
+          var said = ($('#cover-prompt').value || '').trim(), look = ((p.settings || {}).look || '').trim();
+          var prompt = said || ('Cover illustration for the audio story "' + p.name + '"');
+          if (look && prompt.indexOf(look) < 0) prompt += '. ' + look;
+          var cov = coverItem();
+          if (cov) cov.prompt = prompt;
+          else { p.images.push(newItem({ prompt: prompt, size: '1024x1024', title: S.story_cover })); }
+          await saveNow();
+          if (!coverItem()) { current.settings.cover = current.images[current.images.length - 1].id; await saveNow(); }
+          delete coverDraft[p.id];
+          return generate([coverItem().id]);
+        }
+        if (d.story) {
+          await flushSave();
+          await api('projects/' + p.id + '/story', { method: 'POST', body: { format: d.story } });
+          current = await api('projects/' + p.id); drawTab(); watchRender(); return;
+        }
         if (b.id === 'gen-pending') {
           await saveNow();
           var ids = p.shots.filter(function (s) { return !(s.takes || []).length && !jobFor(s.id) && !s.card && !s.recorded; }).map(function (s) { return s.id; });

@@ -8,8 +8,8 @@ the top of the Studio answers questions about using it.
 ## Projects
 
 - **New project** (＋ on the projects page): give it a name and pick what it is
-  for. *Music video*, *Recording* (tutorials, screen and camera) and *Free* are
-  ready; *short film*, *explainer* and *podcast* are coming.
+  for. *Music video*, *Recording* (tutorials, screen and camera), *Audio story*
+  and *Free* are ready; *short film*, *explainer* and *podcast* are coming.
 - Anything you ask Alfred for without naming a project lands in your default
   project, called "Alfred".
 - A project has tabs: **Video** (the shots or recordings, in order),
@@ -132,6 +132,31 @@ with a camera, **👁 Eye contact** moves your eyes to the lens, only where you 
 - **📝 Subtitles** transcribes what you said into subtitles (.srt, downloadable,
   and can be burnt into the film). With subtitles, **✨ Title and chapters**
   asks Alfred for a title, a description and chapters.
+
+## An audio story
+
+A story to listen to: a narrator, the characters' voices and music, and a
+cover picture. Make a project of the kind **Audio story**; it opens on the
+**Story** tab.
+
+1. **The cover**: say what it shows ("the fox with her lantern on the cliff,
+   at dusk") and **🎨 Draw the cover**. The project's look is added to it. It
+   is the project's picture on its card and in the finished file; **Draw it
+   again** for another.
+2. **The voices**: in **Characters**, give each character (the narrator too)
+   a voice sample. Then **＋ 🗣️ Voice** for each line, choose **Who says it**
+   and write what they say. (A voice sample from **Files** works too.)
+3. **The music**: **＋ 🎹 Instrumental** for music under the voices, **＋ 🎤
+   Song** for a song in the story.
+4. The order of the cards is the order of the story. Voices and songs play one
+   after another. An instrumental plays alone for two seconds, then quietly
+   under the voices that follow it, until the next music or the end; an
+   instrumental with no voice after it plays on its own, whole. A song stops
+   the music under it.
+5. **🎧 Put the story together** makes one audio file with the cover as its
+   picture, for any player. **🎞️ As a video with the cover** makes a video of
+   the cover over the sound, for sites that only take video (YouTube). Both
+   are listed under **The story, put together**, to play or download.
 
 ## A music video from a song
 

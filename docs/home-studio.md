@@ -93,6 +93,30 @@ own process, so one process decides what is on the card at any moment.
 - **The GGUF Q2_K text encoder** (`config: gguf_q2_k`): 8.5 GB of RAM instead
   of ~65 GB for BF16.
 
+## An audio story
+
+The `audio_story` kind: no shots, only its audio items in order, its cast, and
+one picture -- the cover, the image item `settings.cover` names. The page draws
+the cover from what the person says it shows plus the project's look (a square
+`image` job); the projects list shows it as the card's cover (`_cover`).
+
+A voice line can be said by one of the cast (`speaker`, a character id): the
+generate route resolves it to `voice_char`, and the manager clones that
+character's own sample when the job runs. A character with no sample is
+refused at generate, by name.
+
+`POST /api/projects/{pid}/story` puts it together on the CPU, beside the queue,
+under the same one-render-per-project state as the film. `story.plan` decides
+everything and touches no file: voices and songs play whole one after another
+(0.6 s apart); an instrumental followed by a voice before the next music is a
+bed -- 2 s alone, then under those voices at 0.22, looped if short, faded out
+into the next music or 2.5 s after the last voice; one followed by none plays
+whole as an interlude; a song ends the bed under it. `media.story_mix` plays
+the plan through one ffmpeg graph and levels it to -16 LUFS (spoken-word
+apps' target); the result is an M4A with the cover embedded as its artwork, or
+(`format: "video"`, which needs the cover) a square 1080 MP4 of the cover over
+the sound at two frames a second. Renders carry `story: true`.
+
 ## Collections
 
 A person's projects gathered under names they choose; a project can be in

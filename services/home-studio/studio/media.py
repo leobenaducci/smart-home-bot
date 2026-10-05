@@ -722,3 +722,54 @@ def thumbnail(src: Path, out: Path, width: int = 320) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     _run(["-i", str(src), "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "4", str(out)])
     return out
+
+
+def story_mix(placements: list[dict], out: Path) -> Path:
+    """An audio story's placements (story.plan) played into one WAV, levelled
+    for listening (-16 LUFS, what spoken-word apps aim for). Music under the
+    voices loops when it is shorter than its stretch."""
+    if not placements:
+        raise MediaError("nothing to put together")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    args, graph = [], []
+    for i, p in enumerate(placements):
+        args += (["-stream_loop", "-1"] if p.get("loop") else []) + ["-i", str(p["file"])]
+        length, ms = float(p["length"]), int(round(float(p["start"]) * 1000))
+        chain = (f"[{i}:a]aresample=44100,aformat=channel_layouts=stereo,atrim=0:{length:.3f},"
+                 f"asetpts=PTS-STARTPTS,volume={float(p['volume']):.3f}")
+        if p.get("fade_in"):
+            chain += f",afade=t=in:d={float(p['fade_in']):.3f}"
+        if p.get("fade_out"):
+            fo = min(float(p["fade_out"]), length)
+            chain += f",afade=t=out:st={max(0.0, length - fo):.3f}:d={fo:.3f}"
+        graph.append(chain + f",adelay={ms}|{ms}[a{i}]")
+    n = len(placements)
+    graph.append("".join(f"[a{i}]" for i in range(n)) +
+                 (f"amix=inputs={n}:normalize=0:dropout_transition=0" if n > 1 else "anull") +
+                 ",loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100[m]")
+    _run([*args, "-filter_complex", ";".join(graph), "-map", "[m]", "-c:a", "pcm_s16le", str(out)], timeout=1800)
+    if probe(out)["seconds"] <= 0:
+        out.unlink(missing_ok=True)
+        raise MediaError("the story did not mix")
+    return out
+
+
+def story_audio(wav: Path, out: Path, cover: Path | None = None, title: str = "") -> Path:
+    """The story as an M4A, its cover embedded as the artwork players show."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    args = ["-i", str(wav)] + (["-i", str(cover)] if cover else [])
+    args += ["-map", "0:a"] + (["-map", "1:v", "-c:v", "mjpeg", "-disposition:v:0", "attached_pic"] if cover else [])
+    args += ["-c:a", "aac", "-b:a", "160k"] + (["-metadata", f"title={title}"] if title else [])
+    _run([*args, "-movflags", "+faststart", str(out)], timeout=1800)
+    return out
+
+
+def story_video(wav: Path, cover: Path, out: Path, size: int = 1080) -> Path:
+    """The story as a video of its cover, square, for sites that take video
+    only. Two frames a second: the picture does not move."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run(["-loop", "1", "-framerate", "2", "-i", str(cover), "-i", str(wav),
+          "-vf", f"scale={size}:{size}:force_original_aspect_ratio=increase,crop={size}:{size},setsar=1,format=yuv420p",
+          "-c:v", "libx264", "-tune", "stillimage", "-preset", "veryfast", "-c:a", "aac", "-b:a", "160k",
+          "-shortest", "-movflags", "+faststart", str(out)], timeout=3600)
+    return out

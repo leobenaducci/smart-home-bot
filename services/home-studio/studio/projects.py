@@ -52,7 +52,10 @@ EDITABLE = {
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
               "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take",
               "card", "callouts", "callouts_take", "eyes", "eyes_take"),
-    "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
+    # `speaker`: a voice line said by one of the cast, in that character's
+    # cloned voice (its own sample), instead of a sample from the files.
+    "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm",
+              "speaker"),
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
@@ -62,7 +65,7 @@ TRASH_DAYS = 14
 REMOVED_DIR = ".history-removed"
 # What a project is for. It decides the page's starting shape and the
 # planning flow Alfred runs; every tool stays available in every kind.
-PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
+PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording", "audio_story")
 
 
 CORNERS = ("tl", "tr", "bl", "br")
@@ -227,6 +230,11 @@ class Projects:
 
     @staticmethod
     def _cover(doc: dict) -> str:
+        named = (doc.get("settings") or {}).get("cover")
+        for item in doc.get("images") or [] if named else []:
+            take = Projects.chosen_take(item) if item.get("id") == named else None
+            if take and take.get("file"):
+                return take["file"]
         for section, key in (("shots", "first"), ("images", "file")):
             for item in doc.get(section) or []:
                 take = Projects.chosen_take(item)
@@ -296,6 +304,11 @@ class Projects:
                 # default) or from what the Video tab picks for it.
                 if "use_storyboard" in s:
                     doc["settings"]["use_storyboard"] = bool(s["use_storyboard"])
+                # An audio story's cover: the picture item it is shown by
+                # (on its card, in its player, embedded in the file).
+                if "cover" in s:
+                    cv = str(s.get("cover") or "")
+                    doc["settings"]["cover"] = cv if ID_RE.fullmatch(cv) else ""
                 if "soundtrack" in s:
                     st = str(s.get("soundtrack") or "")
                     doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""
@@ -975,7 +988,7 @@ def _clean(key: str, value: Any, item: dict) -> Any:
         return clean_mix(value)
     if key == "sections":
         return clean_sections(value)
-    if key in ("sections_take", "callouts_take", "eyes_take"):
+    if key in ("sections_take", "callouts_take", "eyes_take", "speaker"):
         return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
     if key == "card":
         return clean_card(value)
