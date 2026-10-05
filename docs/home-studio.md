@@ -84,6 +84,12 @@ own process, so one process decides what is on the card at any moment.
   ACE-Step's layer shapes on an RTX 3060 ("dimensions multiple of 4");
   `int8_kernels: triton` (in `wgp_config.json`) runs it.
 - **SDPA attention and profile 5** for H3 on 12 GB, as the WanGP research found.
+  Songs, instrumentals and voices ask for **profile 3.5** per job
+  (`AUDIO_PROFILE`, `override_profile`): WanGP applies the command line's
+  profile to every output, and under 5 a song streamed ACE-Step's weights from
+  RAM for every token its LM decoded -- 2-3 GB/s over PCIe, the card 30% busy.
+  The same 270 s song took 28.8 minutes under 5 and 6.2 under 3.5. Its LM still
+  decodes on the `legacy` engine: `vllm` would need FlashAttention 2.
 - **The GGUF Q2_K text encoder** (`config: gguf_q2_k`): 8.5 GB of RAM instead
   of ~65 GB for BF16.
 
