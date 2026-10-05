@@ -468,6 +468,20 @@ say(tmp, "12", ("user", "Publicá"), ("bot", "¿Seguro?"), ("user", "esperá, pr
 check("the latest word decides: 'wait' after 'publish' is not a yes",
       not G.approved(tmp, "999000111", 1790000000012, 0, "publish"))
 say(tmp, "12", ("user", "Ahora sí, publicá y desplegá"))
+opening = ("Fix request #13, made from this conversation:\n\n> add two actions\n\n"
+           "5. Tell me what changed and how to check it, and stop. Publish and deploy only when I say so.")
+say(tmp, "13", ("bot", "Listo, commiteado. ¿Lo publico y despliego?"), ("user", "Sí"),
+    ("bot", "improve publish se negó: no conversation"), ("user", "Creá el pedido"), ("user", opening))
+check("a request's own opening, made after the commit, is not the person asking",
+      not G.approved(tmp, "999000111", 1790000000013, 0, "publish")
+      and not G.approved(tmp, "999000111", 1790000000013, 0, "deploy"))
+say(tmp, "13", ("bot", "Es el pedido #13. ¿Lo publico?"), ("user", "Sí"))
+check("and a yes after it is",
+      G.approved(tmp, "999000111", 1790000000013, 0, "publish")
+      and not G.approved(tmp, "999000111", 1790000000013, 0, "deploy"))
+say(tmp, "14", ("user", "Fix request #14, asked of Alfred:\n\n> la luz\n\nPublish and deploy only when I say so."))
+check("nor is the opening of one Alfred filed",
+      not G.approved(tmp, "999000111", 1790000000014, 0, "publish"))
 check("the Programmer's own words are never an approval",
       not G.approved(tmp, "999000111", 1790000000099, 0, "publish"))
 check("code without a test is refused, a test without code is fine",
