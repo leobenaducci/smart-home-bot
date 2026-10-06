@@ -117,6 +117,33 @@ apps' target); the result is an M4A with the cover embedded as its artwork, or
 (`format: "video"`, which needs the cover) a square 1080 MP4 of the cover over
 the sound at two frames a second. Renders carry `story: true`.
 
+## A short film
+
+The `short_film` kind is a music video's pipeline -- storyboard, shots,
+cast, the film -- without the song, and with a script in front: its tabs are
+Script, Storyboard, Video, Characters, Music & voices, Pictures and Files, and
+a film with no shots opens on the Script.
+
+`POST /studio/api/film-script` (the portal) asks the Designer for `{"title",
+"characters": [{"name", "look", "personality"}], "scenes": [{"heading",
+"shots": [{"prompt", "dialogue", "cast", "seconds", "continues"}]}]}` from the
+idea, at about one shot per 7 seconds. A shot is clamped to 5-10 s (H3 runs
+~5 card-minutes a second of video), a scene's first shot never continues the
+one before, and a shot without a description is dropped. With
+`new_characters`, up to three characters the story brings are made in the
+project (one already there by that name is not); the cast is mapped back to
+ids by name without case or accents. Shots are filed after a title card, the
+scene's heading as the first shot's `title`; `replace` takes the old shots out
+first.
+
+Dialogue is one line per speaker, "Name: words". `recipes.h3_prompt` gives each
+name of the shot's cast its own H3 speaker -- S1 for the first to speak, S2 for
+the next -- and leaves the name out of what is said; a line whose "Name" is
+not in the shot's cast ("Look: the sea") is an ordinary line, S1's, as every
+line was before. The Script tab shows the scenes and shots as a script, the
+description and the dialogue editable, and the card time the video will take
+(`video_rate` from the queue).
+
 ## An explainer
 
 The `explainer` kind is its points: shots that are a title card (`card`) or a

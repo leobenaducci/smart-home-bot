@@ -892,6 +892,70 @@ check("an unreadable explainer is asked for once more, then fails and files noth
 A._studio_call, A._run_nanobot_turn = _saved_x
 
 
+print("\na short film's script, written by the Designer")
+_saved_f2 = (A._studio_call, A._run_nanobot_turn)
+FDOC2 = {"id": "film1", "settings": {"language": "es", "look": "3D cartoon"}, "shots": [{"id": "old"}]}
+FCHARS = [{"id": "tomi1", "name": "Tomi", "look": "a boy of ten, red cap"}]
+posted_f2, asked_f2, answers_f2 = [], [], []
+def _scf2(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/film1" and method == "GET":
+        return FDOC2
+    if path == "projects/film1/characters" and method == "GET":
+        return {"characters": FCHARS}
+    posted_f2.append((method, path, body, via))
+    if path == "projects/film1/characters":
+        return {"id": "new" + body["name"].lower()[:3] + "xxxxxx", **body}
+    return {"ok": True, "items": ["x"]}
+A._studio_call = _scf2
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_f2.append((text, profile)) or (answers_f2.pop(0) if answers_f2 else "")
+check("a short film needs an idea",
+      client.post("/studio/api/film-script", headers=HOME, json={"project": "film1"}).status_code == 400)
+answers_f2[:] = [json.dumps({"title": "El faro encendido", "characters": [
+    {"name": "Mora", "look": "a girl of nine, yellow raincoat", "personality": "brave"},
+    {"name": "Tomi", "look": "a duplicate", "personality": ""}],
+    "scenes": [
+        {"heading": "Playa, atardecer", "shots": [
+            {"prompt": "Tomi and Mora walk along the beach toward a dark lighthouse.", "dialogue": "Tomi: ¿Lo ves?\nMora: Sí.",
+             "cast": ["Tomi", "Mora"], "seconds": 30, "continues": True},
+            {"prompt": "Close on the lighthouse door, half open.", "dialogue": "", "cast": [], "seconds": 2, "continues": True}]},
+        {"heading": "Dentro del faro", "shots": [
+            {"prompt": "They climb a spiral stair with a flashlight.", "dialogue": "Móra: ¡Arriba!", "cast": ["MORA", "Nobody"],
+             "seconds": 7, "continues": True},
+            {"prompt": "", "dialogue": "nothing to show"}]}]})]
+r = client.post("/studio/api/film-script", headers=HOME, json={"project": "film1", "idea": "dos chicos y un faro", "seconds": 60,
+                                                               "new_characters": True, "replace": True})
+out = r.get_json() or {}
+made = [c for c in posted_f2 if c[1] == "projects/film1/characters"]
+add = next((c for c in posted_f2 if c[1] == "projects/film1/items"), None)
+items = add[2]["items"] if add else []
+check("the new characters the story brings are made in the project, once -- one already there is not made again",
+      r.status_code == 200 and [c[2]["name"] for c in made] == ["Mora"] and made[0][3] == "Alfred" and out["characters"] == 1,
+      (out, made))
+check("  the shots are filed after a title card, each scene's heading on its first shot",
+      items and items[0]["card"]["title"] == "El faro encendido" and [i.get("title") for i in items[1:]]
+      == ["Playa, atardecer", "", "Dentro del faro"], items)
+check("  its cast by id, found by name whatever the case or accents -- names of nobody dropped",
+      [i.get("cast") for i in items[1:]] == [["tomi1", "newmorxxxxxx"], [], ["newmorxxxxxx"]], items)
+check("  a shot is 5-10 seconds, a scene's first shot never carries on from the one before, and one with no "
+      "description is left out",
+      [i["seconds"] for i in items[1:]] == [10, 5, 7] and [i["continuity"] for i in items[1:]] == [False, True, False]
+      and len(items) == 4 and items[1]["dialogue"] == "Tomi: ¿Lo ves?\nMora: Sí.", items)
+_put_f2 = ("PUT", "projects/film1", {"shots": []}, "Alfred")
+check("  written again, the old shots go first", _put_f2 in posted_f2 and posted_f2.index(_put_f2) < posted_f2.index(add),
+      posted_f2)
+text_f2, prof_f2 = asked_f2[-1] if asked_f2 else ("", "")
+check("  written by the Designer, the dialogue as \"Name: words\" in the film's language, the cast as described",
+      prof_f2 == "designer" and '"Name: words"' in text_f2 and "in Spanish" in text_f2 and "a boy of ten, red cap" in text_f2
+      and "about 9 shots" in text_f2 and A.STUDIO_STYLE_RULE in text_f2, text_f2[:800])
+posted_f2.clear(); asked_f2.clear()
+answers_f2[:] = [json.dumps({"title": "x", "characters": [{"name": "Pili", "look": "y"}],
+                             "scenes": [{"heading": "h", "shots": [{"prompt": "p", "cast": ["Pili"]}]}]})]
+client.post("/studio/api/film-script", headers=HOME, json={"project": "film1", "idea": "z", "new_characters": False})
+check("without leave to add characters, none is made and Alfred is told to use only the listed ones",
+      not [c for c in posted_f2 if c[1] == "projects/film1/characters"] and "Use only the listed characters" in asked_f2[-1][0])
+A._studio_call, A._run_nanobot_turn = _saved_f2
+
+
 print("\na Studio notification opens the Studio")
 _sent = []
 _saved_n = A._notify_user

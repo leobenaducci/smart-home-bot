@@ -100,6 +100,14 @@
     .story-cover .cover-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .story-take { display: flex; gap: 10px; align-items: center; }
     .card.pod-line { padding-top: 10px; padding-bottom: 10px; }
+    .card.script { display: grid; gap: 10px; }
+    .script-scene { font-family: var(--display); font-weight: 700; font-size: 1.05rem; text-transform: uppercase;
+      letter-spacing: .02em; background: transparent; border: 1px solid transparent; padding: 6px 4px; margin-top: 8px; }
+    .script-scene:hover, .script-scene:focus { border-color: var(--line); background: var(--paper); }
+    .script-card { font-weight: 800; margin: 0; }
+    .script-shot { display: grid; gap: 6px; padding-left: 10px; border-left: 3px solid var(--line); }
+    .script-meta { font-size: .8rem; }
+    .script-dialogue { font-style: italic; }
     .point-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 14px; align-items: start; }
     .point-pic { aspect-ratio: 16/9; background: var(--wall); border-radius: var(--r); display: grid; place-items: center; overflow: hidden; }
     .point-pic img, .point-pic video { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -545,7 +553,7 @@
     // ── Projects ────────────────────────────────────────────────────────────
     // What a project is for: its starting shape and the flow Alfred plans it
     // with. The ones not built yet are shown, and said to be coming.
-    var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️' },
+    var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️', ready: true },
                  { id: 'explainer', icon: '🎓', ready: true }, { id: 'podcast', icon: '🎙️', ready: true }, { id: 'recording', icon: '🔴', ready: true },
                  { id: 'audio_story', icon: '📻', ready: true },
                  { id: 'free', icon: '✨', ready: true }];
@@ -862,7 +870,7 @@
       if (current.kind === 'recording' && tab === 'board') tab = 'video';
       if (current.kind === 'music_video' || current.kind === 'short_film') {
         var shotsNow = current.shots || [];
-        if (!shotsNow.length) tab = current.kind === 'music_video' ? 'audio' : tab;
+        if (!shotsNow.length) tab = current.kind === 'music_video' ? 'audio' : 'script';
         else if (!shotsNow.some(function (sh) { return (sh.takes || []).length; })) tab = 'board';
       }
       if (tabsFor(current.kind).indexOf(tab) < 0) tab = tabsFor(current.kind)[0];
@@ -1343,6 +1351,9 @@
       // An explainer is its points: each a picture (or a clip, made on the
       // Video tab) and the narration said over it.
       if (kind === 'explainer') return ['points', 'video', 'audio', 'cast', 'images', 'files'];
+      // A short film starts from its script, then goes the music video's way:
+      // a storyboard to approve, then the shots.
+      if (kind === 'short_film') return ['script', 'board', 'video', 'cast', 'audio', 'images', 'files'];
       return ['video', 'board', 'audio', 'images', 'cast', 'files'];
     }
     function drawRail() {
@@ -1394,6 +1405,7 @@
       if (tab === 'video') { body.innerHTML = videoTab(); wireLayered(); }
       else if (tab === 'audio') body.innerHTML = audioTab();
       else if (tab === 'points') body.innerHTML = pointsTab();
+      else if (tab === 'script') body.innerHTML = scriptTab();
       else if (tab === 'images') body.innerHTML = imagesTab();
       else body.innerHTML = filesTab();
     }
@@ -1749,6 +1761,50 @@
         '<div class="row" style="margin-top:6px"><button data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
         (t && t.file ? dlLink(p.id, t.file, p.name + ' - ' + (who ? who.name : '')) : '') + '</div></div>';
     }
+    // ── Short film ─────────────────────────────────────────────────────────
+    // The script: Alfred writes scenes of short shots from an idea -- each a
+    // description, its dialogue ("Name: words", said in the shot with
+    // lip-synced voices), its cast and its length -- and may bring in new
+    // recurring characters. Read and edited here as a script; drawn on the
+    // Storyboard tab and made on the Video tab, as a music video's shots are.
+    var filmDraft = {};
+    function filmBox() {
+      var p = current, d = filmDraft[p.id] || (filmDraft[p.id] = { idea: '', seconds: 60, chars: true });
+      var rate = (queueState && queueState.video_rate) || 300;
+      return '<div class="card"><b>✍️ ' + S.film_title + '</b>' +
+        '<label class="f" for="film-idea">' + S.film_idea + '</label><textarea id="film-idea" rows="3" placeholder="' + esc(S.film_idea_ph) + '">' + esc(d.idea) + '</textarea>' +
+        '<div class="row" style="margin-top:8px;flex-wrap:wrap;align-items:center">' +
+        '<label class="f" style="margin:0" for="film-seconds">' + S.film_length + '</label><select id="film-seconds" style="width:auto">' +
+        [[30, '30 s'], [60, '1 min'], [120, '2 min'], [180, '3 min']].map(function (o) { return '<option value="' + o[0] + '"' + (+d.seconds === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+        '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="film-chars"' + (d.chars ? ' checked' : '') + '> 👤 ' + S.film_new_chars + '</label>' +
+        '<span class="grow"></span><button class="primary" id="film-write">✍️ ' + S.film_write + '</button></div>' +
+        '<p class="muted" style="margin-top:6px" id="film-estimate">' + fmt('film_estimate', { t: dur(d.seconds * rate) }) + '</p></div>';
+    }
+    function scriptTab() {
+      var p = current, n = 0, byId = {};
+      cast.forEach(function (c) { byId[c.id] = c.name; });
+      var html = filmBox() + '<p class="muted" style="margin:4px 0 12px">' + esc(S.film_help) + '</p>';
+      var shots = (p.shots || []).filter(function (s) { return !s.recorded; });
+      if (!shots.length) return html + '<div class="card"><p class="muted">' + S.film_empty + '</p></div>';
+      html += '<div class="card script">';
+      shots.forEach(function (s) {
+        if (s.card) { html += '<p class="script-card">🔤 ' + esc(s.card.title || S.card_label) + '</p>'; return; }
+        n++;
+        if (s.title) html += '<input class="script-scene" data-f="title" data-id="' + s.id + '" value="' + esc(s.title) + '" placeholder="' + esc(S.film_scene_ph) + '" aria-label="' + esc(S.film_scene_ph) + '">';
+        var who = (s.cast || []).map(function (c) { return byId[c]; }).filter(Boolean);
+        html += '<div class="script-shot"><div class="muted script-meta">' + fmt('film_shot', { n: n }) + ' · ' + (s.seconds || 5) + ' ' + S.sec +
+          (s.continuity && n > 1 ? ' · ⛓' : '') + (who.length ? ' · 👤 ' + esc(who.join(', ')) : '') + '</div>' +
+          '<textarea rows="2" data-f="prompt" data-id="' + s.id + '" aria-label="' + esc(S.shot_what) + '">' + esc(s.prompt) + '</textarea>' +
+          '<textarea rows="2" class="script-dialogue" data-f="dialogue" data-id="' + s.id + '" placeholder="' + esc(S.film_dialogue_ph) + '" aria-label="' + esc(S.film_dialogue) + '">' + esc(s.dialogue) + '</textarea></div>';
+      });
+      html += '</div>';
+      var undrawn = shots.filter(function (s) { return !s.card && !(s.boards || []).length && s.prompt && !boardJob(s); }).length;
+      html += '<div class="row" style="margin-top:12px"><span class="grow"></span>' +
+        (undrawn ? '<button class="primary" id="board-all">🖼️ ' + fmt('film_draw', { n: undrawn }) + '</button>' : '') +
+        '<button data-tab="board">' + S.tab_board + ' →</button></div>';
+      return html;
+    }
+
     // ── Explainer ──────────────────────────────────────────────────────────
     // Points in order: a title card, or a picture (the storyboard's frame, or
     // a clip made from it on the Video tab) with its narration -- the voice
@@ -2094,6 +2150,7 @@
       if (el.id === 'cover-prompt') { coverDraft[current.id] = el.value; return; }
       if (el.id === 'pod-topic') { (podDraft[current.id] || {}).topic = el.value; return; }
       if (el.id === 'exp-topic') { (expDraft[current.id] || {}).topic = el.value; return; }
+      if (el.id === 'film-idea') { (filmDraft[current.id] || {}).idea = el.value; return; }
       if (el.dataset.eyeStrength) { eyeStrength[el.dataset.eyeStrength] = Number(el.value); return; }
       if (el.dataset.cardF) {
         var cs3 = itemById(el.dataset.id); if (!cs3 || !cs3.card) return;
@@ -2133,6 +2190,13 @@
       if (el.id === 'pod-minutes') { (podDraft[current.id] || {}).minutes = Number(el.value); return; }
       if (el.id === 'exp-minutes') { (expDraft[current.id] || {}).minutes = Number(el.value); return; }
       if (el.id === 'exp-card') { (expDraft[current.id] || {}).card = el.checked; return; }
+      if (el.id === 'film-chars') { (filmDraft[current.id] || {}).chars = el.checked; return; }
+      if (el.id === 'film-seconds') {
+        var fd2 = filmDraft[current.id]; if (!fd2) return;
+        fd2.seconds = Number(el.value);
+        var est = $('#film-estimate'); if (est) est.textContent = fmt('film_estimate', { t: dur(fd2.seconds * ((queueState && queueState.video_rate) || 300)) });
+        return;
+      }
       if (el.id === 'exp-narrator') {
         // The narrator says every narration that was the old narrator's.
         var old = (current.settings || {}).narrator;
@@ -2262,6 +2326,23 @@
           if (!coverItem()) { current.settings.cover = current.images[current.images.length - 1].id; await saveNow(); }
           delete coverDraft[p.id];
           return generate([coverItem().id]);
+        }
+        if (b.id === 'film-write') {
+          var fd = filmDraft[p.id] || {};
+          if (!(fd.idea || '').trim()) { toast(S.film_need_idea, true); return; }
+          var hasShots = (p.shots || []).some(function (s) { return !s.recorded; });
+          if (hasShots && !confirm(S.film_replace_confirm)) return;
+          await flushSave();
+          b.disabled = true; b.textContent = '✍️ ' + S.pod_writing; busy++;
+          try {
+            var fr = await api('film-script', { method: 'POST', body: { project: p.id, idea: fd.idea, seconds: fd.seconds,
+                                                                      new_characters: !!fd.chars, replace: hasShots } });
+            if (fr.title && (p.name === S.untitled || !p.name.trim())) { current = await api('projects/' + p.id); current.name = fr.title; markDirty(); await flushSave(); }
+            await loadCast();
+            toast(fmt('film_written', { n: fr.shots, s: fr.seconds }) + (fr.characters ? ' ' + fmt('film_new_made', { n: fr.characters }) : ''));
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          finally { busy--; current = await api('projects/' + p.id); drawEditor(); }
+          return;
         }
         if (b.id === 'exp-write') {
           var ed = expDraft[p.id] || {};

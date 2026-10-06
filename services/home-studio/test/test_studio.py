@@ -49,6 +49,13 @@ check("  a continued shot starts from a frame (S) with the small text encoder",
 s = recipes.settings_for("video_shot", {"prompt": "x", "dialogue": "Hola, ¿qué tal?", "start_image": "/a", "end_image": "/b"})
 check("  dialogue goes in H3's <d>[Spanish] ...</d>, both ends anchored (SE)",
       "<d>[Spanish] Hola, ¿qué tal?</d>" in s["prompt"] and s["image_prompt_type"] == "SE", s["prompt"])
+two = recipes.h3_prompt({"prompt": "two kids at a lighthouse", "characters": "Tomi: a boy of ten; Mora: a girl of nine",
+                         "dialogue": "Tomi: ¿Ves la luz?\nMora: Sí, gira.\nTomi: ¡Qué lindo!\nLook: the sea"})
+check("  a script's lines go to their speakers -- S1, S2 by who speaks first -- without the name spoken",
+      "(S1) <d>[Spanish] ¿Ves la luz?</d> (S2) <d>[Spanish] Sí, gira.</d> (S1) <d>[Spanish] ¡Qué lindo!</d>" in two
+      and "The characters speak" in two and "Tomi:" not in two.split("synchronization:")[1], two)
+check("  and a colon in a line that names no one in the shot is just part of the line",
+      "(S1) <d>[Spanish] Look: the sea</d>" in two, two)
 s = recipes.settings_for("video_shot", {"prompt": "a cat walks", "look": "pastel watercolour."})
 check("  a shot's video carries the film's look, the same words as its frame",
       s["prompt"].count("Visual style: pastel watercolour.") == 1

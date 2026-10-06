@@ -8,8 +8,8 @@ the top of the Studio answers questions about using it.
 ## Projects
 
 - **New project** (＋ on the projects page): give it a name and pick what it is
-  for. *Music video*, *Recording* (tutorials, screen and camera), *Audio story*,
-  *Podcast*, *Explainer* and *Free* are ready; *short film* is coming.
+  for: *Music video*, *Short film*, *Recording* (tutorials, screen and camera),
+  *Explainer*, *Podcast*, *Audio story* or *Free*.
 - Anything you ask Alfred for without naming a project lands in your default
   project, called "Alfred".
 - A project has tabs: **Video** (the shots or recordings, in order),
@@ -157,6 +157,24 @@ cover picture. Make a project of the kind **Audio story**; it opens on the
    picture, for any player. **🎞️ As a video with the cover** makes a video of
    the cover over the sound, for sites that only take video (YouTube). Both
    are listed under **The story, put together**, to play or download.
+
+## A short film
+
+An idea, a script, scenes and shots with dialogue and recurring characters.
+
+1. On the **Script** tab, **✍️ Write the script with Alfred**: tell the idea
+   and the length (30 s to 3 min). Alfred writes scenes of short shots (5-10 s
+   each), each with what is on screen, who is in it and what they say. Tick
+   **Alfred may add characters** to let the story bring up to three of its
+   own; they appear in **Characters** -- give them a picture so they keep their
+   faces from shot to shot. The page says how long the video will take on the
+   card (about 5 hours a minute of film).
+2. Read it as a script and edit any description or line. Dialogue is one line
+   per speaker, as **Name: what they say**; in the video each line is said by
+   that character, with lip sync.
+3. Then as for a music video: **Draw the storyboard**, approve or correct the
+   frames on the **Storyboard** tab (🔁 Refine helps), make the shots on the
+   **Video** tab and **🎞️ Put the film together**.
 
 ## An explainer
 
