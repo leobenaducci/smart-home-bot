@@ -18,6 +18,13 @@ IMAGE_MODEL = "z_image"
 SONG_MODEL = "ace_step_v1_5_turbo_lm_1_7b"
 INSTRUMENTAL_MODEL = "stable_audio3_medium"
 VOICE_MODEL = "qwen3_tts_base"
+# The memory profile a song, an instrumental or a voice asks for: WanGP's own
+# audio default, each model whole on the card. The session's profile 5
+# (worker.py) is H3's, and WanGP applies a command-line profile to *every*
+# output, so without this a song streamed its weights from RAM per layer --
+# the 1.7B LM decodes a token at a time, 2-3 GB/s over PCIe with the card 30%
+# busy, and a 270 s song took 18-34 minutes.
+AUDIO_PROFILE = 3.5
 # Drawing *from pictures*: the cast's photos or portraits, and the pictures the
 # person flagged as the film's style. Z-Image reads text only, so a character
 # it draws is whoever its description makes them, different every frame.
@@ -143,7 +150,8 @@ def settings_for(kind: str, p: dict) -> dict:
         out = {"model_type": SONG_MODEL, "prompt": lyrics,
                "alt_prompt": str(p.get("style") or "").strip(),
                "duration_seconds": max(10, min(600, int(p.get("seconds") or 60))),
-               "seed": seed, "custom_settings": {"language": str(p.get("language") or "es")}}
+               "seed": seed, "custom_settings": {"language": str(p.get("language") or "es")},
+               "override_profile": AUDIO_PROFILE}
         if p.get("bpm"):
             out["custom_settings"]["bpm"] = int(p["bpm"])
         # A retouch of a song already made: ACE-Step's cover mode, the whole
@@ -161,7 +169,8 @@ def settings_for(kind: str, p: dict) -> dict:
         if not str(p.get("style") or "").strip():
             raise RecipeError("an instrumental needs a description of the sound")
         return {"model_type": INSTRUMENTAL_MODEL, "prompt": p["style"],
-                "duration_seconds": max(5, min(380, int(p.get("seconds") or 30))), "seed": seed}
+                "duration_seconds": max(5, min(380, int(p.get("seconds") or 30))), "seed": seed,
+                "override_profile": AUDIO_PROFILE}
     if kind == "voice":
         if not p.get("voice_file"):
             raise RecipeError("a cloned voice needs a sample of that voice")
@@ -169,7 +178,8 @@ def settings_for(kind: str, p: dict) -> dict:
             raise RecipeError("nothing to say")
         return {"model_type": VOICE_MODEL, "prompt": p["text"], "audio_prompt_type": "A",
                 "audio_guide": p["voice_file"], "alt_prompt": str(p.get("voice_text") or ""),
-                "duration_seconds": max(5, min(300, int(p.get("seconds") or 60))), "seed": seed}
+                "duration_seconds": max(5, min(300, int(p.get("seconds") or 60))), "seed": seed,
+                "override_profile": AUDIO_PROFILE}
     # Video: a shot, or an edit of one.
     size = p.get("size") if p.get("size") in VIDEO_SIZES else VIDEO_SIZES[0]
     out = {"model_type": VIDEO_MODEL, "config": H3_CONFIG, "resolution": size,

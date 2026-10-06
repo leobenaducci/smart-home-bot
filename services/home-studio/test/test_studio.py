@@ -67,6 +67,12 @@ check("  and the job is filed under the model it will run on",
 s = recipes.settings_for("song", {"lyrics": "[Verse]\nla la", "style": "pop", "seconds": 60})
 check("  a song: lyrics are the prompt, style the caption, Spanish by default",
       s["prompt"].startswith("[Verse]") and s["alt_prompt"] == "pop" and s["custom_settings"]["language"] == "es", s)
+check("  audio asks for the audio profile, whole on the card; a video keeps the session's",
+      s["override_profile"] == recipes.AUDIO_PROFILE
+      and recipes.settings_for("instrumental", {"style": "rock"})["override_profile"] == recipes.AUDIO_PROFILE
+      and recipes.settings_for("voice", {"text": "hola", "voice_file": "/v.wav"})["override_profile"] == recipes.AUDIO_PROFILE
+      and "override_profile" not in recipes.settings_for("video_shot", {"prompt": "x"})
+      and "override_profile" not in recipes.settings_for("image", {"prompt": "x"}), s)
 try:
     recipes.settings_for("voice", {"text": "hola"})
     check("  a voice without a sample is refused", False)
@@ -90,6 +96,21 @@ a = store.add(owner=MORA, owner_name="Mora", kind="video_shot", model="h3", para
 b = store.add(owner=MORA, owner_name="Mora", kind="video_shot", model="h3", params={}, title="m2", after=a["id"])
 order = [j["title"] for j in store.order()]
 check("  a shot never runs before the one it continues", order.index("m1") < order.index("m2"), order)
+rr = Store(tmp / "rr.db")
+for i in range(6):
+    rr.add(owner=TOMI, owner_name="Tomi", kind="board", model="flux", params={}, title=f"T{i}")
+prev = None
+for i in range(3):
+    prev = rr.add(owner=MORA, owner_name="Mora", kind="video_shot", model="h3", params={}, title=f"M{i}",
+                  after=prev["id"] if prev else "")
+for i in range(2):
+    rr.add(owner=JUANA, owner_name="Juana", kind="song", model="ace", params={}, title=f"J{i}")
+check("  several people at once take turns, a job each, whatever the model or the queue's length",
+      [j["title"] for j in rr.order()] == ["T0", "M0", "J0", "T1", "M1", "J1", "T2", "M2", "T3", "T4", "T5"],
+      [j["title"] for j in rr.order()])
+rr.update(rr.order()[0]["id"], state="running", started=time.time())
+check("  and whoever is on the card goes to the back of the turn",
+      [j["title"] for j in rr.order()][:3] == ["M0", "J0", "T1"], [j["title"] for j in rr.order()])
 sched = store.schedule()
 check("  every queued job has a position and a start estimate",
       all(j["position"] and j["starts_in"] is not None for j in sched) and sched[0]["starts_in"] == 0)
@@ -365,7 +386,7 @@ else:
         def separate_vocals(self, song, work):
             return song
 
-        def align(self, vocals, text, language, work):
+        def align_mono(self, mono, text, language):
             # Two words a second from 3 s, a three-second break after the verse
             # (12 words), so the song has an intro, a break and an outro.
             out, t = [], 3.0
@@ -386,6 +407,54 @@ else:
     check("  sections come out in time, with the unsung stretches marked",
           names[0] == ("Instrumental", False) and ("Verso", True) in names and ("Coro", True) in names
           and names[-1] == ("Instrumental", False), names)
+
+    # A long song, followed a window at a time: the aligner here refuses more
+    # than 90 s, places what is really sung in the window, and squeezes any
+    # lines it was given beyond that into the window's last two seconds --
+    # what too much text does to a forced aligner.
+    truth, t = [], 6.0
+    for n in range(44):
+        if n == 28:
+            t += 25.0                                   # a guitar solo
+        truth.append((t, t + 3.2))
+        t += 4.6
+    long_lines = [{"text": f"linea {n} palabra{n}", "section": "Verse", "section_index": 0} for n in range(44)]
+    calls = []
+
+    def fake_window(start, end, some):
+        assert end - start <= 90.0, ("refused", start, end)
+        calls.append((round(start, 1), round(end, 1), len(some)))
+        out, crowd = [], end - 2.0
+        for line in some:
+            n = int(line["text"].split()[1])
+            a, b = truth[n]
+            if a >= start and b <= end:
+                out += [{"word": "linea", "start": a, "end": a + 1.5}, {"word": str(n), "start": a + 1.5, "end": a + 2.0},
+                        {"word": f"palabra{n}", "start": a + 2.0, "end": b}]
+            else:
+                out += [{"word": w, "start": crowd, "end": crowd + 0.05} for w in ("linea", str(n), f"palabra{n}")]
+                crowd += 0.05
+        return out
+    song_len = truth[-1][1] + 8.0
+    gaps = [(truth[n][1], truth[n + 1][0]) for n in range(43)]
+    got = analysis.align_windows(fake_window, long_lines, song_len, gaps)
+    check(f"  a {song_len:.0f} s song is followed in windows the aligner takes",
+          len(calls) >= 3 and all(e - s_ <= 90 for s_, e, _k in calls), calls)
+    wrong = [n for n, l in enumerate(got) if abs(l.get("start", -99) - truth[n][0]) > 0.01]
+    check("  and every line lands where it is sung, the solo included", not wrong,
+          [(n, got[n].get("start"), truth[n][0]) for n in wrong][:6])
+    check("  each window ends in a pause, so no word is cut in two",
+          all(any(abs(e - (a + b) / 2) < 0.01 for a, b in gaps) or e == round(song_len, 1) for _s, e, _k in calls), calls)
+    held = analysis.end_at_pauses([{"text": "y su caballo", "start": 59.25, "end": 67.73,
+                                    "words": [{"word": "y", "start": 59.25, "end": 59.5},
+                                              {"word": "caballo", "start": 61.0, "end": 67.73}]},
+                                   {"text": "otra", "start": 67.81, "end": 70.6}],
+                                  [(63.9, 67.8), (70.7, 70.9)])
+    check("  a line held on through a pause ends where the pause begins; a short pause changes nothing",
+          held[0]["end"] == 63.9 and held[1]["end"] == 70.6, held)
+    nothing = analysis.align_windows(lambda a, b, s_: [], long_lines[:3], 200.0)
+    check("  an aligner that finds nothing leaves the lines unplaced, not the analysis broken",
+          len(nothing) == 3 and not any("start" in l for l in nothing), nothing)
     check("  the beats are found (120 bpm clicks)", 100 < an["tempo"] < 140 and len(an["beats"]) >= 12, (an["tempo"], len(an["beats"])))
     gaps = [b - a for a, b in zip(an["beats"], an["beats"][1:])]
     check("  on a steady grid: one tempo, every beat the same distance apart",
@@ -1155,6 +1224,12 @@ check("  and whether the frame kept to the film's style", rv["review"]["style"] 
 rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
             json={"review": {"score": 4, "style": "<b>"}}, headers=h(JUANA, "Juana")).json()
 check("  as one of three words, or nothing", rv["review"]["style"] == "", rv.get("review"))
+rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
+            json={"review": {"score": 9, "style": "yes", "own_style": "black-and-white pencil sketch " * 20}},
+            headers=h(JUANA, "Juana")).json()
+check("  and the style its shot asks for itself, when it asks for one",
+      rv["review"]["own_style"].startswith("black-and-white pencil sketch") and len(rv["review"]["own_style"]) <= 200,
+      rv.get("review"))
 check("  a review without a score is refused",
       c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review", json={"review": {"ok": []}},
              headers=h(JUANA, "Juana")).status_code == 404)
@@ -1890,6 +1965,178 @@ check("  at the size nearest the one asked for", imgs[-1]["prompt"] == "a red bo
       imgs[-1])
 check("  and nobody else's default project is involved",
       c.get("/api/default-project", headers=h(TOMI, "Tomi")).json()["id"] != d1["id"])
+
+print("\ncollections: a person's projects gathered under a name")
+HJ, HT = h(JUANA, "Juana"), h(TOMI, "Tomi")
+check("  a collection needs a name", c.post("/api/collections", json={"name": "  "}, headers=HJ).status_code == 400)
+nico = c.post("/api/collections", json={"name": "Nico"}, headers=HJ).json()
+cumple = c.post("/api/collections", json={"name": "Cumples"}, headers=HJ).json()
+inside = c.post("/api/projects", json={"name": "Pirata", "kind": "free", "collection": nico["id"]}, headers=HJ).json()
+check("  a project made inside a collection is in it",
+      next(x for x in c.get("/api/projects", headers=HJ).json()["projects"] if x["id"] == inside["id"])["collections"]
+      == [nico["id"]])
+check("  an unknown collection makes no project",
+      c.post("/api/projects", json={"name": "x", "collection": "zzzzzzzz"}, headers=HJ).status_code == 404
+      and not any(x["name"] == "x" for x in c.get("/api/projects", headers=HJ).json()["projects"]))
+c.post(f"/api/collections/{cumple['id']}/projects", json={"project": inside["id"]}, headers=HJ)
+c.post(f"/api/collections/{cumple['id']}/projects", json={"project": inside["id"]}, headers=HJ)
+c.post(f"/api/collections/{nico['id']}/projects", json={"project": d1["id"]}, headers=HJ)
+lst = c.get("/api/projects", headers=HJ).json()
+mine = {x["id"]: x["collections"] for x in lst["projects"]}
+check("  added to a second collection, once however often it is asked",
+      mine[inside["id"]] == [nico["id"], cumple["id"]], mine)
+check("  each collection counts its projects",
+      {x["name"]: x["count"] for x in lst["collections"]} == {"Nico": 2, "Cumples": 1}, lst["collections"])
+check("  Tomi sees none of Juana's collections, and cannot add to them",
+      c.get("/api/projects", headers=HT).json()["collections"] == []
+      and c.post(f"/api/collections/{nico['id']}/projects", json={"project": inside["id"]}, headers=HT).status_code == 404)
+tomis = c.post("/api/projects", json={"name": "De Tomi"}, headers=HT).json()
+check("  nor can Juana file Tomi's project in hers",
+      c.post(f"/api/collections/{nico['id']}/projects", json={"project": tomis["id"]}, headers=HJ).status_code == 404)
+c.delete(f"/api/collections/{cumple['id']}/projects/{inside['id']}", headers=HJ)
+check("  removed from one collection, it stays in the other and the project stays",
+      next(x for x in c.get("/api/projects", headers=HJ).json()["projects"] if x["id"] == inside["id"])["collections"]
+      == [nico["id"]])
+c.put(f"/api/collections/{nico['id']}", json={"name": "Nico pirata"}, headers=HJ)
+copy = c.post(f"/api/projects/{inside['id']}/duplicate", json={}, headers=HJ).json()
+lst = c.get("/api/projects", headers=HJ).json()
+check("  renamed; and a copy sits where its original does",
+      [x["name"] for x in lst["collections"] if x["id"] == nico["id"]] == ["Nico pirata"]
+      and next(x for x in lst["projects"] if x["id"] == copy["id"])["collections"] == [nico["id"]])
+hist = c.get(f"/api/projects/{inside['id']}/history", headers=HJ).json()
+check("  filing a project is not a change to it: its history does not grow",
+      not any("ollection" in json.dumps(r) for r in (hist.get("revisions") or hist.get("log") or [])), hist)
+c.delete(f"/api/projects/{copy['id']}", headers=HJ)
+c.delete(f"/api/collections/{nico['id']}", headers=HJ)
+lst = c.get("/api/projects", headers=HJ).json()
+check("  a deleted collection takes no project with it",
+      [x["name"] for x in lst["collections"]] == ["Cumples"]
+      and all(x["collections"] == [] for x in lst["projects"]) and any(x["id"] == inside["id"] for x in lst["projects"]),
+      lst)
+
+print("\nan audio story: voices in order, music under them, a cover")
+from studio import story  # noqa: E402
+pl, total = story.plan([("instrumental", "m", 20), ("voice", "a", 5), ("voice", "b", 4), ("song", "s", 30),
+                        ("voice", "c", 3), ("instrumental", "x", 8)])
+by = {p["file"]: p for p in pl}
+check("  the music before the voices plays alone first, then under them, quietly and looped",
+      by["a"]["start"] == story.LEAD and by["m"]["start"] == 0 and by["m"]["volume"] == story.BED and by["m"]["loop"]
+      and by["b"]["start"] == round(story.LEAD + 5 + story.GAP, 3), pl)
+check("  a song ends the music under it and plays whole",
+      by["m"]["start"] + by["m"]["length"] <= by["s"]["start"] + 1.0 and by["s"]["volume"] == 1.0
+      and by["c"]["start"] == round(by["s"]["start"] + 30 + story.GAP, 3), pl)
+check("  music with nothing to go under is an interlude, whole and at its own level",
+      by["x"]["volume"] == story.MUSIC and not by["x"]["loop"] and by["x"]["length"] == 8
+      and total == round(by["x"]["start"] + 8, 3), (pl, total))
+pl2, total2 = story.plan([("voice", "a", 5), ("instrumental", "m", 3), ("voice", "b", 4)])
+check("  music under the last voices lasts past them and fades",
+      {p["file"]: p for p in pl2}["m"]["length"] == round(story.LEAD + 4 + story.TAIL, 3)
+      and total2 == round(5 + story.GAP + story.LEAD + 4 + story.TAIL, 3), (pl2, total2))
+check("  nothing made yet is nothing to place", story.plan([("voice", "a", 0)]) == ([], 0.0))
+
+sp = c.post("/api/projects", json={"name": "El faro", "kind": "audio_story"}, headers=HJ).json()
+check("  a project can be an audio story", sp["kind"] == "audio_story")
+spdir = A.projects.dir(JUANA, sp["id"])
+(spdir / "takes").mkdir(exist_ok=True)
+
+
+def tone(name, seconds, freq):
+    out = spdir / "takes" / name
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"sine=frequency={freq}:duration={seconds}", "-ac", "2", str(out)], check=True)
+    return out.name
+
+
+saved = c.put(f"/api/projects/{sp['id']}", json={"audio": [
+    {"kind": "instrumental", "title": "Intro", "style": "soft piano"},
+    {"kind": "voice", "title": "Narrador", "text": "Había una vez un faro."},
+    {"kind": "voice", "title": "Bruma", "text": "¡Hola!"}],
+    "images": [{"prompt": "a lighthouse at dusk", "size": "1024x1024"}]}, headers=HJ).json()
+intro, line1, line2 = (a["id"] for a in saved["audio"])
+cover_id = saved["images"][0]["id"]
+for iid, (name, secs, f) in zip((intro, line1, line2), (("intro.wav", 4, 220), ("n.wav", 3, 440), ("b.wav", 2, 660))):
+    A.projects.add_take(JUANA, sp["id"], iid, {"file": "takes/" + tone(name, secs, f)})
+check("  the story wants a version of something before it can be put together",
+      c.post(f"/api/projects/{c.post('/api/projects', json={'name': 'vacía', 'kind': 'audio_story'}, headers=HJ).json()['id']}/story",
+             json={}, headers=HJ).status_code == 400)
+check("  and a video of it wants its cover",
+      c.post(f"/api/projects/{sp['id']}/story", json={"format": "video"}, headers=HJ).status_code == 400)
+subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=navy:s=512x512",
+                "-frames:v", "1", str(spdir / "takes" / "cover.jpg")], check=True)
+A.projects.add_take(JUANA, sp["id"], cover_id, {"file": "takes/cover.jpg"})
+c.put(f"/api/projects/{sp['id']}", json={"settings": {"cover": cover_id}}, headers=HJ)
+check("  its cover is the picture named, on its card",
+      next(x for x in c.get("/api/projects", headers=HJ).json()["projects"] if x["id"] == sp["id"])["cover"]
+      == "takes/cover.jpg")
+c.put(f"/api/projects/{sp['id']}", json={"settings": {"cover": "../../x"}}, headers=HJ)
+check("  and a cover is an item id, nothing else",
+      c.get(f"/api/projects/{sp['id']}", headers=HJ).json()["settings"]["cover"] == "")
+c.put(f"/api/projects/{sp['id']}", json={"settings": {"cover": cover_id}}, headers=HJ)
+
+
+def story_done(fmt):
+    c.post(f"/api/projects/{sp['id']}/story", json={"format": fmt}, headers=HJ)
+    deadline = time.time() + 240
+    while time.time() < deadline:
+        st = c.get(f"/api/projects/{sp['id']}", headers=HJ).json()
+        if (st.get("render") or {}).get("state") != "running":
+            return st
+        time.sleep(0.3)
+    return st
+
+
+st = story_done("audio")
+m4a = spdir / (st.get("render") or {}).get("file", "none")
+info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format",
+                                  str(m4a)], capture_output=True, text=True).stdout or "{}") if m4a.is_file() else {}
+kinds = sorted(s_["codec_type"] for s_ in info.get("streams", []))
+expected = story.plan([("instrumental", "", 4), ("voice", "", 3), ("voice", "", 2)])[1]
+check("  put together: an M4A as long as the plan, with the cover as its artwork",
+      m4a.suffix == ".m4a" and kinds == ["audio", "video"]
+      and abs(float(info["format"]["duration"]) - expected) < 0.5
+      and st["renders"][-1].get("story") and st["renders"][-1]["format"] == "m4a", (st.get("render"), kinds, info.get("format")))
+st = story_done("video")
+mp4 = spdir / (st.get("render") or {}).get("file", "none")
+vi = media.probe(mp4) if mp4.is_file() else {}
+check("  and as a video of the cover, square, for sites that take video only",
+      mp4.suffix == ".mp4" and (vi.get("width"), vi.get("height")) == (1080, 1080) and vi.get("has_audio")
+      and abs(vi.get("seconds", 0) - expected) < 0.7, (st.get("render"), vi))
+check("  the mix was not left behind",
+      not list((spdir / "renders").glob("*.wav")))
+
+bru = c.post(f"/api/projects/{sp['id']}/characters", json={"name": "Bruma", "look": "a small fox"}, headers=HJ).json()
+doc = c.get(f"/api/projects/{sp['id']}", headers=HJ).json()
+for a in doc["audio"]:
+    if a["id"] == line2:
+        a["speaker"] = bru["id"]
+c.put(f"/api/projects/{sp['id']}", json={"audio": doc["audio"]}, headers=HJ)
+r = c.post(f"/api/projects/{sp['id']}/generate", json={"items": [line2]}, headers=HJ)
+check("  a line said by a character without a voice sample is refused, by name",
+      r.status_code == 400 and "Bruma" in r.text, (r.status_code, r.text[:200]))
+c.post(f"/api/projects/{sp['id']}/characters/{bru['id']}/upload", headers=HJ,
+       files={"file": ("bruma.wav", (spdir / "takes" / "b.wav").read_bytes(), "audio/wav")}, data={"kind": "voice"})
+r = c.post(f"/api/projects/{sp['id']}/generate", json={"items": [line2]}, headers=HJ)
+job = A.store.get(r.json()["queued"][0]["id"]) if r.status_code == 200 else {}
+check("  with one, it is said in that character's voice",
+      r.status_code == 200 and job.get("kind") == "voice" and job["params"].get("voice_char") == bru["id"]
+      and not job["params"].get("voice_upload"), (r.status_code, r.text[:200], job.get("params")))
+A.manager.cancel(job["id"]) if job else None
+
+print("\n  a song whose words could not be followed before is listened to again, once")
+an_take = Projects.chosen_take(Projects.find(A.projects.load(JUANA, sp["id"]), intro)[2])
+(spdir / "takes" / "old-analysis.json").write_text(json.dumps(
+    {"aligned": False, "error": "could not follow the words: 500 Server Error", "lines": []}), encoding="utf-8")
+A.projects.set_take_field(JUANA, sp["id"], intro, an_take["id"], "analysis",
+                          {"file": "takes/old-analysis.json", "aligned": False})
+r = c.post(f"/api/projects/{sp['id']}/items/{intro}/analyze", json={}, headers=HJ).json()
+check("  an analysis from before the windows, without words, is queued again", bool(r.get("job")), r)
+A.manager.cancel(r["job"]["id"]) if r.get("job") else None
+(spdir / "takes" / "old-analysis.json").write_text(json.dumps(
+    {"aligned": False, "error": "could not follow the words: 500", "lines": [], "version": analysis.VERSION}),
+    encoding="utf-8")
+r = c.post(f"/api/projects/{sp['id']}/items/{intro}/analyze", json={}, headers=HJ).json()
+check("  but a current one is served as it is, so asking again does not loop",
+      not r.get("job") and r.get("analysis"), r)
 
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")

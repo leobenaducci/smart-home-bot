@@ -468,6 +468,35 @@ say(tmp, "12", ("user", "Publicá"), ("bot", "¿Seguro?"), ("user", "esperá, pr
 check("the latest word decides: 'wait' after 'publish' is not a yes",
       not G.approved(tmp, "999000111", 1790000000012, 0, "publish"))
 say(tmp, "12", ("user", "Ahora sí, publicá y desplegá"))
+opening = ("Fix request #13, made from this conversation:\n\n> add two actions\n\n"
+           "5. Tell me what changed and how to check it, and stop. Publish and deploy only when I say so.")
+say(tmp, "13", ("bot", "Listo, commiteado. ¿Lo publico y despliego?"), ("user", "Sí"),
+    ("bot", "improve publish se negó: no conversation"), ("user", "Creá el pedido"), ("user", opening))
+check("a request's own opening, made after the commit, is not the person asking",
+      not G.approved(tmp, "999000111", 1790000000013, 0, "publish")
+      and not G.approved(tmp, "999000111", 1790000000013, 0, "deploy"))
+say(tmp, "13", ("bot", "Es el pedido #13. ¿Lo publico?"), ("user", "Sí"))
+check("and a yes after it is",
+      G.approved(tmp, "999000111", 1790000000013, 0, "publish")
+      and not G.approved(tmp, "999000111", 1790000000013, 0, "deploy"))
+say(tmp, "14", ("user", "Fix request #14, asked of Alfred:\n\n> la luz\n\nPublish and deploy only when I say so."))
+check("nor is the opening of one Alfred filed",
+      not G.approved(tmp, "999000111", 1790000000014, 0, "publish"))
+rb = tmp / "rebased-wt"
+rb.mkdir()
+_now = int(_time.time())
+for cmd, env in ((["init", "-q"], {}), (["config", "user.email", "dueno@example.org"], {}),
+                 (["config", "user.name", "Dueño"], {}),
+                 (["commit", "-q", "--allow-empty", "-m", "the fix, rebased after the yes"],
+                  {"GIT_AUTHOR_DATE": f"{_now - 3600} +0000", "GIT_COMMITTER_DATE": f"{_now + 3600} +0000"})):
+    subprocess.run(["git", "-C", str(rb), *cmd], check=True, env={**os.environ, **env})
+say(tmp, "15", ("bot", "Listo, commiteado. ¿Lo publico?"), ("user", "Sí"))
+try:
+    G.require_approval(tmp, "15", rb, "publish")
+    check("a yes given before publish rebased the fix still counts: it was given after the fix was written", True)
+except W.WorkError as exc:
+    check("a yes given before publish rebased the fix still counts: it was given after the fix was written",
+          False, str(exc))
 check("the Programmer's own words are never an approval",
       not G.approved(tmp, "999000111", 1790000000099, 0, "publish"))
 check("code without a test is refused, a test without code is fine",
@@ -557,6 +586,11 @@ check("newest first, and only that person's when asked",
       [q["id"] for q in cli.requests(state, "999000111")] == [3, 1]
       and [q["id"] for q in cli.requests(state)] == [3, 2, 1])
 check("and no database is no requests, not an error", cli.requests(tmp / "nada") == [])
+check("a worktree starts only for a request the portal filed",
+      cli.filed(state, "3") and not cli.filed(state, "11") and not cli.filed(state, "x; rm")
+      and not cli.filed(tmp / "nada", "3"))
+check("and the refusal says how to get one",
+      "Make it a fix request" in cli.NOT_FILED and "#{rid}" in cli.NOT_FILED)
 
 print("\nwhen the checkout moved on while the fix was made")
 mv_wt = W.start(imp, [lrepo], "15", "luces2")

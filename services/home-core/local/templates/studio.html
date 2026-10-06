@@ -83,6 +83,25 @@
     .pcard .body { padding: 10px 12px; }
     .pcard .name { font-weight: 800; }
     .pcard.new .cover { background: var(--paper); color: var(--olive); }
+    .pcard { position: relative; }
+    .pcard .cover { position: relative; }
+    .pcard .pc-act { position: absolute; top: 6px; right: 6px; padding: 4px 8px; background: var(--paper); }
+    .pcard.coll .cover { background: var(--paper); color: var(--olive); }
+    .pcard .mosaic { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; gap: 2px; }
+    .pcard .mosaic i { background: var(--wall) center/cover no-repeat; }
+    .pcard .mosaic.n1 { grid-template-columns: 1fr; }
+    .pcard .mosaic.n3 i:first-child { grid-row: span 2; }
+    #phead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .ed-colls { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 10px; }
+    .ed-colls button { padding: 3px 10px; font-size: .74rem; }
+    /* An audio story's cover, square, beside what it shows. */
+    .story-cover .cover-art { width: 160px; aspect-ratio: 1; border-radius: var(--r-lg); background: var(--wall);
+      display: grid; place-items: center; font-size: 2.6rem; overflow: hidden; flex: none; }
+    .story-cover .cover-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .story-take { display: flex; gap: 10px; align-items: center; }
+    .story-take img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--r); flex: none; }
+    .story-take audio { flex: 1 1 auto; min-width: 0; width: 100%; }
+    @media (max-width: 520px) { .story-cover .cover-art { width: 100%; max-width: 260px; } }
 
     /* Editor: the title, where the project is in its making, and its tabs. */
     .ed-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -322,7 +341,8 @@
 
   <main>
     <section id="v-list">
-      <h2>{{ strings.projects }}</h2>
+      <h2 id="ptitle">{{ strings.projects }}</h2>
+      <div id="phead" hidden></div>
       <div class="grid" id="plist"></div>
     </section>
     <section id="v-edit" hidden></section>
@@ -521,12 +541,15 @@
     // with. The ones not built yet are shown, and said to be coming.
     var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️' },
                  { id: 'explainer', icon: '🎓' }, { id: 'podcast', icon: '🎙️' }, { id: 'recording', icon: '🔴', ready: true },
+                 { id: 'audio_story', icon: '📻', ready: true },
                  { id: 'free', icon: '✨', ready: true }];
     function kindIcon(k) { var f = KINDS.find(function (x) { return x.id === k; }); return f ? f.icon : '✨'; }
     function newProjectDialog() {
       var dlg = $('#dlg');
       dlg.innerHTML = '<h2>' + S.new_project + '</h2><label class="f">' + S.new_project_name + '</label>' +
-        '<input id="np-name" value="' + esc(S.untitled) + '"><label class="f">' + S.new_project_kind + '</label>' +
+        '<input id="np-name" value="' + esc(S.untitled) + '">' +
+        (collOpen() ? '<p class="muted">📁 ' + esc(fmt('coll_inside', { c: collOpen().name })) + '</p>' : '') +
+        '<label class="f">' + S.new_project_kind + '</label>' +
         KINDS.map(function (k) {
           return '<label class="choice"' + (k.ready ? '' : ' style="opacity:.55"') + '><input type="radio" name="np-kind" value="' + k.id + '"' +
             (k.id === 'music_video' ? ' checked' : '') + (k.ready ? '' : ' disabled') + '> ' + k.icon + ' <span><b>' + S['pkind_' + k.id] + '</b>' +
@@ -537,7 +560,8 @@
       $('#np-no').onclick = function () { dlg.close(); };
       $('#np-go').onclick = async function () {
         var kind = dlg.querySelector('input[name="np-kind"]:checked').value;
-        var p = await api('projects', { method: 'POST', body: { name: $('#np-name').value.trim() || S.untitled, kind: kind } });
+        var p = await api('projects', { method: 'POST', body: { name: $('#np-name').value.trim() || S.untitled, kind: kind,
+                                                                collection: collOpen() ? openColl : '' } });
         dlg.close(); openProject(p.id);
       };
     }
@@ -547,22 +571,123 @@
         .filter(function (x) { return x[0]; }).map(function (x) { return x[0] === 1 ? S[x[1]] : fmt(x[2], { n: x[0] }); });
       return parts.length ? ' · ' + parts.join(' · ') : '';
     }
+    // ── Collections ────────────────────────────────────────────────────────
+    // A person's projects gathered under names they choose. A project can be
+    // in several collections or none: the top level shows the collections
+    // and the projects in none, and a collection shows its own. Which
+    // collection is open survives opening one of its projects, so ← Back
+    // returns to it.
+    var openColl = '', listData = { projects: [], collections: [] };
+    function collOpen() { return openColl ? listData.collections.find(function (c) { return c.id === openColl; }) : null; }
+    function collName(id) { var c = listData.collections.find(function (x) { return x.id === id; }); return c ? c.name : ''; }
+    function projectCard(p, inColl) {
+      var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
+      var act = inColl
+        ? '<button class="pc-act" data-rmfrom="' + p.id + '" title="' + esc(S.coll_remove_here) + '" aria-label="' + esc(S.coll_remove_here) + '">✕</button>'
+        : '<button class="pc-act" data-addto="' + p.id + '" title="' + esc(S.coll_add) + '" aria-label="' + esc(S.coll_add) + '">📁</button>';
+      return '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + act + '</div>' +
+        '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
+        '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + counted(p) + '</div></div></div>';
+    }
+    function collCard(c) {
+      var covers = listData.projects.filter(function (p) { return p.cover && p.collections.indexOf(c.id) >= 0; }).slice(0, 4);
+      var cover = covers.length ? '<div class="mosaic n' + covers.length + '">' + covers.map(function (p) {
+        return '<i style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"></i>';
+      }).join('') + '</div>' : '📁';
+      return '<div class="pcard coll" data-coll="' + c.id + '"><div class="cover">' + cover + '</div>' +
+        '<div class="body"><div class="name">📁 ' + esc(c.name) + '</div><div class="muted">' +
+        (c.count === 1 ? S.coll_count1 : fmt('coll_count', { n: c.count })) + '</div></div></div>';
+    }
     async function loadList() {
-      var d = await api('projects');
+      listData = await api('projects');
+      var gone = $('#pempty'); if (gone) gone.remove();
+      if (openColl && !collOpen()) openColl = '';
+      var col = collOpen(), head = $('#phead');
       var html = '<div class="pcard new" data-new="1"><div class="cover">＋</div><div class="body"><div class="name">' + S.new_project + '</div></div></div>';
-      d.projects.forEach(function (p) {
-        var cover = p.cover ? ' style="background-image:url(\'' + fileUrl(p.id, p.cover) + '\')"' : '';
-        html += '<div class="pcard" data-id="' + p.id + '"><div class="cover"' + cover + '>' + (p.cover ? '' : kindIcon(p.kind)) + '</div>' +
-          '<div class="body"><div class="name">' + esc(p.name) + (p.default ? ' <span class="pill">📥 ' + esc(S.default_project) + '</span>' : '') +
-          '</div><div class="muted">' + kindIcon(p.kind) + ' ' + esc(S['pkind_' + (p.kind || 'free')] || '') + counted(p) + '</div></div></div>';
-      });
+      var shown;
+      if (col) {
+        $('#ptitle').textContent = '📁 ' + col.name;
+        head.innerHTML = '<button id="coll-up">← ' + esc(S.projects) + '</button><span class="grow"></span>' +
+          '<button id="coll-ren">✏️ ' + esc(S.coll_rename) + '</button><button id="coll-del" class="danger">🗑 ' + esc(S.coll_delete) + '</button>';
+        head.hidden = false;
+        shown = listData.projects.filter(function (p) { return p.collections.indexOf(col.id) >= 0; });
+      } else {
+        $('#ptitle').textContent = S.projects;
+        head.hidden = true; head.innerHTML = '';
+        html += '<div class="pcard new" data-new-coll="1"><div class="cover">📁</div><div class="body"><div class="name">＋ ' + S.coll_new + '</div></div></div>';
+        listData.collections.forEach(function (c) { html += collCard(c); });
+        shown = listData.projects.filter(function (p) { return !p.collections.length; });
+      }
+      shown.forEach(function (p) { html += projectCard(p, !!col); });
       $('#plist').innerHTML = html;
-      if (!d.projects.length) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + S.empty_projects + '</p>');
+      var empty = col && !shown.length ? S.coll_empty : !listData.projects.length ? S.empty_projects : '';
+      if (empty) $('#plist').insertAdjacentHTML('afterend', '<p class="muted" id="pempty" style="margin-top:10px">' + esc(empty) + '</p>');
+    }
+    async function newCollection() {
+      var name = prompt(S.coll_name); if (!name || !name.trim()) return null;
+      return api('collections', { method: 'POST', body: { name: name.trim() } });
+    }
+    // "Add to collection": the collections the project is not in yet, and a
+    // new one made on the spot. *after* redraws whatever asked.
+    function addToDialog(pid, pname, inIds, after) {
+      var dlg = $('#dlg'), free = listData.collections.filter(function (c) { return inIds.indexOf(c.id) < 0; });
+      dlg.innerHTML = '<h2>📁 ' + esc(fmt('coll_add_title', { p: pname })) + '</h2>' +
+        (free.length ? '<div class="row" style="flex-wrap:wrap">' + free.map(function (c) {
+          return '<button data-pick="' + c.id + '">📁 ' + esc(c.name) + '</button>';
+        }).join('') + '</div>' : '<p class="muted">' + esc(listData.collections.length ? S.coll_add_none : S.coll_none_yet) + '</p>') +
+        '<label class="f">' + S.coll_new + '</label><div class="row"><input id="coll-new-name" class="grow" placeholder="' + esc(S.coll_name) + '">' +
+        '<button id="coll-new-go">' + S.coll_create_add + '</button></div>' +
+        '<div class="row" style="margin-top:12px"><span class="grow"></span><button id="coll-close">' + S.cancel + '</button></div>';
+      dlg.showModal();
+      dlg.addEventListener('close', function () { dlg.onclick = null; }, { once: true });
+      async function add(cid, name) {
+        await api('collections/' + cid + '/projects', { method: 'POST', body: { project: pid } });
+        dlg.close(); toast(fmt('coll_added', { c: name })); await after();
+      }
+      dlg.onclick = async function (ev) {
+        var b = ev.target.closest('button'); if (!b) return;
+        try {
+          if (b.id === 'coll-close') return dlg.close();
+          if (b.dataset.pick) return add(b.dataset.pick, collName(b.dataset.pick));
+          if (b.id === 'coll-new-go') {
+            var name = $('#coll-new-name').value.trim(); if (!name) return $('#coll-new-name').focus();
+            var c = await api('collections', { method: 'POST', body: { name: name } });
+            listData.collections.push(Object.assign({ count: 0 }, c));
+            return add(c.id, c.name);
+          }
+        } catch (e) { toast(fmt('err', { e: e.message }), true); }
+      };
     }
     $('#plist').addEventListener('click', async function (ev) {
-      var c = ev.target.closest('.pcard'); if (!c) return;
-      if (c.dataset.new) newProjectDialog();
-      else openProject(c.dataset.id);
+      try {
+        var b = ev.target.closest('button[data-addto], button[data-rmfrom]');
+        if (b) {
+          var pid = b.dataset.addto || b.dataset.rmfrom, proj = listData.projects.find(function (x) { return x.id === pid; });
+          if (b.dataset.addto) return addToDialog(pid, proj ? proj.name : '', proj ? proj.collections : [], loadList);
+          await api('collections/' + openColl + '/projects/' + pid, { method: 'DELETE' });
+          toast(fmt('coll_removed', { c: collName(openColl) })); return loadList();
+        }
+        var c = ev.target.closest('.pcard'); if (!c) return;
+        if (c.dataset.new) newProjectDialog();
+        else if (c.dataset.newColl) { var made = await newCollection(); if (made) { openColl = made.id; loadList(); } }
+        else if (c.dataset.coll) { openColl = c.dataset.coll; loadList(); window.scrollTo(0, 0); }
+        else openProject(c.dataset.id);
+      } catch (e) { toast(fmt('err', { e: e.message }), true); }
+    });
+    $('#phead').addEventListener('click', async function (ev) {
+      var b = ev.target.closest('button'); if (!b) return;
+      var col = collOpen(); if (!col) return;
+      try {
+        if (b.id === 'coll-up') { openColl = ''; return loadList(); }
+        if (b.id === 'coll-ren') {
+          var name = prompt(S.coll_name, col.name); if (!name || !name.trim() || name.trim() === col.name) return;
+          await api('collections/' + col.id, { method: 'PUT', body: { name: name.trim() } }); return loadList();
+        }
+        if (b.id === 'coll-del') {
+          if (!confirm(fmt('coll_delete_confirm', { c: col.name }))) return;
+          await api('collections/' + col.id, { method: 'DELETE' }); openColl = ''; return loadList();
+        }
+      } catch (e) { toast(fmt('err', { e: e.message }), true); }
     });
 
     // ── The editor ─────────────────────────────────────────────────────────
@@ -734,6 +859,7 @@
         if (!shotsNow.length) tab = current.kind === 'music_video' ? 'audio' : tab;
         else if (!shotsNow.some(function (sh) { return (sh.takes || []).length; })) tab = 'board';
       }
+      if (tabsFor(current.kind).indexOf(tab) < 0) tab = tabsFor(current.kind)[0];
       history.replaceState(null, '', '/studio?project=' + pid);
       $('#v-list').hidden = true; $('#v-edit').hidden = false;
       drawEditor();
@@ -1174,10 +1300,18 @@
         '<span class="muted" id="saved">' + S.saved + '</span>' +
         '<span class="ed-actions"><button id="hist">🕘 ' + S.hist_button + '</button>' +
         '<details class="more"><summary aria-label="' + esc(S.more) + '">⋯</summary><div class="menu">' +
+        '<button id="addto">📁 ' + S.coll_add + '</button>' +
+        (p.in_collections || []).map(function (c) {
+          return '<button data-rmfrom-ed="' + c.id + '">✕ ' + esc(fmt('coll_remove', { c: c.name })) + '</button>';
+        }).join('') +
         '<button id="dup">' + S.duplicate + '</button><button id="del" class="danger">' + S.delete + '</button></div></details></span></div>' +
+        ((p.in_collections || []).length ? '<div class="ed-colls">' + p.in_collections.map(function (c) {
+          return '<button data-gocoll="' + c.id + '" title="' + esc(S.coll_open) + '">📁 ' + esc(c.name) + '</button>';
+        }).join('') + '</div>' : '') +
         '<div id="rail"></div>' +
         '<div class="tabs" role="tablist">' + tabsFor(p.kind).map(function (t) {
-          return '<button role="tab" aria-selected="' + (t === tab) + '" data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' + S['tab_' + t] + '</button>';
+          return '<button role="tab" aria-selected="' + (t === tab) + '" data-tab="' + t + '" class="' + (t === tab ? 'on' : '') + '">' +
+            S[t === 'audio' && p.kind === 'audio_story' ? 'tab_story' : 'tab_' + t] + '</button>';
         }).join('') + '</div>' +
         '<div id="tabbody"></div>';
       $('#v-edit').innerHTML = html;
@@ -1195,6 +1329,9 @@
     function tabsFor(kind) {
       if (kind === 'music_video') return ['audio', 'board', 'video', 'cast', 'images', 'files'];
       if (kind === 'recording') return ['video', 'files', 'audio', 'images'];
+      // An audio story is heard, not seen: its voices and music, who says
+      // them, and the one picture it has -- its cover, drawn in the story tab.
+      if (kind === 'audio_story') return ['audio', 'cast', 'images', 'files'];
       return ['video', 'board', 'audio', 'images', 'cast', 'files'];
     }
     function drawRail() {
@@ -1528,9 +1665,10 @@
 
     // Music & voices
     function audioTab() {
-      var p = current, items = p.audio || [];
+      var p = current, items = p.audio || [], story = p.kind === 'audio_story';
       var uploads = (p.uploads || []).filter(function (u) { return u.kind === 'voice'; });
-      var html = '';
+      var voiced = cast.filter(function (c) { return c.voice; });
+      var html = story ? coverBox() + '<p class="muted" style="margin:4px 0 12px">' + esc(S.story_help) + '</p>' : '';
       items.forEach(function (a) {
         var t = chosen(a), kind = a.kind || 'song';
         html += '<div class="card" id="audio-' + a.id + '"><div class="row" style="margin-bottom:6px"><b>' + S['kind_' + kind] + '</b>' + statusPill(a) +
@@ -1548,20 +1686,66 @@
           html += '<label class="f">' + S.style + '</label><textarea rows="2" data-f="style" data-id="' + a.id + '" placeholder="' + esc(S.inst_ph) + '">' + esc(a.style) + '</textarea>' +
             '<label class="f">' + S.seconds + '</label><input type="number" min="5" max="380" data-f="seconds" data-id="' + a.id + '" value="' + (a.seconds || 30) + '">';
         } else {
-          html += '<label class="f">' + S.voice_sample + '</label><select data-f="voice" data-id="' + a.id + '"><option value="">' + S.none + '</option>' +
+          // Who says it: one of the cast with a voice sample, in that voice,
+          // or a sample from the files as before.
+          if (voiced.length || story) {
+            html += '<label class="f">' + S.voice_speaker + '</label><select data-f="speaker" data-id="' + a.id + '"><option value="">' + S.voice_speaker_sample + '</option>' +
+              voiced.map(function (c) { return '<option value="' + c.id + '"' + (a.speaker === c.id ? ' selected' : '') + '>🗣️ ' + esc(c.name) + '</option>'; }).join('') + '</select>' +
+              (voiced.length ? '' : '<p class="muted" style="margin-top:4px">' + S.voice_speaker_none + '</p>');
+          }
+          if (!a.speaker) html += '<label class="f">' + S.voice_sample + '</label><select data-f="voice" data-id="' + a.id + '"><option value="">' + S.none + '</option>' +
             uploads.map(function (u) { return '<option value="' + esc(u.file) + '"' + (a.voice === u.file ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' +
-            '<p class="muted" style="margin-top:4px">' + S.voice_sample_help + '</p>' +
-            '<label class="f">' + S.voice_text + '</label><textarea rows="4" data-f="text" data-id="' + a.id + '" placeholder="' + esc(S.voice_text_ph) + '">' + esc(a.text) + '</textarea>';
+            '<p class="muted" style="margin-top:4px">' + S.voice_sample_help + '</p>';
+          html += '<label class="f">' + S.voice_text + '</label><textarea rows="4" data-f="text" data-id="' + a.id + '" placeholder="' + esc(S.voice_text_ph) + '">' + esc(a.text) + '</textarea>';
         }
         html += (t && t.file ? '<audio controls preload="none" src="' + fileUrl(p.id, t.file) + '"></audio>' : '') + takesRow(a) +
           '<div class="row" style="margin-top:8px"><button class="primary" data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
           (t && t.file ? dlLink(p.id, t.file, a.title || (p.name + ' - ' + S['kind_' + kind])) +
-            '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>' +
+            (story ? '' : '<button data-mv="' + a.id + '">🎬 ' + S.music_video + '</button>') +
             (kind === 'song' ? '<button data-rs="' + a.id + '">✏️ ' + S.rs_button + '</button>' : '') +
             (kind !== 'voice' ? scoreButton(a, t) : '') : '') + '</div></div>';
       });
       html += '<div class="row"><button data-add-audio="song">＋ 🎤 ' + S.add_song + '</button><button data-add-audio="instrumental">＋ 🎹 ' + S.add_instrumental + '</button>' +
         '<button data-add-audio="voice">＋ 🗣️ ' + S.add_voice + '</button></div>';
+      return html + (story ? storyBox() : '');
+    }
+    // An audio story's cover: the picture item `settings.cover` names, drawn
+    // from what the person says it shows and the project's look.
+    // What is being typed for the cover, kept across the redraws the queue
+    // causes (it is not an item's field until the cover is drawn).
+    var coverDraft = {};
+    function coverItem() {
+      var id = (current.settings || {}).cover;
+      return id ? (current.images || []).find(function (x) { return x.id === id; }) || null : null;
+    }
+    function coverBox() {
+      var p = current, cov = coverItem(), t = cov && chosen(cov), live = cov && livePreview(cov);
+      return '<div class="card story-cover"><div class="row" style="align-items:flex-start;flex-wrap:wrap;gap:14px">' +
+        '<div class="cover-art">' + (t && t.file ? '<img src="' + fileUrl(p.id, t.file) + '" alt="' + esc(S.story_cover) + '">' : live || '📻') + '</div>' +
+        '<div class="grow" style="min-width:220px"><div class="row"><b>' + S.story_cover + '</b>' + (cov ? statusPill(cov) : '') + '</div>' +
+        '<textarea id="cover-prompt" rows="3" placeholder="' + esc(S.story_cover_ph) + '">' + esc(coverDraft[p.id] != null ? coverDraft[p.id] : cov ? cov.prompt : '') + '</textarea>' +
+        '<div class="row" style="margin-top:6px"><button class="primary" id="cover-draw">🎨 ' + (t ? S.story_cover_redraw : S.story_cover_draw) + '</button>' +
+        (t && t.file ? dlLink(p.id, t.file, p.name + ' - ' + S.story_cover) : '') + '</div></div></div></div>';
+    }
+    // The story as one file: voices and songs in order, music under them.
+    function storyBox() {
+      var p = current, cov = coverItem(), ct = cov && chosen(cov);
+      var made = (p.audio || []).some(function (a) { var t = chosen(a); return t && t.file; });
+      var html = '<div class="row" style="margin-top:16px;flex-wrap:wrap"><button class="primary" data-story="audio"' + (made ? '' : ' disabled') + '>🎧 ' + S.story_go_audio + '</button>' +
+        '<button data-story="video" title="' + esc(S.story_video_help) + '"' + (made && ct && ct.file ? '' : ' disabled') + '>🎞️ ' + S.story_go_video + '</button></div>' +
+        (made ? '' : '<p class="muted" style="margin-top:4px">' + S.story_nothing + '</p>');
+      if (p.render && p.render.state === 'running') html += '<div class="note">' + S.story_running + '</div>';
+      if (p.render && p.render.state === 'failed') html += '<div class="note err">' + S.story_failed + ': ' + esc(p.render.error) + '</div>';
+      var mine = (p.renders || []).filter(function (r) { return r.story; }).slice().reverse();
+      if (mine.length) html += '<h2 style="margin-top:20px">' + S.story_versions + '</h2>' + mine.map(function (r) {
+        var src = fileUrl(p.id, r.file);
+        return '<div class="card">' + (r.format === 'mp4'
+          ? '<video controls preload="metadata" style="width:100%;max-width:420px;border-radius:8px" src="' + src + '"></video>'
+          : '<div class="story-take">' + (ct && ct.file ? '<img src="' + fileUrl(p.id, ct.file) + '" alt="">' : '') + '<audio controls preload="none" src="' + src + '"></audio></div>') +
+          '<div class="row" style="margin-top:6px"><span class="muted">' + (r.format === 'mp4' ? '🎞️ ' : '🎧 ') + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) +
+          '</span><span class="grow"></span>' + dlLink(p.id, r.file, p.name) +
+          '<button class="danger" data-del-render="' + esc(r.file.replace(/^renders\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div></div>';
+      }).join('');
       return html;
     }
 
@@ -1776,6 +1960,7 @@
       if (el.id === 'sb-correct-text') { correctDraft = el.value; return; }
       if (el.id === 'sb-correct-redraw') { correctRedraw = el.checked; return; }
       if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
+      if (el.id === 'cover-prompt') { coverDraft[current.id] = el.value; return; }
       if (el.dataset.eyeStrength) { eyeStrength[el.dataset.eyeStrength] = Number(el.value); return; }
       if (el.dataset.cardF) {
         var cs3 = itemById(el.dataset.id); if (!cs3 || !cs3.card) return;
@@ -1811,7 +1996,7 @@
       if (!current) return;
       if (el.id === 'use-sb') { current.settings.use_storyboard = el.checked; markDirty(); drawTab(); return; }
       if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
-      if (el.dataset.f === 'continuity') { drawTab(); return; }
+      if (el.dataset.f === 'continuity' || el.dataset.f === 'speaker') { drawTab(); return; }
       if (el.dataset.secCam) {
         var cs2 = itemById(el.dataset.secCam), ct2 = chosen(cs2);
         var lst = sectionsOf(cs2, ct2).map(function (x) { return Object.assign({}, x); }), k2 = Math.min(secSel[cs2.id] || 0, lst.length - 1);
@@ -1860,6 +2045,18 @@
           return;
         }
         if (b.id === 'hist') { await flushSave(); return historyDialog(); }
+        if (b.id === 'addto') {
+          await flushSave();
+          if (!listData.collections.length) listData = await api('projects');
+          return addToDialog(p.id, p.name, (p.in_collections || []).map(function (c) { return c.id; }),
+                             async function () { current = await api('projects/' + p.id); drawEditor(); });
+        }
+        if (d.rmfromEd) {
+          var cname = ((p.in_collections || []).find(function (c) { return c.id === d.rmfromEd; }) || {}).name || '';
+          await api('collections/' + d.rmfromEd + '/projects/' + p.id, { method: 'DELETE' });
+          toast(fmt('coll_removed', { c: cname })); current = await api('projects/' + p.id); drawEditor(); return;
+        }
+        if (d.gocoll) { openColl = d.gocoll; return closeProject(); }
         if (b.id === 'dup') { await flushSave(); var np = await api('projects/' + p.id + '/duplicate', { method: 'POST', body: {} }); return openProject(np.id); }
         if (b.id === 'del') { if (!confirm(S.delete_confirm)) return; await api('projects/' + p.id, { method: 'DELETE' }); current = null; return closeProject(); }
         if (d.jump) { var el = document.getElementById('shot-' + d.jump); if (el) el.scrollIntoView({ behavior: 'smooth' }); return; }
@@ -1899,6 +2096,25 @@
         }
         if (d.choose) { itemById(d.choose).chosen = Number(d.i); await saveNow(); drawTab(); return; }
         if (d.gen) { await saveNow(); return generate([d.gen]); }
+        if (b.id === 'cover-draw') {
+          // What the person says the cover shows, else the story's name; the
+          // look follows, as the storyboard's frames carry it.
+          var said = ($('#cover-prompt').value || '').trim(), look = ((p.settings || {}).look || '').trim();
+          var prompt = said || ('Cover illustration for the audio story "' + p.name + '"');
+          if (look && prompt.indexOf(look) < 0) prompt += '. ' + look;
+          var cov = coverItem();
+          if (cov) cov.prompt = prompt;
+          else { p.images.push(newItem({ prompt: prompt, size: '1024x1024', title: S.story_cover })); }
+          await saveNow();
+          if (!coverItem()) { current.settings.cover = current.images[current.images.length - 1].id; await saveNow(); }
+          delete coverDraft[p.id];
+          return generate([coverItem().id]);
+        }
+        if (d.story) {
+          await flushSave();
+          await api('projects/' + p.id + '/story', { method: 'POST', body: { format: d.story } });
+          current = await api('projects/' + p.id); drawTab(); watchRender(); return;
+        }
         if (b.id === 'gen-pending') {
           await saveNow();
           var ids = p.shots.filter(function (s) { return !(s.takes || []).length && !jobFor(s.id) && !s.card && !s.recorded; }).map(function (s) { return s.id; });
@@ -2122,7 +2338,8 @@
           if (!confirm(S.sb_refine_confirm)) return;
           await flushSave();
           var rf = await api('board-refine', { method: 'POST', body: { project: p.id, rounds: 2, threshold: 7 } });
-          toast(fmt('sb_refine_started', { n: rf.started }));
+          toast(fmt('sb_refine_started', { n: rf.started, r: rf.redrawn || 0 }));
+          current = await api('projects/' + p.id); loadQueue(); drawTab();
           return;
         }
         if (d.reviewApply) {

@@ -8,8 +8,8 @@ the top of the Studio answers questions about using it.
 ## Projects
 
 - **New project** (＋ on the projects page): give it a name and pick what it is
-  for. *Music video*, *Recording* (tutorials, screen and camera) and *Free* are
-  ready; *short film*, *explainer* and *podcast* are coming.
+  for. *Music video*, *Recording* (tutorials, screen and camera), *Audio story*
+  and *Free* are ready; *short film*, *explainer* and *podcast* are coming.
 - Anything you ask Alfred for without naming a project lands in your default
   project, called "Alfred".
 - A project has tabs: **Video** (the shots or recordings, in order),
@@ -18,6 +18,16 @@ the top of the Studio answers questions about using it.
 - **🕘 History** lists every change to the project's words (descriptions,
   lyrics, looks); any change can be undone alone, or the whole project taken
   back to how it was then.
+- **Collections** gather projects under a name ("Nico", "Birthdays"). On the
+  projects page, **＋ New collection** makes one; **📁** on a project's card (or
+  **📁 Add to collection…** in a project's ⋯ menu) adds the project to one,
+  or to a new one made there. A project can be in several collections. Open a
+  collection to see its projects; **＋ New project** inside it makes the new one
+  there. **✕** on a card in a collection (or **Remove from …** in the ⋯ menu)
+  takes the project out of that collection only. **✏️ Rename** and **🗑 Delete
+  collection** are at the top of an open collection; deleting a collection
+  keeps its projects. Projects in no collection are listed beside the
+  collections.
 - Every item keeps all its versions. A new version never deletes the old one.
   ⭐ marks the version to use. 🗑 on a version deletes that version's file. ✕ on
   a card takes the item out of the project (its files stay until the project is
@@ -123,6 +133,31 @@ with a camera, **👁 Eye contact** moves your eyes to the lens, only where you 
   and can be burnt into the film). With subtitles, **✨ Title and chapters**
   asks Alfred for a title, a description and chapters.
 
+## An audio story
+
+A story to listen to: a narrator, the characters' voices and music, and a
+cover picture. Make a project of the kind **Audio story**; it opens on the
+**Story** tab.
+
+1. **The cover**: say what it shows ("the fox with her lantern on the cliff,
+   at dusk") and **🎨 Draw the cover**. The project's look is added to it. It
+   is the project's picture on its card and in the finished file; **Draw it
+   again** for another.
+2. **The voices**: in **Characters**, give each character (the narrator too)
+   a voice sample. Then **＋ 🗣️ Voice** for each line, choose **Who says it**
+   and write what they say. (A voice sample from **Files** works too.)
+3. **The music**: **＋ 🎹 Instrumental** for music under the voices, **＋ 🎤
+   Song** for a song in the story.
+4. The order of the cards is the order of the story. Voices and songs play one
+   after another. An instrumental plays alone for two seconds, then quietly
+   under the voices that follow it, until the next music or the end; an
+   instrumental with no voice after it plays on its own, whole. A song stops
+   the music under it.
+5. **🎧 Put the story together** makes one audio file with the cover as its
+   picture, for any player. **🎞️ As a video with the cover** makes a video of
+   the cover over the sound, for sites that only take video (YouTube). Both
+   are listed under **The story, put together**, to play or download.
+
 ## A music video from a song
 
 1. In **Music & voices**, make a song: write lyrics (or ask Alfred to write
@@ -156,10 +191,18 @@ with a camera, **👁 Eye contact** moves your eyes to the lens, only where you 
 
 ## The storyboard
 
-- Each frame is reviewed automatically for what the shot should show and for
-  the look. Under 7/10, Alfred suggests a better description: **Use and
-  redraw**.
-- **🔁 Refine** runs that review-and-redraw loop on every frame (twice at most).
+- Each frame is reviewed automatically for what the shot should show, for
+  the look, and for the same style as the frames that already passed: every
+  frame in one style. A shot can have a style of its own only if you write it
+  in its description ("in black and white, like an old photo"); that frame is
+  then checked against the style it asks for. Under 7/10, Alfred suggests a
+  better description: **Use and redraw**.
+- **🔁 Refine** first redraws the frames already marked -- the ones whose
+  description you changed (✏️), and the ones a review scored under 7/10, from
+  the review's description -- then reviews the frames not reviewed yet and
+  redraws those under 7/10. Every redrawn frame is reviewed again (twice at
+  most). Frames already reviewed at 7 or more in the storyboard's style are
+  left as they are; one whose style was never checked is reviewed again.
 - **One correction for every shot**: the box under the toolbar ("it is night in
   every shot") changes every description the same way and redraws them. A
   correction about the whole style changes the look instead.

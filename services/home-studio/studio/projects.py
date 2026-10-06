@@ -52,7 +52,10 @@ EDITABLE = {
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
               "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take",
               "card", "callouts", "callouts_take", "eyes", "eyes_take"),
-    "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm"),
+    # `speaker`: a voice line said by one of the cast, in that character's
+    # cloned voice (its own sample), instead of a sample from the files.
+    "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm",
+              "speaker"),
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
@@ -62,7 +65,7 @@ TRASH_DAYS = 14
 REMOVED_DIR = ".history-removed"
 # What a project is for. It decides the page's starting shape and the
 # planning flow Alfred runs; every tool stays available in every kind.
-PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording")
+PROJECT_KINDS = ("free", "music_video", "short_film", "explainer", "podcast", "recording", "audio_story")
 
 
 CORNERS = ("tl", "tr", "bl", "br")
@@ -208,6 +211,7 @@ class Projects:
         if not LOGIN_RE.fullmatch(owner or ""):
             return []
         out = []
+        of = self.collections(owner)["of"]
         for p in sorted((self.root / owner).glob("*/project.json")):
             try:
                 doc = json.loads(p.read_text())
@@ -218,6 +222,7 @@ class Projects:
                         "shots": len(doc.get("shots") or []), "audio": len(doc.get("audio") or []),
                         "images": len(doc.get("images") or []),
                         "default": bool(doc.get("default")),
+                        "collections": of.get(doc["id"], []),
                         "cover": self._cover(doc)})
         # The default project first: it is where anything asked of the
         # assistant went, which is what somebody is usually looking for.
@@ -225,6 +230,11 @@ class Projects:
 
     @staticmethod
     def _cover(doc: dict) -> str:
+        named = (doc.get("settings") or {}).get("cover")
+        for item in doc.get("images") or [] if named else []:
+            take = Projects.chosen_take(item) if item.get("id") == named else None
+            if take and take.get("file"):
+                return take["file"]
         for section, key in (("shots", "first"), ("images", "file")):
             for item in doc.get(section) or []:
                 take = Projects.chosen_take(item)
@@ -232,10 +242,12 @@ class Projects:
                     return take[key]
         return ""
 
-    def create(self, owner: str, name: str, kind: str = "free") -> dict:
+    def create(self, owner: str, name: str, kind: str = "free", collection: str = "") -> dict:
         if not LOGIN_RE.fullmatch(owner or ""):
             raise ProjectError("unknown person")
         kind = kind if kind in PROJECT_KINDS else "free"
+        if collection:
+            self._collection(self.collections(owner), collection)    # before anything is made
         pid = _new_id()
         d = self.root / owner / pid
         for sub in ("takes", "uploads", "renders"):
@@ -246,6 +258,8 @@ class Projects:
                "settings": {"resolution": "832x480", "fps": 24, "language": "es"},
                "shots": [], "audio": [], "images": [], "renders": [], "uploads": []}
         self._write(owner, pid, doc)
+        if collection:
+            self.add_to_collection(owner, collection, pid)
         return doc
 
     def load(self, owner: str, pid: str) -> dict:
@@ -290,6 +304,11 @@ class Projects:
                 # default) or from what the Video tab picks for it.
                 if "use_storyboard" in s:
                     doc["settings"]["use_storyboard"] = bool(s["use_storyboard"])
+                # An audio story's cover: the picture item it is shown by
+                # (on its card, in its player, embedded in the file).
+                if "cover" in s:
+                    cv = str(s.get("cover") or "")
+                    doc["settings"]["cover"] = cv if ID_RE.fullmatch(cv) else ""
                 if "soundtrack" in s:
                     st = str(s.get("soundtrack") or "")
                     doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""
@@ -463,10 +482,13 @@ class Projects:
         trash = self.root / owner / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         src.rename(trash / f"{pid}-{int(time.time())}")
+        self._edit_collections(owner, lambda c: c["of"].pop(pid, None))
 
     def duplicate(self, owner: str, pid: str, name: str = "") -> dict:
         doc = self.load(owner, pid)
         new = self.create(owner, name or f"{doc['name']} (copia)")
+        for cid in self.collections(owner)["of"].get(pid, []):      # the copy sits where the original does
+            self.add_to_collection(owner, cid, new["id"])
         src, dst = self.dir(owner, pid), self.dir(owner, new["id"])
         # Its history comes too: a copy remembers what it was copied from.
         for sub in ("takes", "uploads", "renders", ".history", REMOVED_DIR):
@@ -487,6 +509,97 @@ class Projects:
         doc.pop("default", None)                        # a copy is an ordinary project
         self._write(owner, new["id"], doc)
         return doc
+
+    # -- collections ----------------------------------------------------------
+    # A person's projects gathered under names they choose. A project can be
+    # in several (a song's video in "Nico" and in "Birthdays") or none. Kept
+    # beside the projects in
+    # `<owner>/.collections.json` rather than in each project.json -- which
+    # collection a project sits in is how its owner files it, not part of the
+    # project, so it stays out of the project's history and its copies' past.
+    def _collections_path(self, owner: str) -> Path:
+        if not LOGIN_RE.fullmatch(owner or ""):
+            raise ProjectError("unknown person")
+        return self.root / owner / ".collections.json"
+
+    def collections(self, owner: str) -> dict:
+        """`{"collections": [{id, name, created}], "of": {project id: [collection ids]}}`,
+        with what points at a deleted project or collection left out."""
+        try:
+            raw = json.loads(self._collections_path(owner).read_text())
+        except (OSError, ValueError):
+            raw = {}
+        cols = [c for c in raw.get("collections") or []
+                if isinstance(c, dict) and ID_RE.fullmatch(str(c.get("id") or ""))]
+        ids = {c["id"] for c in cols}
+        of = {}
+        for p, cs in (raw.get("of") or {}).items():
+            kept = [c for c in cs if c in ids] if isinstance(cs, list) else []
+            if kept and ID_RE.fullmatch(str(p)) and (self.root / owner / str(p) / "project.json").is_file():
+                of[str(p)] = list(dict.fromkeys(kept))
+        return {"collections": cols, "of": of}
+
+    def _edit_collections(self, owner: str, change) -> dict:
+        with self._lock(f"{owner}/.collections"):
+            data = self.collections(owner)
+            result = change(data)
+            path = self._collections_path(owner)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+            tmp.replace(path)
+            return result
+
+    @staticmethod
+    def _collection_name(name: str) -> str:
+        name = " ".join(str(name or "").split())[:60]
+        if not name:
+            raise ProjectError("a collection needs a name")
+        return name
+
+    def create_collection(self, owner: str, name: str) -> dict:
+        col = {"id": _new_id(), "name": self._collection_name(name), "created": time.time()}
+        self._edit_collections(owner, lambda c: c["collections"].append(col))
+        return col
+
+    def _collection(self, data: dict, cid: str) -> dict:
+        for c in data["collections"]:
+            if c["id"] == cid:
+                return c
+        raise ProjectError("no such collection")
+
+    def rename_collection(self, owner: str, cid: str, name: str) -> dict:
+        name = self._collection_name(name)
+
+        def change(data):
+            col = self._collection(data, cid)
+            col["name"] = name
+            return dict(col)
+        return self._edit_collections(owner, change)
+
+    def delete_collection(self, owner: str, cid: str) -> None:
+        """The collection goes; its projects stay, in no collection."""
+        def change(data):
+            self._collection(data, cid)
+            data["collections"] = [c for c in data["collections"] if c["id"] != cid]
+            data["of"] = {p: [c for c in cs if c != cid] for p, cs in data["of"].items()}
+        self._edit_collections(owner, change)
+
+    def add_to_collection(self, owner: str, cid: str, pid: str) -> None:
+        self.load(owner, pid)                              # it exists and it is theirs
+
+        def change(data):
+            self._collection(data, cid)
+            if cid not in data["of"].setdefault(pid, []):
+                data["of"][pid].append(cid)
+        self._edit_collections(owner, change)
+
+    def remove_from_collection(self, owner: str, cid: str, pid: str) -> None:
+        """Out of that collection only; the project itself stays."""
+        def change(data):
+            self._collection(data, cid)
+            data["of"][pid] = [c for c in data["of"].get(pid, []) if c != cid]
+        self._edit_collections(owner, change)
 
     def purge_trash(self) -> None:
         cutoff = time.time() - TRASH_DAYS * 86400
@@ -562,6 +675,9 @@ class Projects:
                          # Whether it keeps to the film's style -- the portal
                          # holds other frames to the ones that do.
                          style=review.get("style") if review.get("style") in ("yes", "partly", "no") else "",
+                         # The style the shot itself asks for, when it does:
+                         # held to that, and no reference for the others.
+                         own_style=str(review.get("own_style") or "").strip()[:200],
                          round=max(0, min(9, int(review.get("round") or 0))),
                          # The checklist the score was counted from: each thing
                          # the shot asks for, and whether the frame shows it.
@@ -875,7 +991,7 @@ def _clean(key: str, value: Any, item: dict) -> Any:
         return clean_mix(value)
     if key == "sections":
         return clean_sections(value)
-    if key in ("sections_take", "callouts_take", "eyes_take"):
+    if key in ("sections_take", "callouts_take", "eyes_take", "speaker"):
         return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
     if key == "card":
         return clean_card(value)

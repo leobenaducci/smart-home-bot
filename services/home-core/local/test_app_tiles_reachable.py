@@ -84,7 +84,7 @@ tiles = [(n, u) for n, u in re.findall(
     r"'name':\s*'([^']+)'.*?'url':\s*'([^']+)'", internal.group(1))]
 assert tiles, "no links parsed out of CHAT_APP_LINKS"
 
-routed = set(re.findall(r'@app\.api_route\(\s*"/(\w+)\{rest', PROXY.read_text(encoding="utf-8")))
+routed = set(re.findall(r'@app\.api_route\(\s*"/([\w-]+)\{rest', PROXY.read_text(encoding="utf-8")))
 assert routed, "no prefixes parsed out of the proxy"
 
 print(f"the proxy routes: {', '.join('/' + p for p in sorted(routed))}\n")
@@ -123,6 +123,35 @@ for prefix, page in (("profiles", "Correos de Alfred"),
                      ("credentials", "Credenciales")):
     check(f"/{prefix}/api for {page}", prefix in routed,
           "the page loads and then fails every fetch")
+
+# And every API a page calls by an absolute path. Nothing links to these, so
+# neither loop above saw them: "Make it a fix request" POSTed to /improve,
+# the proxy 404'd it, and the button did nothing in the app while working in
+# a browser on the LAN (2026-10-04). Read from every template, since any page
+# can be opened in the app.
+print("\nand every API a page fetches")
+fetched = {}
+for tpl in sorted((HERE / "templates").glob("*.html")):
+    for top in re.findall(r"""fetch\(\s*['"`]/([\w-]+)/""", tpl.read_text(encoding="utf-8")):
+        fetched.setdefault(top, set()).add(tpl.name)
+check("there are fetches to check", bool(fetched), fetched)
+for top in sorted(fetched):
+    check(f"/{top} ({', '.join(sorted(fetched[top]))})", top in routed,
+          f"add `@app.api_route(\"/{top}{{rest:path}}\", ...)` to the proxy's server/main.py, "
+          "or the page's calls 404 in the app")
+
+# And the files a page loads by an absolute path -- the house font, KaTeX --
+# which 404'd in the app the same way: every page in the fallback font there.
+print("\nand every file a page loads")
+loaded = {}
+for tpl in sorted((HERE / "templates").glob("*.html")):
+    for top in re.findall(r"""(?:src|href)=['"]/([\w-]+)/""", tpl.read_text(encoding="utf-8")):
+        loaded.setdefault(top, set()).add(tpl.name)
+check("there are files to check", bool(loaded), loaded)
+for top in sorted(loaded):
+    check(f"/{top}/ ({len(loaded[top])} page(s))", top in routed,
+          f"add `@app.api_route(\"/{top}{{rest:path}}\", ...)` to the proxy's server/main.py, "
+          "or those pages load without it in the app")
 
 # Two of those tiles are routed *and* deliberately refused off the VPN, which
 # the loop above cannot tell apart from a working one. Pin both halves, so the

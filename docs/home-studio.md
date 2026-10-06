@@ -84,8 +84,56 @@ own process, so one process decides what is on the card at any moment.
   ACE-Step's layer shapes on an RTX 3060 ("dimensions multiple of 4");
   `int8_kernels: triton` (in `wgp_config.json`) runs it.
 - **SDPA attention and profile 5** for H3 on 12 GB, as the WanGP research found.
+  Songs, instrumentals and voices ask for **profile 3.5** per job
+  (`AUDIO_PROFILE`, `override_profile`): WanGP applies the command line's
+  profile to every output, and under 5 a song streamed ACE-Step's weights from
+  RAM for every token its LM decoded -- 2-3 GB/s over PCIe, the card 30% busy.
+  The same 270 s song took 28.8 minutes under 5 and 6.2 under 3.5. Its LM still
+  decodes on the `legacy` engine: `vllm` would need FlashAttention 2.
 - **The GGUF Q2_K text encoder** (`config: gguf_q2_k`): 8.5 GB of RAM instead
   of ~65 GB for BF16.
+
+## An audio story
+
+The `audio_story` kind: no shots, only its audio items in order, its cast, and
+one picture -- the cover, the image item `settings.cover` names. The page draws
+the cover from what the person says it shows plus the project's look (a square
+`image` job); the projects list shows it as the card's cover (`_cover`).
+
+A voice line can be said by one of the cast (`speaker`, a character id): the
+generate route resolves it to `voice_char`, and the manager clones that
+character's own sample when the job runs. A character with no sample is
+refused at generate, by name.
+
+`POST /api/projects/{pid}/story` puts it together on the CPU, beside the queue,
+under the same one-render-per-project state as the film. `story.plan` decides
+everything and touches no file: voices and songs play whole one after another
+(0.6 s apart); an instrumental followed by a voice before the next music is a
+bed -- 2 s alone, then under those voices at 0.22, looped if short, faded out
+into the next music or 2.5 s after the last voice; one followed by none plays
+whole as an interlude; a song ends the bed under it. `media.story_mix` plays
+the plan through one ffmpeg graph and levels it to -16 LUFS (spoken-word
+apps' target); the result is an M4A with the cover embedded as its artwork, or
+(`format: "video"`, which needs the cover) a square 1080 MP4 of the cover over
+the sound at two frames a second. Renders carry `story: true`.
+
+## Collections
+
+A person's projects gathered under names they choose; a project can be in
+several, or in none. They live in `<owner>/.collections.json` beside the
+projects -- `{"collections": [{id, name, created}], "of": {project: [collections]}}`
+-- and not in each `project.json`: where somebody files a project is not a
+change to it, so it stays out of the project's history, and a revision brought
+back never moves a project between collections. Entries naming a deleted
+project or collection are dropped on read. A copy of a project joins its
+original's collections; deleting a collection keeps its projects.
+
+The projects page shows the collections and the projects in none; a collection
+shows its own, and a project made inside it is filed there. The routes are
+`POST/PUT/DELETE /api/collections[/{id}]` and `POST
+/api/collections/{id}/projects` / `DELETE .../projects/{pid}`;
+`GET /api/projects` carries each project's `collections` and each collection's
+`count`, and `GET /api/projects/{pid}` its `in_collections` by name.
 
 ## Kinds of project
 
@@ -202,6 +250,17 @@ redraws told to restate the look wrote "clean, realistic" into them.
   styles the verdicts contradicted each other.
 - A frame off-style scores at most 4 (6 if partly), whatever else it gets
   right.
+- **One style unless a shot says otherwise.** A person may write a style into a
+  shot's description on purpose (a black-and-white flashback, a child's
+  drawing) -- the Designer never does. The step that turns the shot into a
+  checklist also says whether its description asks for a style of its own
+  (`own_style`); such a frame is held to that style instead of the look and the
+  other frames, its review keeps it, and it is never another frame's style
+  reference.
+- 🔁 Refine leaves a frame that passed alone only when its review found it in
+  the style (or in the style its shot asks for). One that passed before its
+  style could be checked -- no look yet, no frame to hold it to -- is reviewed
+  again, against the look and the frames that passed in it.
 
 ### Reviewing the frames
 
@@ -223,7 +282,13 @@ action, "Use and redraw": it becomes the shot's description and the frame is
 drawn from it, and the new frame is reviewed in turn -- description, frame and
 video agree. 🔁 Refine runs that loop on every frame by itself, up to twice
 each; the descriptions it rewrites are in the project's history under the
-assistant, to undo.
+assistant, to undo. It starts with the frames already marked, redrawn at once
+rather than looked at again: one whose description changed since it was drawn
+(✏️), from that description, and one a review already scored under the bar,
+from the description that review wrote. Then it reviews the frames with no
+review yet. A frame reviewed at or over the bar and unchanged since is left
+alone -- its review is of that very frame -- and so is one being drawn.
+"Review all" still looks at every frame and redraws none.
 
 ### Cutting on the beat
 
@@ -410,6 +475,17 @@ the words are known -- the house's speech recogniser, tuned for short spoken
 commands, heard one wrong line for the whole song. On the separated vocals,
 every line boundary the aligner gave fell inside a measured pause in the
 singing.
+
+**A song longer than about a minute and a half is followed in windows.** The
+aligner refuses more audio than its encoder takes ("audio encoder token count
+exceeds max_source_positions": 90 s followed, 120 s refused), and until
+2026-10-05 every longer song came back with the beat and no words -- both
+270-second songs made here, without a word placed. `align_windows` follows
+80 seconds at a time, each window ending in a pause in the singing; a window is
+offered more lines than it can hold at the pace sung so far, keeps the lines
+placed more than ten seconds before its end (a forced aligner squeezes text it
+has no audio for into the end, so those are not trusted), and the next window
+starts after the last line kept. The last window takes every line left.
 
 The cuts then fall on the music (`plan_cuts`): a part of the song starting
 within reach wins, then the nearest bar, then the nearest beat. Every cut is a

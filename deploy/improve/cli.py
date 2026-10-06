@@ -194,9 +194,38 @@ def _work(fn):
         return 1
 
 
+NOT_FILED = ("there is no fix request #{rid}. Only the person can file one: ask them to press "
+             "\"🛠 Make it a fix request\" beside the project selector in this conversation (or to "
+             "ask Alfred in the chat), then start with the number it gets. Work under a number "
+             "nobody filed has no conversation to read an approval from, so it can never be "
+             "published.")
+
+
+def filed(state: Path, rid: str) -> bool:
+    """Whether the portal filed request *rid* (improve.db)."""
+    import sqlite3  # noqa: PLC0415
+    db = state / "home-core" / "data" / "improve.db"
+    if not str(rid).isdigit() or not db.exists():
+        return False
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return con.execute("SELECT 1 FROM improve_requests WHERE id = ?", (int(rid),)).fetchone() is not None
+    finally:
+        con.close()
+
+
 def cmd_start(args) -> int:
     cfg = live_config()
     d = improve_dir(cfg)
+    state = Path((cfg.get("paths") or {}).get("state") or "/var/lib/home-stack/state")
+    # A request the portal filed, never a number picked by whoever runs this:
+    # #11 was started from an ordinary Programmer conversation before anyone
+    # had filed it (2026-10-04), the fix was made and committed, and publishing
+    # it was then refused for having no conversation to read the yes from.
+    # Refused here instead, before any work, with what to do about it.
+    if not filed(state, args.id):
+        print("improve: " + NOT_FILED.format(rid=args.id), file=sys.stderr)
+        return 1
     repos = RP.discover(cfg)
     RP.write(d, repos)
     return _work(lambda: f"worktree: {W.start(d, repos, args.id, args.repo)}\n"

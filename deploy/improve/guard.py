@@ -31,6 +31,9 @@ PUBLISH = re.compile(r"\b(public|publiqu|publish|merge)", re.I)
 DEPLOY = re.compile(r"\b(despleg|desplieg|deploy)", re.I)
 YES = re.compile(r"^\s*(s[ií]|yes|dale|ok|okay|de una|hacelo|adelante|claro)\b", re.I)
 SPACE_DIRS = ("programmer", "programador")
+# The first line of a fix request's opening message (the portal's
+# `_improve_prompt`): never an answer from the person.
+OPENING = re.compile(r"Fix request #\d+, (made from this conversation|asked of Alfred):")
 
 
 def _added(path: Path) -> list[tuple[str, str]]:
@@ -98,7 +101,13 @@ def approved(state: Path, login: str, conv: int, since_ms: int, what: str) -> bo
     """Whether the person's latest word in the conversation, after *since_ms*,
     asks for *what* ("publish" or "deploy")."""
     want = PUBLISH if what == "publish" else DEPLOY
-    msgs = [m for m in _conversation(state, login, conv) if (m.get("ts") or 0) > since_ms]
+    # A request's opening message is filed as the person's (it is their
+    # request), and its rules say "publish and deploy only when I say so" --
+    # which reads as asking for both. Alfred's requests open before any
+    # commit, so it never counted; a conversation made a request after its
+    # fix was committed (#11, 2026-10-05) would have approved itself.
+    msgs = [m for m in _conversation(state, login, conv) if (m.get("ts") or 0) > since_ms
+            and not (m.get("role") == "user" and OPENING.match(m.get("text") or ""))]
     last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"), default=None)
     if last_user is None:
         return False
@@ -131,7 +140,12 @@ def require_approval(state: Path, rid: str, wt: Path, what: str) -> None:
     who = request_of(state, rid)
     if not who:
         raise W.WorkError(f"fix request #{rid} has no conversation to read an approval from")
-    last_commit = int(W._git(wt, "log", "-1", "--format=%ct", check=False) or 0) * 1000
+    # When the fix was written (author date), not when it was last applied:
+    # publishing rebases a fix whose checkout moved on, which re-dates every
+    # commit, and the person's yes to the change would then read as given
+    # "before" it -- a second yes for the same fix. What a rebase changes is
+    # what it was tested with, and publish asks for the tests again for that.
+    last_commit = int(W._git(wt, "log", "-1", "--format=%at", check=False) or 0) * 1000
     if not approved(state, who[0], who[1], last_commit, what):
         word = "publish" if what == "publish" else "deploy"
         raise W.WorkError(f"not asked to {word}: the person has not asked for it in #{rid}'s "

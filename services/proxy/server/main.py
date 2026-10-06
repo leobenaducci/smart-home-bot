@@ -942,6 +942,58 @@ async def proxy_projects(request: Request, rest: str):
         request, _upstream_url("/projects", rest, request.url.query), user)
 
 
+# APIs the chat page itself calls, not pages of their own -- and the same bug
+# a seventh time, from the other side: the tile check below never saw them,
+# because nothing links to them. "Make it a fix request" in the Programmer
+# POSTs to /improve; through here it was a 404 before HomeCore saw it, so the
+# button did nothing in the app on any network (2026-10-04). /family-chat is
+# the chat's family threads and /account the device list's "revoke". HomeCore
+# checks the login and whose data it is on each.
+@app.api_route("/improve{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_improve(request: Request, rest: str):
+    """Fix requests: filing one from a Programmer conversation, publishing it."""
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/improve", rest, request.url.query), user)
+
+
+@app.api_route("/family-chat{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_family_chat(request: Request, rest: str):
+    """The family's threads, inside the chat."""
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/family-chat", rest, request.url.query), user)
+
+
+@app.api_route("/account{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_account(request: Request, rest: str):
+    """The person's signed-in devices, and revoking one."""
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/account", rest, request.url.query), user)
+
+
+@app.api_route("/static{rest:path}", methods=["GET", "HEAD"])
+async def proxy_static(request: Request, rest: str):
+    """HomeCore's own files: the house font every page links (house.css), KaTeX
+    for the chat's maths, the Studio's practice player, i18n.js. Unrouted, the
+    app got a 404 for each -- pages drew in the fallback font and an answer's
+    formulas stayed as raw TeX, while the LAN looked right. Read only, and
+    behind the login like the pages that link them; the proxy's own login page
+    links none of them."""
+    early, user = _settings_gate(request, rest)
+    if early:
+        return early
+    return await _forward_to_homeweb(
+        request, _upstream_url("/static", rest, request.url.query), user)
+
+
 @app.api_route("/credentials{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_credentials(request: Request, rest: str):
     """Las credenciales que usan esos proyectos."""
