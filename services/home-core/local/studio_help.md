@@ -9,7 +9,7 @@ the top of the Studio answers questions about using it.
 
 - **New project** (＋ on the projects page): give it a name and pick what it is
   for. *Music video*, *Recording* (tutorials, screen and camera), *Audio story*,
-  *Podcast* and *Free* are ready; *short film* and *explainer* are coming.
+  *Podcast*, *Explainer* and *Free* are ready; *short film* is coming.
 - Anything you ask Alfred for without naming a project lands in your default
   project, called "Alfred".
 - A project has tabs: **Video** (the shots or recordings, in order),
@@ -157,6 +157,26 @@ cover picture. Make a project of the kind **Audio story**; it opens on the
    picture, for any player. **🎞️ As a video with the cover** makes a video of
    the cover over the sound, for sites that only take video (YouTube). Both
    are listed under **The story, put together**, to play or download.
+
+## An explainer
+
+A narrated explanation with a picture or a clip for each point.
+
+1. **The narrator** is a character with a voice sample (make one in
+   **Characters**).
+2. On the **Points** tab, **✍️ Write the explainer with Alfred**: say what it
+   explains (and for whom), the narrator and the length (1-5 minutes), and
+   whether a title card opens it. Alfred writes the points: each one is what the
+   narrator says and the picture on screen meanwhile. Writing it again replaces
+   the points.
+3. **Draw every picture**, then **Say every narration**. Edit any narration or
+   picture, move a point with ↑ ↓, add one with **＋ Point**, or a title with
+   **🔤 Title**. A point can have a clip instead of a still: make it on the
+   **Video** tab from its picture.
+4. An instrumental made in **Music & voices** plays quietly under it all.
+5. **🎞️ Put the explainer together** (1080p or 720p, H.264 to share anywhere):
+   each point stays on screen while its narration is said; a clip shorter than
+   its narration ends on its last frame.
 
 ## A podcast
 

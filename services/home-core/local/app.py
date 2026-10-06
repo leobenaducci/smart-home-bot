@@ -22965,6 +22965,10 @@ STUDIO_UI_KEYS = (
     'coll_empty', 'coll_add', 'coll_add_title', 'coll_add_none', 'coll_none_yet', 'coll_create_add', 'coll_added',
     'coll_remove', 'coll_remove_here', 'coll_removed', 'coll_inside', 'coll_open',
     'tab_episode', 'pod_cover_ph', 'pod_title', 'pod_topic', 'pod_topic_ph', 'pod_hosts', 'pod_hosts_none', 'pod_minutes',
+    'tab_points', 'exp_title', 'exp_topic', 'exp_topic_ph', 'exp_narrator', 'exp_narrator_none', 'exp_card',
+    'exp_write', 'exp_point', 'exp_no_picture', 'exp_narration', 'exp_add_narration', 'exp_picture',
+    'exp_help', 'exp_add_point', 'exp_say_all', 'exp_render', 'exp_need_pictures', 'exp_replace_confirm',
+    'exp_need_topic', 'exp_need_narrator', 'exp_failed', 'exp_written',
     'pod_music', 'pod_write', 'pod_writing', 'pod_written', 'pod_replace_confirm', 'pod_need_topic',
     'pod_need_hosts', 'pod_failed', 'pod_make_all', 'pod_go_audio', 'pod_versions', 'pod_help', 'alone_label',
     'pkind_audio_story', 'pkind_audio_story_about', 'tab_story', 'story_cover', 'story_cover_ph',
@@ -23179,6 +23183,119 @@ def _studio_parse_episode(text, hosts):
 
 def _studio_fold(name):
     return ''.join(c for c in unicodedata.normalize('NFKD', name.lower()) if c.isalnum())
+
+
+# An explainer's point: about a sentence or three of narration, so a few
+# minutes is a handful of points rather than one long monologue per picture.
+EXPLAINER_POINT_WORDS = 35
+EXPLAINER_MAX_POINTS = 30
+
+
+def _studio_parse_explainer(text):
+    """(title, subtitle, points) from the explainer Alfred wrote: `{"title",
+    "subtitle", "points": [{"narration", "picture"}]}`, every point with both.
+    None when there are not at least two."""
+    if not text:
+        return None
+    start, end = text.find('{'), text.rfind('}')
+    try:
+        raw = json.loads(text[start:end + 1]) if 0 <= start < end else None
+    except ValueError:
+        raw = None
+    if not isinstance(raw, dict) or not isinstance(raw.get('points'), list):
+        return None
+    points = []
+    for entry in raw['points'][:EXPLAINER_MAX_POINTS]:
+        if not isinstance(entry, dict):
+            continue
+        said = ' '.join(str(entry.get('narration') or '').split())[:900]
+        shows = ' '.join(str(entry.get('picture') or '').split())[:1200]
+        if said and shows:
+            points.append({'narration': said, 'picture': shows})
+    if len(points) < 2:
+        return None
+    return (' '.join(str(raw.get('title') or '').split())[:120],
+            ' '.join(str(raw.get('subtitle') or '').split())[:200], points)
+
+
+@app.route('/studio/api/explainer-script', methods=['POST'])
+@api_login_required
+def studio_explainer_script():
+    """✍️ An explainer written by the person's own assistant: the topic as a
+    few points, each a narration and the picture shown while it is said. Filed
+    in the project as one shot a point (its picture's description) and one
+    voice card a point -- said by the narrator, a character with a voice
+    sample, and linked to its shot (`point`) -- under Alfred's name; with
+    `title_card`, a title card first. `replace` takes the old points and their
+    narrations out first; the music stays."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    topic = str(d.get('topic') or '').strip()[:1500]
+    if not topic:
+        return jsonify(error=t('studio.exp_need_topic')), 400
+    try:
+        minutes = max(1, min(10, int(d.get('minutes') or 2)))
+    except (TypeError, ValueError):
+        minutes = 2
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    narrator = next((c for c in chars if c.get('id') == str(d.get('narrator') or '') and c.get('voice')), None)
+    if not narrator:
+        return jsonify(error=t('studio.exp_need_narrator')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(
+        str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    n = max(2, min(EXPLAINER_MAX_POINTS, round(minutes * PODCAST_WORDS_PER_MIN / EXPLAINER_POINT_WORDS)))
+    look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    audience = str(d.get('audience') or '').strip()[:300]
+    prompt = (
+        f"Write a short narrated explainer video in {language} about: {topic}\n"
+        + (f"For: {audience}\n" if audience else "")
+        + (f"The film's look: {look}\n" if look else "")
+        + f"About {minutes} minute(s): {n} points, each a narration of 1 to 3 sentences (about "
+        f"{EXPLAINER_POINT_WORDS} words) said by a narrator, and the picture on screen while it is said. Explain "
+        "one idea per point, in order, simply and concretely; the first point says what the video explains, the "
+        "last sums it up. The narration is spoken words only -- no stage directions, no markdown. The picture is "
+        "one concrete visual description in English (1-2 sentences) for a text-to-image model: what is on screen, "
+        "the setting, the framing; no text, letters, labels or diagrams with words in it. "
+        + STUDIO_STYLE_RULE + "\n"
+        'Also a short title and a one-line subtitle for the title card, in the narration\'s language.\n'
+        'Answer with only a JSON object, no code fence: {"title": "...", "subtitle": "...", "points": '
+        '[{"narration": "...", "picture": "..."}, ...]}')
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-explainer'
+    out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S))
+    if out is None:
+        again = ('That was not the JSON object asked for. Answer again with only {"title": "...", "subtitle": '
+                 '"...", "points": [{"narration": "...", "picture": "..."}]}, no code fence.')
+        out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S))
+    if out is None:
+        return jsonify(error=t('studio.exp_failed')), 502
+    title, subtitle, points = out
+    if d.get('replace'):
+        kept_audio = [a for a in doc.get('audio') or [] if not a.get('point')]
+        if _studio_call(username, 'PUT', f'projects/{pid}', {'shots': [], 'audio': kept_audio}, via='Alfred') is None:
+            return jsonify(error=t('studio.exp_failed')), 502
+    shots = ([{'card': {'title': title or topic[:120], 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
+             if d.get('title_card') else [])
+    shots += [{'prompt': pt['picture'],
+               'seconds': max(3, min(30, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60)) + 1))}
+              for pt in points]
+    added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')
+    ids = (added or {}).get('items') or []
+    if len(ids) != len(shots):
+        return jsonify(error=t('studio.exp_failed')), 502
+    point_ids = ids[1:] if d.get('title_card') else ids
+    voices = [{'kind': 'voice', 'title': f'{i + 1}', 'speaker': narrator['id'], 'text': pt['narration'],
+               'point': sid, 'seconds': max(5, min(120, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60) * 1.4) + 3))}
+              for i, (pt, sid) in enumerate(zip(points, point_ids))]
+    if not _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': voices}, via='Alfred'):
+        return jsonify(error=t('studio.exp_failed')), 502
+    _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'narrator': narrator['id']}}, via='Alfred')
+    return jsonify(title=title, points=len(points))
 
 
 @app.route('/studio/api/podcast-script', methods=['POST'])

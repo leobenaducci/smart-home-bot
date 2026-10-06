@@ -117,6 +117,33 @@ apps' target); the result is an M4A with the cover embedded as its artwork, or
 (`format: "video"`, which needs the cover) a square 1080 MP4 of the cover over
 the sound at two frames a second. Renders carry `story: true`.
 
+## An explainer
+
+The `explainer` kind is its points: shots that are a title card (`card`) or a
+picture -- the storyboard's frame, or a clip made from it on the Video tab --
+each with its narration, the voice card whose `point` is that shot, said by the
+project's narrator (`settings.narrator`, a character with a voice sample). Its
+tabs are Points, Video, Music & voices (its music only: the narrations are on
+the points), Characters, Pictures and Files; the progress strip is off, since
+the film it counts is not the explainer's.
+
+`POST /studio/api/explainer-script` (the portal) asks the person's assistant
+for `{"title", "subtitle", "points": [{"narration", "picture"}]}` -- about 35
+words a point at ~140 a minute, pictures in English with no text in them and
+no style words (`STUDIO_STYLE_RULE`; the look carries the style) -- and files
+the shots first (a title card when asked), then one narration a point linked
+by id, under Alfred's name. `replace` drops the old points and their
+narrations; the music stays.
+
+`POST /api/projects/{pid}/explainer` puts it together on the CPU, beside the
+queue: each point on screen for 0.4 s + its narration + 0.8 s (3 s at least; a
+point with no narration yet holds for its own length), a title card for its
+seconds; a clip shorter than its narration is followed by its last frame held.
+The narrations, and the first instrumental not linked to a point at 0.15 under
+it all, are one soundtrack (`story_mix`, levelled), laid under the stitched
+pictures without their own sound. H.264 at 1080p unless asked otherwise.
+Removing a point on the page takes its narration with it.
+
 ## A podcast
 
 The `podcast` kind is an audio story whose words Alfred writes: the same tabs,

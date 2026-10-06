@@ -100,6 +100,10 @@
     .story-cover .cover-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .story-take { display: flex; gap: 10px; align-items: center; }
     .card.pod-line { padding-top: 10px; padding-bottom: 10px; }
+    .point-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 14px; align-items: start; }
+    .point-pic { aspect-ratio: 16/9; background: var(--wall); border-radius: var(--r); display: grid; place-items: center; overflow: hidden; }
+    .point-pic img, .point-pic video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    @media (max-width: 640px) { .point-grid { grid-template-columns: 1fr; } }
     .card.pod-line textarea { min-height: 0; }
     .story-take img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--r); flex: none; }
     .story-take audio { flex: 1 1 auto; min-width: 0; width: 100%; }
@@ -542,7 +546,7 @@
     // What a project is for: its starting shape and the flow Alfred plans it
     // with. The ones not built yet are shown, and said to be coming.
     var KINDS = [{ id: 'music_video', icon: '🎵', ready: true }, { id: 'short_film', icon: '🎞️' },
-                 { id: 'explainer', icon: '🎓' }, { id: 'podcast', icon: '🎙️', ready: true }, { id: 'recording', icon: '🔴', ready: true },
+                 { id: 'explainer', icon: '🎓', ready: true }, { id: 'podcast', icon: '🎙️', ready: true }, { id: 'recording', icon: '🔴', ready: true },
                  { id: 'audio_story', icon: '📻', ready: true },
                  { id: 'free', icon: '✨', ready: true }];
     function kindIcon(k) { var f = KINDS.find(function (x) { return x.id === k; }); return f ? f.icon : '✨'; }
@@ -862,6 +866,8 @@
         else if (!shotsNow.some(function (sh) { return (sh.takes || []).length; })) tab = 'board';
       }
       if (tabsFor(current.kind).indexOf(tab) < 0) tab = tabsFor(current.kind)[0];
+      // An explainer is made on its points; its Video tab is only for a clip.
+      if (current.kind === 'explainer' && tab === 'video') tab = 'points';
       history.replaceState(null, '', '/studio?project=' + pid);
       $('#v-list').hidden = true; $('#v-edit').hidden = false;
       drawEditor();
@@ -1334,6 +1340,9 @@
       // An audio story is heard, not seen: its voices and music, who says
       // them, and the one picture it has -- its cover, drawn in the story tab.
       if (kind === 'audio_story' || kind === 'podcast') return ['audio', 'cast', 'images', 'files'];
+      // An explainer is its points: each a picture (or a clip, made on the
+      // Video tab) and the narration said over it.
+      if (kind === 'explainer') return ['points', 'video', 'audio', 'cast', 'images', 'files'];
       return ['video', 'board', 'audio', 'images', 'cast', 'files'];
     }
     function drawRail() {
@@ -1341,7 +1350,10 @@
       if (!el || !p) return;
       var shots = (p.shots || []).filter(function (s) { return !s.recorded && !s.card; });
       var song = fitSong();
-      if (p.kind === 'recording' || (!shots.length && !song && p.kind !== 'music_video' && p.kind !== 'short_film')) { el.innerHTML = ''; return; }
+      // An explainer's progress is on its points, and its film is not the
+      // film this strip counts: it would say "not put together" forever.
+      if (p.kind === 'recording' || p.kind === 'explainer' ||
+          (!shots.length && !song && p.kind !== 'music_video' && p.kind !== 'short_film')) { el.innerHTML = ''; return; }
       var steps = [];
       if (song || p.kind === 'music_video') {
         var st = song && chosen(song), an = st && st.analysis;
@@ -1381,6 +1393,7 @@
       if (tab === 'board') { body.innerHTML = boardTab(); loadSung(); return; }
       if (tab === 'video') { body.innerHTML = videoTab(); wireLayered(); }
       else if (tab === 'audio') body.innerHTML = audioTab();
+      else if (tab === 'points') body.innerHTML = pointsTab();
       else if (tab === 'images') body.innerHTML = imagesTab();
       else body.innerHTML = filesTab();
     }
@@ -1667,7 +1680,9 @@
 
     // Music & voices
     function audioTab() {
-      var p = current, items = p.audio || [], pod = p.kind === 'podcast', story = p.kind === 'audio_story' || pod;
+      var p = current, pod = p.kind === 'podcast', story = p.kind === 'audio_story' || pod;
+      // An explainer's narrations are on its points; here, only its music.
+      var items = (p.audio || []).filter(function (a) { return !(p.kind === 'explainer' && a.point); });
       var uploads = (p.uploads || []).filter(function (u) { return u.kind === 'voice'; });
       var voiced = cast.filter(function (c) { return c.voice; });
       var html = story ? coverBox() + (pod ? episodeBox(voiced) : '') +
@@ -1733,6 +1748,76 @@
         (t && t.file ? '<audio controls preload="none" src="' + fileUrl(p.id, t.file) + '"></audio>' : '') + takesRow(a) +
         '<div class="row" style="margin-top:6px"><button data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button>' +
         (t && t.file ? dlLink(p.id, t.file, p.name + ' - ' + (who ? who.name : '')) : '') + '</div></div>';
+    }
+    // ── Explainer ──────────────────────────────────────────────────────────
+    // Points in order: a title card, or a picture (the storyboard's frame, or
+    // a clip made from it on the Video tab) with its narration -- the voice
+    // card whose `point` is that shot, said by the narrator. Put together, each
+    // point stays on screen for as long as its narration takes.
+    var expDraft = {};
+    function narrationOf(s) { return (current.audio || []).find(function (a) { return a.point === s.id; }) || null; }
+    function narrator() { var id = (current.settings || {}).narrator; return cast.find(function (c) { return c.id === id && c.voice; }) || null; }
+    function explainerBox(voiced) {
+      var p = current, d = expDraft[p.id] || (expDraft[p.id] = { topic: '', minutes: 2, card: true });
+      var nr = narrator();
+      if (!voiced.length) return '<div class="card"><b>✍️ ' + S.exp_title + '</b><p class="muted" style="margin-top:6px">' + S.exp_narrator_none + '</p></div>';
+      return '<div class="card"><b>✍️ ' + S.exp_title + '</b>' +
+        '<label class="f" for="exp-topic">' + S.exp_topic + '</label><textarea id="exp-topic" rows="2" placeholder="' + esc(S.exp_topic_ph) + '">' + esc(d.topic) + '</textarea>' +
+        '<div class="row" style="margin-top:8px;flex-wrap:wrap;align-items:center">' +
+        '<label class="f" style="margin:0" for="exp-narrator">' + S.exp_narrator + '</label><select id="exp-narrator" style="width:auto">' +
+        voiced.map(function (c) { return '<option value="' + c.id + '"' + ((nr ? nr.id : voiced[0].id) === c.id ? ' selected' : '') + '>🗣️ ' + esc(c.name) + '</option>'; }).join('') + '</select>' +
+        '<label class="f" style="margin:0" for="exp-minutes">' + S.pod_minutes + '</label><select id="exp-minutes" style="width:auto">' +
+        [1, 2, 3, 5].map(function (m) { return '<option value="' + m + '"' + (+d.minutes === m ? ' selected' : '') + '>' + m + ' min</option>'; }).join('') + '</select>' +
+        '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="exp-card"' + (d.card ? ' checked' : '') + '> 🔤 ' + S.exp_card + '</label>' +
+        '<span class="grow"></span><button class="primary" id="exp-write">✍️ ' + S.exp_write + '</button></div></div>';
+    }
+    function pointCard(s, n) {
+      var p = current, b = chosenBoard(s), j = boardJob(s), a = narrationOf(s), at = a && chosen(a), vt = chosen(s);
+      var pic = j && j.state === 'running' && j.preview ? livePreview(s)
+        : vt && vt.file ? '<video src="' + fileUrl(p.id, vt.file) + '" muted controls preload="metadata"></video>'
+        : b ? '<img src="' + fileUrl(p.id, b.file) + '" alt="" loading="lazy">'
+        : '<span class="muted">' + (j ? S.sb_drawing : S.exp_no_picture) + '</span>';
+      return '<div class="card point" id="shot-' + s.id + '"><div class="row" style="margin-bottom:6px"><b>' + fmt('exp_point', { n: n }) + '</b>' +
+        (j ? '<span class="pill run">' + (j.state === 'running' ? S.sb_drawing : S.state_queued) + '</span>' : '') +
+        (a ? statusPill(a) : '') + '<span class="grow"></span>' +
+        '<button data-up="' + s.id + '">↑</button><button data-down="' + s.id + '">↓</button>' +
+        '<button class="danger" data-remove="shots" data-id="' + s.id + '" title="' + esc(S.remove) + '">✕</button></div>' +
+        '<div class="point-grid"><div class="point-pic">' + pic + '</div><div>' +
+        '<label class="f">🗣️ ' + S.exp_narration + '</label>' +
+        (a ? '<textarea rows="3" data-f="text" data-id="' + a.id + '">' + esc(a.text) + '</textarea>' +
+             (at && at.file ? '<audio controls preload="none" src="' + fileUrl(p.id, at.file) + '"></audio>' : '') + takesRow(a) +
+             '<div class="row" style="margin-top:6px"><button data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button></div>'
+           : '<button data-exp-narrate="' + s.id + '">＋ ' + S.exp_add_narration + '</button>') +
+        '<label class="f">🖼️ ' + S.exp_picture + '</label><textarea rows="2" data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
+        boardRow(s) + '</div></div></div>';
+    }
+    function pointsTab() {
+      var p = current, voiced = cast.filter(function (c) { return c.voice; }), n = 0;
+      var html = explainerBox(voiced) + '<p class="muted" style="margin:4px 0 12px">' + esc(S.exp_help) + '</p>';
+      (p.shots || []).forEach(function (s, i) {
+        if (s.recorded) return;
+        html += s.card ? cardHtml(s, i) : pointCard(s, ++n);
+      });
+      var shots = (p.shots || []).filter(function (s) { return !s.recorded && !s.card; });
+      var undrawn = shots.filter(function (s) { return !(s.boards || []).length && s.prompt && !boardJob(s); }).length;
+      var unsaid = shots.map(narrationOf).filter(function (a) { return a && a.text && !(a.takes || []).length && !jobFor(a.id); });
+      var ready = shots.length && shots.every(function (s) { return (s.boards || []).length || (chosen(s) || {}).file; });
+      html += '<div class="row" style="margin-top:12px;flex-wrap:wrap"><button id="exp-add">＋ ' + S.exp_add_point + '</button><button id="add-card">🔤 ' + S.add_card + '</button>' +
+        (undrawn ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: undrawn }) + '</button>' : '') +
+        (unsaid.length ? '<button data-exp-say-all="1">🗣️ ' + fmt('exp_say_all', { n: unsaid.length }) + '</button>' : '') +
+        '<span class="grow"></span><select id="exp-size" style="width:auto"><option value="1080">1080p</option><option value="720">720p</option></select>' +
+        '<button class="primary" id="exp-render"' + (ready ? '' : ' disabled') + '>🎞️ ' + S.exp_render + '</button></div>' +
+        (ready ? '' : '<p class="muted" style="margin-top:4px">' + S.exp_need_pictures + '</p>');
+      if (p.render && p.render.state === 'running') html += '<div class="note">' + S.render_running + '</div>';
+      if (p.render && p.render.state === 'failed') html += '<div class="note err">' + S.render_failed + ': ' + esc(p.render.error) + '</div>';
+      var mine = (p.renders || []).filter(function (r) { return r.explainer; }).slice().reverse();
+      if (mine.length) html += '<h2 style="margin-top:20px">' + S.renders + '</h2>' + mine.map(function (r) {
+        return '<div class="card"><video controls preload="metadata" style="width:100%;border-radius:8px" src="' + fileUrl(p.id, r.file) + '"></video>' +
+          '<div class="row"><span class="muted">' + new Date(r.created * 1000).toLocaleString() + ' · ' + dur(r.seconds) + (r.size ? ' · ' + r.size + 'p' : '') +
+          '</span><span class="grow"></span>' + dlLink(p.id, r.file, p.name) +
+          '<button class="danger" data-del-render="' + esc(r.file.replace(/^renders\//, '')) + '" title="' + esc(S.delete) + '">🗑</button></div></div>';
+      }).join('');
+      return html;
     }
     // A podcast's episode, written by Alfred: the topic, how long, the hosts
     // (characters with a voice sample -- each line is said in its host's own
@@ -2008,6 +2093,7 @@
       if (el.dataset.theme) { themes[el.dataset.theme] = el.value; return; }
       if (el.id === 'cover-prompt') { coverDraft[current.id] = el.value; return; }
       if (el.id === 'pod-topic') { (podDraft[current.id] || {}).topic = el.value; return; }
+      if (el.id === 'exp-topic') { (expDraft[current.id] || {}).topic = el.value; return; }
       if (el.dataset.eyeStrength) { eyeStrength[el.dataset.eyeStrength] = Number(el.value); return; }
       if (el.dataset.cardF) {
         var cs3 = itemById(el.dataset.id); if (!cs3 || !cs3.card) return;
@@ -2045,6 +2131,15 @@
       if (el.id === 'res' || el.id === 'lang') { current.settings[el.id === 'res' ? 'resolution' : 'language'] = el.value; markDirty(); return; }
       if (el.dataset.f === 'continuity' || el.dataset.f === 'speaker') { drawTab(); return; }
       if (el.id === 'pod-minutes') { (podDraft[current.id] || {}).minutes = Number(el.value); return; }
+      if (el.id === 'exp-minutes') { (expDraft[current.id] || {}).minutes = Number(el.value); return; }
+      if (el.id === 'exp-card') { (expDraft[current.id] || {}).card = el.checked; return; }
+      if (el.id === 'exp-narrator') {
+        // The narrator says every narration that was the old narrator's.
+        var old = (current.settings || {}).narrator;
+        current.settings.narrator = el.value;
+        (current.audio || []).forEach(function (a) { if (a.point && (!a.speaker || a.speaker === old)) a.speaker = el.value; });
+        markDirty(); return;
+      }
       if (el.id === 'pod-music') { (podDraft[current.id] || {}).music = el.checked; return; }
       if (el.dataset.podHost) {
         var pd = podDraft[current.id]; if (!pd) return;
@@ -2120,7 +2215,10 @@
         if (d.addAudio) { p.audio.push(newItem({ kind: d.addAudio, seconds: d.addAudio === 'song' ? 90 : 30, language: p.settings.language })); await saveNow(); drawTab(); return; }
         if (d.remove) {
           if (!confirm(S.remove_confirm)) return;
-          p[d.remove] = p[d.remove].filter(function (x) { return x.id !== d.id; }); await saveNow(); drawTab(); return;
+          p[d.remove] = p[d.remove].filter(function (x) { return x.id !== d.id; });
+          // An explainer's point takes its narration with it.
+          if (d.remove === 'shots') p.audio = (p.audio || []).filter(function (a) { return a.point !== d.id; });
+          await saveNow(); drawTab(); return;
         }
         if (d.fav) {
           await flushSave();
@@ -2164,6 +2262,45 @@
           if (!coverItem()) { current.settings.cover = current.images[current.images.length - 1].id; await saveNow(); }
           delete coverDraft[p.id];
           return generate([coverItem().id]);
+        }
+        if (b.id === 'exp-write') {
+          var ed = expDraft[p.id] || {};
+          if (!(ed.topic || '').trim()) { toast(S.exp_need_topic, true); return; }
+          var nsel = $('#exp-narrator');
+          var hasPoints = (p.shots || []).some(function (s) { return !s.recorded; });
+          if (hasPoints && !confirm(S.exp_replace_confirm)) return;
+          await flushSave();
+          b.disabled = true; b.textContent = '✍️ ' + S.pod_writing; busy++;
+          try {
+            var ex = await api('explainer-script', { method: 'POST', body: { project: p.id, topic: ed.topic, minutes: ed.minutes,
+                                                                           narrator: nsel ? nsel.value : '', title_card: !!ed.card, replace: hasPoints } });
+            if (ex.title && (p.name === S.untitled || !p.name.trim())) { current = await api('projects/' + p.id); current.name = ex.title; markDirty(); await flushSave(); }
+            toast(fmt('exp_written', { n: ex.points }));
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          finally { busy--; current = await api('projects/' + p.id); drawEditor(); }
+          return;
+        }
+        if (b.id === 'exp-add' || d.expNarrate) {
+          // A point is a shot and its narration; the narration links to the
+          // shot by id, so the shot is saved first and gets its id.
+          var sid = d.expNarrate;
+          if (!sid) { p.shots.push(newItem({ prompt: '', seconds: 5 })); await saveNow(); sid = current.shots[current.shots.length - 1].id; }
+          var nr2 = narrator();
+          current.audio.push(newItem({ kind: 'voice', title: '', text: '', point: sid, speaker: nr2 ? nr2.id : '', seconds: 30 }));
+          await saveNow(); drawTab();
+          var box = document.querySelector('#shot-' + sid + ' textarea[data-f="text"]'); if (box) box.focus();
+          return;
+        }
+        if (d.expSayAll) {
+          await saveNow();
+          var ids2 = current.shots.map(narrationOf).filter(function (a) { return a && a.text && !(a.takes || []).length && !jobFor(a.id); }).map(function (a) { return a.id; });
+          if (ids2.length) await generate(ids2);
+          return;
+        }
+        if (b.id === 'exp-render') {
+          await flushSave();
+          await api('projects/' + p.id + '/explainer', { method: 'POST', body: { format: 'h264', size: $('#exp-size').value } });
+          current = await api('projects/' + p.id); drawTab(); watchRender(); return;
         }
         if (b.id === 'pod-write') {
           var pd2 = podDraft[p.id] || {};

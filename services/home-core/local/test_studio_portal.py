@@ -833,6 +833,65 @@ check("an answer that cannot be read is asked for again once, then it fails and 
 A._studio_call, A._run_nanobot_turn = _saved_p
 
 
+print("\nan explainer, written by Alfred")
+_saved_x = (A._studio_call, A._run_nanobot_turn)
+XDOC = {"id": "exp1", "settings": {"language": "en", "look": "flat 2D vector"},
+        "shots": [{"id": "oldpt"}], "audio": [{"id": "oldn", "kind": "voice", "point": "oldpt"},
+                                              {"id": "bed1", "kind": "instrumental"}]}
+XCHARS = [{"id": "narr1", "name": "Pili", "voice": "p.wav"}, {"id": "mute2", "name": "Paula"}]
+posted_x, asked_x, answers_x = [], [], []
+def _scx(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/exp1" and method == "GET":
+        return XDOC
+    if path == "projects/exp1/characters":
+        return {"characters": XCHARS}
+    posted_x.append((method, path, body, via))
+    if path == "projects/exp1/items":
+        return {"items": [f"id{i}{'x' * 8}" for i in range(len(body["items"]))]}
+    return {"ok": True}
+A._studio_call = _scx
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_x.append(text) or (answers_x.pop(0) if answers_x else "")
+check("an explainer needs a topic",
+      client.post("/studio/api/explainer-script", headers=HOME, json={"project": "exp1", "narrator": "narr1"}).status_code == 400)
+check("  and a narrator with a voice", client.post("/studio/api/explainer-script", headers=HOME, json={
+    "project": "exp1", "topic": "lighthouses", "narrator": "mute2"}).status_code == 400 and not asked_x)
+answers_x[:] = ['{"title": "How a lighthouse works", "subtitle": "in three steps", "points": ['
+                '{"narration": "A lighthouse warns ships at night.", "picture": "a lighthouse on a cliff at dusk"},'
+                '{"narration": "", "picture": "no words"},'
+                '{"narration": "Its lamp turns behind a big lens.", "picture": "a huge glass lens around a lamp"},'
+                '{"narration": "So every ship can see it from far away.", "picture": "ships far out at sea, a beam of light"}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, json={
+    "project": "exp1", "topic": "how a lighthouse works", "minutes": 1, "narrator": "narr1", "title_card": True,
+    "replace": True})
+adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
+shots_x = adds[0][2]["items"] if adds else []
+voices_x = adds[1][2]["items"] if len(adds) > 1 else []
+check("each point is a shot drawn from its picture, after a title card with Alfred's title",
+      r.status_code == 200 and r.get_json()["points"] == 3 and adds[0][2]["section"] == "shots"
+      and shots_x[0]["card"]["title"] == "How a lighthouse works" and shots_x[0]["card"]["subtitle"] == "in three steps"
+      and [x["prompt"] for x in shots_x[1:]] == ["a lighthouse on a cliff at dusk", "a huge glass lens around a lamp",
+                                                 "ships far out at sea, a beam of light"], shots_x)
+check("  and its narration a voice card said by the narrator, linked to that shot -- not to the title card",
+      [(v["point"], v["speaker"], v["text"][:12]) for v in voices_x] == [
+          ("id1xxxxxxxx", "narr1", "A lighthouse"), ("id2xxxxxxxx", "narr1", "Its lamp tur"), ("id3xxxxxxxx", "narr1", "So every shi")]
+      and all(c[3] == "Alfred" for c in adds), voices_x)
+check("  written again, the old points and their narrations go -- the music stays",
+      ("PUT", "projects/exp1", {"shots": [], "audio": [{"id": "bed1", "kind": "instrumental"}]}, "Alfred") in posted_x
+      and posted_x.index(("PUT", "projects/exp1", {"shots": [], "audio": [{"id": "bed1", "kind": "instrumental"}]},
+                          "Alfred")) < posted_x.index(adds[0]), posted_x[:2])
+check("  and the project remembers its narrator",
+      ("PUT", "projects/exp1", {"settings": {"narrator": "narr1"}}, "Alfred") in posted_x)
+check("  asked for the right number of points, pictures in English with no text and no style words",
+      asked_x and "4 points" in asked_x[-1] and "no text, letters" in asked_x[-1] and A.STUDIO_STYLE_RULE in asked_x[-1]
+      and "English" in asked_x[-1] and "flat 2D vector" in asked_x[-1], asked_x[-1][:700])
+posted_x.clear(); asked_x.clear()
+answers_x[:] = ["nope", '{"points": [{"narration": "one", "picture": "one"}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, json={"project": "exp1", "topic": "x", "narrator": "narr1"})
+check("an unreadable explainer is asked for once more, then fails and files nothing",
+      r.status_code == 502 and len(asked_x) == 2 and not posted_x, posted_x)
+A._studio_call, A._run_nanobot_turn = _saved_x
+
+
 print("\na Studio notification opens the Studio")
 _sent = []
 _saved_n = A._notify_user

@@ -56,8 +56,10 @@ EDITABLE = {
     # cloned voice (its own sample), instead of a sample from the files.
     # `alone`: an instrumental played on its own when an audio story or a
     # podcast is put together, not under the voices after it (a jingle).
+    # `point`: the shot an explainer's narration belongs to -- said while that
+    # point's picture or clip is on screen.
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm",
-              "speaker", "alone"),
+              "speaker", "alone", "point"),
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
@@ -311,6 +313,11 @@ class Projects:
                 if "cover" in s:
                     cv = str(s.get("cover") or "")
                     doc["settings"]["cover"] = cv if ID_RE.fullmatch(cv) else ""
+                # An explainer's narrator: the character whose voice says
+                # every point unless a narration names another.
+                if "narrator" in s:
+                    nr = str(s.get("narrator") or "")
+                    doc["settings"]["narrator"] = nr if ID_RE.fullmatch(nr) else ""
                 if "soundtrack" in s:
                     st = str(s.get("soundtrack") or "")
                     doc["settings"]["soundtrack"] = st if ID_RE.fullmatch(st) else ""
@@ -993,7 +1000,7 @@ def _clean(key: str, value: Any, item: dict) -> Any:
         return clean_mix(value)
     if key == "sections":
         return clean_sections(value)
-    if key in ("sections_take", "callouts_take", "eyes_take", "speaker"):
+    if key in ("sections_take", "callouts_take", "eyes_take", "speaker", "point"):
         return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
     if key == "card":
         return clean_card(value)
