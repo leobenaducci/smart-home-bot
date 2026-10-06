@@ -23157,6 +23157,17 @@ PODCAST_WORDS_PER_MIN = 140
 PODCAST_MAX_LINES = 120
 
 
+def _studio_json_object(text):
+    """The JSON object in whatever the assistant answered (from the first `{`
+    to the last `}`, so a code fence or a sentence around it does no harm), or
+    None."""
+    start, end = text.find('{'), text.rfind('}')
+    try:
+        return json.loads(text[start:end + 1]) if 0 <= start < end else None
+    except ValueError:
+        return None
+
+
 def _studio_parse_episode(text, hosts):
     """(title, lines) from the episode Alfred wrote: `{"title", "lines":
     [{"speaker", "text"}]}`, every line said by one of *hosts* (name -> id,
@@ -23164,11 +23175,7 @@ def _studio_parse_episode(text, hosts):
     at least two lines to keep."""
     if not text:
         return None
-    start, end = text.find('{'), text.rfind('}')
-    try:
-        raw = json.loads(text[start:end + 1]) if 0 <= start < end else None
-    except ValueError:
-        raw = None
+    raw = _studio_json_object(text)
     if not isinstance(raw, dict) or not isinstance(raw.get('lines'), list):
         return None
     by_name = {_studio_fold(n): cid for n, cid in hosts.items()}
@@ -23200,11 +23207,7 @@ def _studio_parse_explainer(text):
     None when there are not at least two."""
     if not text:
         return None
-    start, end = text.find('{'), text.rfind('}')
-    try:
-        raw = json.loads(text[start:end + 1]) if 0 <= start < end else None
-    except ValueError:
-        raw = None
+    raw = _studio_json_object(text)
     if not isinstance(raw, dict) or not isinstance(raw.get('points'), list):
         return None
     points = []
@@ -23279,7 +23282,12 @@ def studio_explainer_script():
         return jsonify(error=t('studio.exp_failed')), 502
     title, subtitle, points = out
     if d.get('replace'):
-        kept_audio = [a for a in doc.get('audio') or [] if not a.get('point')]
+        # The project as it is now: the PUT replaces whole lists, and the one
+        # read before the assistant's turn is minutes old.
+        fresh = _studio_call(username, 'GET', f'projects/{pid}')
+        if not fresh:
+            return jsonify(error=t('studio.exp_failed')), 502
+        kept_audio = [a for a in fresh.get('audio') or [] if not a.get('point')]
         if _studio_call(username, 'PUT', f'projects/{pid}', {'shots': [], 'audio': kept_audio}, via='Alfred') is None:
             return jsonify(error=t('studio.exp_failed')), 502
     shots = ([{'card': {'title': title or topic[:120], 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
@@ -23315,11 +23323,7 @@ def _studio_parse_film(text):
     shot with a description."""
     if not text:
         return None
-    start, end = text.find('{'), text.rfind('}')
-    try:
-        raw = json.loads(text[start:end + 1]) if 0 <= start < end else None
-    except ValueError:
-        raw = None
+    raw = _studio_json_object(text)
     if not isinstance(raw, dict) or not isinstance(raw.get('scenes'), list):
         return None
     people = []
@@ -23507,12 +23511,21 @@ def studio_podcast_script():
                  + [{'kind': 'instrumental', 'title': 'Outro', 'style': jingle + ', ending', 'seconds': 8,
                      'alone': True}])
     if d.get('replace'):
-        kept = [a for a in doc.get('audio') or [] if a.get('kind') == 'song']
+        # The project as it is now, not as it was before the assistant's turn
+        # (minutes ago): the PUT replaces the whole list, so a stale one would
+        # drop whatever was added meanwhile.
+        fresh = _studio_call(username, 'GET', f'projects/{pid}')
+        if not fresh:
+            return jsonify(error=t('studio.pod_failed')), 502
+        kept = [a for a in fresh.get('audio') or [] if a.get('kind') == 'song']
         if _studio_call(username, 'PUT', f'projects/{pid}', {'audio': kept}, via='Alfred') is None:
             return jsonify(error=t('studio.pod_failed')), 502
-    added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': items}, via='Alfred')
-    if not added:
-        return jsonify(error=t('studio.pod_failed')), 502
+    # The Studio takes 50 items a call; a long episode is more lines than that,
+    # and the rest (and an outro jingle) would be dropped without a word.
+    for i in range(0, len(items), 50):
+        if not _studio_call(username, 'POST', f'projects/{pid}/items',
+                            {'section': 'audio', 'items': items[i:i + 50]}, via='Alfred'):
+            return jsonify(error=t('studio.pod_failed')), 502
     return jsonify(title=title, lines=len(lines), items=len(items))
 
 

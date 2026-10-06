@@ -830,6 +830,26 @@ answers_p[:] = ["no json", '{"lines": [{"speaker": "Tomi", "text": "solo una"}]}
 r = client.post("/studio/api/podcast-script", headers=HOME, json={"project": "pod1", "topic": "x", "hosts": ["hostA"]})
 check("an answer that cannot be read is asked for again once, then it fails and files nothing",
       r.status_code == 502 and len(asked_p) == 2 and not posted_p, (r.status_code, posted_p))
+posted_p.clear(); asked_p.clear()
+reads_p = []
+def _scp_long(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/pod1" and method == "GET":
+        reads_p.append(1)
+        later = {"id": "song2", "kind": "song"}
+        return dict(PDOC, audio=PDOC["audio"] + ([later] if len(reads_p) > 1 else []))
+    return _scp(username, method, path, body, timeout, via)
+A._studio_call = _scp_long
+answers_p[:] = [json.dumps({"title": "Largo", "lines": [{"speaker": "Tomi" if n % 2 else "Mora", "text": f"Línea número {n}."}
+                                                         for n in range(60)]})]
+r = client.post("/studio/api/podcast-script", headers=HOME, json={
+    "project": "pod1", "topic": "huertas", "minutes": 10, "hosts": ["hostA", "hostB"], "music": True, "replace": True})
+adds = [c for c in posted_p if c[1] == "projects/pod1/items"]
+check("a long episode is filed in as many calls as the Studio's 50 items allow, so nothing -- the outro included -- is dropped",
+      r.status_code == 200 and [len(c[2]["items"]) for c in adds] == [50, 12]
+      and adds[-1][2]["items"][-1]["title"] == "Outro", [len(c[2]["items"]) for c in adds])
+put = next((c for c in posted_p if c[0] == "PUT"), None)
+check("  and a replace keeps what the project holds now, not what it held before Alfred's turn",
+      put and [a["id"] for a in put[2]["audio"]] == ["song1", "song2"], put)
 A._studio_call, A._run_nanobot_turn = _saved_p
 
 
