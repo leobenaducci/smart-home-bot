@@ -191,14 +191,18 @@ cover picture. Make a project of the kind **Audio story**; it opens on the
 
 ## The storyboard
 
-- Each frame is reviewed automatically for what the shot should show and for
-  the look. Under 7/10, Alfred suggests a better description: **Use and
-  redraw**.
+- Each frame is reviewed automatically for what the shot should show, for
+  the look, and for the same style as the frames that already passed: every
+  frame in one style. A shot can have a style of its own only if you write it
+  in its description ("in black and white, like an old photo"); that frame is
+  then checked against the style it asks for. Under 7/10, Alfred suggests a
+  better description: **Use and redraw**.
 - **🔁 Refine** first redraws the frames already marked -- the ones whose
   description you changed (✏️), and the ones a review scored under 7/10, from
   the review's description -- then reviews the frames not reviewed yet and
   redraws those under 7/10. Every redrawn frame is reviewed again (twice at
-  most). Frames already reviewed at 7 or more are left as they are.
+  most). Frames already reviewed at 7 or more in the storyboard's style are
+  left as they are; one whose style was never checked is reviewed again.
 - **One correction for every shot**: the box under the toolbar ("it is night in
   every shot") changes every description the same way and redraws them. A
   correction about the whole style changes the look instead.

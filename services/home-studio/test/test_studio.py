@@ -1209,6 +1209,12 @@ check("  and whether the frame kept to the film's style", rv["review"]["style"] 
 rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
             json={"review": {"score": 4, "style": "<b>"}}, headers=h(JUANA, "Juana")).json()
 check("  as one of three words, or nothing", rv["review"]["style"] == "", rv.get("review"))
+rv = c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review",
+            json={"review": {"score": 9, "style": "yes", "own_style": "black-and-white pencil sketch " * 20}},
+            headers=h(JUANA, "Juana")).json()
+check("  and the style its shot asks for itself, when it asks for one",
+      rv["review"]["own_style"].startswith("black-and-white pencil sketch") and len(rv["review"]["own_style"]) <= 200,
+      rv.get("review"))
 check("  a review without a score is refused",
       c.post(f"/api/projects/{sbp['id']}/items/{s1id}/boards/{bd['id']}/review", json={"review": {"ok": []}},
              headers=h(JUANA, "Juana")).status_code == 404)

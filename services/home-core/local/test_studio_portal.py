@@ -530,6 +530,32 @@ vision_answers[:] = ['{"items": ["un zorro rojo"]}',
 r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
 check("a frame in the style passes as before", (r.get_json() or {})["review"]["score"] == 10
       and r.get_json()["review"]["style"] == "yes", r.get_json())
+calls.clear()
+vision_answers[:] = ['{"items": ["un zorro rojo", "la escalera del faro"], "own_style": "black-and-white pencil sketch"}',
+                     '{"checks": [{"item": "El estilo que pide", "shown": "yes"}, {"item": "un zorro rojo", "shown": "yes"},'
+                     ' {"item": "la escalera del faro", "shown": "yes"}], "defects": []}']
+r = client.post("/studio/api/board-review", headers=HOME, json={"project": "abc123def456", "shot": "sh1"})
+rv = (r.get_json() or {}).get("review") or {}
+vparts = looked[-1]["body"]["messages"][0]["content"]
+vt = vparts[0]["text"]
+check("a shot whose description asks for a style of its own is held to that style -- not the look, not the others",
+      "- " + A._studio_t("es", "studio.review_item_own_style", "The style this shot asks for: {style}",
+                         style="black-and-white pencil sketch") in vt
+      and "pastel watercolour" not in vt.split("Requirements:")[1]
+      and A._studio_t("es", "studio.review_item_style", "The same style as the storyboard's other frames") not in vt
+      and len([x for x in vparts if x["type"] == "image_url"]) == 2 and "other frames of the same storyboard" not in vt,
+      vt[-400:])
+check("  and passes in it, the review saying which style it kept",
+      rv.get("score") == 10 and rv.get("style") == "yes" and rv.get("own_style") == "black-and-white pencil sketch"
+      and any(c[1].endswith("/boards/bd1/review") and c[2]["review"].get("own_style") == "black-and-white pencil sketch"
+              for c in calls), rv)
+asked_req = looked[-2]["body"]["messages"][0]["content"][0]["text"]
+check("  the shot's own style is asked for with its checklist: only what its description itself asks for",
+      '"own_style": null or "..."' in asked_req and "only repeats the look" in asked_req)
+RDOC["shots"][-2]["boards"][0]["review"]["own_style"] = "a child's crayon drawing"
+check("a frame in a style of its own on purpose is never another frame's style reference",
+      A._studio_style_refs(USER1, "abc123def456", RDOC, "sh1") == [])
+RDOC["shots"][-2]["boards"][0]["review"].pop("own_style")
 plans[:] = ['[{"prompt": "x"}, {"prompt": "y"}, {"prompt": "z"}]']
 seen.clear()
 A._studio_correct_shots(USER1, RDOC, RDOC["shots"], "make it night")
@@ -695,7 +721,11 @@ FDOC = {"id": "pr", "jobs": [{"kind": "board", "target": "q"}], "shots": [
                                                    "review": {"state": "done", "score": 9}}]},
     {"id": "w", "prompt": "x", "boards": [{"id": "b2", "prompt": "x",
                                            "review": {"state": "done", "score": 4, "prompt": "better words"}}]},
-    {"id": "g", "prompt": "y", "boards": [{"id": "b3", "prompt": "y", "review": {"state": "done", "score": 8}}]},
+    {"id": "g", "prompt": "y", "boards": [{"id": "b3", "prompt": "y",
+                                           "review": {"state": "done", "score": 8, "style": "yes"}}]},
+    {"id": "gs", "prompt": "t", "boards": [{"id": "b8", "prompt": "t", "review": {"state": "done", "score": 9}}]},
+    {"id": "go", "prompt": "s", "boards": [{"id": "b9", "prompt": "s", "review": {
+        "state": "done", "score": 8, "style": "yes", "own_style": "sepia flashback"}}]},
     {"id": "n", "prompt": "z", "boards": [{"id": "b4", "prompt": "z"}]},
     {"id": "f", "prompt": "v", "boards": [{"id": "b5", "prompt": "v", "review": {"state": "failed"}}]},
     {"id": "q", "prompt": "u", "boards": [{"id": "b6", "prompt": "u", "review": {"state": "done", "score": 2,
@@ -720,17 +750,21 @@ check("  and a frame a review already scored low is redrawn from the review's de
       and ("POST", "projects/pr/storyboard", {"items": ["w"], "refine": {"rounds": 1, "threshold": 7, "round": 1}},
            "") in posted_f, posted_f)
 check("  before any frame is looked at, and none of them looked at again",
-      r.status_code == 200 and r.get_json() == {"started": 2, "redrawn": 2} and len(posted_f) == 3 and len(bg_f) == 1,
+      r.status_code == 200 and r.get_json() == {"started": 3, "redrawn": 2} and len(posted_f) == 3 and len(bg_f) == 1,
       (r.get_json(), posted_f))
 bg_f[0]()
 check("then only the frames not reviewed yet are reviewed; a good review stands, a frame being drawn is left to it",
-      reviewed_f == [("n", 2), ("f", 2)], reviewed_f)
+      ("n", 2) in reviewed_f and ("f", 2) in reviewed_f and "g" not in [x[0] for x in reviewed_f]
+      and "go" not in [x[0] for x in reviewed_f], reviewed_f)
+check("  but a good review that never checked the style is looked at again: one style, unless a shot says otherwise",
+      reviewed_f == [("gs", 2), ("n", 2), ("f", 2)], reviewed_f)
 posted_f.clear(); bg_f.clear(); reviewed_f.clear()
 r = client.post("/studio/api/board-refine", headers=HOME, json={"project": "pr", "rounds": 0})
 bg_f[0]()
 check("'review all' still looks at every frame with one (not one being drawn) and redraws none",
-      r.get_json() == {"started": 5, "redrawn": 0} and not posted_f
-      and reviewed_f == [("c", 0), ("w", 0), ("g", 0), ("n", 0), ("f", 0)], (r.get_json(), reviewed_f))
+      r.get_json() == {"started": 7, "redrawn": 0} and not posted_f
+      and reviewed_f == [("c", 0), ("w", 0), ("g", 0), ("gs", 0), ("go", 0), ("n", 0), ("f", 0)],
+      (r.get_json(), reviewed_f))
 posted_f.clear(); bg_f.clear()
 A._studio_refining.add((USER1, "pr"))
 r = client.post("/studio/api/board-refine", headers=HOME, json={"project": "pr", "rounds": 2})

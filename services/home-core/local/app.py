@@ -23425,7 +23425,8 @@ def _studio_style_refs(username, pid, doc, sid, limit=STUDIO_STYLE_REFS):
         if not b.get('file'):
             continue
         r = b.get('review') or {}
-        if r.get('style') in ('partly', 'no'):
+        # Off the style, or in a style of its own on purpose: no reference.
+        if r.get('style') in ('partly', 'no') or r.get('own_style'):
             continue
         # Passed, and in the style: checked against the look when there is one. A
         # review from before style was checked says nothing about it.
@@ -23469,23 +23470,34 @@ def _studio_requirements(shot, look, cast, language):
     """What a still must show to match the shot, as 4-8 things a viewer can
     check -- asked of the house's model, text only. Camera movement, sound
     and anything that happens over time are left out: one frame cannot show
-    them, and asked anyway the model marks them half-there on every frame."""
+    them, and asked anyway the model marks them half-there on every frame.
+
+    And the style the shot asks for itself, when it asks for one: every
+    storyboard keeps one style "unless specified otherwise", and only a person
+    writes a style into a description -- the Designer is told never to
+    (`STUDIO_STYLE_RULE`). (items, that style or None)."""
     prompt = (
         "List the concrete things a single still picture must show to match this storyboard shot: the subject "
         "and what it looks like, its pose or action, where it is looking, the setting, the framing and camera "
         "angle, the light, the mood. Leave out camera movement, sound and anything that happens over time -- a "
         "still cannot show them -- and the visual style or medium, which is checked on its own. "
         f"4 to 8 short items, each one thing a viewer could check, in {language}. "
-        'Answer with only a JSON object: {"items": ["...", ...]}\n\n'
+        "Then say whether the shot's description itself asks for a visual style of its own -- a medium, "
+        "rendering, palette or period different from the film's look, such as a black-and-white flashback or "
+        "a child's crayon drawing: that style in a few words, or null when the description says nothing about "
+        "style or only repeats the look. "
+        'Answer with only a JSON object: {"items": ["...", ...], "own_style": null or "..."}\n\n'
         f"The shot: {shot.get('prompt') or ''}\n"
         + (f"The film's look: {look}\n" if look else "")
         + ("".join(f"Character {c['name']} looks like: {c.get('look') or ''}\n" for c in cast))
     )
     try:
         raw = json.loads(_studio_vision(prompt, [], max_tokens=600) or '')
-        return [str(x).strip()[:200] for x in raw.get('items') or [] if str(x).strip()][:8]
+        own = raw.get('own_style')
+        own = str(own).strip()[:200] if isinstance(own, str) and own.strip() and own.strip().lower() != 'null' else None
+        return [str(x).strip()[:200] for x in raw.get('items') or [] if str(x).strip()][:8], own
     except (ValueError, AttributeError):
-        return []
+        return [], None
 
 
 def _studio_score_checks(text, items):
@@ -23577,7 +23589,7 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
     # So it does not choose the number: the shot is first made into a
     # checklist of what a still must show, each item is marked shown, partly
     # or not, and the score is counted from the marks.
-    items = _studio_requirements(shot, look, cast, language)
+    items, own_style = _studio_requirements(shot, look, cast, language)
     if not items:
         _studio_call(username, 'POST', path, {'review': {'state': 'failed', 'error': 'the shot could not be read'}})
         return None
@@ -23585,9 +23597,15 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
     # the rest: the look as written, and -- when there are other frames -- the
     # same style as them (`_studio_style_refs`).
     locale = str((doc.get('settings') or {}).get('language') or 'es')[:2]
-    styles = _studio_style_refs(username, pid, doc, sid)
+    # A shot that asks for a style of its own is held to that style, and not
+    # to the look or the other frames: the storyboard keeps one style unless
+    # a shot says otherwise.
+    styles = [] if own_style else _studio_style_refs(username, pid, doc, sid)
     labels = []
-    if look:
+    if own_style:
+        labels.append(_studio_t(locale, 'studio.review_item_own_style', "The style this shot asks for: {style}",
+                                style=own_style))
+    elif look:
         labels.append(_studio_t(locale, 'studio.review_item_look', "The film's look: {look}", look=look[:300]))
     if styles:
         labels.append(_studio_t(locale, 'studio.review_item_style', "The same style as the storyboard's other frames"))
@@ -23614,6 +23632,8 @@ def _studio_review_frame(username, pid, doc, shot, board, path, round_, threshol
         return None
     _studio_style_marks(review, labels, len(items))
     review['round'] = round_
+    if own_style:
+        review['own_style'] = own_style
     # The picture was looked at on the house's card; what to draw instead is
     # writing, and the storyboard's writing is the Designer's.
     if review['score'] < threshold and review['problems']:
@@ -23698,8 +23718,12 @@ def studio_board_refine():
     # from the description that review wrote. Each new frame is reviewed when
     # it lands, like any refined one. Then the frames not reviewed yet are
     # reviewed; one reviewed at or over the bar, unchanged since, is left as it
-    # is -- its review is of this very frame. "Review all" (rounds 0) still
-    # looks at every frame and redraws none.
+    # is -- its review is of this very frame -- but only once that review found
+    # it in the storyboard's style, or in the style its shot asks for. One
+    # whose style was never checked (reviewed before there was a look or a
+    # frame to hold it to) is reviewed again: the storyboard keeps one style
+    # unless a shot says otherwise. "Review all" (rounds 0) still looks at
+    # every frame and redraws none.
     changed, weak, review = [], [], []
     for s in shots:
         if not refine['rounds']:
@@ -23712,7 +23736,7 @@ def studio_board_refine():
             changed.append(s['id'])
         elif rv.get('state') == 'done' and int(rv.get('score') or 0) < refine['threshold'] and rv.get('prompt'):
             weak.append((s['id'], rv['prompt']))
-        elif rv.get('state') != 'done':
+        elif rv.get('state') != 'done' or (rv.get('style') != 'yes' and not rv.get('own_style')):
             review.append(s['id'])
     key = (username, pid)
     with _studio_refining_lock:

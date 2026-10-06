@@ -250,6 +250,17 @@ redraws told to restate the look wrote "clean, realistic" into them.
   styles the verdicts contradicted each other.
 - A frame off-style scores at most 4 (6 if partly), whatever else it gets
   right.
+- **One style unless a shot says otherwise.** A person may write a style into a
+  shot's description on purpose (a black-and-white flashback, a child's
+  drawing) -- the Designer never does. The step that turns the shot into a
+  checklist also says whether its description asks for a style of its own
+  (`own_style`); such a frame is held to that style instead of the look and the
+  other frames, its review keeps it, and it is never another frame's style
+  reference.
+- 🔁 Refine leaves a frame that passed alone only when its review found it in
+  the style (or in the style its shot asks for). One that passed before its
+  style could be checked -- no look yet, no frame to hold it to -- is reviewed
+  again, against the look and the frames that passed in it.
 
 ### Reviewing the frames
 

@@ -675,6 +675,9 @@ class Projects:
                          # Whether it keeps to the film's style -- the portal
                          # holds other frames to the ones that do.
                          style=review.get("style") if review.get("style") in ("yes", "partly", "no") else "",
+                         # The style the shot itself asks for, when it does:
+                         # held to that, and no reference for the others.
+                         own_style=str(review.get("own_style") or "").strip()[:200],
                          round=max(0, min(9, int(review.get("round") or 0))),
                          # The checklist the score was counted from: each thing
                          # the shot asks for, and whether the frame shows it.
