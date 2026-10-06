@@ -96,6 +96,21 @@ a = store.add(owner=MORA, owner_name="Mora", kind="video_shot", model="h3", para
 b = store.add(owner=MORA, owner_name="Mora", kind="video_shot", model="h3", params={}, title="m2", after=a["id"])
 order = [j["title"] for j in store.order()]
 check("  a shot never runs before the one it continues", order.index("m1") < order.index("m2"), order)
+rr = Store(tmp / "rr.db")
+for i in range(6):
+    rr.add(owner=TOMI, owner_name="Tomi", kind="board", model="flux", params={}, title=f"T{i}")
+prev = None
+for i in range(3):
+    prev = rr.add(owner=MORA, owner_name="Mora", kind="video_shot", model="h3", params={}, title=f"M{i}",
+                  after=prev["id"] if prev else "")
+for i in range(2):
+    rr.add(owner=JUANA, owner_name="Juana", kind="song", model="ace", params={}, title=f"J{i}")
+check("  several people at once take turns, a job each, whatever the model or the queue's length",
+      [j["title"] for j in rr.order()] == ["T0", "M0", "J0", "T1", "M1", "J1", "T2", "M2", "T3", "T4", "T5"],
+      [j["title"] for j in rr.order()])
+rr.update(rr.order()[0]["id"], state="running", started=time.time())
+check("  and whoever is on the card goes to the back of the turn",
+      [j["title"] for j in rr.order()][:3] == ["M0", "J0", "T1"], [j["title"] for j in rr.order()])
 sched = store.schedule()
 check("  every queued job has a position and a start estimate",
       all(j["position"] and j["starts_in"] is not None for j in sched) and sched[0]["starts_in"] == 0)
