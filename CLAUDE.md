@@ -430,7 +430,10 @@ applied, and `house:` commits stay on top.
 fails if any of them is in what would be pushed: every credential in the live
 and seed env files, every login id, email and phone in the portal's user store,
 the sanitizer's identifiers (with the local rules -- without them it warns that
-it cannot see the household's names), key-shaped strings, and any commit whose
+it cannot see the household's names), key-shaped strings, any `house:` commit,
+anything that names one of the household's own extensions (read from `plugins:`
+in the live config, so the public file never spells them -- a line, a file or a
+commit message), and any commit whose
 author or committer email is not `git config publish.email` (a GitHub no-reply
 address; a personal one was once published this way). It prints the kind of
 value and the file, never the value. The publishing clone needs the working

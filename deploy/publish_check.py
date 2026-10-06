@@ -17,7 +17,11 @@ is in what would leave it:
      household; without it this check is much weaker, and says so);
   4. anything shaped like an API key or a private key, in the added lines;
   5. a commit whose author or committer email is not the allowed one
-     (`git config publish.email`, else the repository's `user.email`).
+     (`git config publish.email`, else the repository's `user.email`);
+  6. a `house:` commit, and anything -- an added line, a commit message --
+     that names one of the household's own extensions (`plugins:` in the live
+     config: its name, its directory, its services, the path it mounts at).
+     Extensions live on a private remote and never go to a public one.
 
 It prints what kind of value it found and where, never the value itself: the
 output of a check like this ends up in terminals and logs.
@@ -89,6 +93,49 @@ def live_config() -> tuple[dict, Path | None]:
     except Exception as exc:  # noqa: BLE001
         print(f"  (could not read the live config: {exc})")
         return {}, None
+
+
+def extension_terms(plugins: list[dict]) -> list[re.Pattern]:
+    """Patterns that name a configured extension, from what each declares.
+
+    The names come from the live config on purpose: this file is public, so it
+    cannot spell them. Hyphen and underscore are one spelling (`a-b`, `a_b`),
+    and a mount path only counts at the start of a path -- `/chat/<x>` is a
+    persona some other part of the stack owns, not the extension's own door.
+    """
+    words: set[str] = set()
+    paths: set[str] = set()
+    for pl in plugins:
+        doc = pl.get("doc") or {}
+        words.add(str(pl.get("name") or ""))
+        words.add(Path(str(pl.get("root") or "")).name)
+        words.update(str(k) for k in (doc.get("services") or {}))
+        for tile in doc.get("tiles") or []:
+            href = str(tile.get("href") or "") if isinstance(tile, dict) else ""
+            if href.startswith("/") and not href.startswith("//"):
+                paths.add("/" + href.strip("/").split("/")[0])
+    out = []
+    for w in sorted({w.strip() for w in words if len(w.strip()) >= 4}):
+        spelled = r"[-_ ]?".join(re.escape(part) for part in re.split(r"[-_]", w))
+        out.append(re.compile(rf"(?<![A-Za-z0-9]){spelled}(?![A-Za-z0-9])", re.I))
+    for path in sorted(p for p in paths if len(p) >= 4):
+        out.append(re.compile(rf"(?<![\w/]){re.escape(path)}(?![A-Za-z0-9_-])", re.I))
+    return out
+
+
+def extension_problems(terms: list[re.Pattern], lines: list[tuple[str, str]],
+                       messages: dict[str, str]) -> list[str]:
+    """Where an extension is named, by file and by commit. Never the name."""
+    found = []
+    files = sorted({f for f, line in lines if any(t.search(line) for t in terms)})
+    if files:
+        found.append(f"a household extension is named in {', '.join(files[:5])}")
+    for sha, message in messages.items():
+        if message.lstrip().lower().startswith("house:"):
+            found.append(f"commit {sha[:8]} is a `house:` commit, which is never published")
+        elif any(t.search(message) for t in terms):
+            found.append(f"commit {sha[:8]} names a household extension in its message")
+    return found
 
 
 def env_values(paths: list[Path]) -> dict[str, str]:
@@ -202,6 +249,20 @@ def main(argv: list[str] | None = None) -> int:
             if email != allowed:
                 problems.append(f"commit {c[:8]} {role} email is not the allowed one "
                                 f"({'set git config publish.email' if not allowed else allowed})")
+
+    # 6. the household's extensions, and commits that exist only for this house
+    plugins: list[dict] = []
+    try:
+        import deploy  # noqa: PLC0415 -- already on sys.path from live_config()
+        plugins = deploy.load_plugins(cfg)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  warning: could not load the household's extensions ({type(exc).__name__}), "
+              "so the gate cannot see them by name; only `house:` commits are checked")
+    terms = extension_terms(plugins)
+    if cfg.get("plugins") and not terms:
+        print("  warning: `plugins:` is set but no extension names were found")
+    messages = {c: git("show", "-s", "--format=%B", c) for c in commits}
+    problems += extension_problems(terms, lines, messages)
 
     # 3. the sanitizer over the tree, with the household's own rules
     # The sanitizer checks the tree it sits in, so it is the published repo's own.

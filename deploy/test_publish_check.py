@@ -88,6 +88,36 @@ check("  a fixture with only the header is not",
       not shape('"-----BEGIN OPENSSH PRIVATE KEY-----\\nsecreto\\n"'))
 check("  ordinary words are not", not shape("the skill-creator task-runner"))
 
+print("\nextensions and house commits")
+PLUGINS = [
+    {"name": "tomi-ledger", "root": "/srv/plugins/Ledger_Tomi",
+     "doc": {"services": {"tomi-ledger": {}}, "tiles": [{"href": "/ledger/"}]}},
+    {"name": "mora-backups", "root": "/srv/mora/backups",
+     "doc": {"services": {"pili-reports": {}}, "tiles": [{"href": "http://{derived.hub_address}:21601/"}]}},
+]
+terms = P.extension_terms(PLUGINS)
+
+
+def named(text):
+    return P.extension_problems(terms, [("f.py", text)], {})
+
+
+check("a plugin is named by its name, in either spelling, and by its directory",
+      all(named(t) for t in ("# the tomi-ledger plugin", "tomi_ledger = 1", "Tomi Ledger", "see Ledger_Tomi/")))
+check("  and by its service, and by the path it mounts at",
+      named("route pili-reports") and named("href='/ledger/'") and named("/camaras* /ledger*"))
+check("  not by a longer word, a persona under /chat, or a tile that points at an address",
+      not any(named(t) for t in ("tomi-ledgers-all", "href='/chat/ledger'", "the ledgerless year",
+                                 "http://{derived.hub_address}:21601/")))
+check("  and the report says where, never what",
+      "ledger" not in " ".join(named("tomi-ledger")).lower().replace("household extension", ""), named("tomi-ledger"))
+msgs = P.extension_problems(terms, [], {"a" * 40: "house: lights", "b" * 40: "Studio: fix\n\nfor tomi-ledger",
+                                        "c" * 40: "Studio: a long podcast is filed whole"})
+check("a `house:` commit and a message that names an extension are refused; an ordinary one is not",
+      len(msgs) == 2 and "aaaaaaaa" in msgs[0] and "bbbbbbbb" in msgs[1], msgs)
+check("no extensions configured: only `house:` is left to see",
+      P.extension_terms([]) == [] and not P.extension_problems([], [("f", "anything")], {"d" * 40: "x"}))
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {', '.join(failed)}")
