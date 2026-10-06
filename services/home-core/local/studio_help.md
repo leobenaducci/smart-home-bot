@@ -8,8 +8,8 @@ the top of the Studio answers questions about using it.
 ## Projects
 
 - **New project** (＋ on the projects page): give it a name and pick what it is
-  for. *Music video*, *Recording* (tutorials, screen and camera), *Audio story*
-  and *Free* are ready; *short film*, *explainer* and *podcast* are coming.
+  for. *Music video*, *Recording* (tutorials, screen and camera), *Audio story*,
+  *Podcast* and *Free* are ready; *short film* and *explainer* are coming.
 - Anything you ask Alfred for without naming a project lands in your default
   project, called "Alfred".
 - A project has tabs: **Video** (the shots or recordings, in order),
@@ -157,6 +157,23 @@ cover picture. Make a project of the kind **Audio story**; it opens on the
    picture, for any player. **🎞️ As a video with the cover** makes a video of
    the cover over the sound, for sites that only take video (YouTube). Both
    are listed under **The story, put together**, to play or download.
+
+## A podcast
+
+An episode: a conversation between hosts, each line in the host's own voice.
+
+1. **The hosts** are characters with a voice sample: make one to three in
+   **Characters**, give each a voice and a personality (how they talk).
+2. On the **Episode** tab, **✍️ Write the episode with Alfred**: say what it is
+   about, pick the hosts and the length (2-15 minutes), and whether it opens and
+   closes with music. Alfred writes the conversation; each line becomes a card
+   said by its host. Writing it again replaces its lines and music (songs stay).
+3. Edit any line, change who says it, take one out with ✕ or add one with
+   **＋ Voice**. **Make every line** makes them all at once, in the card's queue.
+4. The jingles are instrumentals marked **On its own, not under the voices**;
+   an instrumental without that mark plays quietly under the voices that follow.
+5. **🎨 Draw the cover**, then **🎧 Put the episode together** (an audio file
+   with the cover as its picture) or **🎞️ As a video with the cover**.
 
 ## A music video from a song
 

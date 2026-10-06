@@ -22964,6 +22964,9 @@ STUDIO_UI_KEYS = (
     'coll_new', 'coll_name', 'coll_count1', 'coll_count', 'coll_rename', 'coll_delete', 'coll_delete_confirm',
     'coll_empty', 'coll_add', 'coll_add_title', 'coll_add_none', 'coll_none_yet', 'coll_create_add', 'coll_added',
     'coll_remove', 'coll_remove_here', 'coll_removed', 'coll_inside', 'coll_open',
+    'tab_episode', 'pod_cover_ph', 'pod_title', 'pod_topic', 'pod_topic_ph', 'pod_hosts', 'pod_hosts_none', 'pod_minutes',
+    'pod_music', 'pod_write', 'pod_writing', 'pod_written', 'pod_replace_confirm', 'pod_need_topic',
+    'pod_need_hosts', 'pod_failed', 'pod_make_all', 'pod_go_audio', 'pod_versions', 'pod_help', 'alone_label',
     'pkind_audio_story', 'pkind_audio_story_about', 'tab_story', 'story_cover', 'story_cover_ph',
     'story_cover_draw', 'story_cover_redraw', 'story_help', 'story_go_audio', 'story_go_video',
     'story_video_help', 'story_nothing', 'story_running', 'story_failed', 'story_versions', 'voice_speaker',
@@ -23141,6 +23144,119 @@ def studio_lyrics():
 
 
 STUDIO_PLAN_TIMEOUT_S = 240
+# A podcast's spoken pace, for how many words an episode of N minutes holds,
+# and how long a line is given to be said in (Qwen3-TTS stops at its length).
+PODCAST_WORDS_PER_MIN = 140
+PODCAST_MAX_LINES = 120
+
+
+def _studio_parse_episode(text, hosts):
+    """(title, lines) from the episode Alfred wrote: `{"title", "lines":
+    [{"speaker", "text"}]}`, every line said by one of *hosts* (name -> id,
+    matched without case or accents) and none empty. None when there are not
+    at least two lines to keep."""
+    if not text:
+        return None
+    start, end = text.find('{'), text.rfind('}')
+    try:
+        raw = json.loads(text[start:end + 1]) if 0 <= start < end else None
+    except ValueError:
+        raw = None
+    if not isinstance(raw, dict) or not isinstance(raw.get('lines'), list):
+        return None
+    by_name = {_studio_fold(n): cid for n, cid in hosts.items()}
+    lines = []
+    for entry in raw['lines'][:PODCAST_MAX_LINES]:
+        if not isinstance(entry, dict):
+            continue
+        who = by_name.get(_studio_fold(str(entry.get('speaker') or '')))
+        said = ' '.join(str(entry.get('text') or '').split())[:900]
+        if who and said:
+            lines.append({'speaker': who, 'text': said})
+    title = ' '.join(str(raw.get('title') or '').split())[:120]
+    return (title, lines) if len(lines) >= 2 else None
+
+
+def _studio_fold(name):
+    return ''.join(c for c in unicodedata.normalize('NFKD', name.lower()) if c.isalnum())
+
+
+@app.route('/studio/api/podcast-script', methods=['POST'])
+@api_login_required
+def studio_podcast_script():
+    """✍️ A podcast episode written by the person's own assistant: a
+    conversation between the hosts they chose -- characters with a voice
+    sample, so each line is said in its host's own cloned voice -- about the
+    topic, about as long as asked. Filed in the project as voice cards, one a
+    line, under Alfred's name; with `music`, an intro and an outro jingle that
+    play on their own (`alone`). `replace` takes out the episode's cards
+    first, so writing it again does not double it."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    topic = str(d.get('topic') or '').strip()[:1500]
+    if not topic:
+        return jsonify(error=t('studio.pod_need_topic')), 400
+    try:
+        minutes = max(1, min(30, int(d.get('minutes') or 5)))
+    except (TypeError, ValueError):
+        minutes = 5
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    wanted = {str(x) for x in d.get('hosts') or []}
+    hosts = [c for c in chars if c.get('id') in wanted and c.get('voice') and c.get('name')][:3]
+    if not hosts:
+        return jsonify(error=t('studio.pod_need_hosts')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(
+        str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    words = minutes * PODCAST_WORDS_PER_MIN
+    cast_text = "\n".join(f"- {c['name']}" + (f": {str(c.get('personality'))[:300]}" if c.get('personality') else '')
+                          for c in hosts)
+    notes = str(d.get('notes') or '').strip()[:800]
+    prompt = (
+        f"Write a podcast episode in {language}: a natural spoken conversation "
+        + (f"between {', '.join(c['name'] for c in hosts)}" if len(hosts) > 1 else f"by {hosts[0]['name']}, alone")
+        + f", about: {topic}\n"
+        + f"The hosts, and how each one talks:\n{cast_text}\n"
+        + (f"Also: {notes}\n" if notes else "")
+        + f"About {minutes} minute(s) long: about {words} words in all. Open by welcoming the listeners and "
+        "saying what the episode is about, and close by saying goodbye. Each line is what one host says out "
+        "loud, 1 to 4 sentences: spoken words only -- no stage directions, no sound effects, no music cues, no "
+        "names or labels inside the text, no markdown. Hosts answer each other and take turns.\n"
+        'Answer with only a JSON object, no code fence: {"title": "...", "lines": [{"speaker": "<host name>", '
+        '"text": "..."}, ...]}')
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-podcast'
+    names = {c['name']: c['id'] for c in hosts}
+    out = _studio_parse_episode(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S), names)
+    if out is None:
+        again = ('That was not the JSON object asked for. Answer again with only {"title": "...", "lines": '
+                 f'[{{"speaker": ..., "text": ...}}]}}, every speaker one of: {", ".join(names)}.')
+        out = _studio_parse_episode(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S), names)
+    if out is None:
+        return jsonify(error=t('studio.pod_failed')), 502
+    title, lines = out
+    by_id = {c['id']: c['name'] for c in hosts}
+    # Seconds a line is given: its words at the spoken pace, with room.
+    items = [{'kind': 'voice', 'title': by_id[ln['speaker']], 'speaker': ln['speaker'], 'text': ln['text'],
+              'seconds': max(5, min(120, round(len(ln['text'].split()) / (PODCAST_WORDS_PER_MIN / 60) * 1.4) + 3))}
+             for ln in lines]
+    if d.get('music'):
+        jingle = str(d.get('music_style') or '').strip()[:200] or 'short upbeat podcast jingle, warm, modern'
+        items = ([{'kind': 'instrumental', 'title': 'Intro', 'style': jingle, 'seconds': 10, 'alone': True}] + items
+                 + [{'kind': 'instrumental', 'title': 'Outro', 'style': jingle + ', ending', 'seconds': 8,
+                     'alone': True}])
+    if d.get('replace'):
+        kept = [a for a in doc.get('audio') or [] if a.get('kind') == 'song']
+        if _studio_call(username, 'PUT', f'projects/{pid}', {'audio': kept}, via='Alfred') is None:
+            return jsonify(error=t('studio.pod_failed')), 502
+    added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': items}, via='Alfred')
+    if not added:
+        return jsonify(error=t('studio.pod_failed')), 502
+    return jsonify(title=title, lines=len(lines), items=len(items))
 
 
 def _studio_parse_plan(text, n):

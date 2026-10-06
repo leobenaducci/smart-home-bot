@@ -2052,6 +2052,12 @@ check("  music under the last voices lasts past them and fades",
       {p["file"]: p for p in pl2}["m"]["length"] == round(story.LEAD + 4 + story.TAIL, 3)
       and total2 == round(5 + story.GAP + story.LEAD + 4 + story.TAIL, 3), (pl2, total2))
 check("  nothing made yet is nothing to place", story.plan([("voice", "a", 0)]) == ([], 0.0))
+pj, _tj = story.plan([("instrumental", "intro", 6, True), ("voice", "a", 5), ("voice", "b", 4),
+                      ("instrumental", "outro", 5, True)])
+byj = {p["file"]: p for p in pj}
+check("  a jingle marked to play on its own is not laid under the voices: it plays whole, then they start",
+      byj["intro"]["volume"] == story.MUSIC and not byj["intro"]["loop"] and byj["intro"]["length"] == 6
+      and byj["a"]["start"] == round(6 + story.GAP, 3) and byj["outro"]["volume"] == story.MUSIC, pj)
 
 sp = c.post("/api/projects", json={"name": "El faro", "kind": "audio_story"}, headers=HJ).json()
 check("  a project can be an audio story", sp["kind"] == "audio_story")
@@ -2067,11 +2073,14 @@ def tone(name, seconds, freq):
 
 
 saved = c.put(f"/api/projects/{sp['id']}", json={"audio": [
-    {"kind": "instrumental", "title": "Intro", "style": "soft piano"},
+    {"kind": "instrumental", "title": "Intro", "style": "soft piano", "alone": "yes please"},
     {"kind": "voice", "title": "Narrador", "text": "Había una vez un faro."},
     {"kind": "voice", "title": "Bruma", "text": "¡Hola!"}],
     "images": [{"prompt": "a lighthouse at dusk", "size": "1024x1024"}]}, headers=HJ).json()
 intro, line1, line2 = (a["id"] for a in saved["audio"])
+check("  `alone` is kept as a yes or no", saved["audio"][0]["alone"] is True, saved["audio"][0])
+c.put(f"/api/projects/{sp['id']}", json={"audio": [{**saved["audio"][0], "alone": False}] + saved["audio"][1:]},
+      headers=HJ)
 cover_id = saved["images"][0]["id"]
 for iid, (name, secs, f) in zip((intro, line1, line2), (("intro.wav", 4, 220), ("n.wav", 3, 440), ("b.wav", 2, 660))):
     A.projects.add_take(JUANA, sp["id"], iid, {"file": "takes/" + tone(name, secs, f)})

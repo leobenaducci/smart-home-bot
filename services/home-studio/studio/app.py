@@ -1818,7 +1818,7 @@ def put_story_together(pid: str, body: dict | None = None, me: Who = Depends(who
     for a in doc.get("audio") or []:
         take = Projects.chosen_take(a)
         if take and take.get("file") and (base / take["file"]).is_file():
-            items.append((a.get("kind") or "song", base / take["file"]))
+            items.append((a.get("kind") or "song", base / take["file"], bool(a.get("alone"))))
     if not items:
         _bad(ValueError("no voice or music has a version yet"))
     cover = None
@@ -1839,7 +1839,7 @@ def put_story_together(pid: str, body: dict | None = None, me: Who = Depends(who
         wav = base / "renders" / f"{stamp}-story.wav"
         out = base / "renders" / f"{stamp}-story.{'mp4' if fmt_ == 'video' else 'm4a'}"
         try:
-            placements, _total = story.plan([(k, str(f), media.probe(f)["seconds"]) for k, f in items])
+            placements, _total = story.plan([(k, str(f), media.probe(f)["seconds"], al) for k, f, al in items])
             media.story_mix(placements, wav)
             if fmt_ == "video":
                 media.story_video(wav, cover, out)

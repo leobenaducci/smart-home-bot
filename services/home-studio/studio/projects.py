@@ -54,8 +54,10 @@ EDITABLE = {
               "card", "callouts", "callouts_take", "eyes", "eyes_take"),
     # `speaker`: a voice line said by one of the cast, in that character's
     # cloned voice (its own sample), instead of a sample from the files.
+    # `alone`: an instrumental played on its own when an audio story or a
+    # podcast is put together, not under the voices after it (a jingle).
     "audio": ("kind", "title", "lyrics", "style", "language", "seconds", "voice", "text", "chosen", "bpm",
-              "speaker"),
+              "speaker", "alone"),
     "images": ("prompt", "size", "chosen", "title"),
 }
 TRASH_DAYS = 14
@@ -1010,7 +1012,7 @@ def _clean(key: str, value: Any, item: dict) -> Any:
     if key == "board":
         n = len(item.get("boards") or [])
         return value if isinstance(value, int) and -1 <= value < n else item.get("board", -1)
-    if key in ("continuity", "exact"):
+    if key in ("continuity", "exact", "alone"):
         return bool(value)
     if key == "start":
         try:

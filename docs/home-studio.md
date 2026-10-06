@@ -117,6 +117,24 @@ apps' target); the result is an M4A with the cover embedded as its artwork, or
 (`format: "video"`, which needs the cover) a square 1080 MP4 of the cover over
 the sound at two frames a second. Renders carry `story: true`.
 
+## A podcast
+
+The `podcast` kind is an audio story whose words Alfred writes: the same tabs,
+cover, voice cards and assembly (`story.plan`, `POST /story`), with an episode
+writer on top. `POST /studio/api/podcast-script` (the portal) takes a topic, a
+length in minutes and the hosts -- characters with a voice sample, one to
+three -- and asks the person's own assistant for `{"title", "lines":
+[{"speaker", "text"}]}` at ~140 words a minute; a line by anyone but a host,
+or empty, is dropped (names matched without case or accents), an unreadable
+answer is asked for once more, and the lines are filed through the Studio's
+`/items` as voice cards with `speaker` set, under Alfred's name, each given the
+seconds its words take with room (5-120). With `music`, an intro and an outro
+instrumental frame it with `alone: true`: an instrumental so marked plays whole
+on its own when the episode is put together, instead of under the voices after
+it. `replace` keeps only the episode's songs before filing the new script. The
+page names an untitled project after the episode, shows each line as a compact
+card headed by its host, and **Make every line** queues every card not made.
+
 ## Collections
 
 A person's projects gathered under names they choose; a project can be in
