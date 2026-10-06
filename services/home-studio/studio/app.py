@@ -916,6 +916,13 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
 
 @app.get("/api/projects/{pid}")
 def get_project(pid: str, me: Who = Depends(who)):
+    # The render's state before the project, never after: a film is filed in
+    # the project (add_render) and only then marked done, so "done" read
+    # first means the film is in what is loaded next. Read the other way
+    # round, a render finishing between the two answered "done" with the
+    # film list from before it -- the page stops polling on "done" and kept
+    # that list, and a test read the previous film (2026-10-06).
+    render = render_state.get(f"{me.login}/{pid}")
     try:
         doc = projects.load(me.login, pid)
     except ProjectError as exc:
@@ -925,7 +932,7 @@ def get_project(pid: str, me: Who = Depends(who)):
     # part of the project, so never saved back into it.
     cols = projects.collections(me.login)
     names = {c["id"]: c["name"] for c in cols["collections"]}
-    return {**doc, "jobs": [_public(j, me) for j in active], "render": render_state.get(f"{me.login}/{pid}"),
+    return {**doc, "jobs": [_public(j, me) for j in active], "render": render,
             "in_collections": [{"id": c, "name": names[c]} for c in cols["of"].get(pid, [])]}
 
 

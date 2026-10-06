@@ -1675,6 +1675,25 @@ while time.time() < deadline:
 kept = media.probe(tbase / st["render"]["file"])
 check("  anything else asked for is the kept film: H.265 at the clips' size",
       kept["codec"] == "hevc" and (kept["width"], kept["height"]) == (320, 180), kept)
+key_ = f"{JUANA}/{tp['id']}"
+A.render_state[key_] = {"state": "running", "started": time.time()}
+_load = A.projects.load
+
+
+def _load_while_it_finishes(owner, pid):
+    # The project read as it was, and the render finishing right after the
+    # read: the film filed and marked done between the two halves of a GET.
+    doc = _load(owner, pid)
+    A.render_state[key_] = {"state": "done", "file": "renders/new.mp4"}
+    return doc
+
+
+A.projects.load = _load_while_it_finishes
+seen_ = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+A.projects.load = _load
+check("  a render finishing while the project is read is still running in that answer, never done with the old films",
+      (seen_.get("render") or {}).get("state") == "running", seen_.get("render"))
+A.render_state.pop(key_, None)
 print("\n  a title card, and text over a recording")
 tt_now = Projects.chosen_take(tclip())["id"]
 shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
