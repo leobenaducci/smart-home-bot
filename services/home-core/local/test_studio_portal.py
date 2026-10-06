@@ -688,6 +688,57 @@ check("the music-video plan is written knowing the style pictures and the first 
  A.requests.request) = _saved_r
 
 
+print("\nrefining starts with the frames already marked")
+_saved_f = (A._studio_call, A._studio_background, A._studio_refine_step)
+FDOC = {"id": "pr", "jobs": [{"kind": "board", "target": "q"}], "shots": [
+    {"id": "c", "prompt": "new words", "boards": [{"id": "b1", "prompt": "old words",
+                                                   "review": {"state": "done", "score": 9}}]},
+    {"id": "w", "prompt": "x", "boards": [{"id": "b2", "prompt": "x",
+                                           "review": {"state": "done", "score": 4, "prompt": "better words"}}]},
+    {"id": "g", "prompt": "y", "boards": [{"id": "b3", "prompt": "y", "review": {"state": "done", "score": 8}}]},
+    {"id": "n", "prompt": "z", "boards": [{"id": "b4", "prompt": "z"}]},
+    {"id": "f", "prompt": "v", "boards": [{"id": "b5", "prompt": "v", "review": {"state": "failed"}}]},
+    {"id": "q", "prompt": "u", "boards": [{"id": "b6", "prompt": "u", "review": {"state": "done", "score": 2,
+                                                                                "prompt": "p"}}]},
+    {"id": "r", "recorded": True, "boards": [{"id": "b7"}]},
+    {"id": "e", "prompt": "nothing drawn"}]}
+posted_f, bg_f, reviewed_f = [], [], []
+def _scf(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/pr":
+        return FDOC
+    posted_f.append((method, path, body, via))
+    return {"ok": True}
+A._studio_call = _scf
+A._studio_background = lambda fn, *a: bg_f.append(fn)
+A._studio_refine_step = lambda u, pid, sid, refine, job_id=None: reviewed_f.append((sid, refine["rounds"]))
+r = client.post("/studio/api/board-refine", headers=HOME, json={"project": "pr", "rounds": 2, "threshold": 7})
+check("the frames whose description changed are redrawn at once, from it, to be reviewed when they land",
+      ("POST", "projects/pr/storyboard", {"items": ["c"], "refine": {"rounds": 2, "threshold": 7, "round": 0}}, "")
+      in posted_f, posted_f)
+check("  and a frame a review already scored low is redrawn from the review's description, under Alfred's name",
+      ("POST", "projects/pr/items/w/prompt", {"prompt": "better words"}, "Alfred") in posted_f
+      and ("POST", "projects/pr/storyboard", {"items": ["w"], "refine": {"rounds": 1, "threshold": 7, "round": 1}},
+           "") in posted_f, posted_f)
+check("  before any frame is looked at, and none of them looked at again",
+      r.status_code == 200 and r.get_json() == {"started": 2, "redrawn": 2} and len(posted_f) == 3 and len(bg_f) == 1,
+      (r.get_json(), posted_f))
+bg_f[0]()
+check("then only the frames not reviewed yet are reviewed; a good review stands, a frame being drawn is left to it",
+      reviewed_f == [("n", 2), ("f", 2)], reviewed_f)
+posted_f.clear(); bg_f.clear(); reviewed_f.clear()
+r = client.post("/studio/api/board-refine", headers=HOME, json={"project": "pr", "rounds": 0})
+bg_f[0]()
+check("'review all' still looks at every frame with one (not one being drawn) and redraws none",
+      r.get_json() == {"started": 5, "redrawn": 0} and not posted_f
+      and reviewed_f == [("c", 0), ("w", 0), ("g", 0), ("n", 0), ("f", 0)], (r.get_json(), reviewed_f))
+posted_f.clear(); bg_f.clear()
+A._studio_refining.add((USER1, "pr"))
+r = client.post("/studio/api/board-refine", headers=HOME, json={"project": "pr", "rounds": 2})
+A._studio_refining.discard((USER1, "pr"))
+check("  and refining twice at once queues nothing the second time", r.status_code == 409 and not posted_f, posted_f)
+A._studio_call, A._studio_background, A._studio_refine_step = _saved_f
+
+
 print("\na Studio notification opens the Studio")
 _sent = []
 _saved_n = A._notify_user

@@ -271,7 +271,13 @@ action, "Use and redraw": it becomes the shot's description and the frame is
 drawn from it, and the new frame is reviewed in turn -- description, frame and
 video agree. 🔁 Refine runs that loop on every frame by itself, up to twice
 each; the descriptions it rewrites are in the project's history under the
-assistant, to undo.
+assistant, to undo. It starts with the frames already marked, redrawn at once
+rather than looked at again: one whose description changed since it was drawn
+(✏️), from that description, and one a review already scored under the bar,
+from the description that review wrote. Then it reviews the frames with no
+review yet. A frame reviewed at or over the bar and unchanged since is left
+alone -- its review is of that very frame -- and so is one being drawn.
+"Review all" still looks at every frame and redraws none.
 
 ### Cutting on the beat
 

@@ -23689,23 +23689,59 @@ def studio_board_refine():
     if not doc:
         abort(404)
     want = {re.sub(r'[^a-z0-9]', '', str(x))[:32] for x in d.get('shots') or []}
-    shots = [s['id'] for s in doc.get('shots') or [] if s.get('boards') and not s.get('recorded')
-             and (not want or s['id'] in want)]
+    drawing = {j.get('target') for j in doc.get('jobs') or [] if j.get('kind') == 'board'}
+    shots = [s for s in doc.get('shots') or [] if s.get('boards') and not s.get('recorded')
+             and (not want or s['id'] in want) and s['id'] not in drawing]
+    # Refining starts with the frames already marked, redrawn at once rather
+    # than looked at again: one whose description changed since it was drawn
+    # (✏️), from that description; one a review already scored under the bar,
+    # from the description that review wrote. Each new frame is reviewed when
+    # it lands, like any refined one. Then the frames not reviewed yet are
+    # reviewed; one reviewed at or over the bar, unchanged since, is left as it
+    # is -- its review is of this very frame. "Review all" (rounds 0) still
+    # looks at every frame and redraws none.
+    changed, weak, review = [], [], []
+    for s in shots:
+        if not refine['rounds']:
+            review.append(s['id'])
+            continue
+        boards, i = s['boards'], s.get('board', -1)
+        board = boards[i] if isinstance(i, int) and 0 <= i < len(boards) else boards[-1]
+        rv = board.get('review') or {}
+        if board.get('prompt') and board['prompt'] != str(s.get('prompt') or '').strip():
+            changed.append(s['id'])
+        elif rv.get('state') == 'done' and int(rv.get('score') or 0) < refine['threshold'] and rv.get('prompt'):
+            weak.append((s['id'], rv['prompt']))
+        elif rv.get('state') != 'done':
+            review.append(s['id'])
     key = (username, pid)
     with _studio_refining_lock:
         if key in _studio_refining:
             return jsonify(error=t('studio.sb_refine_busy')), 409
         _studio_refining.add(key)
+    try:
+        if changed:
+            _studio_call(username, 'POST', f'projects/{pid}/storyboard', {'items': changed, 'refine': dict(refine)})
+        redrawn = [sid for sid, prompt in weak
+                   if _studio_call(username, 'POST', f'projects/{pid}/items/{sid}/prompt', {'prompt': prompt},
+                                   via='Alfred')]
+        if redrawn:
+            _studio_call(username, 'POST', f'projects/{pid}/storyboard', {
+                'items': redrawn, 'refine': {**refine, 'rounds': refine['rounds'] - 1, 'round': 1}})
+    except Exception:
+        with _studio_refining_lock:
+            _studio_refining.discard(key)
+        raise
 
     def run():
         try:
-            for sid in shots:
+            for sid in review:
                 _studio_refine_step(username, pid, sid, dict(refine))
         finally:
             with _studio_refining_lock:
                 _studio_refining.discard(key)
     _studio_background(run)
-    return jsonify(started=len(shots))
+    return jsonify(started=len(review), redrawn=len(changed) + len(redrawn))
 
 
 def _studio_parse_correction(text, n):

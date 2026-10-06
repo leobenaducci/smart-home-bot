@@ -2338,7 +2338,8 @@
           if (!confirm(S.sb_refine_confirm)) return;
           await flushSave();
           var rf = await api('board-refine', { method: 'POST', body: { project: p.id, rounds: 2, threshold: 7 } });
-          toast(fmt('sb_refine_started', { n: rf.started }));
+          toast(fmt('sb_refine_started', { n: rf.started, r: rf.redrawn || 0 }));
+          current = await api('projects/' + p.id); loadQueue(); drawTab();
           return;
         }
         if (d.reviewApply) {

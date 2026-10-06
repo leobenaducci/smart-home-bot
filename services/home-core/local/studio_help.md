@@ -194,7 +194,11 @@ cover picture. Make a project of the kind **Audio story**; it opens on the
 - Each frame is reviewed automatically for what the shot should show and for
   the look. Under 7/10, Alfred suggests a better description: **Use and
   redraw**.
-- **🔁 Refine** runs that review-and-redraw loop on every frame (twice at most).
+- **🔁 Refine** first redraws the frames already marked -- the ones whose
+  description you changed (✏️), and the ones a review scored under 7/10, from
+  the review's description -- then reviews the frames not reviewed yet and
+  redraws those under 7/10. Every redrawn frame is reviewed again (twice at
+  most). Frames already reviewed at 7 or more are left as they are.
 - **One correction for every shot**: the box under the toolbar ("it is night in
   every shot") changes every description the same way and redraws them. A
   correction about the whole style changes the look instead.
