@@ -12,6 +12,7 @@ Models and their knobs are the ones the prototype measured on this card
 from __future__ import annotations
 
 import math
+import re
 
 VIDEO_MODEL = "minimax_h3_fl2va_pruned"
 IMAGE_MODEL = "z_image"
@@ -95,6 +96,12 @@ def h3_frames_at_least(seconds: float) -> int:
     return max(H3_MIN_FRAMES, min(H3_MAX_FRAMES, n * H3_STEP + H3_OFFSET))
 
 
+# "Name: words" -- a name of up to four words, then a colon. A sentence with
+# a colon later in it ("Look: the sea") would be read as one, so the name is
+# short and the words after it must not be empty.
+SPEAKER_RE = re.compile(r"^([^\W\d_][\w'. -]{0,40}?):\s+(\S.*)$")
+
+
 def h3_prompt(shot: dict, language: str = "Spanish", index: int = 1) -> str:
     """H3's structured prompt, from the fields a person fills in.
 
@@ -117,9 +124,29 @@ def h3_prompt(shot: dict, language: str = "Spanish", index: int = 1) -> str:
     lines = [f"integrated_multimodal_description: [Shot {index}] A {seconds:g}-second single take. {desc}"]
     dialogue = str(shot.get("dialogue") or "").strip()
     if dialogue:
-        spoken = " ".join(f"(S1) <d>[{language}] {line.strip()}</d>"
-                          for line in dialogue.splitlines() if line.strip())
-        lines[0] += f" The character speaks clearly with precise lip synchronization: {spoken}"
+        # A line written "Name: words" (a script's), Name one of the shot's
+        # cast, is said by that name's speaker -- S1 for the first name in the
+        # shot, S2 for the next -- with the name itself not spoken. Any other
+        # line is S1's, as before.
+        # Only a name of the shot's cast counts: "Look: the sea" is a line.
+        cast = {part.split(":", 1)[0].strip().lower()
+                for part in str(shot.get("characters") or "").split("; ") if ":" in part}
+        ids: dict[str, int] = {}
+        said = []
+        for line in dialogue.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = SPEAKER_RE.match(line)
+            if m and m.group(1).strip().lower() in cast:
+                who = m.group(1).strip().lower()
+                ids.setdefault(who, len(ids) + 1)
+                said.append((min(ids[who], 4), m.group(2).strip()))
+            else:
+                said.append((1, line))
+        spoken = " ".join(f"(S{n}) <d>[{language}] {words}</d>" for n, words in said if words)
+        lines[0] += (" The character speaks" if len(ids) < 2 else " The characters speak") + \
+            f" clearly with precise lip synchronization: {spoken}"
     lines.append(f"overall_soundscape: {str(shot.get('soundscape') or 'natural ambient sound matching the scene').strip()}")
     lines.append(f"non_diegetic_music: {str(shot.get('music') or 'none').strip()}")
     return "\n".join(lines)

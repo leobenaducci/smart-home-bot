@@ -773,6 +773,209 @@ check("  and refining twice at once queues nothing the second time", r.status_co
 A._studio_call, A._studio_background, A._studio_refine_step = _saved_f
 
 
+print("\na podcast episode, written by Alfred")
+_saved_p = (A._studio_call, A._run_nanobot_turn)
+PDOC = {"id": "pod1", "settings": {"language": "es"},
+        "audio": [{"id": "old1", "kind": "voice"}, {"id": "song1", "kind": "song"}, {"id": "jin1", "kind": "instrumental"}]}
+PCHARS = [{"id": "hostA", "name": "Tomi", "voice": "v.wav", "personality": "curious, asks short questions"},
+          {"id": "hostB", "name": "Mora", "voice": "w.wav", "personality": "calm, explains with examples"},
+          {"id": "mute1", "name": "Nico", "personality": "has no voice yet"}]
+posted_p, asked_p = [], []
+def _scp(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/pod1":
+        return PDOC if method == "GET" else (posted_p.append((method, path, body, via)) or {"ok": True})
+    if path == "projects/pod1/characters":
+        return {"characters": PCHARS}
+    posted_p.append((method, path, body, via))
+    return {"items": ["x"]}
+A._studio_call = _scp
+answers_p = []
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_p.append(text) or (answers_p.pop(0) if answers_p else "")
+check("an episode needs a topic",
+      client.post("/studio/api/podcast-script", headers=HOME, json={"project": "pod1", "hosts": ["hostA"]}).status_code == 400)
+check("  and a host with a voice: a character without a sample cannot say a line",
+      client.post("/studio/api/podcast-script", headers=HOME,
+                  json={"project": "pod1", "topic": "huertas", "hosts": ["mute1"]}).status_code == 400 and not asked_p)
+answers_p[:] = ['Here it is: {"title": "Huertas en el balcón", "lines": ['
+                '{"speaker": "TOMI", "text": "¡Hola a todos! Hoy hablamos de huertas."},'
+                '{"speaker": "Móra", "text": "Empecemos por la luz: seis horas de sol."},'
+                '{"speaker": "Narrator", "text": "This line has no host."},'
+                '{"speaker": "Tomi", "text": "  "},'
+                '{"speaker": "Tomi", "text": "' + "palabra " * 60 + '"},'
+                '{"speaker": "Mora", "text": "Gracias por escucharnos, ¡chau!"}]}']
+r = client.post("/studio/api/podcast-script", headers=HOME, json={
+    "project": "pod1", "topic": "huertas en el balcón", "minutes": 5, "hosts": ["hostA", "hostB"], "music": True,
+    "replace": True})
+out = r.get_json() or {}
+add = next((c for c in posted_p if c[1] == "projects/pod1/items"), None)
+items = (add or ("", "", {"items": []}))[2]["items"]
+check("the hosts' lines become voice cards in their own voices; a line by nobody, or empty, is left out",
+      r.status_code == 200 and out.get("lines") == 4 and out.get("title") == "Huertas en el balcón"
+      and [(i["kind"], i.get("speaker")) for i in items[1:-1]] == [("voice", "hostA"), ("voice", "hostB"),
+                                                                     ("voice", "hostA"), ("voice", "hostB")]
+      and items[1]["title"] == "Tomi" and add[3] == "Alfred", (out, items))
+check("  each given the time its words take to say, with room, and no more than a voice can hold",
+      5 <= items[1]["seconds"] <= 12 and items[3]["seconds"] > 30 and all(i["seconds"] <= 120 for i in items), items)
+check("  framed by an intro and an outro that play on their own",
+      items[0]["kind"] == "instrumental" and items[0]["alone"] is True and items[-1]["kind"] == "instrumental"
+      and items[-1]["alone"] is True and len(items) == 6, items)
+put = next((c for c in posted_p if c[0] == "PUT"), None)
+check("  written again, the episode's voices and music are replaced -- its songs stay",
+      put and put[2] == {"audio": [{"id": "song1", "kind": "song"}]} and posted_p.index(put) < posted_p.index(add), put)
+check("  asked of Alfred with the topic, the hosts and how they talk, the length in words and the language",
+      asked_p and all(x in asked_p[-1] for x in ("huertas en el balcón", "Tomi", "curious, asks short questions",
+                                                  "about 700 words", "Spanish", '"speaker"')), asked_p[-1][:600])
+posted_p.clear(); asked_p.clear()
+answers_p[:] = ["no json", '{"lines": [{"speaker": "Tomi", "text": "solo una"}]}']
+r = client.post("/studio/api/podcast-script", headers=HOME, json={"project": "pod1", "topic": "x", "hosts": ["hostA"]})
+check("an answer that cannot be read is asked for again once, then it fails and files nothing",
+      r.status_code == 502 and len(asked_p) == 2 and not posted_p, (r.status_code, posted_p))
+posted_p.clear(); asked_p.clear()
+reads_p = []
+def _scp_long(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/pod1" and method == "GET":
+        reads_p.append(1)
+        later = {"id": "song2", "kind": "song"}
+        return dict(PDOC, audio=PDOC["audio"] + ([later] if len(reads_p) > 1 else []))
+    return _scp(username, method, path, body, timeout, via)
+A._studio_call = _scp_long
+answers_p[:] = [json.dumps({"title": "Largo", "lines": [{"speaker": "Tomi" if n % 2 else "Mora", "text": f"Línea número {n}."}
+                                                         for n in range(60)]})]
+r = client.post("/studio/api/podcast-script", headers=HOME, json={
+    "project": "pod1", "topic": "huertas", "minutes": 10, "hosts": ["hostA", "hostB"], "music": True, "replace": True})
+adds = [c for c in posted_p if c[1] == "projects/pod1/items"]
+check("a long episode is filed in as many calls as the Studio's 50 items allow, so nothing -- the outro included -- is dropped",
+      r.status_code == 200 and [len(c[2]["items"]) for c in adds] == [50, 12]
+      and adds[-1][2]["items"][-1]["title"] == "Outro", [len(c[2]["items"]) for c in adds])
+put = next((c for c in posted_p if c[0] == "PUT"), None)
+check("  and a replace keeps what the project holds now, not what it held before Alfred's turn",
+      put and [a["id"] for a in put[2]["audio"]] == ["song1", "song2"], put)
+A._studio_call, A._run_nanobot_turn = _saved_p
+
+
+print("\nan explainer, written by Alfred")
+_saved_x = (A._studio_call, A._run_nanobot_turn)
+XDOC = {"id": "exp1", "settings": {"language": "en", "look": "flat 2D vector"},
+        "shots": [{"id": "oldpt"}], "audio": [{"id": "oldn", "kind": "voice", "point": "oldpt"},
+                                              {"id": "bed1", "kind": "instrumental"}]}
+XCHARS = [{"id": "narr1", "name": "Pili", "voice": "p.wav"}, {"id": "mute2", "name": "Paula"}]
+posted_x, asked_x, answers_x = [], [], []
+def _scx(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/exp1" and method == "GET":
+        return XDOC
+    if path == "projects/exp1/characters":
+        return {"characters": XCHARS}
+    posted_x.append((method, path, body, via))
+    if path == "projects/exp1/items":
+        return {"items": [f"id{i}{'x' * 8}" for i in range(len(body["items"]))]}
+    return {"ok": True}
+A._studio_call = _scx
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_x.append(text) or (answers_x.pop(0) if answers_x else "")
+check("an explainer needs a topic",
+      client.post("/studio/api/explainer-script", headers=HOME, json={"project": "exp1", "narrator": "narr1"}).status_code == 400)
+check("  and a narrator with a voice", client.post("/studio/api/explainer-script", headers=HOME, json={
+    "project": "exp1", "topic": "lighthouses", "narrator": "mute2"}).status_code == 400 and not asked_x)
+answers_x[:] = ['{"title": "How a lighthouse works", "subtitle": "in three steps", "points": ['
+                '{"narration": "A lighthouse warns ships at night.", "picture": "a lighthouse on a cliff at dusk"},'
+                '{"narration": "", "picture": "no words"},'
+                '{"narration": "Its lamp turns behind a big lens.", "picture": "a huge glass lens around a lamp"},'
+                '{"narration": "So every ship can see it from far away.", "picture": "ships far out at sea, a beam of light"}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, json={
+    "project": "exp1", "topic": "how a lighthouse works", "minutes": 1, "narrator": "narr1", "title_card": True,
+    "replace": True})
+adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
+shots_x = adds[0][2]["items"] if adds else []
+voices_x = adds[1][2]["items"] if len(adds) > 1 else []
+check("each point is a shot drawn from its picture, after a title card with Alfred's title",
+      r.status_code == 200 and r.get_json()["points"] == 3 and adds[0][2]["section"] == "shots"
+      and shots_x[0]["card"]["title"] == "How a lighthouse works" and shots_x[0]["card"]["subtitle"] == "in three steps"
+      and [x["prompt"] for x in shots_x[1:]] == ["a lighthouse on a cliff at dusk", "a huge glass lens around a lamp",
+                                                 "ships far out at sea, a beam of light"], shots_x)
+check("  and its narration a voice card said by the narrator, linked to that shot -- not to the title card",
+      [(v["point"], v["speaker"], v["text"][:12]) for v in voices_x] == [
+          ("id1xxxxxxxx", "narr1", "A lighthouse"), ("id2xxxxxxxx", "narr1", "Its lamp tur"), ("id3xxxxxxxx", "narr1", "So every shi")]
+      and all(c[3] == "Alfred" for c in adds), voices_x)
+check("  written again, the old points and their narrations go -- the music stays",
+      ("PUT", "projects/exp1", {"shots": [], "audio": [{"id": "bed1", "kind": "instrumental"}]}, "Alfred") in posted_x
+      and posted_x.index(("PUT", "projects/exp1", {"shots": [], "audio": [{"id": "bed1", "kind": "instrumental"}]},
+                          "Alfred")) < posted_x.index(adds[0]), posted_x[:2])
+check("  and the project remembers its narrator",
+      ("PUT", "projects/exp1", {"settings": {"narrator": "narr1"}}, "Alfred") in posted_x)
+check("  asked for the right number of points, pictures in English with no text and no style words",
+      asked_x and "4 points" in asked_x[-1] and "no text, letters" in asked_x[-1] and A.STUDIO_STYLE_RULE in asked_x[-1]
+      and "English" in asked_x[-1] and "flat 2D vector" in asked_x[-1], asked_x[-1][:700])
+posted_x.clear(); asked_x.clear()
+answers_x[:] = ["nope", '{"points": [{"narration": "one", "picture": "one"}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, json={"project": "exp1", "topic": "x", "narrator": "narr1"})
+check("an unreadable explainer is asked for once more, then fails and files nothing",
+      r.status_code == 502 and len(asked_x) == 2 and not posted_x, posted_x)
+A._studio_call, A._run_nanobot_turn = _saved_x
+
+
+print("\na short film's script, written by the Designer")
+_saved_f2 = (A._studio_call, A._run_nanobot_turn)
+FDOC2 = {"id": "film1", "settings": {"language": "es", "look": "3D cartoon"}, "shots": [{"id": "old"}]}
+FCHARS = [{"id": "tomi1", "name": "Tomi", "look": "a boy of ten, red cap"}]
+posted_f2, asked_f2, answers_f2 = [], [], []
+def _scf2(username, method, path, body=None, timeout=30, via=""):
+    if path == "projects/film1" and method == "GET":
+        return FDOC2
+    if path == "projects/film1/characters" and method == "GET":
+        return {"characters": FCHARS}
+    posted_f2.append((method, path, body, via))
+    if path == "projects/film1/characters":
+        return {"id": "new" + body["name"].lower()[:3] + "xxxxxx", **body}
+    return {"ok": True, "items": ["x"]}
+A._studio_call = _scf2
+A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_f2.append((text, profile)) or (answers_f2.pop(0) if answers_f2 else "")
+check("a short film needs an idea",
+      client.post("/studio/api/film-script", headers=HOME, json={"project": "film1"}).status_code == 400)
+answers_f2[:] = [json.dumps({"title": "El faro encendido", "characters": [
+    {"name": "Mora", "look": "a girl of nine, yellow raincoat", "personality": "brave"},
+    {"name": "Tomi", "look": "a duplicate", "personality": ""}],
+    "scenes": [
+        {"heading": "Playa, atardecer", "shots": [
+            {"prompt": "Tomi and Mora walk along the beach toward a dark lighthouse.", "dialogue": "Tomi: ¿Lo ves?\nMora: Sí.",
+             "cast": ["Tomi", "Mora"], "seconds": 30, "continues": True},
+            {"prompt": "Close on the lighthouse door, half open.", "dialogue": "", "cast": [], "seconds": 2, "continues": True}]},
+        {"heading": "Dentro del faro", "shots": [
+            {"prompt": "They climb a spiral stair with a flashlight.", "dialogue": "Móra: ¡Arriba!", "cast": ["MORA", "Nobody"],
+             "seconds": 7, "continues": True},
+            {"prompt": "", "dialogue": "nothing to show"}]}]})]
+r = client.post("/studio/api/film-script", headers=HOME, json={"project": "film1", "idea": "dos chicos y un faro", "seconds": 60,
+                                                               "new_characters": True, "replace": True})
+out = r.get_json() or {}
+made = [c for c in posted_f2 if c[1] == "projects/film1/characters"]
+add = next((c for c in posted_f2 if c[1] == "projects/film1/items"), None)
+items = add[2]["items"] if add else []
+check("the new characters the story brings are made in the project, once -- one already there is not made again",
+      r.status_code == 200 and [c[2]["name"] for c in made] == ["Mora"] and made[0][3] == "Alfred" and out["characters"] == 1,
+      (out, made))
+check("  the shots are filed after a title card, each scene's heading on its first shot",
+      items and items[0]["card"]["title"] == "El faro encendido" and [i.get("title") for i in items[1:]]
+      == ["Playa, atardecer", "", "Dentro del faro"], items)
+check("  its cast by id, found by name whatever the case or accents -- names of nobody dropped",
+      [i.get("cast") for i in items[1:]] == [["tomi1", "newmorxxxxxx"], [], ["newmorxxxxxx"]], items)
+check("  a shot is 5-10 seconds, a scene's first shot never carries on from the one before, and one with no "
+      "description is left out",
+      [i["seconds"] for i in items[1:]] == [10, 5, 7] and [i["continuity"] for i in items[1:]] == [False, True, False]
+      and len(items) == 4 and items[1]["dialogue"] == "Tomi: ¿Lo ves?\nMora: Sí.", items)
+_put_f2 = ("PUT", "projects/film1", {"shots": []}, "Alfred")
+check("  written again, the old shots go first", _put_f2 in posted_f2 and posted_f2.index(_put_f2) < posted_f2.index(add),
+      posted_f2)
+text_f2, prof_f2 = asked_f2[-1] if asked_f2 else ("", "")
+check("  written by the Designer, the dialogue as \"Name: words\" in the film's language, the cast as described",
+      prof_f2 == "designer" and '"Name: words"' in text_f2 and "in Spanish" in text_f2 and "a boy of ten, red cap" in text_f2
+      and "about 9 shots" in text_f2 and A.STUDIO_STYLE_RULE in text_f2, text_f2[:800])
+posted_f2.clear(); asked_f2.clear()
+answers_f2[:] = [json.dumps({"title": "x", "characters": [{"name": "Pili", "look": "y"}],
+                             "scenes": [{"heading": "h", "shots": [{"prompt": "p", "cast": ["Pili"]}]}]})]
+client.post("/studio/api/film-script", headers=HOME, json={"project": "film1", "idea": "z", "new_characters": False})
+check("without leave to add characters, none is made and Alfred is told to use only the listed ones",
+      not [c for c in posted_f2 if c[1] == "projects/film1/characters"] and "Use only the listed characters" in asked_f2[-1][0])
+A._studio_call, A._run_nanobot_turn = _saved_f2
+
+
 print("\na Studio notification opens the Studio")
 _sent = []
 _saved_n = A._notify_user

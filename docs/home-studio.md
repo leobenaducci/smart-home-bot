@@ -117,6 +117,78 @@ apps' target); the result is an M4A with the cover embedded as its artwork, or
 (`format: "video"`, which needs the cover) a square 1080 MP4 of the cover over
 the sound at two frames a second. Renders carry `story: true`.
 
+## A short film
+
+The `short_film` kind is a music video's pipeline -- storyboard, shots,
+cast, the film -- without the song, and with a script in front: its tabs are
+Script, Storyboard, Video, Characters, Music & voices, Pictures and Files, and
+a film with no shots opens on the Script.
+
+`POST /studio/api/film-script` (the portal) asks the Designer for `{"title",
+"characters": [{"name", "look", "personality"}], "scenes": [{"heading",
+"shots": [{"prompt", "dialogue", "cast", "seconds", "continues"}]}]}` from the
+idea, at about one shot per 7 seconds. A shot is clamped to 5-10 s (H3 runs
+~5 card-minutes a second of video), a scene's first shot never continues the
+one before, and a shot without a description is dropped. With
+`new_characters`, up to three characters the story brings are made in the
+project (one already there by that name is not); the cast is mapped back to
+ids by name without case or accents. Shots are filed after a title card, the
+scene's heading as the first shot's `title`; `replace` takes the old shots out
+first.
+
+Dialogue is one line per speaker, "Name: words". `recipes.h3_prompt` gives each
+name of the shot's cast its own H3 speaker -- S1 for the first to speak, S2 for
+the next -- and leaves the name out of what is said; a line whose "Name" is
+not in the shot's cast ("Look: the sea") is an ordinary line, S1's, as every
+line was before. The Script tab shows the scenes and shots as a script, the
+description and the dialogue editable, and the card time the video will take
+(`video_rate` from the queue).
+
+## An explainer
+
+The `explainer` kind is its points: shots that are a title card (`card`) or a
+picture -- the storyboard's frame, or a clip made from it on the Video tab --
+each with its narration, the voice card whose `point` is that shot, said by the
+project's narrator (`settings.narrator`, a character with a voice sample). Its
+tabs are Points, Video, Music & voices (its music only: the narrations are on
+the points), Characters, Pictures and Files; the progress strip is off, since
+the film it counts is not the explainer's.
+
+`POST /studio/api/explainer-script` (the portal) asks the person's assistant
+for `{"title", "subtitle", "points": [{"narration", "picture"}]}` -- about 35
+words a point at ~140 a minute, pictures in English with no text in them and
+no style words (`STUDIO_STYLE_RULE`; the look carries the style) -- and files
+the shots first (a title card when asked), then one narration a point linked
+by id, under Alfred's name. `replace` drops the old points and their
+narrations; the music stays.
+
+`POST /api/projects/{pid}/explainer` puts it together on the CPU, beside the
+queue: each point on screen for 0.4 s + its narration + 0.8 s (3 s at least; a
+point with no narration yet holds for its own length), a title card for its
+seconds; a clip shorter than its narration is followed by its last frame held.
+The narrations, and the first instrumental not linked to a point at 0.15 under
+it all, are one soundtrack (`story_mix`, levelled), laid under the stitched
+pictures without their own sound. H.264 at 1080p unless asked otherwise.
+Removing a point on the page takes its narration with it.
+
+## A podcast
+
+The `podcast` kind is an audio story whose words Alfred writes: the same tabs,
+cover, voice cards and assembly (`story.plan`, `POST /story`), with an episode
+writer on top. `POST /studio/api/podcast-script` (the portal) takes a topic, a
+length in minutes and the hosts -- characters with a voice sample, one to
+three -- and asks the person's own assistant for `{"title", "lines":
+[{"speaker", "text"}]}` at ~140 words a minute; a line by anyone but a host,
+or empty, is dropped (names matched without case or accents), an unreadable
+answer is asked for once more, and the lines are filed through the Studio's
+`/items` as voice cards with `speaker` set, under Alfred's name, each given the
+seconds its words take with room (5-120). With `music`, an intro and an outro
+instrumental frame it with `alone: true`: an instrumental so marked plays whole
+on its own when the episode is put together, instead of under the voices after
+it. `replace` keeps only the episode's songs before filing the new script. The
+page names an untitled project after the episode, shows each line as a compact
+card headed by its host, and **Make every line** queues every card not made.
+
 ## Collections
 
 A person's projects gathered under names they choose; a project can be in

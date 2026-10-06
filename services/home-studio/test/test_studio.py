@@ -49,6 +49,13 @@ check("  a continued shot starts from a frame (S) with the small text encoder",
 s = recipes.settings_for("video_shot", {"prompt": "x", "dialogue": "Hola, ¿qué tal?", "start_image": "/a", "end_image": "/b"})
 check("  dialogue goes in H3's <d>[Spanish] ...</d>, both ends anchored (SE)",
       "<d>[Spanish] Hola, ¿qué tal?</d>" in s["prompt"] and s["image_prompt_type"] == "SE", s["prompt"])
+two = recipes.h3_prompt({"prompt": "two kids at a lighthouse", "characters": "Tomi: a boy of ten; Mora: a girl of nine",
+                         "dialogue": "Tomi: ¿Ves la luz?\nMora: Sí, gira.\nTomi: ¡Qué lindo!\nLook: the sea"})
+check("  a script's lines go to their speakers -- S1, S2 by who speaks first -- without the name spoken",
+      "(S1) <d>[Spanish] ¿Ves la luz?</d> (S2) <d>[Spanish] Sí, gira.</d> (S1) <d>[Spanish] ¡Qué lindo!</d>" in two
+      and "The characters speak" in two and "Tomi:" not in two.split("synchronization:")[1], two)
+check("  and a colon in a line that names no one in the shot is just part of the line",
+      "(S1) <d>[Spanish] Look: the sea</d>" in two, two)
 s = recipes.settings_for("video_shot", {"prompt": "a cat walks", "look": "pastel watercolour."})
 check("  a shot's video carries the film's look, the same words as its frame",
       s["prompt"].count("Visual style: pastel watercolour.") == 1
@@ -1675,6 +1682,25 @@ while time.time() < deadline:
 kept = media.probe(tbase / st["render"]["file"])
 check("  anything else asked for is the kept film: H.265 at the clips' size",
       kept["codec"] == "hevc" and (kept["width"], kept["height"]) == (320, 180), kept)
+key_ = f"{JUANA}/{tp['id']}"
+A.render_state[key_] = {"state": "running", "started": time.time()}
+_load = A.projects.load
+
+
+def _load_while_it_finishes(owner, pid):
+    # The project read as it was, and the render finishing right after the
+    # read: the film filed and marked done between the two halves of a GET.
+    doc = _load(owner, pid)
+    A.render_state[key_] = {"state": "done", "file": "renders/new.mp4"}
+    return doc
+
+
+A.projects.load = _load_while_it_finishes
+seen_ = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()
+A.projects.load = _load
+check("  a render finishing while the project is read is still running in that answer, never done with the old films",
+      (seen_.get("render") or {}).get("state") == "running", seen_.get("render"))
+A.render_state.pop(key_, None)
 print("\n  a title card, and text over a recording")
 tt_now = Projects.chosen_take(tclip())["id"]
 shots = c.get(f"/api/projects/{tp['id']}", headers=h(JUANA, "Juana")).json()["shots"]
@@ -2033,6 +2059,12 @@ check("  music under the last voices lasts past them and fades",
       {p["file"]: p for p in pl2}["m"]["length"] == round(story.LEAD + 4 + story.TAIL, 3)
       and total2 == round(5 + story.GAP + story.LEAD + 4 + story.TAIL, 3), (pl2, total2))
 check("  nothing made yet is nothing to place", story.plan([("voice", "a", 0)]) == ([], 0.0))
+pj, _tj = story.plan([("instrumental", "intro", 6, True), ("voice", "a", 5), ("voice", "b", 4),
+                      ("instrumental", "outro", 5, True)])
+byj = {p["file"]: p for p in pj}
+check("  a jingle marked to play on its own is not laid under the voices: it plays whole, then they start",
+      byj["intro"]["volume"] == story.MUSIC and not byj["intro"]["loop"] and byj["intro"]["length"] == 6
+      and byj["a"]["start"] == round(6 + story.GAP, 3) and byj["outro"]["volume"] == story.MUSIC, pj)
 
 sp = c.post("/api/projects", json={"name": "El faro", "kind": "audio_story"}, headers=HJ).json()
 check("  a project can be an audio story", sp["kind"] == "audio_story")
@@ -2048,11 +2080,14 @@ def tone(name, seconds, freq):
 
 
 saved = c.put(f"/api/projects/{sp['id']}", json={"audio": [
-    {"kind": "instrumental", "title": "Intro", "style": "soft piano"},
+    {"kind": "instrumental", "title": "Intro", "style": "soft piano", "alone": "yes please"},
     {"kind": "voice", "title": "Narrador", "text": "Había una vez un faro."},
     {"kind": "voice", "title": "Bruma", "text": "¡Hola!"}],
     "images": [{"prompt": "a lighthouse at dusk", "size": "1024x1024"}]}, headers=HJ).json()
 intro, line1, line2 = (a["id"] for a in saved["audio"])
+check("  `alone` is kept as a yes or no", saved["audio"][0]["alone"] is True, saved["audio"][0])
+c.put(f"/api/projects/{sp['id']}", json={"audio": [{**saved["audio"][0], "alone": False}] + saved["audio"][1:]},
+      headers=HJ)
 cover_id = saved["images"][0]["id"]
 for iid, (name, secs, f) in zip((intro, line1, line2), (("intro.wav", 4, 220), ("n.wav", 3, 440), ("b.wav", 2, 660))):
     A.projects.add_take(JUANA, sp["id"], iid, {"file": "takes/" + tone(name, secs, f)})
@@ -2121,6 +2156,62 @@ check("  with one, it is said in that character's voice",
       r.status_code == 200 and job.get("kind") == "voice" and job["params"].get("voice_char") == bru["id"]
       and not job["params"].get("voice_upload"), (r.status_code, r.text[:200], job.get("params")))
 A.manager.cancel(job["id"]) if job else None
+
+print("\nan explainer: a picture or a clip for each point, on screen while it is said")
+ep = c.post("/api/projects", json={"name": "Cómo funciona un faro", "kind": "explainer"}, headers=HJ).json()
+epdir = A.projects.dir(JUANA, ep["id"])
+(epdir / "takes").mkdir(exist_ok=True)
+
+
+def media_file(name, args):
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args, str(epdir / "takes" / name)], check=True)
+    return "takes/" + name
+
+
+saved_e = c.put(f"/api/projects/{ep['id']}", json={"shots": [
+    {"card": {"title": "Cómo funciona un faro", "subtitle": "en tres pasos", "seconds": 2}},
+    {"prompt": "a lighthouse lamp", "seconds": 4},
+    {"prompt": "a lens turning", "seconds": 4},
+    {"prompt": "ships at sea", "seconds": 3}]}, headers=HJ).json()
+_card, pA, pB, pC = (x["id"] for x in saved_e["shots"])
+check("  a point without a picture cannot be put together, and says which",
+      c.post(f"/api/projects/{ep['id']}/explainer", json={}, headers=HJ).status_code == 400)
+for sid, name in ((pA, "a.png"), (pB, "b.png"), (pC, "c.png")):
+    A.projects.add_board(JUANA, ep["id"], sid, {"file": media_file(name, ["-f", "lavfi", "-i", "color=c=teal:s=640x360",
+                                                                          "-frames:v", "1"])})
+A.projects.add_take(JUANA, ep["id"], pB, {"file": media_file("b.mp4", ["-f", "lavfi", "-i", "color=c=red:s=640x360:d=1",
+                                                                       "-r", "24", "-pix_fmt", "yuv420p"])})
+saved_e = c.put(f"/api/projects/{ep['id']}", json={"audio": [
+    {"kind": "voice", "title": "A", "text": "La lámpara.", "point": pA},
+    {"kind": "voice", "title": "B", "text": "La lente gira.", "point": pB},
+    {"kind": "instrumental", "title": "Fondo", "style": "calm"},
+    {"kind": "voice", "title": "x", "text": "y", "point": "../../nope"}], "settings": {"narrator": "abcdef123456"}},
+    headers=HJ).json()
+check("  a narration names its point by id, nothing else; the project keeps its narrator",
+      saved_e["audio"][3]["point"] == "" and saved_e["audio"][0]["point"] == pA
+      and saved_e["settings"]["narrator"] == "abcdef123456", saved_e["audio"])
+for aid, (name, secs, f) in zip((saved_e["audio"][0]["id"], saved_e["audio"][1]["id"], saved_e["audio"][2]["id"]),
+                                (("na.wav", 3, 330), ("nb.wav", 4, 440), ("bed.wav", 2, 220))):
+    A.projects.add_take(JUANA, ep["id"], aid, {"file": media_file(name, ["-f", "lavfi", "-i",
+                                                                         f"sine=frequency={f}:duration={secs}", "-ac", "2"])})
+c.post(f"/api/projects/{ep['id']}/explainer", json={"format": "h264", "size": "1080"}, headers=HJ)
+deadline = time.time() + 300
+while time.time() < deadline:
+    st = c.get(f"/api/projects/{ep['id']}", headers=HJ).json()
+    if (st.get("render") or {}).get("state") != "running":
+        break
+    time.sleep(0.3)
+efilm = epdir / (st.get("render") or {}).get("file", "none")
+ei = media.probe(efilm) if efilm.is_file() else {}
+want = 2 + (0.4 + 3 + 0.8) + (0.4 + 4 + 0.8) + 3
+check("  put together: each point on screen while it is said, the title card first, a short clip held on its last frame",
+      abs(ei.get("seconds", 0) - want) < 0.35 and ei.get("codec") == "h264" and ei.get("width") == 1920
+      and ei.get("has_audio") and st["renders"][-1].get("explainer"), (st.get("render"), ei, want))
+level = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-ss", "11.6", "-t", "1", "-i", str(efilm), "-af",
+                        "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+check("  and the music under it all, quieter than the voices, where no one speaks",
+      "mean_volume" in level and -60 < float(level.split("mean_volume:")[1].split()[0]) < -20, level[-300:])
+check("  nothing of the work left behind", not [x for x in (epdir / "renders").iterdir() if x.name.startswith(".")])
 
 print("\n  a song whose words could not be followed before is listened to again, once")
 an_take = Projects.chosen_take(Projects.find(A.projects.load(JUANA, sp["id"]), intro)[2])

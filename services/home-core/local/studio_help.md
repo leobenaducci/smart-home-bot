@@ -8,8 +8,8 @@ the top of the Studio answers questions about using it.
 ## Projects
 
 - **New project** (＋ on the projects page): give it a name and pick what it is
-  for. *Music video*, *Recording* (tutorials, screen and camera), *Audio story*
-  and *Free* are ready; *short film*, *explainer* and *podcast* are coming.
+  for: *Music video*, *Short film*, *Recording* (tutorials, screen and camera),
+  *Explainer*, *Podcast*, *Audio story* or *Free*.
 - Anything you ask Alfred for without naming a project lands in your default
   project, called "Alfred".
 - A project has tabs: **Video** (the shots or recordings, in order),
@@ -157,6 +157,61 @@ cover picture. Make a project of the kind **Audio story**; it opens on the
    picture, for any player. **🎞️ As a video with the cover** makes a video of
    the cover over the sound, for sites that only take video (YouTube). Both
    are listed under **The story, put together**, to play or download.
+
+## A short film
+
+An idea, a script, scenes and shots with dialogue and recurring characters.
+
+1. On the **Script** tab, **✍️ Write the script with Alfred**: tell the idea
+   and the length (30 s to 3 min). Alfred writes scenes of short shots (5-10 s
+   each), each with what is on screen, who is in it and what they say. Tick
+   **Alfred may add characters** to let the story bring up to three of its
+   own; they appear in **Characters** -- give them a picture so they keep their
+   faces from shot to shot. The page says how long the video will take on the
+   card (about 5 hours a minute of film).
+2. Read it as a script and edit any description or line. Dialogue is one line
+   per speaker, as **Name: what they say**; in the video each line is said by
+   that character, with lip sync.
+3. Then as for a music video: **Draw the storyboard**, approve or correct the
+   frames on the **Storyboard** tab (🔁 Refine helps), make the shots on the
+   **Video** tab and **🎞️ Put the film together**.
+
+## An explainer
+
+A narrated explanation with a picture or a clip for each point.
+
+1. **The narrator** is a character with a voice sample (make one in
+   **Characters**).
+2. On the **Points** tab, **✍️ Write the explainer with Alfred**: say what it
+   explains (and for whom), the narrator and the length (1-5 minutes), and
+   whether a title card opens it. Alfred writes the points: each one is what the
+   narrator says and the picture on screen meanwhile. Writing it again replaces
+   the points.
+3. **Draw every picture**, then **Say every narration**. Edit any narration or
+   picture, move a point with ↑ ↓, add one with **＋ Point**, or a title with
+   **🔤 Title**. A point can have a clip instead of a still: make it on the
+   **Video** tab from its picture.
+4. An instrumental made in **Music & voices** plays quietly under it all.
+5. **🎞️ Put the explainer together** (1080p or 720p, H.264 to share anywhere):
+   each point stays on screen while its narration is said; a clip shorter than
+   its narration ends on its last frame.
+
+## A podcast
+
+An episode: a conversation between hosts, each line in the host's own voice.
+
+1. **The hosts** are characters with a voice sample: make one to three in
+   **Characters**, give each a voice and a personality (how they talk).
+2. On the **Episode** tab, **✍️ Write the episode with Alfred**: say what it is
+   about, pick the hosts and the length (2-15 minutes), and whether it opens and
+   closes with music. Alfred writes the conversation; each line becomes a card
+   said by its host. Writing it again replaces its lines and music (songs stay).
+3. Edit any line, change who says it, take one out with ✕ or add one with
+   **＋ Voice**. **Make every line** makes them all at once, in the card's queue.
+4. The jingles are instrumentals marked **On its own, not under the voices**;
+   an instrumental without that mark plays quietly under the voices that follow.
+5. **🎨 Draw the cover**, then **🎧 Put the episode together** (an audio file
+   with the cover as its picture) or **🎞️ As a video with the cover**.
 
 ## A music video from a song
 

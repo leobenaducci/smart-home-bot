@@ -14,8 +14,8 @@ MUSIC = 0.9     # music on its own (an interlude)
 FADE = 1.5
 
 
-def plan(items: list[tuple[str, str, float]]) -> tuple[list[dict], float]:
-    """*items* in the story's order as (kind, file, seconds). Placements --
+def plan(items: list[tuple]) -> tuple[list[dict], float]:
+    """*items* in the story's order as (kind, file, seconds[, alone]). Placements --
     {file, start, length, volume, loop, fade_in, fade_out} -- and the length
     of the whole.
 
@@ -23,7 +23,8 @@ def plan(items: list[tuple[str, str, float]]) -> tuple[list[dict], float]:
     followed by a voice before the next piece of music is laid under those
     voices -- looped if it is shorter, faded out when the next music starts or
     the story ends; one followed by nothing it could go under plays on its
-    own, whole. A song ends the music under it: it is music itself."""
+    own, whole, and so does one marked `alone` (a podcast's jingle). A song
+    ends the music under it: it is music itself."""
     out: list[dict] = []
     pos, bed = 0.0, None
 
@@ -34,15 +35,17 @@ def plan(items: list[tuple[str, str, float]]) -> tuple[list[dict], float]:
                         "loop": True, "fade_in": 1.0, "fade_out": FADE})
             bed = None
 
-    for i, (kind, file, seconds) in enumerate(items):
+    for i, item in enumerate(items):
+        kind, file, seconds = item[:3]
+        alone = bool(item[3]) if len(item) > 3 else False
         seconds = max(0.0, float(seconds or 0))
         if seconds <= 0:
             continue
         if kind == "instrumental":
             rest = items[i + 1:]
-            nxt = next((k for k, (kk, _f, _s) in enumerate(rest) if kk in ("instrumental", "song")), len(rest))
+            nxt = next((k for k, it in enumerate(rest) if it[0] in ("instrumental", "song")), len(rest))
             close(pos + 1.0)
-            if any(kk == "voice" for kk, _f, _s in rest[:nxt]):
+            if not alone and any(it[0] == "voice" for it in rest[:nxt]):
                 bed = {"file": file, "start": round(pos, 3)}
                 pos += LEAD
             else:

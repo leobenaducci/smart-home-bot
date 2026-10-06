@@ -916,6 +916,13 @@ def storyboard(pid: str, body: dict | None = None, me: Who = Depends(who)):
 
 @app.get("/api/projects/{pid}")
 def get_project(pid: str, me: Who = Depends(who)):
+    # The render's state before the project, never after: a film is filed in
+    # the project (add_render) and only then marked done, so "done" read
+    # first means the film is in what is loaded next. Read the other way
+    # round, a render finishing between the two answered "done" with the
+    # film list from before it -- the page stops polling on "done" and kept
+    # that list, and a test read the previous film (2026-10-06).
+    render = render_state.get(f"{me.login}/{pid}")
     try:
         doc = projects.load(me.login, pid)
     except ProjectError as exc:
@@ -925,7 +932,7 @@ def get_project(pid: str, me: Who = Depends(who)):
     # part of the project, so never saved back into it.
     cols = projects.collections(me.login)
     names = {c["id"]: c["name"] for c in cols["collections"]}
-    return {**doc, "jobs": [_public(j, me) for j in active], "render": render_state.get(f"{me.login}/{pid}"),
+    return {**doc, "jobs": [_public(j, me) for j in active], "render": render,
             "in_collections": [{"id": c, "name": names[c]} for c in cols["of"].get(pid, [])]}
 
 
@@ -1811,7 +1818,7 @@ def put_story_together(pid: str, body: dict | None = None, me: Who = Depends(who
     for a in doc.get("audio") or []:
         take = Projects.chosen_take(a)
         if take and take.get("file") and (base / take["file"]).is_file():
-            items.append((a.get("kind") or "song", base / take["file"]))
+            items.append((a.get("kind") or "song", base / take["file"], bool(a.get("alone"))))
     if not items:
         _bad(ValueError("no voice or music has a version yet"))
     cover = None
@@ -1832,7 +1839,7 @@ def put_story_together(pid: str, body: dict | None = None, me: Who = Depends(who
         wav = base / "renders" / f"{stamp}-story.wav"
         out = base / "renders" / f"{stamp}-story.{'mp4' if fmt_ == 'video' else 'm4a'}"
         try:
-            placements, _total = story.plan([(k, str(f), media.probe(f)["seconds"]) for k, f in items])
+            placements, _total = story.plan([(k, str(f), media.probe(f)["seconds"], al) for k, f, al in items])
             media.story_mix(placements, wav)
             if fmt_ == "video":
                 media.story_video(wav, cover, out)
@@ -1847,6 +1854,118 @@ def put_story_together(pid: str, body: dict | None = None, me: Who = Depends(who
             render_state[key] = {"state": "failed", "error": str(exc) or exc.__class__.__name__}
         finally:
             wav.unlink(missing_ok=True)
+
+    renders.submit(work)
+    return {"ok": True, "render": render_state[key]}
+
+
+# An explainer: each point's picture or clip on screen while its narration is
+# said, with a little air either side; a point with no narration yet holds
+# for its own length. Never shorter than MIN_POINT.
+POINT_LEAD, POINT_TAIL, MIN_POINT = 0.4, 0.8, 3.0
+EXPLAINER_BED = 0.15
+
+
+@app.post("/api/projects/{pid}/explainer")
+def put_explainer_together(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """An explainer as one film: its points in order -- a title card drawn, a
+    point's clip when it has one, else its picture held -- each on screen for
+    as long as its narration (the voice card whose `point` is that shot) takes
+    to say. The narrations, and an instrumental under them all when there is
+    one, are one levelled soundtrack; the clips' own sound is left out. A clip
+    shorter than its narration ends on its last frame, held. H.264 by default
+    (an explainer is made to be shown), at the size asked for. On the CPU,
+    beside the queue, like the film."""
+    body = body or {}
+    try:
+        doc = projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    base = projects.dir(me.login, pid)
+    codec = body.get("format") if body.get("format") in media.CODECS else "h264"
+    size = str(body.get("size") or "1080") if str(body.get("size") or "1080") in media.SIZES else ""
+    points = [s for s in doc.get("shots") or [] if not s.get("recorded")]
+    if not points:
+        _bad(ValueError("the explainer has no points yet"))
+    narration = {}
+    for a in doc.get("audio") or []:
+        take = Projects.chosen_take(a)
+        if a.get("point") and take and take.get("file") and (base / take["file"]).is_file():
+            narration[a["point"]] = base / take["file"]
+    bed = next((base / Projects.chosen_take(a)["file"] for a in doc.get("audio") or []
+                if a.get("kind") == "instrumental" and not a.get("point") and Projects.chosen_take(a)
+                and (base / Projects.chosen_take(a)["file"]).is_file()), None)
+    plan = []
+    for n, s in enumerate(points, 1):
+        card = clean_card(s.get("card"))
+        take, board = Projects.chosen_take(s), Projects.chosen_board(s)
+        video = base / take["file"] if take and take.get("file") and (base / take["file"]).is_file() else None
+        picture = base / board["file"] if board and board.get("file") and (base / board["file"]).is_file() else None
+        if not card and not video and not picture:
+            _bad(ValueError(f"point {n} has no picture yet"))
+        plan.append((s, card, video, picture, narration.get(s["id"])))
+    key = f"{me.login}/{pid}"
+    if (render_state.get(key) or {}).get("state") == "running":
+        _bad(ValueError("this project is already being put together"), 409)
+    render_state[key] = {"state": "running", "started": time.time()}
+
+    def work():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        tmp = base / "renders" / f".explainer-{stamp}"
+        out = base / "renders" / f"{stamp}-explainer-{codec}{f'-{size}p' if size else ''}.mp4"
+        try:
+            tmp.mkdir(parents=True, exist_ok=True)
+            first = next((p for _s, _c, v, p, _n in plan if p), None)
+            if first:
+                from PIL import Image  # noqa: PLC0415
+                with Image.open(first) as im:
+                    frame = (im.width // 2 * 2, im.height // 2 * 2)
+            else:
+                frame = (1280, 720)
+            clips, lengths, placements, pos = [], [], [], 0.0
+            for i, (s, card, video, picture, voice) in enumerate(plan):
+                said = media.probe(voice)["seconds"] if voice else 0.0
+                length = (card["seconds"] if card and not voice
+                          else max(MIN_POINT, POINT_LEAD + said + POINT_TAIL) if voice
+                          else max(MIN_POINT, float(s.get("seconds") or 4)))
+                if card:
+                    clips.append(media.title_card(card["title"], card["subtitle"], length, frame,
+                                                  tmp / f"{i}-card.mp4", card["theme"]))
+                    lengths.append(None)
+                elif video:
+                    have = media.probe(video)["seconds"]
+                    clips.append(video)
+                    lengths.append(min(have, length))
+                    if have < length - 0.05:
+                        last = media.frame(video, tmp / f"{i}-last.png", "last")
+                        clips.append(media.still(last, length - have, frame, tmp / f"{i}-hold.mp4"))
+                        lengths.append(None)
+                else:
+                    clips.append(media.still(picture, length, frame, tmp / f"{i}-still.mp4"))
+                    lengths.append(None)
+                if voice:
+                    placements.append({"file": str(voice), "start": round(pos + POINT_LEAD, 3),
+                                       "length": round(said, 3), "volume": 1.0, "loop": False,
+                                       "fade_in": 0.0, "fade_out": 0.0})
+                pos += length
+            film = media.stitch(clips, tmp / "film.mp4", lengths=lengths, codec=codec, size=size)
+            if bed:
+                placements.append({"file": str(bed), "start": 0.0, "length": round(pos, 3), "volume": EXPLAINER_BED,
+                                   "loop": True, "fade_in": 1.0, "fade_out": 2.0})
+            if placements:
+                sound = media.story_mix(placements, tmp / "sound.wav")
+                media.mix(film, [{"file": sound, "start": 0, "volume": 1.0}], out, keep_own=False)
+            else:
+                film.replace(out)
+            projects.add_render(me.login, pid, {"file": str(out.relative_to(base)), "explainer": True,
+                                                "format": codec, "size": size,
+                                                "seconds": round(media.probe(out)["seconds"], 1)})
+            render_state[key] = {"state": "done", "file": str(out.relative_to(base))}
+        except Exception as exc:                               # noqa: BLE001 -- as the film's render
+            log.warning("explainer %s failed: %s", key, exc)
+            render_state[key] = {"state": "failed", "error": str(exc) or exc.__class__.__name__}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     renders.submit(work)
     return {"ok": True, "render": render_state[key]}

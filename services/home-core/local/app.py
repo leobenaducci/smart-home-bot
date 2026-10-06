@@ -22964,6 +22964,16 @@ STUDIO_UI_KEYS = (
     'coll_new', 'coll_name', 'coll_count1', 'coll_count', 'coll_rename', 'coll_delete', 'coll_delete_confirm',
     'coll_empty', 'coll_add', 'coll_add_title', 'coll_add_none', 'coll_none_yet', 'coll_create_add', 'coll_added',
     'coll_remove', 'coll_remove_here', 'coll_removed', 'coll_inside', 'coll_open',
+    'tab_episode', 'pod_cover_ph', 'pod_title', 'pod_topic', 'pod_topic_ph', 'pod_hosts', 'pod_hosts_none', 'pod_minutes',
+    'tab_script', 'film_title', 'film_idea', 'film_idea_ph', 'film_length', 'film_new_chars', 'film_write',
+    'film_estimate', 'film_written', 'film_new_made', 'film_replace_confirm', 'film_need_idea', 'film_failed',
+    'film_scene_ph', 'film_shot', 'film_dialogue', 'film_dialogue_ph', 'film_draw', 'film_help', 'film_empty',
+    'tab_points', 'exp_title', 'exp_topic', 'exp_topic_ph', 'exp_narrator', 'exp_narrator_none', 'exp_card',
+    'exp_write', 'exp_point', 'exp_no_picture', 'exp_narration', 'exp_add_narration', 'exp_picture',
+    'exp_help', 'exp_add_point', 'exp_say_all', 'exp_render', 'exp_need_pictures', 'exp_replace_confirm',
+    'exp_need_topic', 'exp_need_narrator', 'exp_failed', 'exp_written',
+    'pod_music', 'pod_write', 'pod_writing', 'pod_written', 'pod_replace_confirm', 'pod_need_topic',
+    'pod_need_hosts', 'pod_failed', 'pod_make_all', 'pod_go_audio', 'pod_versions', 'pod_help', 'alone_label',
     'pkind_audio_story', 'pkind_audio_story_about', 'tab_story', 'story_cover', 'story_cover_ph',
     'story_cover_draw', 'story_cover_redraw', 'story_help', 'story_go_audio', 'story_go_video',
     'story_video_help', 'story_nothing', 'story_running', 'story_failed', 'story_versions', 'voice_speaker',
@@ -23141,6 +23151,382 @@ def studio_lyrics():
 
 
 STUDIO_PLAN_TIMEOUT_S = 240
+# A podcast's spoken pace, for how many words an episode of N minutes holds,
+# and how long a line is given to be said in (Qwen3-TTS stops at its length).
+PODCAST_WORDS_PER_MIN = 140
+PODCAST_MAX_LINES = 120
+
+
+def _studio_json_object(text):
+    """The JSON object in whatever the assistant answered (from the first `{`
+    to the last `}`, so a code fence or a sentence around it does no harm), or
+    None."""
+    start, end = text.find('{'), text.rfind('}')
+    try:
+        return json.loads(text[start:end + 1]) if 0 <= start < end else None
+    except ValueError:
+        return None
+
+
+def _studio_parse_episode(text, hosts):
+    """(title, lines) from the episode Alfred wrote: `{"title", "lines":
+    [{"speaker", "text"}]}`, every line said by one of *hosts* (name -> id,
+    matched without case or accents) and none empty. None when there are not
+    at least two lines to keep."""
+    if not text:
+        return None
+    raw = _studio_json_object(text)
+    if not isinstance(raw, dict) or not isinstance(raw.get('lines'), list):
+        return None
+    by_name = {_studio_fold(n): cid for n, cid in hosts.items()}
+    lines = []
+    for entry in raw['lines'][:PODCAST_MAX_LINES]:
+        if not isinstance(entry, dict):
+            continue
+        who = by_name.get(_studio_fold(str(entry.get('speaker') or '')))
+        said = ' '.join(str(entry.get('text') or '').split())[:900]
+        if who and said:
+            lines.append({'speaker': who, 'text': said})
+    title = ' '.join(str(raw.get('title') or '').split())[:120]
+    return (title, lines) if len(lines) >= 2 else None
+
+
+def _studio_fold(name):
+    return ''.join(c for c in unicodedata.normalize('NFKD', name.lower()) if c.isalnum())
+
+
+# An explainer's point: about a sentence or three of narration, so a few
+# minutes is a handful of points rather than one long monologue per picture.
+EXPLAINER_POINT_WORDS = 35
+EXPLAINER_MAX_POINTS = 30
+
+
+def _studio_parse_explainer(text):
+    """(title, subtitle, points) from the explainer Alfred wrote: `{"title",
+    "subtitle", "points": [{"narration", "picture"}]}`, every point with both.
+    None when there are not at least two."""
+    if not text:
+        return None
+    raw = _studio_json_object(text)
+    if not isinstance(raw, dict) or not isinstance(raw.get('points'), list):
+        return None
+    points = []
+    for entry in raw['points'][:EXPLAINER_MAX_POINTS]:
+        if not isinstance(entry, dict):
+            continue
+        said = ' '.join(str(entry.get('narration') or '').split())[:900]
+        shows = ' '.join(str(entry.get('picture') or '').split())[:1200]
+        if said and shows:
+            points.append({'narration': said, 'picture': shows})
+    if len(points) < 2:
+        return None
+    return (' '.join(str(raw.get('title') or '').split())[:120],
+            ' '.join(str(raw.get('subtitle') or '').split())[:200], points)
+
+
+@app.route('/studio/api/explainer-script', methods=['POST'])
+@api_login_required
+def studio_explainer_script():
+    """✍️ An explainer written by the person's own assistant: the topic as a
+    few points, each a narration and the picture shown while it is said. Filed
+    in the project as one shot a point (its picture's description) and one
+    voice card a point -- said by the narrator, a character with a voice
+    sample, and linked to its shot (`point`) -- under Alfred's name; with
+    `title_card`, a title card first. `replace` takes the old points and their
+    narrations out first; the music stays."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    topic = str(d.get('topic') or '').strip()[:1500]
+    if not topic:
+        return jsonify(error=t('studio.exp_need_topic')), 400
+    try:
+        minutes = max(1, min(10, int(d.get('minutes') or 2)))
+    except (TypeError, ValueError):
+        minutes = 2
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    narrator = next((c for c in chars if c.get('id') == str(d.get('narrator') or '') and c.get('voice')), None)
+    if not narrator:
+        return jsonify(error=t('studio.exp_need_narrator')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(
+        str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    n = max(2, min(EXPLAINER_MAX_POINTS, round(minutes * PODCAST_WORDS_PER_MIN / EXPLAINER_POINT_WORDS)))
+    look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    audience = str(d.get('audience') or '').strip()[:300]
+    prompt = (
+        f"Write a short narrated explainer video in {language} about: {topic}\n"
+        + (f"For: {audience}\n" if audience else "")
+        + (f"The film's look: {look}\n" if look else "")
+        + f"About {minutes} minute(s): {n} points, each a narration of 1 to 3 sentences (about "
+        f"{EXPLAINER_POINT_WORDS} words) said by a narrator, and the picture on screen while it is said. Explain "
+        "one idea per point, in order, simply and concretely; the first point says what the video explains, the "
+        "last sums it up. The narration is spoken words only -- no stage directions, no markdown. The picture is "
+        "one concrete visual description in English (1-2 sentences) for a text-to-image model: what is on screen, "
+        "the setting, the framing; no text, letters, labels or diagrams with words in it. "
+        + STUDIO_STYLE_RULE + "\n"
+        'Also a short title and a one-line subtitle for the title card, in the narration\'s language.\n'
+        'Answer with only a JSON object, no code fence: {"title": "...", "subtitle": "...", "points": '
+        '[{"narration": "...", "picture": "..."}, ...]}')
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-explainer'
+    out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S))
+    if out is None:
+        again = ('That was not the JSON object asked for. Answer again with only {"title": "...", "subtitle": '
+                 '"...", "points": [{"narration": "...", "picture": "..."}]}, no code fence.')
+        out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S))
+    if out is None:
+        return jsonify(error=t('studio.exp_failed')), 502
+    title, subtitle, points = out
+    if d.get('replace'):
+        # The project as it is now: the PUT replaces whole lists, and the one
+        # read before the assistant's turn is minutes old.
+        fresh = _studio_call(username, 'GET', f'projects/{pid}')
+        if not fresh:
+            return jsonify(error=t('studio.exp_failed')), 502
+        kept_audio = [a for a in fresh.get('audio') or [] if not a.get('point')]
+        if _studio_call(username, 'PUT', f'projects/{pid}', {'shots': [], 'audio': kept_audio}, via='Alfred') is None:
+            return jsonify(error=t('studio.exp_failed')), 502
+    shots = ([{'card': {'title': title or topic[:120], 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
+             if d.get('title_card') else [])
+    shots += [{'prompt': pt['picture'],
+               'seconds': max(3, min(30, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60)) + 1))}
+              for pt in points]
+    added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')
+    ids = (added or {}).get('items') or []
+    if len(ids) != len(shots):
+        return jsonify(error=t('studio.exp_failed')), 502
+    point_ids = ids[1:] if d.get('title_card') else ids
+    voices = [{'kind': 'voice', 'title': f'{i + 1}', 'speaker': narrator['id'], 'text': pt['narration'],
+               'point': sid, 'seconds': max(5, min(120, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60) * 1.4) + 3))}
+              for i, (pt, sid) in enumerate(zip(points, point_ids))]
+    if not _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': voices}, via='Alfred'):
+        return jsonify(error=t('studio.exp_failed')), 502
+    _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'narrator': narrator['id']}}, via='Alfred')
+    return jsonify(title=title, points=len(points))
+
+
+# A short film's shots: H3 takes 5-20 s a shot and ~5 card-minutes a second,
+# so a script is kept to short shots and a few minutes at most.
+FILM_SHOT_SECONDS = (5, 10)
+FILM_MAX_SHOTS = 40
+FILM_NEW_CHARACTERS = 3
+
+
+def _studio_parse_film(text):
+    """(title, new characters, shots) from the script Alfred wrote. Shots in
+    order, each with its scene's heading on the first of the scene: `{prompt,
+    dialogue, cast (names), seconds, continues, scene}`. None when there is no
+    shot with a description."""
+    if not text:
+        return None
+    raw = _studio_json_object(text)
+    if not isinstance(raw, dict) or not isinstance(raw.get('scenes'), list):
+        return None
+    people = []
+    for c in (raw.get('characters') or [])[:FILM_NEW_CHARACTERS]:
+        if isinstance(c, dict) and str(c.get('name') or '').strip() and str(c.get('look') or '').strip():
+            people.append({'name': ' '.join(str(c['name']).split())[:60], 'look': ' '.join(str(c['look']).split())[:600],
+                           'personality': ' '.join(str(c.get('personality') or '').split())[:300]})
+    shots = []
+    for scene in raw['scenes']:
+        if not isinstance(scene, dict):
+            continue
+        heading = ' '.join(str(scene.get('heading') or '').split())[:120]
+        first = True
+        for sh in scene.get('shots') or []:
+            if not isinstance(sh, dict) or not str(sh.get('prompt') or '').strip() or len(shots) >= FILM_MAX_SHOTS:
+                continue
+            try:
+                secs = int(float(sh.get('seconds') or 6))
+            except (TypeError, ValueError):
+                secs = 6
+            lines = [' '.join(str(x).split()) for x in str(sh.get('dialogue') or '').splitlines() if str(x).strip()]
+            shots.append({'prompt': ' '.join(str(sh['prompt']).split())[:1200], 'dialogue': '\n'.join(lines)[:600],
+                          'cast': [str(x)[:60] for x in (sh.get('cast') or []) if isinstance(x, str)][:4],
+                          'seconds': max(FILM_SHOT_SECONDS[0], min(FILM_SHOT_SECONDS[1], secs)),
+                          'continues': bool(sh.get('continues')) and not first,
+                          'scene': heading if first else ''})
+            first = False
+    if not shots:
+        return None
+    return ' '.join(str(raw.get('title') or '').split())[:120], people, shots
+
+
+@app.route('/studio/api/film-script', methods=['POST'])
+@api_login_required
+def studio_film_script():
+    """✍️ A short film's script, written by the Designer from the person's
+    idea: scenes of short shots, each a description for the video model,
+    the dialogue said in it ("Name: words", one line each, said in the
+    shot by the cast's lip-synced voices), who is on screen and how long it
+    lasts. The project's characters are used by name and kept as they look;
+    with `new_characters` the story may bring up to three of its own, which
+    are made in the project. Filed as shots under Alfred's name -- a title
+    card first, each scene's heading on its first shot; `replace` takes the
+    old shots out first."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    idea = str(d.get('idea') or '').strip()[:2000]
+    if not idea:
+        return jsonify(error=t('studio.film_need_idea')), 400
+    try:
+        seconds = max(20, min(240, int(float(d.get('seconds') or 60))))
+    except (TypeError, ValueError):
+        seconds = 60
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    named = [c for c in chars if c.get('name')][:12]
+    language = {'es': 'Spanish', 'en': 'English'}.get(
+        str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    cast_text = "\n".join(f"- {str(c['name'])[:60]}: {str(c.get('look') or '')[:300]}"
+                          + (f" Personality: {str(c.get('personality'))[:200]}" if c.get('personality') else '')
+                          for c in named)
+    n = max(3, min(FILM_MAX_SHOTS, round(seconds / 7)))
+    new_ok = bool(d.get('new_characters'))
+    prompt = (
+        f"Write the script of a short film of about {seconds} seconds, as about {n} shots of "
+        f"{FILM_SHOT_SECONDS[0]}-{FILM_SHOT_SECONDS[1]} seconds grouped into a few scenes, from this idea:\n{idea}\n"
+        + (f"The film's look: {look}\n" if look else "")
+        + (f"The characters (use them by these names, and keep each one as described):\n{cast_text}\n" if cast_text else "")
+        + (f"If the story needs characters that are not listed, add at most {FILM_NEW_CHARACTERS} of its own in "
+           '"characters", each with a name and a fixed look (age, build, hair, face, clothes) in English, and a '
+           "personality; they then recur by name like the others.\n" if new_ok else
+           ("Use only the listed characters.\n" if cast_text else "Keep people unnamed and few.\n"))
+        + "Tell it with a beginning, a turn and an end. For each shot write: `prompt`, one description for a "
+        "text-to-video model in English -- who and what is on screen, the setting, the action, the camera "
+        "(framing and movement), the light and the mood -- 1 to 3 sentences, concrete and visual, no sounds, no "
+        "text on screen, the characters described the same way every time; `dialogue`, what is said in the shot "
+        f"in {language}, one line per speaker as \"Name: words\" (empty when nobody speaks; short -- a shot "
+        "lasts seconds); `cast`, the names of the characters on screen; `seconds`; and `continues`: true when "
+        "it is the same moment carrying on from the shot before. " + STUDIO_STYLE_RULE + "\n"
+        'Answer with only a JSON object, no code fence: {"title": "...", "characters": [{"name": "...", "look": '
+        '"...", "personality": "..."}], "scenes": [{"heading": "...", "shots": [{"prompt": "...", "dialogue": '
+        '"...", "cast": ["..."], "seconds": 6, "continues": false}]}]}')
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-film'
+    out = _studio_parse_film(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S, profile='designer'))
+    if out is None:
+        again = ('That was not the JSON object asked for. Answer again with only {"title": "...", "characters": '
+                 '[...], "scenes": [{"heading": "...", "shots": [...]}]}, no code fence.')
+        out = _studio_parse_film(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S,
+                                                   profile='designer'))
+    if out is None:
+        return jsonify(error=t('studio.film_failed')), 502
+    title, people, shots = out
+    ids = {_studio_fold(c['name']): c['id'] for c in named}
+    made = 0
+    for c in people if new_ok else []:
+        if _studio_fold(c['name']) in ids:
+            continue
+        got = _studio_call(username, 'POST', f'projects/{pid}/characters', c, via='Alfred')
+        if got and got.get('id'):
+            ids[_studio_fold(c['name'])] = got['id']
+            made += 1
+    if d.get('replace') and _studio_call(username, 'PUT', f'projects/{pid}', {'shots': []}, via='Alfred') is None:
+        return jsonify(error=t('studio.film_failed')), 502
+    items = [{'card': {'title': title or idea[:120], 'subtitle': '', 'seconds': 3, 'theme': 'dark'}}] if title else []
+    items += [{'prompt': sh['prompt'], 'dialogue': sh['dialogue'], 'seconds': sh['seconds'],
+               'continuity': sh['continues'], 'title': sh['scene'],
+               'cast': [ids[_studio_fold(x)] for x in sh['cast'] if _studio_fold(x) in ids]} for sh in shots]
+    if not _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': items}, via='Alfred'):
+        return jsonify(error=t('studio.film_failed')), 502
+    return jsonify(title=title, shots=len(shots), characters=made, seconds=sum(s['seconds'] for s in shots))
+
+
+@app.route('/studio/api/podcast-script', methods=['POST'])
+@api_login_required
+def studio_podcast_script():
+    """✍️ A podcast episode written by the person's own assistant: a
+    conversation between the hosts they chose -- characters with a voice
+    sample, so each line is said in its host's own cloned voice -- about the
+    topic, about as long as asked. Filed in the project as voice cards, one a
+    line, under Alfred's name; with `music`, an intro and an outro jingle that
+    play on their own (`alone`). `replace` takes out the episode's cards
+    first, so writing it again does not double it."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.get_json(silent=True) or {}
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    topic = str(d.get('topic') or '').strip()[:1500]
+    if not topic:
+        return jsonify(error=t('studio.pod_need_topic')), 400
+    try:
+        minutes = max(1, min(30, int(d.get('minutes') or 5)))
+    except (TypeError, ValueError):
+        minutes = 5
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    wanted = {str(x) for x in d.get('hosts') or []}
+    hosts = [c for c in chars if c.get('id') in wanted and c.get('voice') and c.get('name')][:3]
+    if not hosts:
+        return jsonify(error=t('studio.pod_need_hosts')), 400
+    language = {'es': 'Spanish', 'en': 'English'}.get(
+        str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    words = minutes * PODCAST_WORDS_PER_MIN
+    cast_text = "\n".join(f"- {c['name']}" + (f": {str(c.get('personality'))[:300]}" if c.get('personality') else '')
+                          for c in hosts)
+    notes = str(d.get('notes') or '').strip()[:800]
+    prompt = (
+        f"Write a podcast episode in {language}: a natural spoken conversation "
+        + (f"between {', '.join(c['name'] for c in hosts)}" if len(hosts) > 1 else f"by {hosts[0]['name']}, alone")
+        + f", about: {topic}\n"
+        + f"The hosts, and how each one talks:\n{cast_text}\n"
+        + (f"Also: {notes}\n" if notes else "")
+        + f"About {minutes} minute(s) long: about {words} words in all. Open by welcoming the listeners and "
+        "saying what the episode is about, and close by saying goodbye. Each line is what one host says out "
+        "loud, 1 to 4 sentences: spoken words only -- no stage directions, no sound effects, no music cues, no "
+        "names or labels inside the text, no markdown. Hosts answer each other and take turns.\n"
+        'Answer with only a JSON object, no code fence: {"title": "...", "lines": [{"speaker": "<host name>", '
+        '"text": "..."}, ...]}')
+    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-podcast'
+    names = {c['name']: c['id'] for c in hosts}
+    out = _studio_parse_episode(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S), names)
+    if out is None:
+        again = ('That was not the JSON object asked for. Answer again with only {"title": "...", "lines": '
+                 f'[{{"speaker": ..., "text": ...}}]}}, every speaker one of: {", ".join(names)}.')
+        out = _studio_parse_episode(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S), names)
+    if out is None:
+        return jsonify(error=t('studio.pod_failed')), 502
+    title, lines = out
+    by_id = {c['id']: c['name'] for c in hosts}
+    # Seconds a line is given: its words at the spoken pace, with room.
+    items = [{'kind': 'voice', 'title': by_id[ln['speaker']], 'speaker': ln['speaker'], 'text': ln['text'],
+              'seconds': max(5, min(120, round(len(ln['text'].split()) / (PODCAST_WORDS_PER_MIN / 60) * 1.4) + 3))}
+             for ln in lines]
+    if d.get('music'):
+        jingle = str(d.get('music_style') or '').strip()[:200] or 'short upbeat podcast jingle, warm, modern'
+        items = ([{'kind': 'instrumental', 'title': 'Intro', 'style': jingle, 'seconds': 10, 'alone': True}] + items
+                 + [{'kind': 'instrumental', 'title': 'Outro', 'style': jingle + ', ending', 'seconds': 8,
+                     'alone': True}])
+    if d.get('replace'):
+        # The project as it is now, not as it was before the assistant's turn
+        # (minutes ago): the PUT replaces the whole list, so a stale one would
+        # drop whatever was added meanwhile.
+        fresh = _studio_call(username, 'GET', f'projects/{pid}')
+        if not fresh:
+            return jsonify(error=t('studio.pod_failed')), 502
+        kept = [a for a in fresh.get('audio') or [] if a.get('kind') == 'song']
+        if _studio_call(username, 'PUT', f'projects/{pid}', {'audio': kept}, via='Alfred') is None:
+            return jsonify(error=t('studio.pod_failed')), 502
+    # The Studio takes 50 items a call; a long episode is more lines than that,
+    # and the rest (and an outro jingle) would be dropped without a word.
+    for i in range(0, len(items), 50):
+        if not _studio_call(username, 'POST', f'projects/{pid}/items',
+                            {'section': 'audio', 'items': items[i:i + 50]}, via='Alfred'):
+            return jsonify(error=t('studio.pod_failed')), 502
+    return jsonify(title=title, lines=len(lines), items=len(items))
 
 
 def _studio_parse_plan(text, n):
