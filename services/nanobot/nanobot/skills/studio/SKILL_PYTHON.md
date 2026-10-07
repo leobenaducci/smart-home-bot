@@ -1,5 +1,6 @@
 ```python
-import subprocess, json, os, math
+import subprocess, json, os, math, re, shutil
+from urllib.parse import quote
 
 # Through the portal, as the person: HomeCore forwards /studio/api/* to the
 # house's studio with their login.
@@ -182,6 +183,123 @@ def edit_character(project, character, **fields):
         return updated
     return {"updated": updated["name"], "open": f"/studio?project={pid}",
             "note": "The change is in the project's Characters tab."}
+
+# -- downloading a finished video --------------------------------------------
+SHARE_HOST = os.environ.get("FILE_SHARE_HOST", "compute.home")
+SHARE_NAME = os.environ.get("FILE_SHARE_NAME", "share")
+SHARE_FOLDER = os.environ.get("FILE_SHARE_FOLDER", "")
+SHARE_USER = os.environ.get("FILE_SHARE_USERNAME", "share")
+SHARE_PASS = os.environ.get("FILE_SHARE_PASSWORD", "")
+MEDIA_DIR = os.path.expanduser("~/.nanobot/workspace/media")
+
+def _safe_filename(name):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or "")).strip("_")[:80]
+
+def _share_link(rel):
+    """A chat link to a file on the share, matching the file-share skill."""
+    name = rel.split("/")[-1]
+    target = f"download:{rel}"
+    if any(ch in rel for ch in "()[]<>"):
+        return f"[{name}](<{target}>)"
+    return f"[{name}]({target})"
+
+def _chosen_take(item):
+    """The take a shot is currently using."""
+    takes = item.get("takes") or []
+    i = item.get("chosen", -1)
+    if isinstance(i, int) and 0 <= i < len(takes):
+        return takes[i]
+    return takes[-1] if takes else None
+
+def _download_project_file(pid, rel, local_path):
+    """Download a binary file from the Studio project to a local path."""
+    if not BASE:
+        return {"error": "The portal's address is not configured (TASKS_API_URL missing)."}
+    if not USER_ID or not TOKEN:
+        return {"error": "This account has no access to the Studio (HOMECORE_USER_ID/HOMECORE_PROXY_TOKEN missing)."}
+    os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+    cmd = ["curl", "-sk", "--max-time", "300", "-o", local_path,
+           "-H", f"X-Proxy-Secret: {TOKEN}", "-H", f"X-Proxy-User: {USER_ID}",
+           f"{BASE}/projects/{pid}/file/{quote(rel, safe='/')}"]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=310)
+    if not os.path.isfile(local_path) or os.path.getsize(local_path) == 0:
+        return {"error": r.stderr.strip() or f"could not download {rel}"}
+    return {"ok": True, "local_path": local_path}
+
+def _upload_to_share(local_path, remote_path=None):
+    """Copy a local file to the family share and return a download link."""
+    import smbclient
+    if not SHARE_HOST or not SHARE_NAME or not SHARE_FOLDER:
+        return {"error": "file-share is not configured for this assistant"}
+    local_path = os.path.expanduser(local_path)
+    if not os.path.isfile(local_path):
+        return {"error": f"local file not found: {local_path}"}
+    name = os.path.basename(local_path)
+    if remote_path is None:
+        remote_path = f"{SHARE_FOLDER}/alfred/{name}"
+    parts = [p for p in remote_path.replace("\\", "/").split("/") if p and p != "."]
+    if ".." in parts:
+        return {"error": "invalid share path"}
+    unc = f"\\\\{SHARE_HOST}\\{SHARE_NAME}\\" + "\\".join(parts)
+    smbclient.ClientConfig(username=SHARE_USER, password=SHARE_PASS)
+    smbclient.makedirs("\\".join(unc.split("\\")[:-1]), exist_ok=True)
+    with open(local_path, "rb") as src, smbclient.open_file(unc, mode="wb") as dst:
+        shutil.copyfileobj(src, dst, 256 * 1024)
+    return {"ok": True, "remote_path": "/".join(parts),
+            "download_link": _share_link("/".join(parts))}
+
+def download_video(project, shot=None):
+    """Download the project's resulting video: the latest render, or a specific shot's chosen take."""
+    doc, err = _project(project)
+    if err:
+        return err
+    pid = doc["id"]
+    rel = None
+    label = None
+    if shot is not None:
+        shots = doc.get("shots") or []
+        want = str(shot).strip().lower()
+        found = None
+        if want.isdigit():
+            n = int(want)
+            if 1 <= n <= len(shots):
+                found = shots[n - 1]
+        else:
+            for s in shots:
+                if s["id"] == want or s.get("title", "").strip().lower() == want:
+                    found = s
+                    break
+        if not found:
+            return {"error": f"no shot matches '{shot}'", "shots": len(shots)}
+        take = _chosen_take(found)
+        if not take or not take.get("file"):
+            return {"error": f"shot {shot} has no video yet"}
+        rel = take["file"]
+        label = f"{doc['name']} - shot {shot}"
+    else:
+        renders = sorted(doc.get("renders") or [], key=lambda r: r.get("created", 0))
+        if not renders:
+            shots_with_video = [i + 1 for i, s in enumerate(doc.get("shots") or [])
+                                if _chosen_take(s) and _chosen_take(s).get("file")]
+            return {"error": "this project has no rendered film yet; render it in the Studio page first, or pass a shot number",
+                    "shots_with_video": shots_with_video}
+        rel = renders[-1].get("file")
+        label = f"{doc['name']} - film"
+    if not rel:
+        return {"error": "no video file found"}
+    ext = os.path.splitext(rel)[1].lower() or ".mp4"
+    base_name = _safe_filename(f"studio_{doc['name']}_{os.path.basename(rel)}")
+    if not base_name.endswith(ext):
+        base_name += ext
+    local_path = os.path.join(MEDIA_DIR, base_name)
+    down = _download_project_file(pid, rel, local_path)
+    if down.get("error"):
+        return down
+    up = _upload_to_share(local_path)
+    if up.get("error"):
+        return up
+    return {"download_link": up["download_link"], "file": up["remote_path"],
+            "note": f"Downloaded {label} to the share. The link points to the file where it lives."}
 
 def song_timing(project, song="", shot_seconds=8):
     """Where the cuts fall on the song and the words sung in each. The Studio

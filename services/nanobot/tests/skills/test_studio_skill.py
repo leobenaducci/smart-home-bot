@@ -44,7 +44,7 @@ def ns(guide):
 
 def test_every_advertised_action_exists(guide):
     """The description is the menu the model orders from."""
-    for action in ("clone_project", "edit_character"):
+    for action in ("clone_project", "edit_character", "download_video"):
         assert f"def {action}(" in guide, action
         assert action in SKILL_MD.read_text(encoding="utf-8"), \
             f"{action} is implemented but never advertised"
@@ -157,3 +157,87 @@ def test_reads_translate_without_an_llm(guide):
         {"skill": "studio", "action": "edit_character",
          "project": "Faro Zorro", "character": "Bruma", "look": "new"}, guide)
     assert code and "edit_character(project='Faro Zorro', character='Bruma', look='new')" in code
+
+
+def test_download_video_fetches_render_when_no_shot(ns, tmp_path, monkeypatch):
+    calls = []
+
+    def fake_curl(method, path, data=None):
+        calls.append((method, path, data))
+        if method == "GET" and path == "projects":
+            return {"projects": [{"id": "p1", "name": "Faro Zorro"}]}
+        if method == "GET" and path == "projects/p1":
+            return {"id": "p1", "name": "Faro Zorro",
+                    "renders": [{"file": "renders/20261006-120000.mp4", "created": 1}]}
+        return {}
+
+    ns["_curl"] = fake_curl
+    uploaded = []
+
+    def fake_download(pid, rel, local_path):
+        calls.append(("download", pid, rel, local_path))
+        Path(local_path).write_bytes(b"fake video")
+        return {"ok": True, "local_path": local_path}
+
+    def fake_upload(local_path, remote_path=None):
+        uploaded.append((local_path, remote_path))
+        return {"ok": True, "remote_path": "ana/alfred/studio_Faro_Zorro_20261006-120000.mp4",
+                "download_link": "[studio_Faro_Zorro_20261006-120000.mp4](download:ana/alfred/studio_Faro_Zorro_20261006-120000.mp4)"}
+
+    ns["_download_project_file"] = fake_download
+    ns["_upload_to_share"] = fake_upload
+    monkeypatch.setenv("FILE_SHARE_FOLDER", "ana")
+    out = ns["download_video"]("Faro Zorro")
+
+    assert out["download_link"].startswith("[")
+    assert "download:" in out["download_link"]
+    assert any(c[2] == "renders/20261006-120000.mp4" for c in calls if c[0] == "download")
+
+
+def test_download_video_fetches_shot_take_when_shot_given(ns, tmp_path, monkeypatch):
+    calls = []
+
+    def fake_curl(method, path, data=None):
+        calls.append((method, path, data))
+        if method == "GET" and path == "projects":
+            return {"projects": [{"id": "p1", "name": "Faro Zorro"}]}
+        if method == "GET" and path == "projects/p1":
+            return {"id": "p1", "name": "Faro Zorro",
+                    "shots": [{"id": "s1", "title": "Opening", "takes": [
+                        {"id": "t1", "file": "takes/s1/t1.mp4"}], "chosen": 0}]}
+        return {}
+
+    ns["_curl"] = fake_curl
+
+    def fake_download(pid, rel, local_path):
+        Path(local_path).write_bytes(b"fake video")
+        return {"ok": True}
+
+    def fake_upload(local_path, remote_path=None):
+        return {"ok": True, "remote_path": "ana/alfred/file.mp4",
+                "download_link": "[file.mp4](download:ana/alfred/file.mp4)"}
+
+    ns["_download_project_file"] = fake_download
+    ns["_upload_to_share"] = fake_upload
+    monkeypatch.setenv("FILE_SHARE_FOLDER", "ana")
+    out = ns["download_video"]("Faro Zorro", shot=1)
+
+    assert "download:" in out["download_link"]
+
+
+def test_download_video_lists_shots_when_no_render(ns, monkeypatch):
+    def fake_curl(method, path, data=None):
+        if method == "GET" and path == "projects":
+            return {"projects": [{"id": "p1", "name": "Faro Zorro"}]}
+        if method == "GET" and path == "projects/p1":
+            return {"id": "p1", "name": "Faro Zorro",
+                    "shots": [{"id": "s1", "takes": [{"id": "t1", "file": "takes/s1/t1.mp4"}], "chosen": 0},
+                              {"id": "s2", "takes": [], "chosen": -1}]}
+        return {}
+
+    ns["_curl"] = fake_curl
+    monkeypatch.setenv("FILE_SHARE_FOLDER", "ana")
+    out = ns["download_video"]("Faro Zorro")
+
+    assert "error" in out
+    assert out["shots_with_video"] == [1]

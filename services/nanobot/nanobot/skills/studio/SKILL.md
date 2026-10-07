@@ -1,6 +1,6 @@
 ---
 name: studio
-description: "Invoke with JSON: {\"skill\":\"studio\",\"action\":\"...\"}. The house Studio: generate on the house's own card -- make_image(prompt, [size]) | make_song(lyrics, style, [seconds], [language]) | make_instrumental(style, [seconds]) | make_video(description, [seconds], [dialogue], [sound]) | studio_queue() | my_projects() | project_details(project) | clone_project(project, [name]) | create_character(project, name, look, [personality], [portrait]) | edit_character(project, character, [name], [look], [personality], [voice_text]) | song_timing(project, [song], [shot_seconds]) | set_storyboard(project, shots, [song], [shot_seconds], [look], [replace]) | make_shot_videos(project, [without_frames]). Use it when a message asks to make, draw, generate or compose a picture, a photo, a song, music, a jingle or a video, or to work on a Studio project by name: its characters, its storyboard, its music video. Loose requests go into the person's default Studio project."
+description: "Invoke with JSON: {\"skill\":\"studio\",\"action\":\"...\"}. The house Studio: generate on the house's own card -- make_image(prompt, [size]) | make_song(lyrics, style, [seconds], [language]) | make_instrumental(style, [seconds]) | make_video(description, [seconds], [dialogue], [sound]) | studio_queue() | my_projects() | project_details(project) | clone_project(project, [name]) | create_character(project, name, look, [personality], [portrait]) | edit_character(project, character, [name], [look], [personality], [voice_text]) | song_timing(project, [song], [shot_seconds]) | set_storyboard(project, shots, [song], [shot_seconds], [look], [replace]) | make_shot_videos(project, [without_frames]) | download_video(project, [shot]). Use it when a message asks to make, draw, generate or compose a picture, a photo, a song, music, a jingle or a video, to download a finished video from a Studio project, or to work on a Studio project by name: its characters, its storyboard, its music video. Loose requests go into the person's default Studio project."
 # On demand: the description carries the invocation and the API.
 metadata: {"nanobot":{"translatable":true}}
 ---
@@ -79,6 +79,16 @@ that project** with its own tools -- never a document, never a loose
 - `make_shot_videos` generates the videos of the shots that have none. It is
   long work on the family's one card: only when the person asks for the
   videos themselves, never as a step of "make the storyboard".
+- `download_video` fetches a finished video to the family share and returns a
+  `download:` link. Without `shot` it downloads the project's latest rendered
+  film; with `shot` it downloads that shot's chosen take. Use it when the person
+  asks for the video file of a project.
+
+```json
+{"skill": "studio", "action": "download_video", "project": "Faro Zorro"}
+{"skill": "studio", "action": "download_video", "project": "Faro Zorro", "shot": 3}
+```
+
 - Report plainly what was queued and where to look; never claim a frame or a
   video is finished.
 
