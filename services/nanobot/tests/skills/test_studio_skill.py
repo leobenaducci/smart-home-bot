@@ -241,3 +241,50 @@ def test_download_video_lists_shots_when_no_render(ns, monkeypatch):
 
     assert "error" in out
     assert out["shots_with_video"] == [1]
+
+
+def _fake_curl_run(ns, *, returncode, body=b"", stderr=""):
+    """Stand in for curl: write `body` to the -o path, the way curl would."""
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        if body:
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(body)
+        return subprocess.CompletedProcess(cmd, returncode, "", stderr)
+
+    ns["subprocess"] = type("S", (), {"run": staticmethod(run)})
+    return seen
+
+
+def test_download_refuses_an_error_answer_instead_of_saving_it(ns, tmp_path):
+    out_path = tmp_path / "film.mp4"
+    seen = _fake_curl_run(ns, returncode=22, stderr="curl: (22) The requested URL returned error: 404")
+    out = ns["_download_project_file"]("p1", "renders/missing.mp4", str(out_path))
+    assert "error" in out and "404" in out["error"]
+    assert not out_path.exists()
+    assert "-sfk" in seen[0]
+
+
+def test_download_does_not_mistake_a_leftover_file_for_the_new_one(ns, tmp_path):
+    out_path = tmp_path / "film.mp4"
+    out_path.write_bytes(b"from an earlier run")
+    _fake_curl_run(ns, returncode=22, stderr="curl: (22) returned error: 404")
+    out = ns["_download_project_file"]("p1", "renders/missing.mp4", str(out_path))
+    assert "error" in out
+    assert not out_path.exists()
+
+
+def test_download_keeps_a_file_curl_wrote_successfully(ns, tmp_path):
+    out_path = tmp_path / "film.mp4"
+    _fake_curl_run(ns, returncode=0, body=b"video bytes")
+    out = ns["_download_project_file"]("p1", "renders/ok.mp4", str(out_path))
+    assert out == {"ok": True, "local_path": str(out_path)}
+    assert out_path.read_bytes() == b"video bytes"
+
+
+def test_upload_to_share_needs_a_configured_host(ns):
+    ns["SHARE_HOST"] = ""
+    ns["SHARE_FOLDER"] = "ana"
+    out = ns["_upload_to_share"]("/nonexistent")
+    assert out == {"error": "file-share is not configured for this assistant"}

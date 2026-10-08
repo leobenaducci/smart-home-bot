@@ -185,7 +185,7 @@ def edit_character(project, character, **fields):
             "note": "The change is in the project's Characters tab."}
 
 # -- downloading a finished video --------------------------------------------
-SHARE_HOST = os.environ.get("FILE_SHARE_HOST", "compute.home")
+SHARE_HOST = os.environ.get("FILE_SHARE_HOST", "")
 SHARE_NAME = os.environ.get("FILE_SHARE_NAME", "share")
 SHARE_FOLDER = os.environ.get("FILE_SHARE_FOLDER", "")
 SHARE_USER = os.environ.get("FILE_SHARE_USERNAME", "share")
@@ -218,11 +218,17 @@ def _download_project_file(pid, rel, local_path):
     if not USER_ID or not TOKEN:
         return {"error": "This account has no access to the Studio (HOMECORE_USER_ID/HOMECORE_PROXY_TOKEN missing)."}
     os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
-    cmd = ["curl", "-sk", "--max-time", "300", "-o", local_path,
+    # A left-over file from an earlier run must not pass for this download, and
+    # -f keeps an error page from being saved as the video.
+    if os.path.exists(local_path):
+        os.remove(local_path)
+    cmd = ["curl", "-sfk", "--max-time", "300", "-o", local_path,
            "-H", f"X-Proxy-Secret: {TOKEN}", "-H", f"X-Proxy-User: {USER_ID}",
            f"{BASE}/projects/{pid}/file/{quote(rel, safe='/')}"]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=310)
-    if not os.path.isfile(local_path) or os.path.getsize(local_path) == 0:
+    if r.returncode != 0 or not os.path.isfile(local_path) or os.path.getsize(local_path) == 0:
+        if os.path.exists(local_path):
+            os.remove(local_path)
         return {"error": r.stderr.strip() or f"could not download {rel}"}
     return {"ok": True, "local_path": local_path}
 
