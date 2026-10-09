@@ -100,6 +100,16 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _is_local_ollama(provider: Any) -> bool:
+    """True for the household's own Ollama, however many servers it runs.
+
+    Read from the provider's spec, not its URL: the servers sit on whichever
+    port the household gave them, and ollama.com (``ollama_cloud``) is not one.
+    """
+    name = getattr(getattr(provider, "_spec", None), "name", "") or ""
+    return name == "ollama" or (name.startswith("ollama_") and name != "ollama_cloud")
+
+
 def _ollama_native_chat_url(api_base: str | None) -> str | None:
     """``http://ollama.home:11434/v1`` -> ``http://ollama.home:11434/api/chat``.
 
@@ -308,6 +318,11 @@ class DescribeImageTool(_FsTool):
                     tools=None,
                     model=self._model,
                     max_tokens=_MAX_TOKENS,
+                    # Reading a picture is not a problem to reason about. A
+                    # thinking model given a photo of a worksheet spent 2,000+
+                    # tokens deliberating, passed the provider's 60s limit and
+                    # returned nothing; the same read takes ~1s without it.
+                    **({"reasoning_effort": "none"} if _is_local_ollama(self._provider) else {}),
                     retry_mode="standard",
                 ),
                 timeout=_TIMEOUT_SECONDS,

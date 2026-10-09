@@ -18,6 +18,21 @@ from nanobot.utils.outage_store import SHARED_DETOURS, SHARED_OUTAGES
 from nanobot.utils.profiling import PROFILER
 
 
+def _stripped_image_text(path: str | None) -> str:
+    """The text left where a picture was taken out of a request that failed.
+
+    A bare ``[image: path]`` reads like any other breadcrumb, and a model that
+    is handed one after the retry describes the picture anyway -- confidently,
+    and from nothing. Say outright that it was not seen.
+    """
+    return (
+        image_placeholder_text(path, empty="[image omitted]")
+        + " (this image was NOT shown to you; you have not seen it. Do not "
+        "describe or guess its contents -- read it with describe_image, or "
+        "tell the person you could not read it.)"
+    )
+
+
 @dataclass
 class ToolCallRequest:
     """A tool call request from the LLM."""
@@ -655,7 +670,7 @@ class LLMProvider(ABC):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "image_url":
                         path = (b.get("_meta") or {}).get("path", "")
-                        placeholder = image_placeholder_text(path, empty="[image omitted]")
+                        placeholder = _stripped_image_text(path)
                         new_content.append({"type": "text", "text": placeholder})
                         found = True
                     else:
@@ -680,7 +695,7 @@ class LLMProvider(ABC):
                 for i, b in enumerate(content):
                     if isinstance(b, dict) and b.get("type") == "image_url":
                         path = (b.get("_meta") or {}).get("path", "")
-                        placeholder = image_placeholder_text(path, empty="[image omitted]")
+                        placeholder = _stripped_image_text(path)
                         content[i] = {"type": "text", "text": placeholder}
                         found = True
         return found

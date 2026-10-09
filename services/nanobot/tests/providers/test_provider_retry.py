@@ -611,3 +611,20 @@ async def test_chat_stream_with_retry_normalizes_explicit_none_max_tokens() -> N
     assert response.content == "ok"
     assert provider.last_kwargs["max_tokens"] == 4096
     assert provider.last_kwargs["temperature"] == 0.7
+
+
+@pytest.mark.asyncio
+async def test_image_fallback_tells_the_model_it_did_not_see_the_picture() -> None:
+    """A bare `[image: path]` after the retry invites a confident description of
+    a picture the model never received; the placeholder must say so."""
+    provider = ScriptedProvider([
+        LLMResponse(content="error", finish_reason="error"),
+        LLMResponse(content="ok"),
+    ])
+
+    await provider.chat_with_retry(messages=copy.deepcopy(_IMAGE_MSG))
+
+    texts = [b.get("text") or "" for msg in provider.last_kwargs["messages"]
+             if isinstance(msg.get("content"), list) for b in msg["content"]]
+    stripped = [t for t in texts if "NOT shown to you" in t]
+    assert stripped and all("describe_image" in t for t in stripped)
