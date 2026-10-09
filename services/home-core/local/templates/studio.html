@@ -1820,7 +1820,8 @@
     function explainerBox(voiced) {
       var p = current, d = expDraft[p.id] || (expDraft[p.id] = { topic: '', minutes: 2, card: true, look: 'pictures', auto: true, pdf: null });
       var nr = narrator();
-      if (!voiced.length) return '<div class="card"><b>✍️ ' + S.exp_title + '</b><p class="muted" style="margin-top:6px">' + S.exp_narrator_none + '</p></div>';
+      // Everything but the narrator can be chosen before there is one: the
+      // form stays, and only the picker gives way to how to make a narrator.
       return '<div class="card"><b>✍️ ' + S.exp_title + '</b>' +
         '<label class="f" for="exp-topic">' + S.exp_topic + '</label><textarea id="exp-topic" rows="2" placeholder="' + esc(S.exp_topic_ph) + '">' + esc(d.topic) + '</textarea>' +
         '<label class="f" for="exp-pdf">📄 ' + S.exp_source + '</label>' +
@@ -1830,13 +1831,15 @@
         '<label class="f" for="exp-look">' + S.exp_look + '</label><select id="exp-look">' +
         ['pictures', 'writing', 'mixed'].map(function (k) { return '<option value="' + k + '"' + (d.look === k ? ' selected' : '') + '>' + (k === 'pictures' ? '🖼️ ' : k === 'writing' ? '✍️ ' : '🖼️✍️ ') + esc(S['exp_look_' + k]) + '</option>'; }).join('') + '</select>' +
         '<div class="row" style="margin-top:8px;flex-wrap:wrap;align-items:center">' +
-        '<label class="f" style="margin:0" for="exp-narrator">' + S.exp_narrator + '</label><select id="exp-narrator" style="width:auto">' +
-        voiced.map(function (c) { return '<option value="' + c.id + '"' + ((nr ? nr.id : voiced[0].id) === c.id ? ' selected' : '') + '>🗣️ ' + esc(c.name) + '</option>'; }).join('') + '</select>' +
+        (voiced.length
+          ? '<label class="f" style="margin:0" for="exp-narrator">' + S.exp_narrator + '</label><select id="exp-narrator" style="width:auto">' +
+            voiced.map(function (c) { return '<option value="' + c.id + '"' + ((nr ? nr.id : voiced[0].id) === c.id ? ' selected' : '') + '>🗣️ ' + esc(c.name) + '</option>'; }).join('') + '</select>'
+          : '<p class="note" style="margin:0;flex-basis:100%">🗣️ ' + esc(S.exp_narrator_none) + '</p>') +
         '<label class="f" style="margin:0" for="exp-minutes">' + S.pod_minutes + '</label><select id="exp-minutes" style="width:auto">' +
         [1, 2, 3, 5, 10].map(function (m) { return '<option value="' + m + '"' + (+d.minutes === m ? ' selected' : '') + '>' + m + ' min</option>'; }).join('') + '</select>' +
         '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="exp-card"' + (d.card ? ' checked' : '') + '> 🔤 ' + S.exp_card + '</label>' +
         '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="exp-auto"' + (d.auto ? ' checked' : '') + '> 🎬 ' + S.exp_auto + '</label>' +
-        '<span class="grow"></span><button class="primary" id="exp-write">✍️ ' + S.exp_write + '</button></div></div>';
+        '<span class="grow"></span><button class="primary" id="exp-write"' + (voiced.length ? '' : ' disabled') + '>✍️ ' + S.exp_write + '</button></div></div>';
     }
     function pointCard(s, n) {
       var p = current, b = chosenBoard(s), j = boardJob(s), a = narrationOf(s), at = a && chosen(a), vt = chosen(s);
