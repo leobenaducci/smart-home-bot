@@ -2213,6 +2213,83 @@ check("  and the music under it all, quieter than the voices, where no one speak
       "mean_volume" in level and -60 < float(level.split("mean_volume:")[1].split()[0]) < -20, level[-300:])
 check("  nothing of the work left behind", not [x for x in (epdir / "renders").iterdir() if x.name.startswith(".")])
 
+print("\n  a point written by hand on its page, and an explainer that makes itself")
+wp = c.post("/api/projects", json={"name": "Función inversa", "kind": "explainer"}, headers=HJ).json()
+wdir = A.projects.dir(JUANA, wp["id"])
+(wdir / "takes").mkdir(exist_ok=True)
+
+
+def w_file(name, args):
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args, str(wdir / "takes" / name)], check=True)
+    return "takes/" + name
+
+
+saved_w = c.put(f"/api/projects/{wp['id']}", json={"shots": [
+    {"write": ["  Función   inversa ", "", "$f^{-1}(x) = \\frac{7x}{2}$", "x" * 300] + [f"l{i}" for i in range(10)],
+     "seconds": 4},
+    {"prompt": "a pencil resting on an open notebook", "seconds": 4}]}, headers=HJ).json()
+w1, w2 = (x["id"] for x in saved_w["shots"])
+from studio.handwriting import _mathtext  # noqa: E402
+check("  what mathtext cannot read is said its way, and notation left among the words is written as a formula",
+      _mathtext("Dom f^{-1} = $\\text{Rec} f$") == "Dom $f^{-1}$ = $\\mathrm{Rec} f$"
+      and _mathtext("an odd $ sign") == "an odd  sign" and _mathtext("plain 2x + 3") == "plain 2x + 3",
+      _mathtext("Dom f^{-1} = $\\text{Rec} f$"))
+wl = saved_w["shots"][0]["write"]
+check("  its lines are kept trimmed, empty ones dropped, eight at most",
+      wl[0] == "Función inversa" and len(wl) == 8 and len(wl[2]) == 140 and wl[1].startswith("$f^"), wl)
+c.put(f"/api/projects/{wp['id']}", json={"shots": [dict(saved_w["shots"][0], write=wl[:2]), saved_w["shots"][1]],
+                                         "audio": [{"kind": "voice", "title": "1", "voice": "muestra.wav",
+                                                    "text": "La inversa deshace lo que hace f.", "point": w1}]},
+      headers=HJ)
+notes = []
+A._tell = lambda login, pid, text, ok: notes.append((text, ok))
+r = c.post(f"/api/projects/{wp['id']}/explainer/auto", json={"size": "720"}, headers=HJ)
+jobs = [A.store.get(i) for i in r.json().get("queued", [])]
+check("  made by itself: the picture to draw and the narration to say are queued, nothing for the written page",
+      r.status_code == 200 and sorted(j["kind"] for j in jobs) == ["board", "voice"]
+      and not any(j["kind"] == "board" and j["target"] == w1 for j in jobs), (r.status_code, r.text[:300]))
+board_job = next((j for j in jobs if j["kind"] == "board"), {})
+voice_job = next((j for j in jobs if j["kind"] == "voice"), {})
+check("  its frame is not held for the assistant's review", "refine" not in (board_job.get("params") or {}),
+      board_job.get("params"))
+wkey = f"{JUANA}/{wp['id']}"
+check("  and the run is remembered on disk, for a restart in the middle", wkey in A._auto_load())
+A.projects.add_take(JUANA, wp["id"], voice_job["target"],
+                    {"file": w_file("n1.wav", ["-f", "lavfi", "-i", "sine=frequency=300:duration=2", "-ac", "2"])})
+A.store.update(voice_job["id"], state="done", finished=time.time())
+A._auto_step({**A.store.get(voice_job["id"]), "ok": True})
+check("  one of two done: nothing is put together yet",
+      wkey in A._auto_load() and (A.render_state.get(wkey) or {}).get("state") is None)
+A.projects.add_board(JUANA, wp["id"], w2, {"file": w_file("w2.png", ["-f", "lavfi", "-i", "color=c=teal:s=640x360",
+                                                                       "-frames:v", "1"])})
+A.store.update(board_job["id"], state="done", finished=time.time())
+A._auto_step({**A.store.get(board_job["id"]), "ok": True})
+deadline = time.time() + 300
+while time.time() < deadline and (A.render_state.get(wkey) or {}).get("state") == "running":
+    time.sleep(0.3)
+wst = A.render_state.get(wkey) or {}
+wfilm = wdir / wst.get("file", "none")
+wi = media.probe(wfilm) if wfilm.is_file() else {}
+check("  the last one in: the film is put together by itself, the written page as long as its narration",
+      wst.get("state") == "done" and abs(wi.get("seconds", 0) - ((0.4 + 2 + 0.8) + 4)) < 0.35
+      and wi.get("width") == 1280, (wst, wi))
+check("  and the person is told it is ready", any(ok and "video explicativo" in t for t, ok in notes), notes)
+check("  the run is over", wkey not in A._auto_load())
+page_png = tmp / "page.png"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-ss", "2.8", "-i", str(wfilm), "-frames:v", "1", str(page_png)],
+               check=True)
+from PIL import Image  # noqa: E402
+with Image.open(page_png) as im:
+    inked = sum(1 for px in im.convert("RGB").getdata() if px[2] > px[0] + 40 and px[0] < 90)
+check("  and the page has its writing on it, in ink", inked > 500, inked)
+
+with A._auto_lock:
+    A._auto_save({wkey: {"format": "h264", "size": "720", "since": time.time()}})
+A._auto_step({**A.store.get(board_job["id"]), "ok": False, "error": "out of memory"})
+check("  a piece that cannot be made stops the run, and says which",
+      wkey not in A._auto_load() and any(not ok and "se detuvo" in t and "out of memory" in t for t, ok in notes),
+      notes[-1:])
+
 print("\n  a song whose words could not be followed before is listened to again, once")
 an_take = Projects.chosen_take(Projects.find(A.projects.load(JUANA, sp["id"]), intro)[2])
 (spdir / "takes" / "old-analysis.json").write_text(json.dumps(

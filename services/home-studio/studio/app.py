@@ -33,12 +33,12 @@ import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import analysis, media, recipes, story
+from . import analysis, handwriting, media, recipes, story
 from .manager import Manager
 from .characters import Characters
 from .history import LABELS, History
 from .projects import (ProjectError, Projects, clean_callouts, clean_card, clean_eyes, clean_layout,
-                       clean_mix, clean_sections)
+                       clean_mix, clean_sections, clean_write)
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -72,6 +72,10 @@ render_state: dict[str, dict] = {}
 
 def _notify(job: dict) -> None:
     """Tell the person their job finished, through the portal (ntfy)."""
+    try:
+        _auto_step(job)
+    except Exception:                                      # noqa: BLE001 -- never the queue's problem
+        log.exception("explainer auto step failed")
     if not NOTIFY_URL:
         return
     what = recipes.estimate_note(job["kind"], job["params"])
@@ -1866,45 +1870,47 @@ POINT_LEAD, POINT_TAIL, MIN_POINT = 0.4, 0.8, 3.0
 EXPLAINER_BED = 0.15
 
 
-@app.post("/api/projects/{pid}/explainer")
-def put_explainer_together(pid: str, body: dict | None = None, me: Who = Depends(who)):
-    """An explainer as one film: its points in order -- a title card drawn, a
-    point's clip when it has one, else its picture held -- each on screen for
-    as long as its narration (the voice card whose `point` is that shot) takes
-    to say. The narrations, and an instrumental under them all when there is
-    one, are one levelled soundtrack; the clips' own sound is left out. A clip
-    shorter than its narration ends on its last frame, held. H.264 by default
-    (an explainer is made to be shown), at the size asked for. On the CPU,
-    beside the queue, like the film."""
-    body = body or {}
-    try:
-        doc = projects.load(me.login, pid)
-    except ProjectError as exc:
-        _bad(exc, 404)
-    base = projects.dir(me.login, pid)
-    codec = body.get("format") if body.get("format") in media.CODECS else "h264"
-    size = str(body.get("size") or "1080") if str(body.get("size") or "1080") in media.SIZES else ""
+def _explainer_plan(login: str, pid: str) -> list:
+    """Each point of an explainer with what shows it -- a title card, its
+    page written by hand, its clip, its picture -- and its narration's file.
+    Raises ValueError naming the first point with nothing to show."""
+    doc = projects.load(login, pid)
+    base = projects.dir(login, pid)
     points = [s for s in doc.get("shots") or [] if not s.get("recorded")]
     if not points:
-        _bad(ValueError("the explainer has no points yet"))
+        raise ValueError("the explainer has no points yet")
     narration = {}
     for a in doc.get("audio") or []:
         take = Projects.chosen_take(a)
         if a.get("point") and take and take.get("file") and (base / take["file"]).is_file():
             narration[a["point"]] = base / take["file"]
-    bed = next((base / Projects.chosen_take(a)["file"] for a in doc.get("audio") or []
-                if a.get("kind") == "instrumental" and not a.get("point") and Projects.chosen_take(a)
-                and (base / Projects.chosen_take(a)["file"]).is_file()), None)
     plan = []
     for n, s in enumerate(points, 1):
-        card = clean_card(s.get("card"))
+        card, write = clean_card(s.get("card")), clean_write(s.get("write"))
         take, board = Projects.chosen_take(s), Projects.chosen_board(s)
         video = base / take["file"] if take and take.get("file") and (base / take["file"]).is_file() else None
         picture = base / board["file"] if board and board.get("file") and (base / board["file"]).is_file() else None
-        if not card and not video and not picture:
-            _bad(ValueError(f"point {n} has no picture yet"))
-        plan.append((s, card, video, picture, narration.get(s["id"])))
-    key = f"{me.login}/{pid}"
+        if not card and not write and not video and not picture:
+            raise ValueError(f"point {n} has no picture yet")
+        plan.append((s, card, write, video, picture, narration.get(s["id"])))
+    return plan
+
+
+def _assemble_explainer(login: str, pid: str, codec: str, size: str, on_done=None) -> dict:
+    """Start putting an explainer together beside the queue; the render's
+    state. `on_done(state)` is told how it ended."""
+    try:
+        plan = _explainer_plan(login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    except ValueError as exc:
+        _bad(exc)
+    base = projects.dir(login, pid)
+    doc = projects.load(login, pid)
+    bed = next((base / Projects.chosen_take(a)["file"] for a in doc.get("audio") or []
+                if a.get("kind") == "instrumental" and not a.get("point") and Projects.chosen_take(a)
+                and (base / Projects.chosen_take(a)["file"]).is_file()), None)
+    key = f"{login}/{pid}"
     if (render_state.get(key) or {}).get("state") == "running":
         _bad(ValueError("this project is already being put together"), 409)
     render_state[key] = {"state": "running", "started": time.time()}
@@ -1915,15 +1921,17 @@ def put_explainer_together(pid: str, body: dict | None = None, me: Who = Depends
         out = base / "renders" / f"{stamp}-explainer-{codec}{f'-{size}p' if size else ''}.mp4"
         try:
             tmp.mkdir(parents=True, exist_ok=True)
-            first = next((p for _s, _c, v, p, _n in plan if p), None)
+            first = next((p for *_rest, p, _n in plan if p), None)
             if first:
                 from PIL import Image  # noqa: PLC0415
                 with Image.open(first) as im:
                     frame = (im.width // 2 * 2, im.height // 2 * 2)
             else:
-                frame = (1280, 720)
+                # Nothing drawn to take a shape from (every point written by
+                # hand): pages at the size asked for, not scaled up to it.
+                frame = media.fit_size(1280, 720, size)
             clips, lengths, placements, pos = [], [], [], 0.0
-            for i, (s, card, video, picture, voice) in enumerate(plan):
+            for i, (s, card, write, video, picture, voice) in enumerate(plan):
                 said = media.probe(voice)["seconds"] if voice else 0.0
                 length = (card["seconds"] if card and not voice
                           else max(MIN_POINT, POINT_LEAD + said + POINT_TAIL) if voice
@@ -1931,6 +1939,9 @@ def put_explainer_together(pid: str, body: dict | None = None, me: Who = Depends
                 if card:
                     clips.append(media.title_card(card["title"], card["subtitle"], length, frame,
                                                   tmp / f"{i}-card.mp4", card["theme"]))
+                    lengths.append(None)
+                elif write:
+                    clips.append(handwriting.page(write, length, frame, tmp / f"{i}-write.mp4", lead=POINT_LEAD))
                     lengths.append(None)
                 elif video:
                     have = media.probe(video)["seconds"]
@@ -1957,18 +1968,156 @@ def put_explainer_together(pid: str, body: dict | None = None, me: Who = Depends
                 media.mix(film, [{"file": sound, "start": 0, "volume": 1.0}], out, keep_own=False)
             else:
                 film.replace(out)
-            projects.add_render(me.login, pid, {"file": str(out.relative_to(base)), "explainer": True,
-                                                "format": codec, "size": size,
-                                                "seconds": round(media.probe(out)["seconds"], 1)})
+            projects.add_render(login, pid, {"file": str(out.relative_to(base)), "explainer": True,
+                                             "format": codec, "size": size,
+                                             "seconds": round(media.probe(out)["seconds"], 1)})
             render_state[key] = {"state": "done", "file": str(out.relative_to(base))}
         except Exception as exc:                               # noqa: BLE001 -- as the film's render
             log.warning("explainer %s failed: %s", key, exc)
             render_state[key] = {"state": "failed", "error": str(exc) or exc.__class__.__name__}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+            if on_done:
+                on_done(render_state[key])
 
     renders.submit(work)
-    return {"ok": True, "render": render_state[key]}
+    return render_state[key]
+
+
+def _render_args(body: dict) -> tuple[str, str]:
+    codec = body.get("format") if body.get("format") in media.CODECS else "h264"
+    size = str(body.get("size") or "1080") if str(body.get("size") or "1080") in media.SIZES else ""
+    return codec, size
+
+
+@app.post("/api/projects/{pid}/explainer")
+def put_explainer_together(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """An explainer as one film: its points in order -- a title card drawn, a
+    point written by hand on a page, a point's clip when it has one, else its
+    picture held -- each on screen for as long as its narration (the voice
+    card whose `point` is that shot) takes to say. The narrations, and an
+    instrumental under them all when there is one, are one levelled
+    soundtrack; the clips' own sound is left out. A clip shorter than its
+    narration ends on its last frame, held. H.264 by default (an explainer is
+    made to be shown), at the size asked for. On the CPU, beside the queue,
+    like the film."""
+    codec, size = _render_args(body or {})
+    return {"ok": True, "render": _assemble_explainer(me.login, pid, codec, size)}
+
+
+# An explainer made start to finish without anyone pressing the next button:
+# its pictures drawn, its narrations said, and when the last of them lands, the
+# film put together. Kept on disk, so a restart in the middle still finishes
+# the film once the queue -- which survives restarts -- has made the rest.
+AUTO_FILE = DATA / "explainer-auto.json"
+_auto_lock = threading.Lock()
+
+
+def _auto_load() -> dict:
+    try:
+        return json.loads(AUTO_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _auto_save(runs: dict) -> None:
+    AUTO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = AUTO_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(runs))
+    tmp.replace(AUTO_FILE)
+
+
+def _tell(login: str, pid: str, text: str, ok: bool) -> None:
+    if not NOTIFY_URL:
+        return
+    try:
+        requests.post(NOTIFY_URL, json={"login": login, "text": text, "project": pid, "ok": ok},
+                      headers={"X-Studio-Secret": SECRET}, timeout=10, verify=False)
+    except requests.RequestException as exc:
+        log.warning("notify failed: %s", exc)
+
+
+def _auto_step(job: dict) -> None:
+    """After a job of a project being made by itself: stop on a failure, and
+    put the film together once nothing of it is left in the queue."""
+    key = f"{job.get('owner')}/{job.get('project')}"
+    with _auto_lock:
+        runs = _auto_load()
+        run = runs.get(key)
+        if not run:
+            return
+        login, pid = job["owner"], job["project"]
+        if not job.get("ok"):
+            runs.pop(key)
+            _auto_save(runs)
+            what = recipes.estimate_note(job["kind"], job["params"])
+            _tell(login, pid, f"El video explicativo se detuvo: no se pudo generar {what}"
+                  + (f" ({job['error'][:120]})" if job.get("error") else ""), False)
+            return
+        if any(j["owner"] == login and j["project"] == pid for j in store.active()):
+            return
+        runs.pop(key)
+        _auto_save(runs)
+    try:
+        name = projects.load(login, pid).get("name") or ""
+
+        def finished(state: dict) -> None:
+            if state.get("state") == "done":
+                _tell(login, pid, "Listo: video explicativo" + (f" — {name}" if name else ""), True)
+            else:
+                _tell(login, pid, f"No se pudo armar el video explicativo: {state.get('error', '')[:160]}", False)
+        _assemble_explainer(login, pid, run.get("format", "h264"), run.get("size", "1080"), finished)
+    except HTTPException as exc:
+        _tell(login, pid, f"No se pudo armar el video explicativo: {exc.detail}", False)
+
+
+@app.post("/api/projects/{pid}/explainer/auto")
+def make_explainer(pid: str, body: dict | None = None, me: Who = Depends(who)):
+    """Make what an explainer is missing and then put it together, without
+    waiting for anyone: a frame for every point with a picture to draw and
+    none yet, every narration not said yet, and the film once the last of
+    those is done. Points written by hand need nothing from the card. Nothing
+    missing, the film starts now. The frames are not sent to the person's
+    assistant for review -- a run that finishes by itself does not wait on
+    one."""
+    body = body or {}
+    codec, size = _render_args(body)
+    try:
+        doc = projects.load(me.login, pid)
+    except ProjectError as exc:
+        _bad(exc, 404)
+    key = f"{me.login}/{pid}"
+    busy = {j["target"] for j in store.active() if j["owner"] == me.login and j["project"] == pid}
+    # Remembered before anything is queued: a job finishing before the run
+    # was written down would leave the last step to nobody.
+    with _auto_lock:
+        runs = _auto_load()
+        runs[key] = {"format": codec, "size": size, "since": time.time()}
+        _auto_save(runs)
+    queued = []
+    to_draw = [s["id"] for s in doc.get("shots") or [] if not s.get("recorded") and not clean_card(s.get("card"))
+               and not clean_write(s.get("write")) and not Projects.chosen_take(s) and not s.get("boards")
+               and str(s.get("prompt") or "").strip() and s["id"] not in busy]
+    to_say = [a["id"] for a in doc.get("audio") or [] if a.get("point") and str(a.get("text") or "").strip()
+              and not (a.get("takes") or []) and a["id"] not in busy]
+    try:
+        if to_draw:
+            queued += [j["id"] for j in storyboard(pid, {"items": to_draw, "review": False}, me)["queued"]]
+        if to_say:
+            queued += [j["id"] for j in generate(pid, {"items": to_say}, me)["queued"]]
+    except HTTPException:
+        with _auto_lock:
+            runs = _auto_load()
+            runs.pop(key, None)
+            _auto_save(runs)
+        raise
+    if not queued and not busy:
+        with _auto_lock:
+            runs = _auto_load()
+            runs.pop(key, None)
+            _auto_save(runs)
+        return {"ok": True, "queued": [], "render": _assemble_explainer(me.login, pid, codec, size)}
+    return {"ok": True, "queued": queued, "waiting": len(busy)}
 
 
 @app.exception_handler(ProjectError)

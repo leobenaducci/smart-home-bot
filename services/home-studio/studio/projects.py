@@ -49,9 +49,11 @@ EDITABLE = {
     # `card`: a title card -- words on a colour, drawn when the film is put
     # together (`clean_card`). `callouts`: text boxes over a recording's
     # stretches, over the version named by `callouts_take` (`clean_callouts`).
+    # `write`: an explainer's point written by hand on a page instead of a
+    # picture -- its lines, formulas between `$...$` (studio/handwriting.py).
     "shots": ("prompt", "soundscape", "music", "dialogue", "seconds", "continuity", "chosen", "refs", "title",
               "exact", "start", "cast", "description", "chapters", "cam_layout", "mix", "sections", "sections_take",
-              "card", "callouts", "callouts_take", "eyes", "eyes_take"),
+              "card", "callouts", "callouts_take", "eyes", "eyes_take", "write"),
     # `speaker`: a voice line said by one of the cast, in that character's
     # cloned voice (its own sample), instead of a sample from the files.
     # `alone`: an instrumental played on its own when an audio story or a
@@ -131,6 +133,22 @@ def clean_card(value: Any) -> dict | None:
         seconds = 3.0
     return {"title": str(value.get("title") or "")[:120], "subtitle": str(value.get("subtitle") or "")[:200],
             "seconds": seconds, "theme": value.get("theme") if value.get("theme") in CARD_THEMES else "dark"}
+
+
+WRITE_LINES, WRITE_CHARS = 8, 140
+
+
+def clean_write(value: Any) -> list[str]:
+    """What a written point puts on its page: up to WRITE_LINES non-empty
+    lines, each trimmed. A string is taken a line per line break."""
+    if isinstance(value, str):
+        value = value.splitlines()
+    out = []
+    for line in value if isinstance(value, list) else []:
+        text = " ".join(str(line or "").split())[:WRITE_CHARS]
+        if text:
+            out.append(text)
+    return out[:WRITE_LINES]
 
 
 def clean_callouts(value: Any) -> list[dict]:
@@ -1004,6 +1022,8 @@ def _clean(key: str, value: Any, item: dict) -> Any:
         return value if isinstance(value, str) and ID_RE.fullmatch(value) else ""
     if key == "card":
         return clean_card(value)
+    if key == "write":
+        return clean_write(value)
     if key == "callouts":
         return clean_callouts(value)
     if key == "eyes":
