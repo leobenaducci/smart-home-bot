@@ -154,22 +154,68 @@ tabs are Points, Video, Music & voices (its music only: the narrations are on
 the points), Characters, Pictures and Files; the progress strip is off, since
 the film it counts is not the explainer's.
 
-`POST /studio/api/explainer-script` (the portal) asks the person's assistant
-for `{"title", "subtitle", "points": [{"narration", "picture"}]}` -- about 35
-words a point at ~140 a minute, pictures in English with no text in them and
-no style words (`STUDIO_STYLE_RULE`; the look carries the style) -- and files
-the shots first (a title card when asked), then one narration a point linked
-by id, under Alfred's name. `replace` drops the old points and their
-narrations; the music stays.
+`POST /studio/api/explainer-script` (the portal) has the house's own model write
+it -- the Studio's vision model (`assistant.models.vision`), or
+`STUDIO_WRITER_URL`/`_MODEL` -- not the person's assistant: a worksheet a child
+hands it stays in the house. It takes a topic, a PDF (`source`, a form), or
+both, and asks for `{"title", "subtitle", "points": [{"narration", "picture" |
+"writing"}]}` at about 35 words a point and ~140 a minute. A PDF of up to eight
+pages is drawn page by page (pypdfium2) and read by the same model -- a text
+layer turns a fraction into three lines -- and a longer one from its text; with
+a PDF the writer is told to work through its exercises. Reasoning is off, as for
+every call this model gets here: letting it reason over the script took 239 s
+on a worksheet, padded every narration and dropped an exercise.
+
+`look` decides how a point is shown. `pictures`: a picture, described in
+English with no text in it and no style words (`STUDIO_STYLE_RULE`; the look
+carries the style). `writing`: lines written by hand on a page, each asked for
+as `{"words", "formula"}` and joined here as `words $formula$` -- asked to put
+`$...$` round its own formulas, the 9B model forgot about one run in two.
+`mixed`: the writer picks, per point. The points are filed as shots (a title
+card first when asked; a written point is a shot with `write` and no prompt,
+so nothing draws it), then one narration a point linked by id, under Alfred's
+name. `replace` drops the old points and their narrations; the music stays.
+With `auto`, the Studio is then told to make the rest (below).
+
+The model is a 9B one, and **its working is not always right**: on a worksheet
+of inverse functions each run slipped a sign or a step in one exercise of five.
+The points are editable on the page before (or after) the video is made.
+
+### A written point
+
+`write` on a shot (`clean_write`: up to 8 lines, 140 characters each) is drawn
+on the CPU when the explainer is put together (`studio/handwriting.py`): a ruled
+sheet on a desk, seen by the person writing, the lines appearing left to right
+under a pen over the narration's length -- about 3 s for a full line, faster
+when the point is short. Words are in Comic Neue (`fonts-comic-neue`, in the
+Dockerfile; Humor Sans, matplotlib's xkcd hand, has no accents and no lower
+case), formulas in Matplotlib's mathtext between `$...$` -- no TeX in the image.
+What mathtext spells differently (`\text`, `\dfrac`) is swapped, notation left
+among the words (`Dom f^{-1}`) is taken as a formula, and a line mathtext still
+cannot read is written as plain text, never dropped. 12 s of 1080p takes about
+8 s.
+
+### Made by itself
+
+`POST /api/projects/{pid}/explainer/auto` queues a frame for every point with a
+picture to draw and none yet -- not sent for the assistant's review -- and every
+narration not said yet, and remembers the run in `explainer-auto.json` beside
+the queue (so a restart in the middle still ends in a film). After each of the
+project's jobs (`_auto_step`, from the notify hook): a failure ends the run and
+tells the person which piece; the last one in puts the explainer together and
+tells them it is ready. Nothing missing, it is put together at once. The page's
+**🎬 Make the whole video** calls it for points already there.
 
 `POST /api/projects/{pid}/explainer` puts it together on the CPU, beside the
 queue: each point on screen for 0.4 s + its narration + 0.8 s (3 s at least; a
 point with no narration yet holds for its own length), a title card for its
-seconds; a clip shorter than its narration is followed by its last frame held.
-The narrations, and the first instrumental not linked to a point at 0.15 under
-it all, are one soundtrack (`story_mix`, levelled), laid under the stitched
-pictures without their own sound. H.264 at 1080p unless asked otherwise.
-Removing a point on the page takes its narration with it.
+seconds, a written point as its page; a clip shorter than its narration is
+followed by its last frame held. The narrations, and the first instrumental not
+linked to a point at 0.15 under it all, are one soundtrack (`story_mix`,
+levelled), laid under the stitched pictures without their own sound. H.264 at
+1080p unless asked otherwise; with nothing drawn to take a shape from, the
+pages are drawn at that size. Removing a point on the page takes its narration
+with it.
 
 ## A podcast
 

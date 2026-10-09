@@ -111,6 +111,10 @@
     .point-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 14px; align-items: start; }
     .point-pic { aspect-ratio: 16/9; background: var(--wall); border-radius: var(--r); display: grid; place-items: center; overflow: hidden; }
     .point-pic img, .point-pic video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* A written point's page, as the film will show it: ruled paper, the lines in ink. */
+    .point-page { width: 100%; height: 100%; padding: 6% 8% 0 14%; background: repeating-linear-gradient(#fbf8ef 0 1.55em, #b2cae4 1.55em calc(1.55em + 1px)) #fbf8ef;
+      border-left: 2px solid #e28080; color: #182a70; font: 600 clamp(.7rem, 1.6vw, .95rem)/1.55em "Comic Neue", "Comic Sans MS", cursive; overflow: hidden; }
+    .point-page div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     @media (max-width: 640px) { .point-grid { grid-template-columns: 1fr; } }
     .card.pod-line textarea { min-height: 0; }
     .story-take img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--r); flex: none; }
@@ -1814,22 +1818,31 @@
     function narrationOf(s) { return (current.audio || []).find(function (a) { return a.point === s.id; }) || null; }
     function narrator() { var id = (current.settings || {}).narrator; return cast.find(function (c) { return c.id === id && c.voice; }) || null; }
     function explainerBox(voiced) {
-      var p = current, d = expDraft[p.id] || (expDraft[p.id] = { topic: '', minutes: 2, card: true });
+      var p = current, d = expDraft[p.id] || (expDraft[p.id] = { topic: '', minutes: 2, card: true, look: 'pictures', auto: true, pdf: null });
       var nr = narrator();
       if (!voiced.length) return '<div class="card"><b>✍️ ' + S.exp_title + '</b><p class="muted" style="margin-top:6px">' + S.exp_narrator_none + '</p></div>';
       return '<div class="card"><b>✍️ ' + S.exp_title + '</b>' +
         '<label class="f" for="exp-topic">' + S.exp_topic + '</label><textarea id="exp-topic" rows="2" placeholder="' + esc(S.exp_topic_ph) + '">' + esc(d.topic) + '</textarea>' +
+        '<label class="f" for="exp-pdf">📄 ' + S.exp_source + '</label>' +
+        (d.pdf ? '<div class="row" style="align-items:center"><span>📄 ' + esc(d.pdf.name) + '</span><button id="exp-pdf-clear" title="' + esc(S.exp_source_clear) + '">✕</button></div>'
+               : '<input type="file" id="exp-pdf" accept="application/pdf,.pdf">') +
+        '<p class="muted" style="margin:4px 0 0;font-size:.85rem">' + esc(S.exp_source_hint) + '</p>' +
+        '<label class="f" for="exp-look">' + S.exp_look + '</label><select id="exp-look">' +
+        ['pictures', 'writing', 'mixed'].map(function (k) { return '<option value="' + k + '"' + (d.look === k ? ' selected' : '') + '>' + (k === 'pictures' ? '🖼️ ' : k === 'writing' ? '✍️ ' : '🖼️✍️ ') + esc(S['exp_look_' + k]) + '</option>'; }).join('') + '</select>' +
         '<div class="row" style="margin-top:8px;flex-wrap:wrap;align-items:center">' +
         '<label class="f" style="margin:0" for="exp-narrator">' + S.exp_narrator + '</label><select id="exp-narrator" style="width:auto">' +
         voiced.map(function (c) { return '<option value="' + c.id + '"' + ((nr ? nr.id : voiced[0].id) === c.id ? ' selected' : '') + '>🗣️ ' + esc(c.name) + '</option>'; }).join('') + '</select>' +
         '<label class="f" style="margin:0" for="exp-minutes">' + S.pod_minutes + '</label><select id="exp-minutes" style="width:auto">' +
-        [1, 2, 3, 5].map(function (m) { return '<option value="' + m + '"' + (+d.minutes === m ? ' selected' : '') + '>' + m + ' min</option>'; }).join('') + '</select>' +
+        [1, 2, 3, 5, 10].map(function (m) { return '<option value="' + m + '"' + (+d.minutes === m ? ' selected' : '') + '>' + m + ' min</option>'; }).join('') + '</select>' +
         '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="exp-card"' + (d.card ? ' checked' : '') + '> 🔤 ' + S.exp_card + '</label>' +
+        '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="exp-auto"' + (d.auto ? ' checked' : '') + '> 🎬 ' + S.exp_auto + '</label>' +
         '<span class="grow"></span><button class="primary" id="exp-write">✍️ ' + S.exp_write + '</button></div></div>';
     }
     function pointCard(s, n) {
       var p = current, b = chosenBoard(s), j = boardJob(s), a = narrationOf(s), at = a && chosen(a), vt = chosen(s);
-      var pic = j && j.state === 'running' && j.preview ? livePreview(s)
+      var written = (s.write || []).filter(function (x) { return String(x).trim(); });
+      var pic = written.length ? '<div class="point-page">' + written.map(function (x) { return '<div>' + esc(x) + '</div>'; }).join('') + '</div>'
+        : j && j.state === 'running' && j.preview ? livePreview(s)
         : vt && vt.file ? '<video src="' + fileUrl(p.id, vt.file) + '" muted controls preload="metadata"></video>'
         : b ? '<img src="' + fileUrl(p.id, b.file) + '" alt="" loading="lazy">'
         : '<span class="muted">' + (j ? S.sb_drawing : S.exp_no_picture) + '</span>';
@@ -1844,8 +1857,9 @@
              (at && at.file ? '<audio controls preload="none" src="' + fileUrl(p.id, at.file) + '"></audio>' : '') + takesRow(a) +
              '<div class="row" style="margin-top:6px"><button data-gen="' + a.id + '">' + ((a.takes || []).length ? S.regenerate : S.generate) + '</button></div>'
            : '<button data-exp-narrate="' + s.id + '">＋ ' + S.exp_add_narration + '</button>') +
-        '<label class="f">🖼️ ' + S.exp_picture + '</label><textarea rows="2" data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
-        boardRow(s) + '</div></div></div>';
+        (s.write ? '<label class="f">✍️ ' + S.exp_written_page + '</label><textarea rows="3" data-f="write" data-id="' + s.id + '" placeholder="' + esc(S.exp_write_ph) + '">' + esc((s.write || []).join('\n')) + '</textarea>'
+                 : '<label class="f">🖼️ ' + S.exp_picture + '</label><textarea rows="2" data-f="prompt" data-id="' + s.id + '" placeholder="' + esc(S.shot_what_ph) + '">' + esc(s.prompt) + '</textarea>' +
+                   boardRow(s)) + '</div></div></div>';
     }
     function pointsTab() {
       var p = current, voiced = cast.filter(function (c) { return c.voice; }), n = 0;
@@ -1857,12 +1871,13 @@
       var shots = (p.shots || []).filter(function (s) { return !s.recorded && !s.card; });
       var undrawn = shots.filter(function (s) { return !(s.boards || []).length && s.prompt && !boardJob(s); }).length;
       var unsaid = shots.map(narrationOf).filter(function (a) { return a && a.text && !(a.takes || []).length && !jobFor(a.id); });
-      var ready = shots.length && shots.every(function (s) { return (s.boards || []).length || (chosen(s) || {}).file; });
+      var ready = shots.length && shots.every(function (s) { return (s.write || []).some(function (x) { return String(x).trim(); }) || (s.boards || []).length || (chosen(s) || {}).file; });
       html += '<div class="row" style="margin-top:12px;flex-wrap:wrap"><button id="exp-add">＋ ' + S.exp_add_point + '</button><button id="add-card">🔤 ' + S.add_card + '</button>' +
         (undrawn ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: undrawn }) + '</button>' : '') +
         (unsaid.length ? '<button data-exp-say-all="1">🗣️ ' + fmt('exp_say_all', { n: unsaid.length }) + '</button>' : '') +
         '<span class="grow"></span><select id="exp-size" style="width:auto"><option value="1080">1080p</option><option value="720">720p</option></select>' +
-        '<button class="primary" id="exp-render"' + (ready ? '' : ' disabled') + '>🎞️ ' + S.exp_render + '</button></div>' +
+        (shots.length ? '<button class="primary" id="exp-make-all">🎬 ' + S.exp_make_all + '</button>' : '') +
+        '<button' + (ready ? ' class="primary"' : '') + ' id="exp-render"' + (ready ? '' : ' disabled') + '>🎞️ ' + S.exp_render + '</button></div>' +
         (ready ? '' : '<p class="muted" style="margin-top:4px">' + S.exp_need_pictures + '</p>');
       if (p.render && p.render.state === 'running') html += '<div class="note">' + S.render_running + '</div>';
       if (p.render && p.render.state === 'failed') html += '<div class="note err">' + S.render_failed + ': ' + esc(p.render.error) + '</div>';
@@ -2177,6 +2192,7 @@
       var item = itemById(el.dataset.id); if (!item) return;
       var v = el.type === 'checkbox' ? el.checked : el.type === 'range' || el.type === 'number' ? Number(el.value) : el.value;
       if (el.dataset.f === 'refs') v = el.value ? [el.value] : [];
+      if (el.dataset.f === 'write') v = el.value.split('\n');
       item[el.dataset.f] = v;
       if (el.type === 'range') el.previousElementSibling.querySelector('span').textContent = el.value;
       markDirty();
@@ -2190,6 +2206,13 @@
       if (el.id === 'pod-minutes') { (podDraft[current.id] || {}).minutes = Number(el.value); return; }
       if (el.id === 'exp-minutes') { (expDraft[current.id] || {}).minutes = Number(el.value); return; }
       if (el.id === 'exp-card') { (expDraft[current.id] || {}).card = el.checked; return; }
+      if (el.id === 'exp-auto') { (expDraft[current.id] || {}).auto = el.checked; return; }
+      if (el.id === 'exp-look') { (expDraft[current.id] || {}).look = el.value; return; }
+      if (el.id === 'exp-pdf') {
+        var ef = el.files && el.files[0], edr = expDraft[current.id];
+        if (ef && edr) { edr.pdf = ef; drawTab(); }
+        return;
+      }
       if (el.id === 'film-chars') { (filmDraft[current.id] || {}).chars = el.checked; return; }
       if (el.id === 'film-seconds') {
         var fd2 = filmDraft[current.id]; if (!fd2) return;
@@ -2346,17 +2369,22 @@
         }
         if (b.id === 'exp-write') {
           var ed = expDraft[p.id] || {};
-          if (!(ed.topic || '').trim()) { toast(S.exp_need_topic, true); return; }
+          if (!(ed.topic || '').trim() && !ed.pdf) { toast(S.exp_need_topic, true); return; }
           var nsel = $('#exp-narrator');
           var hasPoints = (p.shots || []).some(function (s) { return !s.recorded; });
           if (hasPoints && !confirm(S.exp_replace_confirm)) return;
           await flushSave();
-          b.disabled = true; b.textContent = '✍️ ' + S.pod_writing; busy++;
+          b.disabled = true; b.textContent = '✍️ ' + S.exp_reading; busy++;
           try {
-            var ex = await api('explainer-script', { method: 'POST', body: { project: p.id, topic: ed.topic, minutes: ed.minutes,
-                                                                           narrator: nsel ? nsel.value : '', title_card: !!ed.card, replace: hasPoints } });
+            // A form, not JSON: the PDF goes with it, read by the portal.
+            var ef2 = new FormData(), esz = $('#exp-size');
+            [['project', p.id], ['topic', ed.topic || ''], ['minutes', ed.minutes], ['narrator', nsel ? nsel.value : ''],
+             ['title_card', ed.card ? '1' : ''], ['replace', hasPoints ? '1' : ''], ['look', ed.look || 'pictures'],
+             ['auto', ed.auto ? '1' : ''], ['size', esz ? esz.value : '1080']].forEach(function (kv) { ef2.append(kv[0], kv[1]); });
+            if (ed.pdf) ef2.append('source', ed.pdf, ed.pdf.name);
+            var ex = await api('explainer-script', { method: 'POST', body: ef2 });
             if (ex.title && (p.name === S.untitled || !p.name.trim())) { current = await api('projects/' + p.id); current.name = ex.title; markDirty(); await flushSave(); }
-            toast(fmt('exp_written', { n: ex.points }));
+            toast(ex.auto ? fmt('exp_auto_started', { n: ex.queued }) : fmt('exp_written', { n: ex.points }));
           } catch (e) { toast(fmt('err', { e: e.message }), true); }
           finally { busy--; current = await api('projects/' + p.id); drawEditor(); }
           return;
@@ -2377,6 +2405,16 @@
           var ids2 = current.shots.map(narrationOf).filter(function (a) { return a && a.text && !(a.takes || []).length && !jobFor(a.id); }).map(function (a) { return a.id; });
           if (ids2.length) await generate(ids2);
           return;
+        }
+        if (b.id === 'exp-pdf-clear') { (expDraft[p.id] || {}).pdf = null; drawTab(); return; }
+        if (b.id === 'exp-make-all') {
+          await flushSave();
+          b.disabled = true;
+          try {
+            var ma = await api('projects/' + p.id + '/explainer/auto', { method: 'POST', body: { format: 'h264', size: $('#exp-size').value } });
+            toast(ma.render ? S.exp_auto_now : fmt('exp_auto_started', { n: (ma.queued || []).length + (ma.waiting || 0) }));
+          } catch (e) { toast(fmt('err', { e: e.message }), true); }
+          current = await api('projects/' + p.id); drawTab(); watchRender(); return;
         }
         if (b.id === 'exp-render') {
           await flushSave();

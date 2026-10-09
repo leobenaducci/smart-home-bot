@@ -22978,6 +22978,9 @@ STUDIO_UI_KEYS = (
     'exp_write', 'exp_point', 'exp_no_picture', 'exp_narration', 'exp_add_narration', 'exp_picture',
     'exp_help', 'exp_add_point', 'exp_say_all', 'exp_render', 'exp_need_pictures', 'exp_replace_confirm',
     'exp_need_topic', 'exp_need_narrator', 'exp_failed', 'exp_written',
+    'exp_source', 'exp_source_hint', 'exp_source_clear', 'exp_look', 'exp_look_pictures', 'exp_look_writing',
+    'exp_look_mixed', 'exp_auto', 'exp_make_all', 'exp_auto_started', 'exp_auto_now', 'exp_reading',
+    'exp_written_page', 'exp_write_ph',
     'pod_music', 'pod_write', 'pod_writing', 'pod_written', 'pod_replace_confirm', 'pod_need_topic',
     'pod_need_hosts', 'pod_failed', 'pod_make_all', 'pod_go_audio', 'pod_versions', 'pod_help', 'alone_label',
     'pkind_audio_story', 'pkind_audio_story_about', 'tab_story', 'story_cover', 'story_cover_ph',
@@ -23205,12 +23208,131 @@ def _studio_fold(name):
 # minutes is a handful of points rather than one long monologue per picture.
 EXPLAINER_POINT_WORDS = 35
 EXPLAINER_MAX_POINTS = 30
+# How each point is shown. `pictures`: a picture the Studio draws. `writing`:
+# its words and formulas written by hand on a page, seen by the person writing
+# (studio/handwriting.py) -- exact where a drawn picture's text never is.
+# `mixed`: the writer picks, point by point.
+EXPLAINER_LOOKS = ('pictures', 'writing', 'mixed')
+EXPLAINER_WRITE_LINES, EXPLAINER_WRITE_CHARS = 6, 140
+# What a source document gives the writer: about 8k tokens of text, room for
+# the answer in the local model's window and still a long handout.
+EXPLAINER_SOURCE_CHARS = 30000
+EXPLAINER_SOURCE_BYTES = 25 * 1024 * 1024
+EXPLAINER_OCR_PAGES = 8
+# An explainer is written by the house's own model, not the person's
+# assistant: a document somebody hands it -- a child's worksheet, a handout --
+# stays in the house, and so does the topic. The Studio's vision model
+# (`assistant.models.vision`, the same one that reviews its frames) unless set
+# apart: it reads a scanned page as well as it writes. Reasoning off:
+# measured on a worksheet photo, qwen3.5 deliberated 2,000+ tokens over a
+# minute where the answer itself took seconds.
+STUDIO_WRITER_URL = os.environ.get('STUDIO_WRITER_URL') or os.environ.get('STUDIO_VISION_URL', '')
+STUDIO_WRITER_MODEL = os.environ.get('STUDIO_WRITER_MODEL') or os.environ.get('STUDIO_VISION_MODEL', '')
+STUDIO_WRITER_KEY = (os.environ.get('STUDIO_WRITER_KEY', '') if os.environ.get('STUDIO_WRITER_URL')
+                     else os.environ.get('STUDIO_VISION_KEY', ''))
+STUDIO_WRITER_REASONING = os.environ.get('STUDIO_WRITER_REASONING', 'none')
+# The mathtext a written point may use: what Matplotlib draws without TeX.
+EXPLAINER_MATH_RULE = (
+    "A written line is {\"words\": ..., \"formula\": ...}, either one or both: the words in the narration's "
+    "language, the formula -- every equation or expression, even x = 2 -- apart from them, in plain LaTeX math "
+    "with no $ signs, using only: ^ _ \\frac{a}{b} \\sqrt{x} \\infty \\mathbb{R} "
+    "\\to \\Rightarrow \\leq \\geq \\neq \\cdot \\times \\pm \\pi \\in \\cup \\cap and ordinary letters, digits "
+    "and brackets. Never \\left, \\right, \\begin, \\text or environments.")
 
 
-def _studio_parse_explainer(text):
-    """(title, subtitle, points) from the explainer Alfred wrote: `{"title",
-    "subtitle", "points": [{"narration", "picture"}]}`, every point with both.
-    None when there are not at least two."""
+def _studio_writer(messages, max_tokens=6000, timeout=STUDIO_PLAN_TIMEOUT_S, json_out=True):
+    """One call to the house's own model; its text, or '' on any failure."""
+    if not (STUDIO_WRITER_URL and STUDIO_WRITER_MODEL):
+        app.logger.warning('studio writer: no model (assistant.models.vision, or STUDIO_WRITER_URL)')
+        return ''
+    headers = {'Authorization': f'Bearer {STUDIO_WRITER_KEY}'} if STUDIO_WRITER_KEY else {}
+    if 'opencode.ai' in STUDIO_WRITER_URL.lower():
+        headers['x-opencode-session'] = secrets.token_hex(16)
+    body = {'model': STUDIO_WRITER_MODEL, 'messages': messages, 'stream': False,
+            'max_tokens': max_tokens, 'temperature': 0.2}
+    if STUDIO_WRITER_REASONING:
+        body['reasoning_effort'] = STUDIO_WRITER_REASONING
+    if json_out:
+        body['response_format'] = {'type': 'json_object'}
+    try:
+        r = requests.post(STUDIO_WRITER_URL, json=body, headers=headers, timeout=(5, timeout))
+        if not r.ok:
+            app.logger.warning('studio writer: HTTP %s %s', r.status_code, r.text[:200])
+            return ''
+        return str(r.json()['choices'][0]['message'].get('content') or '')
+    except (requests.RequestException, ValueError, KeyError, IndexError) as exc:
+        app.logger.warning('studio writer failed: %s', exc)
+        return ''
+
+
+def _pdf_page_pictures(data, limit):
+    """Each page as a PNG, or None when there are more than *limit* pages
+    (a long handout reads well enough from its text) or it cannot be drawn."""
+    try:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(data)
+        if len(pdf) > limit:
+            return None
+        pages = []
+        for i in range(len(pdf)):
+            page = pdf[i]
+            w, h = page.get_size()
+            img = page.render(scale=min(2.5, 1600 / max(w, h, 1))).to_pil()
+            buf = io.BytesIO()
+            img.convert('RGB').save(buf, 'PNG')
+            pages.append(buf.getvalue())
+        return pages
+    except Exception as exc:                               # noqa: BLE001 -- a PDF can fail in many ways
+        app.logger.warning('explainer source: could not draw the pages: %s', exc)
+        return None
+
+
+def _explainer_source(data):
+    """What a PDF handed to the explainer says, capped. A short one is read
+    page by page by the house's vision model -- the only reading that keeps a
+    formula a formula, and the only one a scan has at all; a long one, or one
+    the model cannot read, from its text layer."""
+    try:
+        text = _doc_text_pdf(data)
+    except Exception as exc:                               # noqa: BLE001 -- pypdf raises many kinds
+        app.logger.warning('explainer source: no text layer: %s', exc)
+        text = ''
+    read = []
+    for n, png in enumerate(_pdf_page_pictures(data, EXPLAINER_OCR_PAGES) or [], 1):
+        said = _studio_writer([{'role': 'user', 'content': [
+            {'type': 'text', 'text': 'Transcribe all the text and formulas on this page exactly as written, in '
+                                     'reading order, keeping the numbering. Formulas in LaTeX between $...$. '
+                                     'Only the transcription.'},
+            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(png).decode()}}]}],
+            max_tokens=2500, timeout=180, json_out=False).strip()
+        if said:
+            read.append(f'[page {n}]\n{said}')
+    return ('\n\n'.join(read) or text)[:EXPLAINER_SOURCE_CHARS]
+
+
+def _explainer_write_line(entry):
+    """One written line as the page takes it: `words $formula$`. The model is
+    asked for the two apart -- a 9B model asked to put `$...$` around its own
+    formulas forgot to about one run in two -- and they are joined here."""
+    if isinstance(entry, dict):
+        words = ' '.join(str(entry.get('words') or '').split())
+        formula = ' '.join(str(entry.get('formula') or '').split()).strip('$ ')
+        return ' '.join(x for x in (words, f'${formula}$' if formula else '') if x)
+    return ' '.join(str(entry or '').split())
+
+
+def _explainer_write_lines(value):
+    if isinstance(value, str):
+        value = value.splitlines()
+    lines = [_explainer_write_line(x)[:EXPLAINER_WRITE_CHARS] for x in (value if isinstance(value, list) else [])]
+    return [x for x in lines if x][:EXPLAINER_WRITE_LINES]
+
+
+def _studio_parse_explainer(text, look='pictures'):
+    """(title, subtitle, points) from the explainer written: `{"title",
+    "subtitle", "points": [{"narration", "picture" | "writing"}]}`. A point
+    keeps what its look allows -- a picture, lines to write, either when
+    mixed -- and is dropped without one. None when fewer than two are left."""
     if not text:
         return None
     raw = _studio_json_object(text)
@@ -23222,7 +23344,12 @@ def _studio_parse_explainer(text):
             continue
         said = ' '.join(str(entry.get('narration') or '').split())[:900]
         shows = ' '.join(str(entry.get('picture') or '').split())[:1200]
-        if said and shows:
+        write = _explainer_write_lines(entry.get('writing'))
+        if not said:
+            continue
+        if look != 'pictures' and write:
+            points.append({'narration': said, 'write': write})
+        elif look != 'writing' and shows:
             points.append({'narration': said, 'picture': shows})
     if len(points) < 2:
         return None
@@ -23230,24 +23357,77 @@ def _studio_parse_explainer(text):
             ' '.join(str(raw.get('subtitle') or '').split())[:200], points)
 
 
+def _explainer_prompt(language, topic, audience, look_words, minutes, n, look, source):
+    shown = {
+        'pictures': ('and the picture on screen while it is said. The picture is one concrete visual description '
+                     'in English (1-2 sentences) for a text-to-image model: what is on screen, the setting, the '
+                     'framing; no text, letters, labels or diagrams with words in it. ' + STUDIO_STYLE_RULE),
+        'writing': ('and what the narrator writes by hand on a sheet of paper while saying it, seen from the '
+                    f'writer\'s own eyes: "writing", 1 to {EXPLAINER_WRITE_LINES} short lines (at most 40 characters '
+                    'each) -- the key words, the formula, the next step of the working. ' + EXPLAINER_MATH_RULE),
+        'mixed': ('and how it is shown: either "writing" -- 1 to '
+                  f'{EXPLAINER_WRITE_LINES} short lines the narrator writes by hand on paper while saying it, for '
+                  'anything with words, numbers or formulas -- or "picture", one concrete visual description in '
+                  'English for a text-to-image model, with no text in it, for everything else. Never both. '
+                  + EXPLAINER_MATH_RULE + ' ' + STUDIO_STYLE_RULE),
+    }[look]
+    example = {'pictures': '{"narration": "...", "picture": "..."}',
+               'writing': ('{"narration": "...", "writing": [{"words": "Despejamos", "formula": "x"}, '
+                           '{"formula": "x = \\\\frac{7y}{2}"}]}'),
+               'mixed': ('{"narration": "...", "writing": [{"words": "...", "formula": "..."}]} or '
+                         '{"narration": "...", "picture": "..."}')}[look]
+    return (
+        f"Write a short narrated explainer video in {language}"
+        + (f" about: {topic}\n" if topic else ".\n")
+        + (f"For: {audience}\n" if audience else "")
+        + (f"The film's look: {look_words}\n" if look_words and look != 'writing' else "")
+        + (("Base it on the material below and explain what it says, in its order. If it holds exercises, work "
+            "through them: say how each is solved and show the working step by step, with the right answers.\n")
+           if source else "")
+        + f"About {minutes} minute(s): about {n} points, each a narration of 1 to 3 sentences (about "
+        f"{EXPLAINER_POINT_WORDS} words) said by a narrator, " + shown + " Explain one idea per point, in order, "
+        "simply and concretely; the first point says what the video explains, the last sums it up. The narration "
+        "is spoken words only -- no stage directions, no markdown, and formulas said in words as a person would "
+        "read them aloud.\n"
+        "Also a short title and a one-line subtitle for the title card, in the narration's language.\n"
+        'Answer with only a JSON object, no code fence: {"title": "...", "subtitle": "...", "points": [' + example
+        + ', ...]}'
+        + (f"\n\nThe material:\n<<<\n{source}\n>>>" if source else ""))
+
+
 @app.route('/studio/api/explainer-script', methods=['POST'])
 @api_login_required
 def studio_explainer_script():
-    """✍️ An explainer written by the person's own assistant: the topic as a
-    few points, each a narration and the picture shown while it is said. Filed
-    in the project as one shot a point (its picture's description) and one
-    voice card a point -- said by the narrator, a character with a voice
-    sample, and linked to its shot (`point`) -- under Alfred's name; with
-    `title_card`, a title card first. `replace` takes the old points and their
-    narrations out first; the music stays."""
+    """✍️ An explainer written by the house's own model: a topic, a PDF, or
+    both, as a few points, each a narration and how it is shown -- a picture,
+    or lines written by hand on a page (`look`). Filed in the project as one
+    shot a point and one voice card a point -- said by the narrator, a
+    character with a voice sample, and linked to its shot (`point`) -- under
+    Alfred's name; with `title_card`, a title card first. `replace` takes the
+    old points and their narrations out first; the music stays. With `auto`,
+    the Studio then makes everything and puts the film together by itself.
+    JSON, or a form with the PDF as `source`."""
     if not _studio_configured() or not _studio_reachable():
         abort(404)
     username = session['user']
-    d = request.get_json(silent=True) or {}
+    d = request.form.to_dict() if request.files or request.form else (request.get_json(silent=True) or {})
+
+    def flag(key):
+        return str(d.get(key) or '').lower() in ('1', 'true', 'on', 'yes')
     pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
     topic = str(d.get('topic') or '').strip()[:1500]
-    if not topic:
+    source = ''
+    upload = request.files.get('source')
+    if upload and upload.filename:
+        data = upload.read(EXPLAINER_SOURCE_BYTES + 1)
+        if len(data) > EXPLAINER_SOURCE_BYTES or not data.startswith(b'%PDF'):
+            return jsonify(error=t('studio.exp_bad_source')), 400
+        source = _explainer_source(data)
+        if not source.strip():
+            return jsonify(error=t('studio.exp_unread_source')), 400
+    if not topic and not source:
         return jsonify(error=t('studio.exp_need_topic')), 400
+    look = d.get('look') if d.get('look') in EXPLAINER_LOOKS else 'pictures'
     try:
         minutes = max(1, min(10, int(d.get('minutes') or 2)))
     except (TypeError, ValueError):
@@ -23262,57 +23442,56 @@ def studio_explainer_script():
     language = {'es': 'Spanish', 'en': 'English'}.get(
         str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
     n = max(2, min(EXPLAINER_MAX_POINTS, round(minutes * PODCAST_WORDS_PER_MIN / EXPLAINER_POINT_WORDS)))
-    look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    look_words = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
     audience = str(d.get('audience') or '').strip()[:300]
-    prompt = (
-        f"Write a short narrated explainer video in {language} about: {topic}\n"
-        + (f"For: {audience}\n" if audience else "")
-        + (f"The film's look: {look}\n" if look else "")
-        + f"About {minutes} minute(s): {n} points, each a narration of 1 to 3 sentences (about "
-        f"{EXPLAINER_POINT_WORDS} words) said by a narrator, and the picture on screen while it is said. Explain "
-        "one idea per point, in order, simply and concretely; the first point says what the video explains, the "
-        "last sums it up. The narration is spoken words only -- no stage directions, no markdown. The picture is "
-        "one concrete visual description in English (1-2 sentences) for a text-to-image model: what is on screen, "
-        "the setting, the framing; no text, letters, labels or diagrams with words in it. "
-        + STUDIO_STYLE_RULE + "\n"
-        'Also a short title and a one-line subtitle for the title card, in the narration\'s language.\n'
-        'Answer with only a JSON object, no code fence: {"title": "...", "subtitle": "...", "points": '
-        '[{"narration": "...", "picture": "..."}, ...]}')
-    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-explainer'
-    out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S))
-    if out is None:
-        again = ('That was not the JSON object asked for. Answer again with only {"title": "...", "subtitle": '
-                 '"...", "points": [{"narration": "...", "picture": "..."}]}, no code fence.')
-        out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S))
+    messages = [{'role': 'user', 'content': _explainer_prompt(language, topic, audience, look_words, minutes, n,
+                                                              look, source)}]
+    answer = _studio_writer(messages)
+    out = _studio_parse_explainer(answer, look)
+    if out is None and answer:
+        messages += [{'role': 'assistant', 'content': answer[:20000]},
+                     {'role': 'user', 'content': 'That was not the JSON object asked for. Answer again with only the '
+                                                 'JSON object, no code fence.'}]
+        out = _studio_parse_explainer(_studio_writer(messages), look)
     if out is None:
         return jsonify(error=t('studio.exp_failed')), 502
     title, subtitle, points = out
-    if d.get('replace'):
+    if flag('replace'):
         # The project as it is now: the PUT replaces whole lists, and the one
-        # read before the assistant's turn is minutes old.
+        # read before the model's turn is minutes old.
         fresh = _studio_call(username, 'GET', f'projects/{pid}')
         if not fresh:
             return jsonify(error=t('studio.exp_failed')), 502
         kept_audio = [a for a in fresh.get('audio') or [] if not a.get('point')]
         if _studio_call(username, 'PUT', f'projects/{pid}', {'shots': [], 'audio': kept_audio}, via='Alfred') is None:
             return jsonify(error=t('studio.exp_failed')), 502
-    shots = ([{'card': {'title': title or topic[:120], 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
-             if d.get('title_card') else [])
-    shots += [{'prompt': pt['picture'],
-               'seconds': max(3, min(30, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60)) + 1))}
-              for pt in points]
+
+    def said_in(pt):
+        return len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60)
+    card_title = title or topic[:120] or (doc.get('name') or '')[:120]
+    shots = ([{'card': {'title': card_title, 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
+             if flag('title_card') else [])
+    shots += [({'prompt': '', 'write': pt['write']} if pt.get('write') else {'prompt': pt['picture']})
+              | {'seconds': max(3, min(30, round(said_in(pt)) + 1))} for pt in points]
     added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')
     ids = (added or {}).get('items') or []
     if len(ids) != len(shots):
         return jsonify(error=t('studio.exp_failed')), 502
-    point_ids = ids[1:] if d.get('title_card') else ids
+    point_ids = ids[1:] if flag('title_card') else ids
     voices = [{'kind': 'voice', 'title': f'{i + 1}', 'speaker': narrator['id'], 'text': pt['narration'],
-               'point': sid, 'seconds': max(5, min(120, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60) * 1.4) + 3))}
+               'point': sid, 'seconds': max(5, min(120, round(said_in(pt) * 1.4) + 3))}
               for i, (pt, sid) in enumerate(zip(points, point_ids))]
     if not _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': voices}, via='Alfred'):
         return jsonify(error=t('studio.exp_failed')), 502
     _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'narrator': narrator['id']}}, via='Alfred')
-    return jsonify(title=title, points=len(points))
+    made = None
+    if flag('auto'):
+        made = _studio_call(username, 'POST', f'projects/{pid}/explainer/auto',
+                            {'format': 'h264', 'size': '720' if str(d.get('size')) == '720' else '1080'})
+        if made is None:
+            return jsonify(title=title, points=len(points), error=t('studio.exp_auto_failed')), 502
+    return jsonify(title=title, points=len(points), written=sum(1 for pt in points if pt.get('write')),
+                   auto=bool(made), queued=len((made or {}).get('queued') or []))
 
 
 # A short film's shots: H3 takes 5-20 s a shot and ~5 card-minutes a second,

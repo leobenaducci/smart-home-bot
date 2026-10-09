@@ -18,6 +18,7 @@ first -- a person who typed their own verse and asked for a shorter chorus
 should get their verse back. So this pins what reaches the model in each mode,
 with the model stubbed out.
 """
+import io
 import os
 import re
 import shutil
@@ -853,8 +854,8 @@ check("  and a replace keeps what the project holds now, not what it held before
 A._studio_call, A._run_nanobot_turn = _saved_p
 
 
-print("\nan explainer, written by Alfred")
-_saved_x = (A._studio_call, A._run_nanobot_turn)
+print("\nan explainer, written by the house's own model")
+_saved_x = (A._studio_call, A._run_nanobot_turn, A._studio_writer)
 XDOC = {"id": "exp1", "settings": {"language": "en", "look": "flat 2D vector"},
         "shots": [{"id": "oldpt"}], "audio": [{"id": "oldn", "kind": "voice", "point": "oldpt"},
                                               {"id": "bed1", "kind": "instrumental"}]}
@@ -870,7 +871,18 @@ def _scx(username, method, path, body=None, timeout=30, via=""):
         return {"items": [f"id{i}{'x' * 8}" for i in range(len(body["items"]))]}
     return {"ok": True}
 A._studio_call = _scx
-A._run_nanobot_turn = lambda u, c, text, timeout, profile=None: asked_x.append(text) or (answers_x.pop(0) if answers_x else "")
+A._run_nanobot_turn = lambda *a, **k: (_ for _ in ()).throw(AssertionError("an explainer is not the assistant's turn"))
+read_x = []           # what the vision model "reads" off each page; nothing by default
+
+
+def _writer_x(messages, **kw):
+    if kw.get("json_out") is False:
+        return read_x.pop(0) if read_x else ""
+    asked_x.append(messages[-1]["content"])
+    return answers_x.pop(0) if answers_x else ""
+
+
+A._studio_writer = _writer_x
 check("an explainer needs a topic",
       client.post("/studio/api/explainer-script", headers=HOME, json={"project": "exp1", "narrator": "narr1"}).status_code == 400)
 check("  and a narrator with a voice", client.post("/studio/api/explainer-script", headers=HOME, json={
@@ -902,14 +914,97 @@ check("  written again, the old points and their narrations go -- the music stay
 check("  and the project remembers its narrator",
       ("PUT", "projects/exp1", {"settings": {"narrator": "narr1"}}, "Alfred") in posted_x)
 check("  asked for the right number of points, pictures in English with no text and no style words",
-      asked_x and "4 points" in asked_x[-1] and "no text, letters" in asked_x[-1] and A.STUDIO_STYLE_RULE in asked_x[-1]
+      asked_x and "about 4 points" in asked_x[-1] and "no text, letters" in asked_x[-1] and A.STUDIO_STYLE_RULE in asked_x[-1]
       and "English" in asked_x[-1] and "flat 2D vector" in asked_x[-1], asked_x[-1][:700])
 posted_x.clear(); asked_x.clear()
 answers_x[:] = ["nope", '{"points": [{"narration": "one", "picture": "one"}]}']
 r = client.post("/studio/api/explainer-script", headers=HOME, json={"project": "exp1", "topic": "x", "narrator": "narr1"})
 check("an unreadable explainer is asked for once more, then fails and files nothing",
       r.status_code == 502 and len(asked_x) == 2 and not posted_x, posted_x)
-A._studio_call, A._run_nanobot_turn = _saved_x
+
+posted_x.clear(); asked_x.clear()
+answers_x[:] = ['{"title": "Función inversa", "subtitle": "paso a paso", "points": ['
+                '{"narration": "Despejamos x.", "writing": ["$y = \\\\frac{2x}{7}$", "", "$x = \\\\frac{7y}{2}$"]},'
+                '{"narration": "Una imagen no cabe aquí.", "picture": "a pencil"},'
+                '{"narration": "Cambiamos x por y.", "writing": [{"words": "La inversa:", "formula": "$f^{-1}(x) = \\\\frac{7x}{2}$"}]}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, json={
+    "project": "exp1", "topic": "inverse functions", "narrator": "narr1", "look": "writing"})
+adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
+shots_w = adds[0][2]["items"] if adds else []
+check("written by hand: each point is a page of lines to write -- words and formula joined -- with nothing to draw; a point with only a picture is left out",
+      r.status_code == 200 and r.get_json()["written"] == 2
+      and [x.get("write") for x in shots_w] == [["$y = \\frac{2x}{7}$", "$x = \\frac{7y}{2}$"],
+                                                ["La inversa: $f^{-1}(x) = \\frac{7x}{2}$"]]
+      and all(x["prompt"] == "" for x in shots_w), shots_w)
+check("  and the writer is told how formulas are written, not how pictures are",
+      A.EXPLAINER_MATH_RULE in asked_x[0] and A.STUDIO_STYLE_RULE not in asked_x[0] and "flat 2D vector" not in asked_x[0],
+      asked_x[0][:600])
+
+posted_x.clear(); asked_x.clear()
+answers_x[:] = ['{"title": "t", "points": [{"narration": "uno", "writing": ["$x^2$"]},'
+                '{"narration": "dos", "picture": "a lighthouse"}, {"narration": "tres", "writing": ["a"], "picture": "b"}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, json={
+    "project": "exp1", "topic": "x", "narrator": "narr1", "look": "mixed", "auto": True, "size": "720"})
+adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
+shots_m = adds[0][2]["items"] if adds else []
+check("both: a page where it writes, a picture where it draws -- never both on one point",
+      [("write" in x, x["prompt"]) for x in shots_m] == [(True, ""), (False, "a lighthouse"), (True, "")], shots_m)
+auto_x = [c for c in posted_x if c[1] == "projects/exp1/explainer/auto"]
+check("  and asked to, the Studio is told to make the whole video by itself, at the size chosen, after the points are filed",
+      r.status_code == 200 and r.get_json()["auto"] and auto_x and auto_x[0][2] == {"format": "h264", "size": "720"}
+      and posted_x.index(auto_x[0]) > posted_x.index(adds[-1]), posted_x)
+
+
+def _tiny_pdf(text):
+    """A one-page PDF with *text* on it, by hand: nothing here writes PDFs."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> "
+            b"/Contents 4 0 R >>",
+            b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offsets = b"%PDF-1.4\n", []
+    for i, o in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + o + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer << /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
+    return out
+
+
+posted_x.clear(); asked_x.clear()
+handout = "Determine the inverse of y = 2x/7. " * 8
+answers_x[:] = ['{"title": "t", "points": [{"narration": "uno", "writing": ["a"]}, {"narration": "dos", "writing": ["b"]}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, content_type="multipart/form-data", data={
+    "project": "exp1", "narrator": "narr1", "look": "writing", "title_card": "1",
+    "source": (io.BytesIO(_tiny_pdf(handout)), "ficha.pdf")})
+check("from a PDF, with no topic typed: its text goes to the writer, with its exercises to be worked through",
+      r.status_code == 200 and asked_x and "Determine the inverse of y = 2x/7." in asked_x[0]
+      and "work through them" in asked_x[0], (r.status_code, r.get_data(as_text=True)[:200], asked_x[:1]))
+adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
+check("  a form's flags read as flags: the title card is there",
+      adds and "card" in adds[0][2]["items"][0], adds[:1])
+try:
+    import pypdfium2  # noqa: F401
+    posted_x.clear(); asked_x.clear()
+    read_x[:] = ["1) Determine $f^{-1}(x)$ for $y = \\frac{2x}{7}$"]
+    answers_x[:] = ['{"title": "t", "points": [{"narration": "uno", "writing": ["a"]}, {"narration": "dos", "writing": ["b"]}]}']
+    r = client.post("/studio/api/explainer-script", headers=HOME, content_type="multipart/form-data", data={
+        "project": "exp1", "narrator": "narr1", "look": "writing",
+        "source": (io.BytesIO(_tiny_pdf(handout)), "ficha.pdf")})
+    check("  a short PDF is read page by page by the vision model, which keeps a formula a formula, over its text layer",
+          r.status_code == 200 and "$y = \\frac{2x}{7}$" in asked_x[0] and "Determine the inverse" not in asked_x[0],
+          asked_x[:1])
+except ImportError:
+    print("  SKIP  pypdfium2 is not installed here: the page-by-page reading is not exercised")
+posted_x.clear(); asked_x.clear()
+r = client.post("/studio/api/explainer-script", headers=HOME, content_type="multipart/form-data", data={
+    "project": "exp1", "narrator": "narr1", "source": (io.BytesIO(b"not a pdf at all"), "x.pdf")})
+check("  something that is not a PDF is refused before anything is asked or filed",
+      r.status_code == 400 and not asked_x and not posted_x, r.status_code)
+A._studio_call, A._run_nanobot_turn, A._studio_writer = _saved_x
 
 
 print("\na short film's script, written by the Designer")

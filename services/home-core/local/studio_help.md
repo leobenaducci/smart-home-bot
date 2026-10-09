@@ -178,23 +178,32 @@ An idea, a script, scenes and shots with dialogue and recurring characters.
 
 ## An explainer
 
-A narrated explanation with a picture or a clip for each point.
+A narrated explanation: each point a picture, a clip, or words and formulas
+written by hand on a page.
 
 1. **The narrator** is a character with a voice sample (make one in
    **Characters**).
 2. On the **Points** tab, **✍️ Write the explainer with Alfred**: say what it
-   explains (and for whom), the narrator and the length (1-5 minutes), and
-   whether a title card opens it. Alfred writes the points: each one is what the
-   narrator says and the picture on screen meanwhile. Writing it again replaces
-   the points.
-3. **Draw every picture**, then **Say every narration**. Edit any narration or
-   picture, move a point with ↑ ↓, add one with **＋ Point**, or a title with
-   **🔤 Title**. A point can have a clip instead of a still: make it on the
-   **Video** tab from its picture.
-4. An instrumental made in **Music & voices** plays quietly under it all.
-5. **🎞️ Put the explainer together** (1080p or 720p, H.264 to share anywhere):
-   each point stays on screen while its narration is said; a clip shorter than
-   its narration ends on its last frame.
+   explains (and for whom), or give it a **📄 PDF** -- notes, a handout, a
+   worksheet: the video explains what it says and works through its exercises.
+   Choose **how it looks**: pictures; **handwritten on a page**, seen by the
+   person writing (best for maths: the formulas come out exact); or both. Then
+   the narrator, the length (1-10 minutes) and whether a title card opens it.
+   It is written by the house's own model, and nothing you give it leaves the
+   house. Writing it again replaces the points.
+3. Leave **🎬 Then make the whole video by itself** on and that is all: the
+   pictures are drawn, the narrations said, and the video put together; you
+   are told when it is ready. Or edit first and press **🎬 Make the whole
+   video** when you are happy.
+4. **Check the working.** The house's model is small and sometimes slips a
+   sign or a step in an exercise. Every narration, picture and written line
+   can be edited on its point; move a point with ↑ ↓, add one with **＋
+   Point**, or a title with **🔤 Title**. A point with a picture can have a
+   clip instead of a still: make it on the **Video** tab.
+5. An instrumental made in **Music & voices** plays quietly under it all.
+6. **🎞️ Put the explainer together** (1080p or 720p, H.264 to share anywhere)
+   again after any change: each point stays on screen while its narration is
+   said.
 
 ## A podcast
 
