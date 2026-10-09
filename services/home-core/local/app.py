@@ -3945,10 +3945,16 @@ def _extension_menu_links():
     source for the wall, so there is one list of extensions and not two.
     """
     home = _at_home()
+    adult = session.get('user') in ADVANCED_USERS
     out = {g: [] for g in CHAT_MENU_GROUPS}
     for tile in _deployed_tiles().get('extensions') or []:
         group = str(tile.get('menu') or '').strip().lower()
         if group not in out:
+            continue
+        # The wall already hides what is not a child's to open (`adults`); the
+        # menu is the same list reached from the chat, so it keeps the rule
+        # rather than offering an entry that answers with a refusal.
+        if tile.get('adults') and not adult:
             continue
         # `lan_only` is dropped from the menu off the network, not merely
         # badged. The badge is honest about where a link works; leaving the
