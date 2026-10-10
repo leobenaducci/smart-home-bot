@@ -197,17 +197,17 @@ written by hand on a page.
    you are told as each one is ready.
 3. Leave **🎬 Then make the whole video by itself** on and that is all: the
    pictures are drawn, the narrations said, and the video put together; you
-   are told when it is ready. Or edit first and press **🎬 Make the whole
-   video** when you are happy.
+   are told when it is ready. Or leave it off, check the points, and press
+   **🎬 Make the video**: it makes whatever is still missing -- a picture, a
+   narration -- and then puts the video together. Press it again after any
+   change.
 4. **Check the working.** The house's model is small and sometimes slips a
    sign or a step in an exercise. Every narration, picture and written line
    can be edited on its point; move a point with ↑ ↓, add one with **＋
    Point**, or a title with **🔤 Title**. A point with a picture can have a
    clip instead of a still: make it on the **Video** tab.
 5. An instrumental made in **Music & voices** plays quietly under it all.
-6. **🎞️ Put the explainer together** (1080p or 720p, H.264 to share anywhere)
-   again after any change: each point stays on screen while its narration is
-   said.
+   Each point stays on screen while its narration is said.
 
 ## A podcast
 

@@ -22976,7 +22976,7 @@ STUDIO_UI_KEYS = (
     'film_scene_ph', 'film_shot', 'film_dialogue', 'film_dialogue_ph', 'film_draw', 'film_help', 'film_empty',
     'tab_points', 'exp_title', 'exp_topic', 'exp_topic_ph', 'exp_narrator', 'exp_narrator_none', 'exp_card',
     'exp_write', 'exp_point', 'exp_no_picture', 'exp_narration', 'exp_add_narration', 'exp_picture',
-    'exp_help', 'exp_add_point', 'exp_say_all', 'exp_render', 'exp_need_pictures', 'exp_replace_confirm',
+    'exp_help', 'exp_add_point', 'exp_say_all', 'exp_replace_confirm',
     'exp_need_topic', 'exp_need_narrator', 'exp_failed', 'exp_written',
     'exp_source', 'exp_source_hint', 'exp_source_clear', 'exp_look', 'exp_look_pictures', 'exp_look_writing',
     'exp_look_mixed', 'exp_auto', 'exp_make_all', 'exp_auto_started', 'exp_auto_now', 'exp_reading',
@@ -23515,8 +23515,12 @@ def _explainer_write(username, pid, d, source=''):
     shots += [({'prompt': '', 'write': pt['write'],
                 # A new sheet where the exercise changes; the same one for
                 # each next step of it (the Studio turns a full one anyway).
+                # An introduction or a summary (exercise 0) shares the sheet of
+                # the exercise beside it: alone, its one line was a page of its
+                # own and one more cut.
                 'continuity': i > 0 and bool(points[i - 1].get('write'))
-                              and points[i - 1].get('exercise') == pt.get('exercise')}
+                              and (points[i - 1].get('exercise') == pt.get('exercise')
+                                   or not points[i - 1].get('exercise') or not pt.get('exercise'))}
                if pt.get('write') else {'prompt': pt['picture']})
               | {'seconds': max(3, min(30, round(said_in(pt)) + 1))} for i, pt in enumerate(points)]
     added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')

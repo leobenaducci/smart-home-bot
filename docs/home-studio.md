@@ -174,7 +174,8 @@ as `{"words", "formula"}` and joined here as `words $formula$` -- asked to put
 `mixed`: the writer picks, per point. Written points also carry `exercise` (0
 for an introduction or summary): an exercise is worked on one sheet, its
 statement first and then a step a point, and each point is filed with
-`continuity` off where the exercise changes. A label that repeats the formula
+`continuity` off where the exercise changes -- an introduction or summary
+shares the sheet of the exercise beside it. A label that repeats the formula
 is dropped -- one run copied every formula into it. The points are filed as shots (a title
 card first when asked; a written point is a shot with `write` and no prompt,
 so nothing draws it), then one narration a point linked by id, under Alfred's
@@ -226,7 +227,9 @@ the queue (so a restart in the middle still ends in a film). After each of the
 project's jobs (`_auto_step`, from the notify hook): a failure ends the run and
 tells the person which piece; the last one in puts the explainer together and
 tells them it is ready. Nothing missing, it is put together at once. The page's
-**🎬 Make the whole video** calls it for points already there.
+one button, **🎬 Make the video**, is this call: a separate "put it together"
+assembled what was there, and with the narrations not yet said that was a
+silent run of points flashing by, a few seconds each.
 
 `POST /api/projects/{pid}/explainer` puts it together on the CPU, beside the
 queue: each point on screen for 0.4 s + its narration + 0.8 s (3 s at least; a

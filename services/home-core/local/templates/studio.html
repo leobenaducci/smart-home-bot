@@ -1878,14 +1878,16 @@
       var shots = (p.shots || []).filter(function (s) { return !s.recorded && !s.card; });
       var undrawn = shots.filter(function (s) { return !(s.boards || []).length && s.prompt && !boardJob(s); }).length;
       var unsaid = shots.map(narrationOf).filter(function (a) { return a && a.text && !(a.takes || []).length && !jobFor(a.id); });
-      var ready = shots.length && shots.every(function (s) { return (s.write || []).some(function (x) { return String(x).trim(); }) || (s.boards || []).length || (chosen(s) || {}).file; });
       html += '<div class="row" style="margin-top:12px;flex-wrap:wrap"><button id="exp-add">＋ ' + S.exp_add_point + '</button><button id="add-card">🔤 ' + S.add_card + '</button>' +
         (undrawn ? '<button id="board-all">🖼️ ' + fmt('board_make', { n: undrawn }) + '</button>' : '') +
         (unsaid.length ? '<button data-exp-say-all="1">🗣️ ' + fmt('exp_say_all', { n: unsaid.length }) + '</button>' : '') +
         '<span class="grow"></span><select id="exp-size" style="width:auto"><option value="1080">1080p</option><option value="720">720p</option></select>' +
-        (shots.length ? '<button class="primary" id="exp-make-all">🎬 ' + S.exp_make_all + '</button>' : '') +
-        '<button' + (ready ? ' class="primary"' : '') + ' id="exp-render"' + (ready ? '' : ' disabled') + '>🎞️ ' + S.exp_render + '</button></div>' +
-        (ready ? '' : '<p class="muted" style="margin-top:4px">' + S.exp_need_pictures + '</p>');
+        // One way to the film: whatever is missing is made first -- a picture,
+        // a narration -- and then it is put together. A separate "put it
+        // together" assembled what was there, and with no narrations yet that
+        // was a silent run of points flashing by.
+        (shots.length ? '<button class="primary" id="exp-make-all"' + (p.render && p.render.state === 'running' ? ' disabled' : '') +
+                        '>🎬 ' + S.exp_make_all + '</button>' : '') + '</div>';
       if (p.render && p.render.state === 'running') html += '<div class="note">' + S.render_running + '</div>';
       if (p.render && p.render.state === 'failed') html += '<div class="note err">' + S.render_failed + ': ' + esc(p.render.error) + '</div>';
       var mine = (p.renders || []).filter(function (r) { return r.explainer; }).slice().reverse();
@@ -2439,11 +2441,6 @@
             var ma = await api('projects/' + p.id + '/explainer/auto', { method: 'POST', body: { format: 'h264', size: $('#exp-size').value } });
             toast(ma.render ? S.exp_auto_now : fmt('exp_auto_started', { n: (ma.queued || []).length + (ma.waiting || 0) }));
           } catch (e) { toast(fmt('err', { e: e.message }), true); }
-          current = await api('projects/' + p.id); drawTab(); watchRender(); return;
-        }
-        if (b.id === 'exp-render') {
-          await flushSave();
-          await api('projects/' + p.id + '/explainer', { method: 'POST', body: { format: 'h264', size: $('#exp-size').value } });
           current = await api('projects/' + p.id); drawTab(); watchRender(); return;
         }
         if (b.id === 'pod-write') {

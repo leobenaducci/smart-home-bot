@@ -966,8 +966,9 @@ r = client.post("/studio/api/explainer-script", headers=HOME, json={
     "project": "exp1", "topic": "inversas", "narrator": "narr1", "look": "writing"})
 adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
 shots_e = adds[0][2]["items"] if adds else []
-check("an exercise is one sheet: a new one where the exercise changes, the same one for each next step",
-      [x.get("continuity") for x in shots_e] == [False, False, True, False, True], [x.get("continuity") for x in shots_e])
+check("an exercise is one sheet: a new one where the exercise changes, the same one for each next step --"
+      " and the introduction shares the first exercise's",
+      [x.get("continuity") for x in shots_e] == [False, True, True, False, True], [x.get("continuity") for x in shots_e])
 check("  a label that only repeats the formula is dropped; a real one is kept, set off from its formula",
       shots_e[1]["write"] == ["$y = \\frac{2x}{7}$"] and shots_e[2]["write"] == ["Por 7: $7y = 2x$"]
       and shots_e[3]["write"] == ["Dada: $y = x + 1$"],
