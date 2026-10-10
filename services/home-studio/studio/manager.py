@@ -747,8 +747,12 @@ class Manager:
                 elif dst.suffix in (".wav", ".mp3", ".flac", ".ogg"):
                     take["seconds"] = round(media.probe(dst)["seconds"], 2)
         shutil.rmtree(self.scratch / job["id"], ignore_errors=True)
-        if job["params"].get("voice_char") and self.characters:
+        if job["params"].get("voice_char") and job["target"] == job["params"]["voice_char"] and self.characters:
             # A voice test lives with the character, one per person who tried it.
+            # Only a test: it is queued against the character itself, where a
+            # line said in a character's voice -- a narration, a podcast's line
+            # -- names the character too but is queued against its own item,
+            # and was being filed here as a test, leaving the line unmade.
             self.characters.store_voice_test(job["params"]["voice_char"], owner, pid, dest_root / rel_files[0])
             return []
         elif job["project"] and job["target"]:

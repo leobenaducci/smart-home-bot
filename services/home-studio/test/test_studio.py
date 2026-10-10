@@ -772,6 +772,19 @@ else:
           and chars.file(pel["id"], JUANA, sb["id"], vt).is_file()
           and fake.seen[-1].get("audio_guide", "").endswith(pel["voice"]), (store2.get(jv["id"]), vt,
                                                                              fake.seen[-1].get("audio_guide")))
+    line = projects.save(JUANA, sb["id"], {"audio": [{"kind": "voice", "title": "1", "text": "hola", "speaker": pel["id"]}]})
+    line_id = next(a["id"] for a in line["audio"] if a.get("speaker") == pel["id"])
+    jl = store2.add(owner=JUANA, owner_name="Juana", kind="voice", model=recipes.VOICE_MODEL,
+                    params={"text": "hola", "voice_char": pel["id"], "seconds": 5}, project=sb["id"], target=line_id)
+    mgr.wake()
+    deadline = time.time() + 60
+    while time.time() < deadline and store2.get(jl["id"])["state"] not in ("done", "failed"):
+        time.sleep(0.2)
+    said = Projects.find(projects.load(JUANA, sb["id"]), line_id)[2]
+    check("  a line said in a character's voice is filed on the line, not taken for a voice test",
+          store2.get(jl["id"])["state"] == "done" and Projects.chosen_take(said)
+          and (chars.get(pel["id"], JUANA, sb["id"]).get("voice_tests") or {}).get(JUANA) == vt,
+          (store2.get(jl["id"]), said.get("takes")))
     try:
         chars.add_file(pel["id"], JUANA, sb["id"], "x.html", b"<script>alert(1)</script>", "picture")
         check("  a 'picture' that is not one is refused", False)
