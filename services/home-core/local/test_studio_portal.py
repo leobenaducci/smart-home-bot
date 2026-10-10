@@ -960,7 +960,7 @@ answers_x[:] = ['{"title": "t", "points": ['
                 '{"exercise": 0, "narration": "Hoy, inversas.", "writing": [{"words": "Funciones inversas"}]},'
                 '{"exercise": 1, "narration": "La primera.", "writing": [{"words": "y = \\\\frac{2x}{7}", "formula": "y = \\\\frac{2x}{7}"}]},'
                 '{"exercise": 1, "narration": "Por siete.", "writing": [{"words": "Por 7:", "formula": "7y = 2x"}]},'
-                '{"exercise": 2, "narration": "La segunda.", "writing": [{"formula": "y = x + 1"}]},'
+                '{"exercise": 2, "narration": "La segunda.", "writing": [{"words": "Dada", "formula": "y = x + 1"}]},'
                 '{"exercise": 2, "narration": "Restamos.", "writing": [{"formula": "x = y - 1"}]}]}']
 r = client.post("/studio/api/explainer-script", headers=HOME, json={
     "project": "exp1", "topic": "inversas", "narrator": "narr1", "look": "writing"})
@@ -968,8 +968,9 @@ adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
 shots_e = adds[0][2]["items"] if adds else []
 check("an exercise is one sheet: a new one where the exercise changes, the same one for each next step",
       [x.get("continuity") for x in shots_e] == [False, False, True, False, True], [x.get("continuity") for x in shots_e])
-check("  a label that only repeats the formula is dropped; a real one is kept",
-      shots_e[1]["write"] == ["$y = \\frac{2x}{7}$"] and shots_e[2]["write"] == ["Por 7: $7y = 2x$"],
+check("  a label that only repeats the formula is dropped; a real one is kept, set off from its formula",
+      shots_e[1]["write"] == ["$y = \\frac{2x}{7}$"] and shots_e[2]["write"] == ["Por 7: $7y = 2x$"]
+      and shots_e[3]["write"] == ["Dada: $y = x + 1$"],
       [x.get("write") for x in shots_e])
 check("  and the writer is told to work each exercise on its sheet, a step a point",
       A.EXPLAINER_EXERCISE_RULE in asked_x[0] and "never a sentence" in asked_x[0], asked_x[0][:300])

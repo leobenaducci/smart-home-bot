@@ -23345,6 +23345,10 @@ def _explainer_write_line(entry):
         # run came back so) -- the label is then math, not words, and goes.
         if formula and re.search(r'[\\^_=]', words):
             words = ''
+        # A label then its formula, apart: "Multiplicamos por 7: 7x = 2y",
+        # not "...por 7 7x = 2y", which reads as one number.
+        if words and formula and words[-1] not in ':.;,!?=':
+            words += ':'
         return ' '.join(x for x in (words, f'${formula}$' if formula else '') if x)
     return ' '.join(str(entry or '').split())
 
