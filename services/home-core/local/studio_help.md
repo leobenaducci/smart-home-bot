@@ -192,6 +192,9 @@ written by hand on a page.
    the narrator, the length (1-10 minutes) and whether a title card opens it.
    It is written by the house's own model, and nothing you give it leaves the
    house. Writing it again replaces the points.
+   Choose several files at once and it makes **one video for each**: every
+   file becomes its own project, named after the file, made one after another;
+   you are told as each one is ready.
 3. Leave **🎬 Then make the whole video by itself** on and that is all: the
    pictures are drawn, the narrations said, and the video put together; you
    are told when it is ready. Or edit first and press **🎬 Make the whole

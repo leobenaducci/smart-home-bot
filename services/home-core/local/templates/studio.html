@@ -1818,15 +1818,17 @@
     function narrationOf(s) { return (current.audio || []).find(function (a) { return a.point === s.id; }) || null; }
     function narrator() { var id = (current.settings || {}).narrator; return cast.find(function (c) { return c.id === id && c.voice; }) || null; }
     function explainerBox(voiced) {
-      var p = current, d = expDraft[p.id] || (expDraft[p.id] = { topic: '', minutes: 2, card: true, look: 'pictures', auto: true, pdf: null });
+      var p = current, d = expDraft[p.id] || (expDraft[p.id] = { topic: '', minutes: 2, card: true, look: 'pictures', auto: true, pdfs: [] });
       var nr = narrator();
       // Everything but the narrator can be chosen before there is one: the
       // form stays, and only the picker gives way to how to make a narrator.
       return '<div class="card"><b>✍️ ' + S.exp_title + '</b>' +
         '<label class="f" for="exp-topic">' + S.exp_topic + '</label><textarea id="exp-topic" rows="2" placeholder="' + esc(S.exp_topic_ph) + '">' + esc(d.topic) + '</textarea>' +
         '<label class="f" for="exp-pdf">📄 ' + S.exp_source + '</label>' +
-        (d.pdf ? '<div class="row" style="align-items:center"><span>📄 ' + esc(d.pdf.name) + '</span><button id="exp-pdf-clear" title="' + esc(S.exp_source_clear) + '">✕</button></div>'
-               : '<input type="file" id="exp-pdf" accept="application/pdf,.pdf,image/jpeg,image/png,image/webp">') +
+        // Several files are several videos: each its own project (explainer-batch).
+        (d.pdfs.length ? '<div class="row" style="align-items:center;flex-wrap:wrap"><span>' + d.pdfs.map(function (f) { return '📄 ' + esc(f.name); }).join(' · ') +
+                         '</span><button id="exp-pdf-clear" title="' + esc(S.exp_source_clear) + '">✕</button></div>'
+                       : '<input type="file" id="exp-pdf" multiple accept="application/pdf,.pdf,image/jpeg,image/png,image/webp">') +
         '<p class="muted" style="margin:4px 0 0;font-size:.85rem">' + esc(S.exp_source_hint) + '</p>' +
         '<label class="f" for="exp-look">' + S.exp_look + '</label><select id="exp-look">' +
         ['pictures', 'writing', 'mixed'].map(function (k) { return '<option value="' + k + '"' + (d.look === k ? ' selected' : '') + '>' + (k === 'pictures' ? '🖼️ ' : k === 'writing' ? '✍️ ' : '🖼️✍️ ') + esc(S['exp_look_' + k]) + '</option>'; }).join('') + '</select>' +
@@ -1839,7 +1841,9 @@
         [1, 2, 3, 5, 10].map(function (m) { return '<option value="' + m + '"' + (+d.minutes === m ? ' selected' : '') + '>' + m + ' min</option>'; }).join('') + '</select>' +
         '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="exp-card"' + (d.card ? ' checked' : '') + '> 🔤 ' + S.exp_card + '</label>' +
         '<label class="row" style="font-size:.88rem;gap:6px"><input type="checkbox" style="width:auto" id="exp-auto"' + (d.auto ? ' checked' : '') + '> 🎬 ' + S.exp_auto + '</label>' +
-        '<span class="grow"></span><button class="primary" id="exp-write"' + (voiced.length ? '' : ' disabled') + '>✍️ ' + S.exp_write + '</button></div></div>';
+        '<span class="grow"></span><button class="primary" id="exp-write"' + (voiced.length ? '' : ' disabled') + '>' +
+        (d.pdfs.length > 1 ? '🎬 ' + fmt('exp_write_many', { n: d.pdfs.length }) : '✍️ ' + S.exp_write) + '</button></div>' +
+        (d.pdfs.length > 1 ? '<p class="muted" style="margin:6px 0 0;font-size:.85rem">' + esc(S.exp_many_hint) + '</p>' : '') + '</div>';
     }
     function pointCard(s, n) {
       var p = current, b = chosenBoard(s), j = boardJob(s), a = narrationOf(s), at = a && chosen(a), vt = chosen(s);
@@ -2212,8 +2216,8 @@
       if (el.id === 'exp-auto') { (expDraft[current.id] || {}).auto = el.checked; return; }
       if (el.id === 'exp-look') { (expDraft[current.id] || {}).look = el.value; return; }
       if (el.id === 'exp-pdf') {
-        var ef = el.files && el.files[0], edr = expDraft[current.id];
-        if (ef && edr) { edr.pdf = ef; drawTab(); }
+        var edr = expDraft[current.id];
+        if (edr && el.files && el.files.length) { edr.pdfs = Array.prototype.slice.call(el.files); drawTab(); }
         return;
       }
       if (el.id === 'film-chars') { (filmDraft[current.id] || {}).chars = el.checked; return; }
@@ -2372,7 +2376,25 @@
         }
         if (b.id === 'exp-write') {
           var ed = expDraft[p.id] || {};
-          if (!(ed.topic || '').trim() && !ed.pdf) { toast(S.exp_need_topic, true); return; }
+          var files = ed.pdfs || [];
+          if (!(ed.topic || '').trim() && !files.length) { toast(S.exp_need_topic, true); return; }
+          if (files.length > 1) {
+            // One video for each file, each its own project, made in the background.
+            await flushSave();
+            b.disabled = true; busy++;
+            try {
+              var bf = new FormData(), bsz = $('#exp-size'), bns = $('#exp-narrator');
+              [['project', p.id], ['topic', ed.topic || ''], ['minutes', ed.minutes], ['narrator', bns ? bns.value : ''],
+               ['title_card', ed.card ? '1' : ''], ['look', ed.look || 'pictures'], ['size', bsz ? bsz.value : '1080']]
+                .forEach(function (kv) { bf.append(kv[0], kv[1]); });
+              files.forEach(function (f) { bf.append('sources', f, f.name); });
+              var bres = await api('explainer-batch', { method: 'POST', body: bf });
+              ed.pdfs = [];
+              toast(fmt('exp_batch_started', { n: (bres.projects || []).length }));
+            } catch (e) { toast(fmt('err', { e: e.message }), true); }
+            finally { busy--; current = await api('projects/' + p.id); drawEditor(); }
+            return;
+          }
           var nsel = $('#exp-narrator');
           var hasPoints = (p.shots || []).some(function (s) { return !s.recorded; });
           if (hasPoints && !confirm(S.exp_replace_confirm)) return;
@@ -2384,7 +2406,7 @@
             [['project', p.id], ['topic', ed.topic || ''], ['minutes', ed.minutes], ['narrator', nsel ? nsel.value : ''],
              ['title_card', ed.card ? '1' : ''], ['replace', hasPoints ? '1' : ''], ['look', ed.look || 'pictures'],
              ['auto', ed.auto ? '1' : ''], ['size', esz ? esz.value : '1080']].forEach(function (kv) { ef2.append(kv[0], kv[1]); });
-            if (ed.pdf) ef2.append('source', ed.pdf, ed.pdf.name);
+            if (files.length) ef2.append('source', files[0], files[0].name);
             var ex = await api('explainer-script', { method: 'POST', body: ef2 });
             if (ex.title && (p.name === S.untitled || !p.name.trim())) { current = await api('projects/' + p.id); current.name = ex.title; markDirty(); await flushSave(); }
             toast(ex.auto ? fmt('exp_auto_started', { n: ex.queued }) : fmt('exp_written', { n: ex.points }));
@@ -2409,7 +2431,7 @@
           if (ids2.length) await generate(ids2);
           return;
         }
-        if (b.id === 'exp-pdf-clear') { (expDraft[p.id] || {}).pdf = null; drawTab(); return; }
+        if (b.id === 'exp-pdf-clear') { (expDraft[p.id] || {}).pdfs = []; drawTab(); return; }
         if (b.id === 'exp-make-all') {
           await flushSave();
           b.disabled = true;

@@ -1033,6 +1033,64 @@ r = client.post("/studio/api/explainer-script", headers=HOME, content_type="mult
     "project": "exp1", "narrator": "narr1", "source": (io.BytesIO(b"not a pdf at all"), "x.pdf")})
 check("  something that is neither a PDF nor a photo is refused before anything is asked or filed",
       r.status_code == 400 and not asked_x and not posted_x, r.status_code)
+print("\none video for each file: a project each, written and made one after another")
+_saved_b = (A._studio_background, A._notify_user, A.t_for)
+A._studio_background = lambda fn, *a: fn(*a)
+A.t_for = lambda login, key, **kw: key + (json.dumps(kw, ensure_ascii=False) if kw else "")
+told_b = []
+A._notify_user = lambda user, text, **kw: told_b.append(text)
+new_ids = iter(["prja", "prjb", "prjc"])
+_inner_scx = A._studio_call
+
+
+def _scx_b(username, method, path, body=None, timeout=30, via=""):
+    if method == "POST" and path == "projects":
+        posted_x.append((method, path, body, via))
+        return {"id": next(new_ids)}
+    m = re.fullmatch(r"projects/(prj[a-z])(/.*)?", path)
+    if m:                                               # a new project answers as exp1 does, but empty
+        if method == "GET" and not m.group(2):
+            return {"id": m.group(1), "settings": {"language": "es"}, "shots": [], "audio": []}
+        if m.group(2) == "/characters":
+            return {"characters": [dict(XCHARS[0], scope="person")]}
+        posted_x.append((method, path, body, via))
+        if m.group(2) == "/items":
+            return {"items": [f"{m.group(1)}{i}{'x' * 8}" for i in range(len(body["items"]))]}
+        return {"ok": True}
+    return _inner_scx(username, method, path, body, timeout, via)
+
+
+A._studio_call = _scx_b
+posted_x.clear(); asked_x.clear()
+good = '{"title": "t", "points": [{"exercise": 1, "narration": "uno", "writing": ["a"]}, {"exercise": 1, "narration": "dos", "writing": ["b"]}]}'
+answers_x[:] = [good, "not json", "still not", good]
+r = client.post("/studio/api/explainer-batch", headers=HOME, content_type="multipart/form-data", data={
+    "project": "exp1", "narrator": "narr1", "look": "writing", "minutes": "2",
+    "sources": [(io.BytesIO(_tiny_pdf("Ficha uno: y = 2x. " * 12)), "ficha-1.pdf"),
+                (io.BytesIO(_tiny_pdf("Ficha dos: y = x + 1. " * 12)), "ficha-2.pdf"),
+                (io.BytesIO(_tiny_pdf("Ficha tres: y = 3x. " * 12)), "ficha-3.pdf")]})
+made_b = [c for c in posted_x if c[1] == "projects"]
+check("every file is its own explainer project, named after it -- this one keeps its points",
+      r.status_code == 200 and [p["name"] for p in r.get_json()["projects"]] == ["ficha-1", "ficha-2", "ficha-3"]
+      and [c[2] for c in made_b] == [{"name": f"ficha-{i}", "kind": "explainer"} for i in (1, 2, 3)],
+      (r.status_code, r.get_data(as_text=True)[:200], made_b))
+check("  with this project's language and look, and its narrator -- widened first, so the new projects have it",
+      ("POST", "projects/exp1/characters/narr1/widen", None, "") in posted_x
+      and ("PUT", "projects/prja", {"settings": {"language": "en", "look": "flat 2D vector", "narrator": "narr1"}}, "")
+      in posted_x, [c for c in posted_x if c[0] == "PUT"][:2])
+autos_b = [c[1] for c in posted_x if c[1].endswith("/explainer/auto")]
+check("  each is written from its own file and made by itself; one that cannot be written is told about, and the"
+      " next goes on", autos_b == ["projects/prja/explainer/auto", "projects/prjc/explainer/auto"]
+      and len(told_b) == 1 and told_b[0].startswith("studio.exp_batch_failed") and "ficha-2" in told_b[0]
+      and "studio.exp_failed" in told_b[0]
+      and "Ficha uno" in asked_x[0] and "Ficha dos" in asked_x[1] and "Ficha tres" in asked_x[-1], (autos_b, told_b))
+posted_x.clear()
+r = client.post("/studio/api/explainer-batch", headers=HOME, content_type="multipart/form-data", data={
+    "project": "exp1", "narrator": "narr1",
+    "sources": [(io.BytesIO(_tiny_pdf("x")), f"f{i}.pdf") for i in range(A.EXPLAINER_BATCH_FILES + 1)]})
+check("  more files than it takes at once are refused, and nothing is made", r.status_code == 400 and not posted_x)
+A._studio_call = _inner_scx
+A._studio_background, A._notify_user, A.t_for = _saved_b
 A._studio_call, A._run_nanobot_turn, A._studio_writer = _saved_x
 
 

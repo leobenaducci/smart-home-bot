@@ -185,6 +185,20 @@ The model is a 9B one, and **its working is not always right**: on a worksheet
 of inverse functions each run slipped a sign or a step in one exercise of five.
 The points are editable on the page before (or after) the video is made.
 
+### Several files, one video each
+
+`POST /studio/api/explainer-batch` (a form, the files as `sources`, up to 10)
+makes every file its own explainer project, named after the file, with the
+current project's language and look and the box's narrator and choices; the
+current project takes the first file when it has no points yet. A narrator
+that lived only in the current project is widened to all the person's
+projects first, so each new one has it. The files are then written and made by
+themselves one after another, in the portal's background (`_explainer_batch`):
+one turn of the house's model at a time, not ten at once. A file that cannot be
+read or written is told about with its name and the rest go on; one that is
+made is told about by the Studio when its video is ready. The writing itself is
+`_explainer_write`, the same code the single route runs.
+
 ### A written point
 
 `write` on a shot (`clean_write`: up to 8 lines, 140 characters each) is drawn

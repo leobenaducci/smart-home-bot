@@ -22980,7 +22980,7 @@ STUDIO_UI_KEYS = (
     'exp_need_topic', 'exp_need_narrator', 'exp_failed', 'exp_written',
     'exp_source', 'exp_source_hint', 'exp_source_clear', 'exp_look', 'exp_look_pictures', 'exp_look_writing',
     'exp_look_mixed', 'exp_auto', 'exp_make_all', 'exp_auto_started', 'exp_auto_now', 'exp_reading',
-    'exp_written_page', 'exp_write_ph',
+    'exp_written_page', 'exp_write_ph', 'exp_write_many', 'exp_many_hint', 'exp_batch_started',
     'pod_music', 'pod_write', 'pod_writing', 'pod_written', 'pod_replace_confirm', 'pod_need_topic',
     'pod_need_hosts', 'pod_failed', 'pod_make_all', 'pod_go_audio', 'pod_versions', 'pod_help', 'alone_label',
     'pkind_audio_story', 'pkind_audio_story_about', 'tab_story', 'story_cover', 'story_cover_ph',
@@ -23431,40 +23431,39 @@ def _explainer_prompt(language, topic, audience, look_words, minutes, n, look, s
         + (f"\n\nThe material:\n<<<\n{source}\n>>>" if source else ""))
 
 
-@app.route('/studio/api/explainer-script', methods=['POST'])
-@api_login_required
-def studio_explainer_script():
-    """✍️ An explainer written by the house's own model: a topic, a PDF, or
-    both, as a few points, each a narration and how it is shown -- a picture,
-    or lines written by hand on a page (`look`). Filed in the project as one
-    shot a point and one voice card a point -- said by the narrator, a
-    character with a voice sample, and linked to its shot (`point`) -- under
-    Alfred's name; with `title_card`, a title card first. `replace` takes the
-    old points and their narrations out first; the music stays. With `auto`,
-    the Studio then makes everything and puts the film together by itself.
-    JSON, or a form with the PDF as `source`."""
-    if not _studio_configured() or not _studio_reachable():
-        abort(404)
-    username = session['user']
-    d = request.form.to_dict() if request.files or request.form else (request.get_json(silent=True) or {})
+class _ExplainerError(Exception):
+    """Why an explainer could not be written: a catalogue key, and the status
+    a request answers with -- or, run in the background, what the person is
+    told."""
 
+    def __init__(self, key, status=400, **extra):
+        super().__init__(key)
+        self.key, self.status, self.extra = key, status, extra
+
+
+def _explainer_source_of(data):
+    """The text a source file gives: a PDF read page by page (or from its
+    text), a photo read as one page. Raises _ExplainerError."""
+    photo = _explainer_photo_type(data)
+    if len(data) > EXPLAINER_SOURCE_BYTES or not (data.startswith(b'%PDF') or photo):
+        raise _ExplainerError('studio.exp_bad_source')
+    source = _explainer_read_page(data, photo)[:EXPLAINER_SOURCE_CHARS] if photo else _explainer_source(data)
+    if not source.strip():
+        raise _ExplainerError('studio.exp_unread_source')
+    return source
+
+
+def _explainer_write(username, pid, d, source=''):
+    """Write an explainer into project *pid* as *username* and file it: `d`
+    holds the box's fields (topic, look, minutes, narrator, audience,
+    title_card, replace, auto, size), `source` what a file said. Returns what
+    was made; raises _ExplainerError. No request needed: a batch runs it in the
+    background, a file at a time."""
     def flag(key):
         return str(d.get(key) or '').lower() in ('1', 'true', 'on', 'yes')
-    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
     topic = str(d.get('topic') or '').strip()[:1500]
-    source = ''
-    upload = request.files.get('source')
-    if upload and upload.filename:
-        data = upload.read(EXPLAINER_SOURCE_BYTES + 1)
-        photo = _explainer_photo_type(data)
-        if len(data) > EXPLAINER_SOURCE_BYTES or not (data.startswith(b'%PDF') or photo):
-            return jsonify(error=t('studio.exp_bad_source')), 400
-        source = (_explainer_read_page(data, photo)[:EXPLAINER_SOURCE_CHARS] if photo
-                  else _explainer_source(data))
-        if not source.strip():
-            return jsonify(error=t('studio.exp_unread_source')), 400
     if not topic and not source:
-        return jsonify(error=t('studio.exp_need_topic')), 400
+        raise _ExplainerError('studio.exp_need_topic')
     look = d.get('look') if d.get('look') in EXPLAINER_LOOKS else 'pictures'
     try:
         minutes = max(1, min(10, int(d.get('minutes') or 2)))
@@ -23472,11 +23471,11 @@ def studio_explainer_script():
         minutes = 2
     doc = _studio_call(username, 'GET', f'projects/{pid}')
     if not doc:
-        abort(404)
+        raise _ExplainerError('studio.unreachable', 404)
     chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
     narrator = next((c for c in chars if c.get('id') == str(d.get('narrator') or '') and c.get('voice')), None)
     if not narrator:
-        return jsonify(error=t('studio.exp_need_narrator')), 400
+        raise _ExplainerError('studio.exp_need_narrator')
     language = {'es': 'Spanish', 'en': 'English'}.get(
         str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
     n = max(2, min(EXPLAINER_MAX_POINTS, round(minutes * PODCAST_WORDS_PER_MIN / EXPLAINER_POINT_WORDS)))
@@ -23492,17 +23491,17 @@ def studio_explainer_script():
                                                  'JSON object, no code fence.'}]
         out = _studio_parse_explainer(_studio_writer(messages), look)
     if out is None:
-        return jsonify(error=t('studio.exp_failed')), 502
+        raise _ExplainerError('studio.exp_failed', 502)
     title, subtitle, points = out
     if flag('replace'):
         # The project as it is now: the PUT replaces whole lists, and the one
         # read before the model's turn is minutes old.
         fresh = _studio_call(username, 'GET', f'projects/{pid}')
         if not fresh:
-            return jsonify(error=t('studio.exp_failed')), 502
+            raise _ExplainerError('studio.exp_failed', 502)
         kept_audio = [a for a in fresh.get('audio') or [] if not a.get('point')]
         if _studio_call(username, 'PUT', f'projects/{pid}', {'shots': [], 'audio': kept_audio}, via='Alfred') is None:
-            return jsonify(error=t('studio.exp_failed')), 502
+            raise _ExplainerError('studio.exp_failed', 502)
 
     def said_in(pt):
         return len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60)
@@ -23519,22 +23518,126 @@ def studio_explainer_script():
     added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')
     ids = (added or {}).get('items') or []
     if len(ids) != len(shots):
-        return jsonify(error=t('studio.exp_failed')), 502
+        raise _ExplainerError('studio.exp_failed', 502)
     point_ids = ids[1:] if flag('title_card') else ids
     voices = [{'kind': 'voice', 'title': f'{i + 1}', 'speaker': narrator['id'], 'text': pt['narration'],
                'point': sid, 'seconds': max(5, min(120, round(said_in(pt) * 1.4) + 3))}
               for i, (pt, sid) in enumerate(zip(points, point_ids))]
     if not _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': voices}, via='Alfred'):
-        return jsonify(error=t('studio.exp_failed')), 502
+        raise _ExplainerError('studio.exp_failed', 502)
     _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'narrator': narrator['id']}}, via='Alfred')
     made = None
     if flag('auto'):
         made = _studio_call(username, 'POST', f'projects/{pid}/explainer/auto',
                             {'format': 'h264', 'size': '720' if str(d.get('size')) == '720' else '1080'})
         if made is None:
-            return jsonify(title=title, points=len(points), error=t('studio.exp_auto_failed')), 502
-    return jsonify(title=title, points=len(points), written=sum(1 for pt in points if pt.get('write')),
-                   auto=bool(made), queued=len((made or {}).get('queued') or []))
+            raise _ExplainerError('studio.exp_auto_failed', 502, title=title, points=len(points))
+    return {'title': title, 'points': len(points), 'written': sum(1 for pt in points if pt.get('write')),
+            'auto': bool(made), 'queued': len((made or {}).get('queued') or [])}
+
+
+@app.route('/studio/api/explainer-script', methods=['POST'])
+@api_login_required
+def studio_explainer_script():
+    """✍️ An explainer written by the house's own model: a topic, a PDF or a
+    photo, or both, as a few points, each a narration and how it is shown -- a
+    picture, or lines written by hand on a page (`look`). Filed in the project
+    as one shot a point and one voice card a point -- said by the narrator, a
+    character with a voice sample, and linked to its shot (`point`) -- under
+    Alfred's name; with `title_card`, a title card first. `replace` takes the
+    old points and their narrations out first; the music stays. With `auto`,
+    the Studio then makes everything and puts the film together by itself.
+    JSON, or a form with the file as `source`."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    d = request.form.to_dict() if request.files or request.form else (request.get_json(silent=True) or {})
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    try:
+        upload = request.files.get('source')
+        source = (_explainer_source_of(upload.read(EXPLAINER_SOURCE_BYTES + 1))
+                  if upload and upload.filename else '')
+        return jsonify(_explainer_write(session['user'], pid, d, source))
+    except _ExplainerError as exc:
+        if exc.status == 404:
+            abort(404)
+        return jsonify(error=t(exc.key), **exc.extra), exc.status
+
+
+# Files at once: each is a project, written and made one after the other, so
+# ten files are ten turns of the house's model in a row, not ten at once.
+EXPLAINER_BATCH_FILES = 10
+
+
+def _explainer_batch(username, jobs, d):
+    """Each (project, name, bytes) in turn: read, written, and made by itself.
+    A file that fails is told about and the next one goes on; one made is told
+    about by the Studio when its video is ready."""
+    for pid, name, data in jobs:
+        try:
+            _explainer_write(username, pid, dict(d, auto='1', replace=''), _explainer_source_of(data))
+        except _ExplainerError as exc:
+            _notify_user(username, t_for(username, 'studio.exp_batch_failed', name=name,
+                                         why=t_for(username, exc.key)),
+                         title=t_for(username, 'studio.title'), tags='warning',
+                         click=f'{HOMECORE_PUBLIC_URL}/studio?project={pid}')
+        except Exception:                                  # noqa: BLE001 -- one file never stops the rest
+            app.logger.exception('studio: explainer batch failed on %s', name)
+            _notify_user(username, t_for(username, 'studio.exp_batch_failed', name=name,
+                                         why=t_for(username, 'studio.exp_failed')),
+                         title=t_for(username, 'studio.title'), tags='warning',
+                         click=f'{HOMECORE_PUBLIC_URL}/studio?project={pid}')
+
+
+@app.route('/studio/api/explainer-batch', methods=['POST'])
+@api_login_required
+def studio_explainer_batch():
+    """🎬 One video for each file: every PDF or photo given becomes its own
+    explainer project -- named after the file, with this one's language, look
+    and narrator, the box's choices -- written and made by itself, a file
+    after the other, in the background. This project takes the first file
+    when it has no points yet. The narrator is widened to all of the person's
+    projects when it lived only in this one, so every new project has it."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.form.to_dict()
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    files = [f for f in request.files.getlist('sources') if f and f.filename]
+    if not files:
+        return jsonify(error=t('studio.exp_need_topic')), 400
+    if len(files) > EXPLAINER_BATCH_FILES:
+        return jsonify(error=t('studio.exp_too_many', n=EXPLAINER_BATCH_FILES)), 400
+    blobs = []
+    for f in files:
+        data = f.read(EXPLAINER_SOURCE_BYTES + 1)
+        if len(data) > EXPLAINER_SOURCE_BYTES or not (data.startswith(b'%PDF') or _explainer_photo_type(data)):
+            return jsonify(error=t('studio.exp_bad_source') + f' ({f.filename})'), 400
+        name = os.path.splitext(os.path.basename(f.filename))[0].strip()[:80] or t('studio.untitled')
+        blobs.append((name, data))
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        abort(404)
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    narrator = next((c for c in chars if c.get('id') == str(d.get('narrator') or '') and c.get('voice')), None)
+    if not narrator:
+        return jsonify(error=t('studio.exp_need_narrator')), 400
+    if (narrator.get('scope') or 'project') == 'project':
+        if not _studio_call(username, 'POST', f'projects/{pid}/characters/{narrator["id"]}/widen'):
+            return jsonify(error=t('studio.exp_failed')), 502
+    keep = {k: v for k, v in (doc.get('settings') or {}).items() if k in ('language', 'look')}
+    keep['narrator'] = narrator['id']
+    jobs = []
+    for i, (name, data) in enumerate(blobs):
+        if i == 0 and not any(not s.get('recorded') for s in doc.get('shots') or []):
+            target = pid
+        else:
+            made = _studio_call(username, 'POST', 'projects', {'name': name, 'kind': 'explainer'})
+            target = (made or {}).get('id')
+            if not target or _studio_call(username, 'PUT', f'projects/{target}', {'settings': keep}) is None:
+                return jsonify(error=t('studio.exp_failed'), started=len(jobs)), 502
+        jobs.append((target, name, data))
+    _studio_background(_explainer_batch, username, jobs, d)
+    return jsonify(projects=[{'id': p, 'name': n} for p, n, _ in jobs])
 
 
 # A short film's shots: H3 takes 5-20 s a shot and ~5 card-minutes a second,
