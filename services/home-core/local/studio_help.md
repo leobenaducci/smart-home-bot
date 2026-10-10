@@ -184,8 +184,9 @@ written by hand on a page.
 1. **The narrator** is a character with a voice sample (make one in
    **Characters**).
 2. On the **Points** tab, **✍️ Write the explainer with Alfred**: say what it
-   explains (and for whom), or give it a **📄 PDF** -- notes, a handout, a
-   worksheet: the video explains what it says and works through its exercises.
+   explains (and for whom), or give it a **📄 PDF or a photo** -- notes, a
+   handout, a worksheet, the board: the video explains what it says and works
+   through its exercises one by one, each on its own sheet, a step at a time.
    Choose **how it looks**: pictures; **handwritten on a page**, seen by the
    person writing (best for maths: the formulas come out exact); or both. Then
    the narrator, the length (1-10 minutes) and whether a title card opens it.

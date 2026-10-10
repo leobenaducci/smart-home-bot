@@ -23231,6 +23231,15 @@ STUDIO_WRITER_MODEL = os.environ.get('STUDIO_WRITER_MODEL') or os.environ.get('S
 STUDIO_WRITER_KEY = (os.environ.get('STUDIO_WRITER_KEY', '') if os.environ.get('STUDIO_WRITER_URL')
                      else os.environ.get('STUDIO_VISION_KEY', ''))
 STUDIO_WRITER_REASONING = os.environ.get('STUDIO_WRITER_REASONING', 'none')
+# How written points group: one exercise on one sheet, a step a point. The
+# Studio carries a sheet from point to point (studio/handwriting.py) and turns
+# it where the exercise changes -- without this every step was a fresh page,
+# and an exercise came out as a run of short unrelated clips.
+EXPLAINER_EXERCISE_RULE = (
+    "Each point also says which exercise it belongs to: \"exercise\": 1, 2, 3... in order, 0 for an introduction "
+    "or a summary. An exercise is worked on one sheet of paper: its first point writes the exercise as given, each "
+    "next point writes only the next step below it, and its last point writes the answer. The narration says what "
+    "is being written at that moment.")
 # The mathtext a written point may use: what Matplotlib draws without TeX.
 EXPLAINER_MATH_RULE = (
     "A written line is {\"words\": ..., \"formula\": ...}, either one or both: the words in the narration's "
@@ -23287,6 +23296,26 @@ def _pdf_page_pictures(data, limit):
         return None
 
 
+def _explainer_read_page(png, mime='image/png'):
+    return _studio_writer([{'role': 'user', 'content': [
+        {'type': 'text', 'text': 'Transcribe all the text and formulas on this page exactly as written, in '
+                                 'reading order, keeping the numbering. Formulas in LaTeX between $...$. '
+                                 'Only the transcription.'},
+        {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,' + base64.b64encode(png).decode()}}]}],
+        max_tokens=2500, timeout=180, json_out=False).strip()
+
+
+EXPLAINER_PHOTO_TYPES = ((b'\xff\xd8\xff', 'image/jpeg'), (b'\x89PNG', 'image/png'))
+
+
+def _explainer_photo_type(data):
+    """The type of a photo handed in as the source -- a whiteboard, a page --
+    or None when it is not one this reads."""
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return next((mime for magic, mime in EXPLAINER_PHOTO_TYPES if data.startswith(magic)), None)
+
+
 def _explainer_source(data):
     """What a PDF handed to the explainer says, capped. A short one is read
     page by page by the house's vision model -- the only reading that keeps a
@@ -23299,12 +23328,7 @@ def _explainer_source(data):
         text = ''
     read = []
     for n, png in enumerate(_pdf_page_pictures(data, EXPLAINER_OCR_PAGES) or [], 1):
-        said = _studio_writer([{'role': 'user', 'content': [
-            {'type': 'text', 'text': 'Transcribe all the text and formulas on this page exactly as written, in '
-                                     'reading order, keeping the numbering. Formulas in LaTeX between $...$. '
-                                     'Only the transcription.'},
-            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(png).decode()}}]}],
-            max_tokens=2500, timeout=180, json_out=False).strip()
+        said = _explainer_read_page(png)
         if said:
             read.append(f'[page {n}]\n{said}')
     return ('\n\n'.join(read) or text)[:EXPLAINER_SOURCE_CHARS]
@@ -23317,6 +23341,10 @@ def _explainer_write_line(entry):
     if isinstance(entry, dict):
         words = ' '.join(str(entry.get('words') or '').split())
         formula = ' '.join(str(entry.get('formula') or '').split()).strip('$ ')
+        # The formula copied into the label as well (measured: every line of a
+        # run came back so) -- the label is then math, not words, and goes.
+        if formula and re.search(r'[\\^_=]', words):
+            words = ''
         return ' '.join(x for x in (words, f'${formula}$' if formula else '') if x)
     return ' '.join(str(entry or '').split())
 
@@ -23348,7 +23376,11 @@ def _studio_parse_explainer(text, look='pictures'):
         if not said:
             continue
         if look != 'pictures' and write:
-            points.append({'narration': said, 'write': write})
+            try:
+                exercise = int(entry.get('exercise') or 0)
+            except (TypeError, ValueError):
+                exercise = 0
+            points.append({'narration': said, 'write': write, 'exercise': exercise})
         elif look != 'writing' and shows:
             points.append({'narration': said, 'picture': shows})
     if len(points) < 2:
@@ -23363,18 +23395,19 @@ def _explainer_prompt(language, topic, audience, look_words, minutes, n, look, s
                      'in English (1-2 sentences) for a text-to-image model: what is on screen, the setting, the '
                      'framing; no text, letters, labels or diagrams with words in it. ' + STUDIO_STYLE_RULE),
         'writing': ('and what the narrator writes by hand on a sheet of paper while saying it, seen from the '
-                    f'writer\'s own eyes: "writing", 1 to {EXPLAINER_WRITE_LINES} short lines (at most 40 characters '
-                    'each) -- the key words, the formula, the next step of the working. ' + EXPLAINER_MATH_RULE),
-        'mixed': ('and how it is shown: either "writing" -- 1 to '
-                  f'{EXPLAINER_WRITE_LINES} short lines the narrator writes by hand on paper while saying it, for '
-                  'anything with words, numbers or formulas -- or "picture", one concrete visual description in '
-                  'English for a text-to-image model, with no text in it, for everything else. Never both. '
-                  + EXPLAINER_MATH_RULE + ' ' + STUDIO_STYLE_RULE),
+                    'writer\'s own eyes: "writing", 1 or 2 lines -- the next step of the working, as a formula, '
+                    'with at most a 1-4 word label ("Multiplicamos por 5:"), never a sentence, a table or an array. '
+                    + EXPLAINER_EXERCISE_RULE + ' ' + EXPLAINER_MATH_RULE),
+        'mixed': ('and how it is shown: either "writing" -- 1 or 2 lines the narrator writes by hand on paper '
+                  'while saying it, for anything with numbers or formulas: the next step as a formula, with at most '
+                  'a 1-4 word label, never a sentence or a table -- or "picture", one concrete visual description '
+                  'in English for a text-to-image model, with no text in it, for everything else. Never both. '
+                  + EXPLAINER_EXERCISE_RULE + ' ' + EXPLAINER_MATH_RULE + ' ' + STUDIO_STYLE_RULE),
     }[look]
     example = {'pictures': '{"narration": "...", "picture": "..."}',
-               'writing': ('{"narration": "...", "writing": [{"words": "Despejamos", "formula": "x"}, '
-                           '{"formula": "x = \\\\frac{7y}{2}"}]}'),
-               'mixed': ('{"narration": "...", "writing": [{"words": "...", "formula": "..."}]} or '
+               'writing': ('{"exercise": 1, "narration": "...", "writing": [{"words": "Multiplicamos por 7:", '
+                           '"formula": "7y = 2x"}]}'),
+               'mixed': ('{"exercise": 1, "narration": "...", "writing": [{"words": "...", "formula": "..."}]} or '
                          '{"narration": "...", "picture": "..."}')}[look]
     return (
         f"Write a short narrated explainer video in {language}"
@@ -23384,8 +23417,11 @@ def _explainer_prompt(language, topic, audience, look_words, minutes, n, look, s
         + (("Base it on the material below and explain what it says, in its order. If it holds exercises, work "
             "through them: say how each is solved and show the working step by step, with the right answers.\n")
            if source else "")
-        + f"About {minutes} minute(s): about {n} points, each a narration of 1 to 3 sentences (about "
-        f"{EXPLAINER_POINT_WORDS} words) said by a narrator, " + shown + " Explain one idea per point, in order, "
+        + f"About {minutes} minute(s): about {n} points"
+        + (" -- or as many as working every exercise through takes, up to "
+           f"{EXPLAINER_MAX_POINTS}" if look != 'pictures' else "")
+        + f", each a narration of 1 to 3 sentences (about {EXPLAINER_POINT_WORDS} words) said by a narrator, "
+        + shown + " Explain one idea per point, in order, "
         "simply and concretely; the first point says what the video explains, the last sums it up. The narration "
         "is spoken words only -- no stage directions, no markdown, and formulas said in words as a person would "
         "read them aloud.\n"
@@ -23420,9 +23456,11 @@ def studio_explainer_script():
     upload = request.files.get('source')
     if upload and upload.filename:
         data = upload.read(EXPLAINER_SOURCE_BYTES + 1)
-        if len(data) > EXPLAINER_SOURCE_BYTES or not data.startswith(b'%PDF'):
+        photo = _explainer_photo_type(data)
+        if len(data) > EXPLAINER_SOURCE_BYTES or not (data.startswith(b'%PDF') or photo):
             return jsonify(error=t('studio.exp_bad_source')), 400
-        source = _explainer_source(data)
+        source = (_explainer_read_page(data, photo)[:EXPLAINER_SOURCE_CHARS] if photo
+                  else _explainer_source(data))
         if not source.strip():
             return jsonify(error=t('studio.exp_unread_source')), 400
     if not topic and not source:
@@ -23471,8 +23509,13 @@ def studio_explainer_script():
     card_title = title or topic[:120] or (doc.get('name') or '')[:120]
     shots = ([{'card': {'title': card_title, 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
              if flag('title_card') else [])
-    shots += [({'prompt': '', 'write': pt['write']} if pt.get('write') else {'prompt': pt['picture']})
-              | {'seconds': max(3, min(30, round(said_in(pt)) + 1))} for pt in points]
+    shots += [({'prompt': '', 'write': pt['write'],
+                # A new sheet where the exercise changes; the same one for
+                # each next step of it (the Studio turns a full one anyway).
+                'continuity': i > 0 and bool(points[i - 1].get('write'))
+                              and points[i - 1].get('exercise') == pt.get('exercise')}
+               if pt.get('write') else {'prompt': pt['picture']})
+              | {'seconds': max(3, min(30, round(said_in(pt)) + 1))} for i, pt in enumerate(points)]
     added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')
     ids = (added or {}).get('items') or []
     if len(ids) != len(shots):

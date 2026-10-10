@@ -1826,7 +1826,7 @@
         '<label class="f" for="exp-topic">' + S.exp_topic + '</label><textarea id="exp-topic" rows="2" placeholder="' + esc(S.exp_topic_ph) + '">' + esc(d.topic) + '</textarea>' +
         '<label class="f" for="exp-pdf">📄 ' + S.exp_source + '</label>' +
         (d.pdf ? '<div class="row" style="align-items:center"><span>📄 ' + esc(d.pdf.name) + '</span><button id="exp-pdf-clear" title="' + esc(S.exp_source_clear) + '">✕</button></div>'
-               : '<input type="file" id="exp-pdf" accept="application/pdf,.pdf">') +
+               : '<input type="file" id="exp-pdf" accept="application/pdf,.pdf,image/jpeg,image/png,image/webp">') +
         '<p class="muted" style="margin:4px 0 0;font-size:.85rem">' + esc(S.exp_source_hint) + '</p>' +
         '<label class="f" for="exp-look">' + S.exp_look + '</label><select id="exp-look">' +
         ['pictures', 'writing', 'mixed'].map(function (k) { return '<option value="' + k + '"' + (d.look === k ? ' selected' : '') + '>' + (k === 'pictures' ? '🖼️ ' : k === 'writing' ? '✍️ ' : '🖼️✍️ ') + esc(S['exp_look_' + k]) + '</option>'; }).join('') + '</select>' +

@@ -955,6 +955,35 @@ check("  and asked to, the Studio is told to make the whole video by itself, at 
       and posted_x.index(auto_x[0]) > posted_x.index(adds[-1]), posted_x)
 
 
+posted_x.clear(); asked_x.clear()
+answers_x[:] = ['{"title": "t", "points": ['
+                '{"exercise": 0, "narration": "Hoy, inversas.", "writing": [{"words": "Funciones inversas"}]},'
+                '{"exercise": 1, "narration": "La primera.", "writing": [{"words": "y = \\\\frac{2x}{7}", "formula": "y = \\\\frac{2x}{7}"}]},'
+                '{"exercise": 1, "narration": "Por siete.", "writing": [{"words": "Por 7:", "formula": "7y = 2x"}]},'
+                '{"exercise": 2, "narration": "La segunda.", "writing": [{"formula": "y = x + 1"}]},'
+                '{"exercise": 2, "narration": "Restamos.", "writing": [{"formula": "x = y - 1"}]}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, json={
+    "project": "exp1", "topic": "inversas", "narrator": "narr1", "look": "writing"})
+adds = [c for c in posted_x if c[1] == "projects/exp1/items"]
+shots_e = adds[0][2]["items"] if adds else []
+check("an exercise is one sheet: a new one where the exercise changes, the same one for each next step",
+      [x.get("continuity") for x in shots_e] == [False, False, True, False, True], [x.get("continuity") for x in shots_e])
+check("  a label that only repeats the formula is dropped; a real one is kept",
+      shots_e[1]["write"] == ["$y = \\frac{2x}{7}$"] and shots_e[2]["write"] == ["Por 7: $7y = 2x$"],
+      [x.get("write") for x in shots_e])
+check("  and the writer is told to work each exercise on its sheet, a step a point",
+      A.EXPLAINER_EXERCISE_RULE in asked_x[0] and "never a sentence" in asked_x[0], asked_x[0][:300])
+
+posted_x.clear(); asked_x.clear()
+read_x[:] = ["1) Determinar $f^{-1}(x)$ en a) $y = \\frac{2x}{7}$"]
+answers_x[:] = ['{"title": "t", "points": [{"narration": "uno", "writing": ["a"]}, {"narration": "dos", "writing": ["b"]}]}']
+r = client.post("/studio/api/explainer-script", headers=HOME, content_type="multipart/form-data", data={
+    "project": "exp1", "narrator": "narr1", "look": "writing",
+    "source": (io.BytesIO(b"\xff\xd8\xff\xe0 a photo of the board"), "pizarron.jpg")})
+check("a photo of the board is a source too, read by the vision model",
+      r.status_code == 200 and "$y = \\frac{2x}{7}$" in asked_x[0], (r.status_code, asked_x[:1]))
+
+
 def _tiny_pdf(text):
     """A one-page PDF with *text* on it, by hand: nothing here writes PDFs."""
     stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
@@ -1002,7 +1031,7 @@ except ImportError:
 posted_x.clear(); asked_x.clear()
 r = client.post("/studio/api/explainer-script", headers=HOME, content_type="multipart/form-data", data={
     "project": "exp1", "narrator": "narr1", "source": (io.BytesIO(b"not a pdf at all"), "x.pdf")})
-check("  something that is not a PDF is refused before anything is asked or filed",
+check("  something that is neither a PDF nor a photo is refused before anything is asked or filed",
       r.status_code == 400 and not asked_x and not posted_x, r.status_code)
 A._studio_call, A._run_nanobot_turn, A._studio_writer = _saved_x
 

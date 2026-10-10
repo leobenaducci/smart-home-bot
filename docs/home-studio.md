@@ -157,8 +157,8 @@ the film it counts is not the explainer's.
 `POST /studio/api/explainer-script` (the portal) has the house's own model write
 it -- the Studio's vision model (`assistant.models.vision`), or
 `STUDIO_WRITER_URL`/`_MODEL` -- not the person's assistant: a worksheet a child
-hands it stays in the house. It takes a topic, a PDF (`source`, a form), or
-both, and asks for `{"title", "subtitle", "points": [{"narration", "picture" |
+hands it stays in the house. It takes a topic, a PDF or a photo (`source`, a
+form -- a photo of the board is read like one page), or both, and asks for `{"title", "subtitle", "points": [{"narration", "picture" |
 "writing"}]}` at about 35 words a point and ~140 a minute. A PDF of up to eight
 pages is drawn page by page (pypdfium2) and read by the same model -- a text
 layer turns a fraction into three lines -- and a longer one from its text; with
@@ -171,7 +171,11 @@ English with no text in it and no style words (`STUDIO_STYLE_RULE`; the look
 carries the style). `writing`: lines written by hand on a page, each asked for
 as `{"words", "formula"}` and joined here as `words $formula$` -- asked to put
 `$...$` round its own formulas, the 9B model forgot about one run in two.
-`mixed`: the writer picks, per point. The points are filed as shots (a title
+`mixed`: the writer picks, per point. Written points also carry `exercise` (0
+for an introduction or summary): an exercise is worked on one sheet, its
+statement first and then a step a point, and each point is filed with
+`continuity` off where the exercise changes. A label that repeats the formula
+is dropped -- one run copied every formula into it. The points are filed as shots (a title
 card first when asked; a written point is a shot with `write` and no prompt,
 so nothing draws it), then one narration a point linked by id, under Alfred's
 name. `replace` drops the old points and their narrations; the music stays.
@@ -187,7 +191,11 @@ The points are editable on the page before (or after) the video is made.
 on the CPU when the explainer is put together (`studio/handwriting.py`): a ruled
 sheet on a desk, seen by the person writing, the lines appearing left to right
 under a pen over the narration's length -- about 3 s for a full line, faster
-when the point is short. Words are in Comic Neue (`fonts-comic-neue`, in the
+when the point is short. A written point carries on the sheet of the written
+point before it, those lines there from its first frame (`already`), and a new
+sheet starts where its `continuity` is off, after anything that is not writing,
+or when the sheet's eight lines are full: without that, every step of an
+exercise was a fresh page and an exercise played as a row of short clips. Words are in Comic Neue (`fonts-comic-neue`, in the
 Dockerfile; Humor Sans, matplotlib's xkcd hand, has no accents and no lower
 case), formulas in Matplotlib's mathtext between `$...$` -- no TeX in the image.
 What mathtext spells differently (`\text`, `\dfrac`) is swapped, notation left
