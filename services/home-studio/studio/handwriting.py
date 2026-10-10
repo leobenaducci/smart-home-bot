@@ -133,22 +133,38 @@ def _pen(scale: float):
     return rotated, (int(round(tx)), int(round(ty)))
 
 
-def page(lines: list[str], seconds: float, size: tuple[int, int], out: Path, lead: float = 0.4) -> Path:
-    """A silent clip of *seconds*: a sheet on a desk, *lines* written onto it
-    one after another from `lead` on, then held. The writing takes what a hand
-    would, never more than the clip leaves; a short point is written briskly
-    and a long one at the hand's own pace."""
-    import numpy as np  # noqa: PLC0415
-    from PIL import Image, ImageDraw  # noqa: PLC0415
-
-    lines = clean_write(lines)
+def _layout(size: tuple[int, int]) -> tuple[int, int, int, int, int, int]:
+    """(left, right, top of the sheet, rule spacing, text margin, first rule)."""
     w, h = size
-    font = _font_path()
     # The sheet: from just below the top of the frame to past its bottom, the
     # way a page lies in front of you when you write on it.
     px0, px1, py0 = int(w * 0.11), int(w * 0.89), int(h * 0.06)
     rule = max(24, int(h * 0.094))
-    margin = px0 + int((px1 - px0) * 0.1)
+    return px0, px1, py0, rule, px0 + int((px1 - px0) * 0.1), py0 + int(rule * 1.6)
+
+
+def capacity(size: tuple[int, int]) -> int:
+    """How many lines one sheet holds at *size*."""
+    *_rest, rule, _margin, first_rule = _layout(size)
+    return max(1, (size[1] - first_rule) // rule)
+
+
+def page(lines: list[str], seconds: float, size: tuple[int, int], out: Path, lead: float = 0.4,
+         already: list[str] | None = None) -> Path:
+    """A silent clip of *seconds*: a sheet on a desk, *lines* written onto it
+    one after another from `lead` on, then held. The writing takes what a hand
+    would, never more than the clip leaves; a short point is written briskly
+    and a long one at the hand's own pace. `already`: what the sheet holds
+    before -- the steps written in the points before this one, on the same
+    page -- there from the first frame, with *lines* carrying on below."""
+    import numpy as np  # noqa: PLC0415
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+
+    old = clean_write(already or [])
+    lines = clean_write(lines)[: max(0, capacity(size) - len(old))]
+    w, h = size
+    font = _font_path()
+    px0, px1, py0, rule, margin, first_rule = _layout(size)
     base = Image.new("RGB", (w, h), DESK)
     d = ImageDraw.Draw(base)
     for i in range(0, h, 3):
@@ -156,7 +172,6 @@ def page(lines: list[str], seconds: float, size: tuple[int, int], out: Path, lea
         d.line([(0, i), (w, i)], fill=tuple(max(0, min(255, c + shade)) for c in DESK))
     d.rectangle([px0 + 10, py0 + 12, px1 + 10, h], fill=(52, 38, 28))
     d.rectangle([px0, py0, px1, h], fill=PAPER)
-    first_rule = py0 + int(rule * 1.6)
     y = first_rule
     while y < h:
         d.line([(px0, y), (px1, y)], fill=RULE, width=max(1, h // 540))
@@ -166,10 +181,10 @@ def page(lines: list[str], seconds: float, size: tuple[int, int], out: Path, lea
 
     # The ink, all of it, and where each line sits.
     ink_alpha = np.zeros((h, w), dtype=np.float32)
-    spans = []                                             # (y0, y1, x0, x1) per line
+    spans = []                                             # (y0, y1, x0, x1) per line to write
     text_px = int(rule * 0.62)
     usable = px1 - margin - int((px1 - px0) * 0.05)
-    for i, text in enumerate(lines):
+    for i, text in enumerate(old + lines):
         a = _render_line(text, text_px, font)
         if a is None:
             continue
@@ -185,7 +200,8 @@ def page(lines: list[str], seconds: float, size: tuple[int, int], out: Path, lea
             y0 = max(0, line_y - int(rule * 0.55) - lh // 2)
             y1 = min(h, y0 + lh)
         ink_alpha[y0:y1, margin: margin + lw] = a[: y1 - y0] / 255.0
-        spans.append((y0, y1, margin, margin + lw))
+        if i >= len(old):
+            spans.append((y0, y1, margin, margin + lw))
 
     # When each line is written.
     writing = sum((x1 - x0) for _y0, _y1, x0, x1 in spans) / max(1, usable) * LINE_SECONDS
@@ -211,7 +227,11 @@ def page(lines: list[str], seconds: float, size: tuple[int, int], out: Path, lea
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     # The page as written so far, kept as the bytes sent: each frame changes
     # only the strip the pen just crossed, so only that strip is mixed again.
-    canvas = paper.astype(np.uint8)
+    written = np.ones((h, w), dtype=bool)
+    for y0, y1, x0, x1 in spans:
+        written[y0:y1, x0:x1] = False
+    held = (ink_alpha * written)[:, :, None]
+    canvas = (paper * (1 - held) + ink * held).astype(np.uint8)
     done_to = [x0 for _s, _e, (_y0, _y1, x0, _x1) in timeline]
 
     def reveal(i: int, y0: int, y1: int, upto: int) -> None:

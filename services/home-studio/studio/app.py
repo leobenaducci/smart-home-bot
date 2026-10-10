@@ -1931,7 +1931,16 @@ def _assemble_explainer(login: str, pid: str, codec: str, size: str, on_done=Non
                 # hand): pages at the size asked for, not scaled up to it.
                 frame = media.fit_size(1280, 720, size)
             clips, lengths, placements, pos = [], [], [], 0.0
+            # What the sheet in front of the writer already holds: a written
+            # point carries on the page of the written point before it -- one
+            # exercise worked through on one sheet, a step a point -- and
+            # starts a clean one when it says so (`continuity` off: a new
+            # exercise), after anything that is not writing, or when full.
+            sheet: list[str] = []
+            room = handwriting.capacity(frame)
             for i, (s, card, write, video, picture, voice) in enumerate(plan):
+                if not write or s.get("continuity") is False or len(sheet) + len(write) > room:
+                    sheet = []
                 said = media.probe(voice)["seconds"] if voice else 0.0
                 length = (card["seconds"] if card and not voice
                           else max(MIN_POINT, POINT_LEAD + said + POINT_TAIL) if voice
@@ -1941,8 +1950,10 @@ def _assemble_explainer(login: str, pid: str, codec: str, size: str, on_done=Non
                                                   tmp / f"{i}-card.mp4", card["theme"]))
                     lengths.append(None)
                 elif write:
-                    clips.append(handwriting.page(write, length, frame, tmp / f"{i}-write.mp4", lead=POINT_LEAD))
+                    clips.append(handwriting.page(write, length, frame, tmp / f"{i}-write.mp4", lead=POINT_LEAD,
+                                                  already=sheet))
                     lengths.append(None)
+                    sheet = sheet + write
                 elif video:
                     have = media.probe(video)["seconds"]
                     clips.append(video)

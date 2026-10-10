@@ -2296,6 +2296,29 @@ with Image.open(page_png) as im:
     inked = sum(1 for px in im.convert("RGB").getdata() if px[2] > px[0] + 40 and px[0] < 90)
 check("  and the page has its writing on it, in ink", inked > 500, inked)
 
+sheet_p = c.post("/api/projects", json={"name": "Una hoja por ejercicio", "kind": "explainer"}, headers=HJ).json()
+c.put(f"/api/projects/{sheet_p['id']}", json={"shots": [
+    {"write": ["1) $y = 2x$", "$x = y/2$"], "seconds": 3, "continuity": False},
+    {"write": ["$f^{-1}(x) = x/2$"], "seconds": 3},
+    {"write": ["2) $y = x + 1$"], "seconds": 3, "continuity": False},
+    {"card": {"title": "fin", "seconds": 1}},
+    {"write": ["$y - 1 = x$"], "seconds": 3}]}, headers=HJ)
+pages_drawn, real_page = [], A.handwriting.page
+A.handwriting.page = lambda lines, *a, **k: pages_drawn.append((list(lines), list(k.get("already") or []))) or real_page(
+    lines, *a, **k)
+c.post(f"/api/projects/{sheet_p['id']}/explainer", json={"size": "720"}, headers=HJ)
+skey = f"{JUANA}/{sheet_p['id']}"
+deadline = time.time() + 300
+while time.time() < deadline and (A.render_state.get(skey) or {}).get("state") == "running":
+    time.sleep(0.3)
+A.handwriting.page = real_page
+check("  an exercise is worked on one sheet: a step carries on the page before it, a new exercise turns the page,"
+      " and anything else in between does too",
+      (A.render_state.get(skey) or {}).get("state") == "done"
+      and [a for _l, a in pages_drawn] == [[], ["1) $y = 2x$", "$x = y/2$"], [], []], pages_drawn)
+from studio import handwriting  # noqa: E402
+check("  and a full sheet is turned too", handwriting.capacity((1280, 720)) == 8 == handwriting.capacity((1920, 1080)))
+
 with A._auto_lock:
     A._auto_save({wkey: {"format": "h264", "size": "720", "since": time.time()}})
 A._auto_step({**A.store.get(board_job["id"]), "ok": False, "error": "out of memory"})
