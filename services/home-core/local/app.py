@@ -960,6 +960,23 @@ def _revoke_device_token(raw):
     conn.close()
 
 
+# A plugin mount's pages that are WebAssembly (`wasm: true`): compiling it needs
+# 'wasm-unsafe-eval', and some start a worker from a blob. Only there -- no page
+# of this app runs either, and the baseline below stays as it is.
+MOUNT_WASM_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; "
+    "worker-src 'self' blob:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self' data: blob:; "
+    "media-src 'self' data: blob:; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self';"
+)
+
+
 @app.after_request
 def _security_headers(response):
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
@@ -1008,7 +1025,8 @@ def _security_headers(response):
         # worker, so the `default-src` fallback covers it. A proxied page --
         # /camaras/, /luces/ -- is same-origin by construction and reaches its
         # own assets through a relative mount prefix, so it is covered too.
-        response.headers['Content-Security-Policy'] = (
+        wasm = any(m['wasm'] and request.path.startswith(m['path'] + '/') for m in PLUGIN_MOUNTS)
+        response.headers['Content-Security-Policy'] = MOUNT_WASM_CSP if wasm else (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
@@ -3945,10 +3963,16 @@ def _extension_menu_links():
     source for the wall, so there is one list of extensions and not two.
     """
     home = _at_home()
+    adult = session.get('user') in ADVANCED_USERS
     out = {g: [] for g in CHAT_MENU_GROUPS}
     for tile in _deployed_tiles().get('extensions') or []:
         group = str(tile.get('menu') or '').strip().lower()
         if group not in out:
+            continue
+        # The wall already hides what is not a child's to open (`adults`); the
+        # menu is the same list reached from the chat, so it keeps the rule
+        # rather than offering an entry that answers with a refusal.
+        if tile.get('adults') and not adult:
             continue
         # `lan_only` is dropped from the menu off the network, not merely
         # badged. The badge is honest about where a link works; leaving the
@@ -5020,22 +5044,24 @@ def _relay_and_release(resp):
         resp.close()
 
 
-def _house_proxy(upstream_base, prefix, path):
+def _house_proxy(upstream_base, prefix, path, max_bytes=None):
     """Forward to another house server as the logged-in member.
 
     Same trusted-proxy pair finance gets, plus X-Forwarded-Prefix: unlike the
     finance dashboard, these apps write their own absolute paths, and they can
     only keep them inside this mount if they are told what the mount is.
+    `max_bytes`: a cap of the caller's own (a plugin mount's `max_upload_mb`).
     """
+    cap = max_bytes or HOUSE_PROXY_MAX_BYTES
     # Before a byte is read where the size is declared, and by reading no more
     # than the cap where it is not. `content_length` alone was not enough: a
     # chunked request declares nothing, so the `and` short-circuited and the
     # whole stream went into RAM anyway — the exact thing the cap is for.
-    if request.content_length and request.content_length > HOUSE_PROXY_MAX_BYTES:
+    if request.content_length and request.content_length > cap:
         return jsonify(error='That is too large to send through here.'), 413
     body = request.get_data() if request.content_length is not None \
-        else request.stream.read(HOUSE_PROXY_MAX_BYTES + 1)
-    if len(body) > HOUSE_PROXY_MAX_BYTES:
+        else request.stream.read(cap + 1)
+    if len(body) > cap:
         return jsonify(error='That is too large to send through here.'), 413
     user = session['user']
     headers = {k: v for k, v in request.headers if k.lower() not in _PROXY_SKIP_HEADERS}
@@ -22970,8 +22996,11 @@ STUDIO_UI_KEYS = (
     'film_scene_ph', 'film_shot', 'film_dialogue', 'film_dialogue_ph', 'film_draw', 'film_help', 'film_empty',
     'tab_points', 'exp_title', 'exp_topic', 'exp_topic_ph', 'exp_narrator', 'exp_narrator_none', 'exp_card',
     'exp_write', 'exp_point', 'exp_no_picture', 'exp_narration', 'exp_add_narration', 'exp_picture',
-    'exp_help', 'exp_add_point', 'exp_say_all', 'exp_render', 'exp_need_pictures', 'exp_replace_confirm',
+    'exp_help', 'exp_add_point', 'exp_say_all', 'exp_replace_confirm',
     'exp_need_topic', 'exp_need_narrator', 'exp_failed', 'exp_written',
+    'exp_source', 'exp_source_hint', 'exp_source_clear', 'exp_look', 'exp_look_pictures', 'exp_look_writing',
+    'exp_look_mixed', 'exp_auto', 'exp_make_all', 'exp_auto_started', 'exp_auto_now', 'exp_reading',
+    'exp_written_page', 'exp_write_ph', 'exp_write_many', 'exp_many_hint', 'exp_batch_started',
     'pod_music', 'pod_write', 'pod_writing', 'pod_written', 'pod_replace_confirm', 'pod_need_topic',
     'pod_need_hosts', 'pod_failed', 'pod_make_all', 'pod_go_audio', 'pod_versions', 'pod_help', 'alone_label',
     'pkind_audio_story', 'pkind_audio_story_about', 'tab_story', 'story_cover', 'story_cover_ph',
@@ -23199,12 +23228,163 @@ def _studio_fold(name):
 # minutes is a handful of points rather than one long monologue per picture.
 EXPLAINER_POINT_WORDS = 35
 EXPLAINER_MAX_POINTS = 30
+# How each point is shown. `pictures`: a picture the Studio draws. `writing`:
+# its words and formulas written by hand on a page, seen by the person writing
+# (studio/handwriting.py) -- exact where a drawn picture's text never is.
+# `mixed`: the writer picks, point by point.
+EXPLAINER_LOOKS = ('pictures', 'writing', 'mixed')
+EXPLAINER_WRITE_LINES, EXPLAINER_WRITE_CHARS = 6, 140
+# What a source document gives the writer: about 8k tokens of text, room for
+# the answer in the local model's window and still a long handout.
+EXPLAINER_SOURCE_CHARS = 30000
+EXPLAINER_SOURCE_BYTES = 25 * 1024 * 1024
+EXPLAINER_OCR_PAGES = 8
+# An explainer is written by the house's own model, not the person's
+# assistant: a document somebody hands it -- a child's worksheet, a handout --
+# stays in the house, and so does the topic. The Studio's vision model
+# (`assistant.models.vision`, the same one that reviews its frames) unless set
+# apart: it reads a scanned page as well as it writes. Reasoning off:
+# measured on a worksheet photo, qwen3.5 deliberated 2,000+ tokens over a
+# minute where the answer itself took seconds.
+STUDIO_WRITER_URL = os.environ.get('STUDIO_WRITER_URL') or os.environ.get('STUDIO_VISION_URL', '')
+STUDIO_WRITER_MODEL = os.environ.get('STUDIO_WRITER_MODEL') or os.environ.get('STUDIO_VISION_MODEL', '')
+STUDIO_WRITER_KEY = (os.environ.get('STUDIO_WRITER_KEY', '') if os.environ.get('STUDIO_WRITER_URL')
+                     else os.environ.get('STUDIO_VISION_KEY', ''))
+STUDIO_WRITER_REASONING = os.environ.get('STUDIO_WRITER_REASONING', 'none')
+# How written points group: one exercise on one sheet, a step a point. The
+# Studio carries a sheet from point to point (studio/handwriting.py) and turns
+# it where the exercise changes -- without this every step was a fresh page,
+# and an exercise came out as a run of short unrelated clips.
+EXPLAINER_EXERCISE_RULE = (
+    "Each point also says which exercise it belongs to: \"exercise\": 1, 2, 3... in order, 0 for an introduction "
+    "or a summary. An exercise is worked on one sheet of paper: its first point writes the exercise as given, each "
+    "next point writes only the next step below it, and its last point writes the answer. The narration says what "
+    "is being written at that moment.")
+# The mathtext a written point may use: what Matplotlib draws without TeX.
+EXPLAINER_MATH_RULE = (
+    "A written line is {\"words\": ..., \"formula\": ...}, either one or both: the words in the narration's "
+    "language, the formula -- every equation or expression, even x = 2 -- apart from them, in plain LaTeX math "
+    "with no $ signs, using only: ^ _ \\frac{a}{b} \\sqrt{x} \\infty \\mathbb{R} "
+    "\\to \\Rightarrow \\leq \\geq \\neq \\cdot \\times \\pm \\pi \\in \\cup \\cap and ordinary letters, digits "
+    "and brackets. Never \\left, \\right, \\begin, \\text or environments.")
 
 
-def _studio_parse_explainer(text):
-    """(title, subtitle, points) from the explainer Alfred wrote: `{"title",
-    "subtitle", "points": [{"narration", "picture"}]}`, every point with both.
-    None when there are not at least two."""
+def _studio_writer(messages, max_tokens=6000, timeout=STUDIO_PLAN_TIMEOUT_S, json_out=True):
+    """One call to the house's own model; its text, or '' on any failure."""
+    if not (STUDIO_WRITER_URL and STUDIO_WRITER_MODEL):
+        app.logger.warning('studio writer: no model (assistant.models.vision, or STUDIO_WRITER_URL)')
+        return ''
+    headers = {'Authorization': f'Bearer {STUDIO_WRITER_KEY}'} if STUDIO_WRITER_KEY else {}
+    if 'opencode.ai' in STUDIO_WRITER_URL.lower():
+        headers['x-opencode-session'] = secrets.token_hex(16)
+    body = {'model': STUDIO_WRITER_MODEL, 'messages': messages, 'stream': False,
+            'max_tokens': max_tokens, 'temperature': 0.2}
+    if STUDIO_WRITER_REASONING:
+        body['reasoning_effort'] = STUDIO_WRITER_REASONING
+    if json_out:
+        body['response_format'] = {'type': 'json_object'}
+    try:
+        r = requests.post(STUDIO_WRITER_URL, json=body, headers=headers, timeout=(5, timeout))
+        if not r.ok:
+            app.logger.warning('studio writer: HTTP %s %s', r.status_code, r.text[:200])
+            return ''
+        return str(r.json()['choices'][0]['message'].get('content') or '')
+    except (requests.RequestException, ValueError, KeyError, IndexError) as exc:
+        app.logger.warning('studio writer failed: %s', exc)
+        return ''
+
+
+def _pdf_page_pictures(data, limit):
+    """Each page as a PNG, or None when there are more than *limit* pages
+    (a long handout reads well enough from its text) or it cannot be drawn."""
+    try:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(data)
+        if len(pdf) > limit:
+            return None
+        pages = []
+        for i in range(len(pdf)):
+            page = pdf[i]
+            w, h = page.get_size()
+            img = page.render(scale=min(2.5, 1600 / max(w, h, 1))).to_pil()
+            buf = io.BytesIO()
+            img.convert('RGB').save(buf, 'PNG')
+            pages.append(buf.getvalue())
+        return pages
+    except Exception as exc:                               # noqa: BLE001 -- a PDF can fail in many ways
+        app.logger.warning('explainer source: could not draw the pages: %s', exc)
+        return None
+
+
+def _explainer_read_page(png, mime='image/png'):
+    return _studio_writer([{'role': 'user', 'content': [
+        {'type': 'text', 'text': 'Transcribe all the text and formulas on this page exactly as written, in '
+                                 'reading order, keeping the numbering. Formulas in LaTeX between $...$. '
+                                 'Only the transcription.'},
+        {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,' + base64.b64encode(png).decode()}}]}],
+        max_tokens=2500, timeout=180, json_out=False).strip()
+
+
+EXPLAINER_PHOTO_TYPES = ((b'\xff\xd8\xff', 'image/jpeg'), (b'\x89PNG', 'image/png'))
+
+
+def _explainer_photo_type(data):
+    """The type of a photo handed in as the source -- a whiteboard, a page --
+    or None when it is not one this reads."""
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return next((mime for magic, mime in EXPLAINER_PHOTO_TYPES if data.startswith(magic)), None)
+
+
+def _explainer_source(data):
+    """What a PDF handed to the explainer says, capped. A short one is read
+    page by page by the house's vision model -- the only reading that keeps a
+    formula a formula, and the only one a scan has at all; a long one, or one
+    the model cannot read, from its text layer."""
+    try:
+        text = _doc_text_pdf(data)
+    except Exception as exc:                               # noqa: BLE001 -- pypdf raises many kinds
+        app.logger.warning('explainer source: no text layer: %s', exc)
+        text = ''
+    read = []
+    for n, png in enumerate(_pdf_page_pictures(data, EXPLAINER_OCR_PAGES) or [], 1):
+        said = _explainer_read_page(png)
+        if said:
+            read.append(f'[page {n}]\n{said}')
+    return ('\n\n'.join(read) or text)[:EXPLAINER_SOURCE_CHARS]
+
+
+def _explainer_write_line(entry):
+    """One written line as the page takes it: `words $formula$`. The model is
+    asked for the two apart -- a 9B model asked to put `$...$` around its own
+    formulas forgot to about one run in two -- and they are joined here."""
+    if isinstance(entry, dict):
+        words = ' '.join(str(entry.get('words') or '').split())
+        formula = ' '.join(str(entry.get('formula') or '').split()).strip('$ ')
+        # The formula copied into the label as well (measured: every line of a
+        # run came back so) -- the label is then math, not words, and goes.
+        if formula and re.search(r'[\\^_=]', words):
+            words = ''
+        # A label then its formula, apart: "Multiplicamos por 7: 7x = 2y",
+        # not "...por 7 7x = 2y", which reads as one number.
+        if words and formula and words[-1] not in ':.;,!?=':
+            words += ':'
+        return ' '.join(x for x in (words, f'${formula}$' if formula else '') if x)
+    return ' '.join(str(entry or '').split())
+
+
+def _explainer_write_lines(value):
+    if isinstance(value, str):
+        value = value.splitlines()
+    lines = [_explainer_write_line(x)[:EXPLAINER_WRITE_CHARS] for x in (value if isinstance(value, list) else [])]
+    return [x for x in lines if x][:EXPLAINER_WRITE_LINES]
+
+
+def _studio_parse_explainer(text, look='pictures'):
+    """(title, subtitle, points) from the explainer written: `{"title",
+    "subtitle", "points": [{"narration", "picture" | "writing"}]}`. A point
+    keeps what its look allows -- a picture, lines to write, either when
+    mixed -- and is dropped without one. None when fewer than two are left."""
     if not text:
         return None
     raw = _studio_json_object(text)
@@ -23216,7 +23396,16 @@ def _studio_parse_explainer(text):
             continue
         said = ' '.join(str(entry.get('narration') or '').split())[:900]
         shows = ' '.join(str(entry.get('picture') or '').split())[:1200]
-        if said and shows:
+        write = _explainer_write_lines(entry.get('writing'))
+        if not said:
+            continue
+        if look != 'pictures' and write:
+            try:
+                exercise = int(entry.get('exercise') or 0)
+            except (TypeError, ValueError):
+                exercise = 0
+            points.append({'narration': said, 'write': write, 'exercise': exercise})
+        elif look != 'writing' and shows:
             points.append({'narration': said, 'picture': shows})
     if len(points) < 2:
         return None
@@ -23224,28 +23413,235 @@ def _studio_parse_explainer(text):
             ' '.join(str(raw.get('subtitle') or '').split())[:200], points)
 
 
-@app.route('/studio/api/explainer-script', methods=['POST'])
-@api_login_required
-def studio_explainer_script():
-    """✍️ An explainer written by the person's own assistant: the topic as a
-    few points, each a narration and the picture shown while it is said. Filed
-    in the project as one shot a point (its picture's description) and one
-    voice card a point -- said by the narrator, a character with a voice
-    sample, and linked to its shot (`point`) -- under Alfred's name; with
-    `title_card`, a title card first. `replace` takes the old points and their
-    narrations out first; the music stays."""
-    if not _studio_configured() or not _studio_reachable():
-        abort(404)
-    username = session['user']
-    d = request.get_json(silent=True) or {}
-    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+def _explainer_prompt(language, topic, audience, look_words, minutes, n, look, source):
+    shown = {
+        'pictures': ('and the picture on screen while it is said. The picture is one concrete visual description '
+                     'in English (1-2 sentences) for a text-to-image model: what is on screen, the setting, the '
+                     'framing; no text, letters, labels or diagrams with words in it. ' + STUDIO_STYLE_RULE),
+        'writing': ('and what the narrator writes by hand on a sheet of paper while saying it, seen from the '
+                    'writer\'s own eyes: "writing", 1 or 2 lines -- the next step of the working, as a formula, '
+                    'with at most a 1-4 word label ("Multiplicamos por 5:"), never a sentence, a table or an array. '
+                    + EXPLAINER_EXERCISE_RULE + ' ' + EXPLAINER_MATH_RULE),
+        'mixed': ('and how it is shown: either "writing" -- 1 or 2 lines the narrator writes by hand on paper '
+                  'while saying it, for anything with numbers or formulas: the next step as a formula, with at most '
+                  'a 1-4 word label, never a sentence or a table -- or "picture", one concrete visual description '
+                  'in English for a text-to-image model, with no text in it, for everything else. Never both. '
+                  + EXPLAINER_EXERCISE_RULE + ' ' + EXPLAINER_MATH_RULE + ' ' + STUDIO_STYLE_RULE),
+    }[look]
+    example = {'pictures': '{"narration": "...", "picture": "..."}',
+               'writing': ('{"exercise": 1, "narration": "...", "writing": [{"words": "Multiplicamos por 7:", '
+                           '"formula": "7y = 2x"}]}'),
+               'mixed': ('{"exercise": 1, "narration": "...", "writing": [{"words": "...", "formula": "..."}]} or '
+                         '{"narration": "...", "picture": "..."}')}[look]
+    return (
+        f"Write a short narrated explainer video in {language}"
+        + (f" about: {topic}\n" if topic else ".\n")
+        + (f"For: {audience}\n" if audience else "")
+        + (f"The film's look: {look_words}\n" if look_words and look != 'writing' else "")
+        + (("Base it on the material below and explain what it says, in its order. If it holds exercises, work "
+            "through them: say how each is solved and show the working step by step, with the right answers.\n")
+           if source else "")
+        + f"About {minutes} minute(s): about {n} points"
+        + (" -- or as many as working every exercise through takes, up to "
+           f"{EXPLAINER_MAX_POINTS}" if look != 'pictures' else "")
+        + f", each a narration of 1 to 3 sentences (about {EXPLAINER_POINT_WORDS} words) said by a narrator, "
+        + shown + " Explain one idea per point, in order, "
+        "simply and concretely; the first point says what the video explains, the last sums it up. The narration "
+        "is spoken words only -- no stage directions, no markdown, and formulas said in words as a person would "
+        "read them aloud.\n"
+        "Also a short title and a one-line subtitle for the title card, in the narration's language.\n"
+        'Answer with only a JSON object, no code fence: {"title": "...", "subtitle": "...", "points": [' + example
+        + ', ...]}'
+        + (f"\n\nThe material:\n<<<\n{source}\n>>>" if source else ""))
+
+
+class _ExplainerError(Exception):
+    """Why an explainer could not be written: a catalogue key, and the status
+    a request answers with -- or, run in the background, what the person is
+    told."""
+
+    def __init__(self, key, status=400, **extra):
+        super().__init__(key)
+        self.key, self.status, self.extra = key, status, extra
+
+
+def _explainer_source_of(data):
+    """The text a source file gives: a PDF read page by page (or from its
+    text), a photo read as one page. Raises _ExplainerError."""
+    photo = _explainer_photo_type(data)
+    if len(data) > EXPLAINER_SOURCE_BYTES or not (data.startswith(b'%PDF') or photo):
+        raise _ExplainerError('studio.exp_bad_source')
+    source = _explainer_read_page(data, photo)[:EXPLAINER_SOURCE_CHARS] if photo else _explainer_source(data)
+    if not source.strip():
+        raise _ExplainerError('studio.exp_unread_source')
+    return source
+
+
+def _explainer_write(username, pid, d, source=''):
+    """Write an explainer into project *pid* as *username* and file it: `d`
+    holds the box's fields (topic, look, minutes, narrator, audience,
+    title_card, replace, auto, size), `source` what a file said. Returns what
+    was made; raises _ExplainerError. No request needed: a batch runs it in the
+    background, a file at a time."""
+    def flag(key):
+        return str(d.get(key) or '').lower() in ('1', 'true', 'on', 'yes')
     topic = str(d.get('topic') or '').strip()[:1500]
-    if not topic:
-        return jsonify(error=t('studio.exp_need_topic')), 400
+    if not topic and not source:
+        raise _ExplainerError('studio.exp_need_topic')
+    look = d.get('look') if d.get('look') in EXPLAINER_LOOKS else 'pictures'
     try:
         minutes = max(1, min(10, int(d.get('minutes') or 2)))
     except (TypeError, ValueError):
         minutes = 2
+    doc = _studio_call(username, 'GET', f'projects/{pid}')
+    if not doc:
+        raise _ExplainerError('studio.unreachable', 404)
+    chars = (_studio_call(username, 'GET', f'projects/{pid}/characters') or {}).get('characters') or []
+    narrator = next((c for c in chars if c.get('id') == str(d.get('narrator') or '') and c.get('voice')), None)
+    if not narrator:
+        raise _ExplainerError('studio.exp_need_narrator')
+    language = {'es': 'Spanish', 'en': 'English'}.get(
+        str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
+    n = max(2, min(EXPLAINER_MAX_POINTS, round(minutes * PODCAST_WORDS_PER_MIN / EXPLAINER_POINT_WORDS)))
+    look_words = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
+    audience = str(d.get('audience') or '').strip()[:300]
+    messages = [{'role': 'user', 'content': _explainer_prompt(language, topic, audience, look_words, minutes, n,
+                                                              look, source)}]
+    answer = _studio_writer(messages)
+    out = _studio_parse_explainer(answer, look)
+    if out is None and answer:
+        messages += [{'role': 'assistant', 'content': answer[:20000]},
+                     {'role': 'user', 'content': 'That was not the JSON object asked for. Answer again with only the '
+                                                 'JSON object, no code fence.'}]
+        out = _studio_parse_explainer(_studio_writer(messages), look)
+    if out is None:
+        raise _ExplainerError('studio.exp_failed', 502)
+    title, subtitle, points = out
+    if flag('replace'):
+        # The project as it is now: the PUT replaces whole lists, and the one
+        # read before the model's turn is minutes old.
+        fresh = _studio_call(username, 'GET', f'projects/{pid}')
+        if not fresh:
+            raise _ExplainerError('studio.exp_failed', 502)
+        kept_audio = [a for a in fresh.get('audio') or [] if not a.get('point')]
+        if _studio_call(username, 'PUT', f'projects/{pid}', {'shots': [], 'audio': kept_audio}, via='Alfred') is None:
+            raise _ExplainerError('studio.exp_failed', 502)
+
+    def said_in(pt):
+        return len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60)
+    card_title = title or topic[:120] or (doc.get('name') or '')[:120]
+    shots = ([{'card': {'title': card_title, 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
+             if flag('title_card') else [])
+    shots += [({'prompt': '', 'write': pt['write'],
+                # A new sheet where the exercise changes; the same one for
+                # each next step of it (the Studio turns a full one anyway).
+                # An introduction or a summary (exercise 0) shares the sheet of
+                # the exercise beside it: alone, its one line was a page of its
+                # own and one more cut.
+                'continuity': i > 0 and bool(points[i - 1].get('write'))
+                              and (points[i - 1].get('exercise') == pt.get('exercise')
+                                   or not points[i - 1].get('exercise') or not pt.get('exercise'))}
+               if pt.get('write') else {'prompt': pt['picture']})
+              | {'seconds': max(3, min(30, round(said_in(pt)) + 1))} for i, pt in enumerate(points)]
+    added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')
+    ids = (added or {}).get('items') or []
+    if len(ids) != len(shots):
+        raise _ExplainerError('studio.exp_failed', 502)
+    point_ids = ids[1:] if flag('title_card') else ids
+    voices = [{'kind': 'voice', 'title': f'{i + 1}', 'speaker': narrator['id'], 'text': pt['narration'],
+               'point': sid, 'seconds': max(5, min(120, round(said_in(pt) * 1.4) + 3))}
+              for i, (pt, sid) in enumerate(zip(points, point_ids))]
+    if not _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': voices}, via='Alfred'):
+        raise _ExplainerError('studio.exp_failed', 502)
+    _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'narrator': narrator['id']}}, via='Alfred')
+    made = None
+    if flag('auto'):
+        made = _studio_call(username, 'POST', f'projects/{pid}/explainer/auto',
+                            {'format': 'h264', 'size': '720' if str(d.get('size')) == '720' else '1080'})
+        if made is None:
+            raise _ExplainerError('studio.exp_auto_failed', 502, title=title, points=len(points))
+    return {'title': title, 'points': len(points), 'written': sum(1 for pt in points if pt.get('write')),
+            'auto': bool(made), 'queued': len((made or {}).get('queued') or [])}
+
+
+@app.route('/studio/api/explainer-script', methods=['POST'])
+@api_login_required
+def studio_explainer_script():
+    """✍️ An explainer written by the house's own model: a topic, a PDF or a
+    photo, or both, as a few points, each a narration and how it is shown -- a
+    picture, or lines written by hand on a page (`look`). Filed in the project
+    as one shot a point and one voice card a point -- said by the narrator, a
+    character with a voice sample, and linked to its shot (`point`) -- under
+    Alfred's name; with `title_card`, a title card first. `replace` takes the
+    old points and their narrations out first; the music stays. With `auto`,
+    the Studio then makes everything and puts the film together by itself.
+    JSON, or a form with the file as `source`."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    d = request.form.to_dict() if request.files or request.form else (request.get_json(silent=True) or {})
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    try:
+        upload = request.files.get('source')
+        source = (_explainer_source_of(upload.read(EXPLAINER_SOURCE_BYTES + 1))
+                  if upload and upload.filename else '')
+        return jsonify(_explainer_write(session['user'], pid, d, source))
+    except _ExplainerError as exc:
+        if exc.status == 404:
+            abort(404)
+        return jsonify(error=t(exc.key), **exc.extra), exc.status
+
+
+# Files at once: each is a project, written and made one after the other, so
+# ten files are ten turns of the house's model in a row, not ten at once.
+EXPLAINER_BATCH_FILES = 10
+
+
+def _explainer_batch(username, jobs, d):
+    """Each (project, name, bytes) in turn: read, written, and made by itself.
+    A file that fails is told about and the next one goes on; one made is told
+    about by the Studio when its video is ready."""
+    for pid, name, data in jobs:
+        try:
+            _explainer_write(username, pid, dict(d, auto='1', replace=''), _explainer_source_of(data))
+        except _ExplainerError as exc:
+            _notify_user(username, t_for(username, 'studio.exp_batch_failed', name=name,
+                                         why=t_for(username, exc.key)),
+                         title=t_for(username, 'studio.title'), tags='warning',
+                         click=f'{HOMECORE_PUBLIC_URL}/studio?project={pid}')
+        except Exception:                                  # noqa: BLE001 -- one file never stops the rest
+            app.logger.exception('studio: explainer batch failed on %s', name)
+            _notify_user(username, t_for(username, 'studio.exp_batch_failed', name=name,
+                                         why=t_for(username, 'studio.exp_failed')),
+                         title=t_for(username, 'studio.title'), tags='warning',
+                         click=f'{HOMECORE_PUBLIC_URL}/studio?project={pid}')
+
+
+@app.route('/studio/api/explainer-batch', methods=['POST'])
+@api_login_required
+def studio_explainer_batch():
+    """🎬 One video for each file: every PDF or photo given becomes its own
+    explainer project -- named after the file, with this one's language, look
+    and narrator, the box's choices -- written and made by itself, a file
+    after the other, in the background. This project takes the first file
+    when it has no points yet. The narrator is widened to all of the person's
+    projects when it lived only in this one, so every new project has it."""
+    if not _studio_configured() or not _studio_reachable():
+        abort(404)
+    username = session['user']
+    d = request.form.to_dict()
+    pid = re.sub(r'[^a-z0-9]', '', str(d.get('project') or ''))[:32]
+    files = [f for f in request.files.getlist('sources') if f and f.filename]
+    if not files:
+        return jsonify(error=t('studio.exp_need_topic')), 400
+    if len(files) > EXPLAINER_BATCH_FILES:
+        return jsonify(error=t('studio.exp_too_many', n=EXPLAINER_BATCH_FILES)), 400
+    blobs = []
+    for f in files:
+        data = f.read(EXPLAINER_SOURCE_BYTES + 1)
+        if len(data) > EXPLAINER_SOURCE_BYTES or not (data.startswith(b'%PDF') or _explainer_photo_type(data)):
+            return jsonify(error=t('studio.exp_bad_source') + f' ({f.filename})'), 400
+        name = os.path.splitext(os.path.basename(f.filename))[0].strip()[:80] or t('studio.untitled')
+        blobs.append((name, data))
     doc = _studio_call(username, 'GET', f'projects/{pid}')
     if not doc:
         abort(404)
@@ -23253,60 +23649,23 @@ def studio_explainer_script():
     narrator = next((c for c in chars if c.get('id') == str(d.get('narrator') or '') and c.get('voice')), None)
     if not narrator:
         return jsonify(error=t('studio.exp_need_narrator')), 400
-    language = {'es': 'Spanish', 'en': 'English'}.get(
-        str((doc.get('settings') or {}).get('language') or 'es')[:2], 'Spanish')
-    n = max(2, min(EXPLAINER_MAX_POINTS, round(minutes * PODCAST_WORDS_PER_MIN / EXPLAINER_POINT_WORDS)))
-    look = str((doc.get('settings') or {}).get('look') or '').strip()[:600]
-    audience = str(d.get('audience') or '').strip()[:300]
-    prompt = (
-        f"Write a short narrated explainer video in {language} about: {topic}\n"
-        + (f"For: {audience}\n" if audience else "")
-        + (f"The film's look: {look}\n" if look else "")
-        + f"About {minutes} minute(s): {n} points, each a narration of 1 to 3 sentences (about "
-        f"{EXPLAINER_POINT_WORDS} words) said by a narrator, and the picture on screen while it is said. Explain "
-        "one idea per point, in order, simply and concretely; the first point says what the video explains, the "
-        "last sums it up. The narration is spoken words only -- no stage directions, no markdown. The picture is "
-        "one concrete visual description in English (1-2 sentences) for a text-to-image model: what is on screen, "
-        "the setting, the framing; no text, letters, labels or diagrams with words in it. "
-        + STUDIO_STYLE_RULE + "\n"
-        'Also a short title and a one-line subtitle for the title card, in the narration\'s language.\n'
-        'Answer with only a JSON object, no code fence: {"title": "...", "subtitle": "...", "points": '
-        '[{"narration": "...", "picture": "..."}, ...]}')
-    chat_id = f'homeweb:{username}:{_tasks_today().isoformat()}:stu-explainer'
-    out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, prompt, STUDIO_PLAN_TIMEOUT_S))
-    if out is None:
-        again = ('That was not the JSON object asked for. Answer again with only {"title": "...", "subtitle": '
-                 '"...", "points": [{"narration": "...", "picture": "..."}]}, no code fence.')
-        out = _studio_parse_explainer(_run_nanobot_turn(username, chat_id, again, STUDIO_PLAN_TIMEOUT_S))
-    if out is None:
-        return jsonify(error=t('studio.exp_failed')), 502
-    title, subtitle, points = out
-    if d.get('replace'):
-        # The project as it is now: the PUT replaces whole lists, and the one
-        # read before the assistant's turn is minutes old.
-        fresh = _studio_call(username, 'GET', f'projects/{pid}')
-        if not fresh:
+    if (narrator.get('scope') or 'project') == 'project':
+        if not _studio_call(username, 'POST', f'projects/{pid}/characters/{narrator["id"]}/widen'):
             return jsonify(error=t('studio.exp_failed')), 502
-        kept_audio = [a for a in fresh.get('audio') or [] if not a.get('point')]
-        if _studio_call(username, 'PUT', f'projects/{pid}', {'shots': [], 'audio': kept_audio}, via='Alfred') is None:
-            return jsonify(error=t('studio.exp_failed')), 502
-    shots = ([{'card': {'title': title or topic[:120], 'subtitle': subtitle, 'seconds': 3, 'theme': 'dark'}}]
-             if d.get('title_card') else [])
-    shots += [{'prompt': pt['picture'],
-               'seconds': max(3, min(30, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60)) + 1))}
-              for pt in points]
-    added = _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'shots', 'items': shots}, via='Alfred')
-    ids = (added or {}).get('items') or []
-    if len(ids) != len(shots):
-        return jsonify(error=t('studio.exp_failed')), 502
-    point_ids = ids[1:] if d.get('title_card') else ids
-    voices = [{'kind': 'voice', 'title': f'{i + 1}', 'speaker': narrator['id'], 'text': pt['narration'],
-               'point': sid, 'seconds': max(5, min(120, round(len(pt['narration'].split()) / (PODCAST_WORDS_PER_MIN / 60) * 1.4) + 3))}
-              for i, (pt, sid) in enumerate(zip(points, point_ids))]
-    if not _studio_call(username, 'POST', f'projects/{pid}/items', {'section': 'audio', 'items': voices}, via='Alfred'):
-        return jsonify(error=t('studio.exp_failed')), 502
-    _studio_call(username, 'PUT', f'projects/{pid}', {'settings': {'narrator': narrator['id']}}, via='Alfred')
-    return jsonify(title=title, points=len(points))
+    keep = {k: v for k, v in (doc.get('settings') or {}).items() if k in ('language', 'look')}
+    keep['narrator'] = narrator['id']
+    jobs = []
+    for i, (name, data) in enumerate(blobs):
+        if i == 0 and not any(not s.get('recorded') for s in doc.get('shots') or []):
+            target = pid
+        else:
+            made = _studio_call(username, 'POST', 'projects', {'name': name, 'kind': 'explainer'})
+            target = (made or {}).get('id')
+            if not target or _studio_call(username, 'PUT', f'projects/{target}', {'settings': keep}) is None:
+                return jsonify(error=t('studio.exp_failed'), started=len(jobs)), 502
+        jobs.append((target, name, data))
+    _studio_background(_explainer_batch, username, jobs, d)
+    return jsonify(projects=[{'id': p, 'name': n} for p, n, _ in jobs])
 
 
 # A short film's shots: H3 takes 5-20 s a shot and ~5 card-minutes a second,
@@ -24677,6 +25036,82 @@ def _studio_attachment(name, sub):
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Plugin mounts
+# ---------------------------------------------------------------------------
+# A household plugin may ask this portal to carry its pages under its own
+# origin (`mounts:` in the plugin's plugin.yml; deploy.py `plugin_mounts`
+# derives PLUGIN_MOUNTS): signed in as the member, over HTTPS, forwarded with the
+# trusted-proxy pair like the cameras, and -- unless the plugin says otherwise --
+# only at home. Declared there rather than written here, so a household's own
+# service never needs a line in this file naming it.
+#
+# Each mount also answers, here and never forwarded, `<path>/_csrf` (the token a
+# page needs to write through this app) and `<path>/_session` (that token, and
+# the member's folder on the share) -- what a page carried from elsewhere cannot
+# otherwise learn.
+_MOUNT_PATH = re.compile(r'/[a-z0-9][a-z0-9-]{0,31}')
+
+
+def _read_plugin_mounts():
+    try:
+        raw = json.loads(os.environ.get('PLUGIN_MOUNTS') or '[]')
+    except ValueError:
+        app.logger.warning('PLUGIN_MOUNTS is not JSON: no plugin pages are carried')
+        return []
+    out = []
+    for m in raw if isinstance(raw, list) else []:
+        if not isinstance(m, dict):
+            continue
+        path, upstream = str(m.get('path') or ''), str(m.get('upstream') or '').rstrip('/')
+        if not _MOUNT_PATH.fullmatch(path) or not upstream.startswith(('http://', 'https://')):
+            app.logger.warning('plugin mount %r skipped: no usable path or upstream', m)
+            continue
+        out.append({'path': path, 'upstream': upstream,
+                    'house_only': m.get('house_only') is not False,
+                    'writes': m.get('writes') is not False,
+                    'max_bytes': m['max_bytes'] if isinstance(m.get('max_bytes'), int) else None,
+                    'wasm': m.get('wasm') is True})
+    return out
+
+
+def _carry_mount(m):
+    path, key = m['path'], 'mount_' + m['path'][1:].replace('-', '_')
+
+    def root():
+        return redirect(path + '/')
+
+    def forward(sub=''):
+        if m['house_only'] and not _at_home():
+            return jsonify(error='Available only at home or over the VPN.'), 404
+        return _house_proxy(m['upstream'], path, sub, max_bytes=m['max_bytes'])
+
+    def token():
+        resp = jsonify(csrf=_ensure_csrf_token())
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    def whoami():
+        folder, _is_admin = _files_access(session['user'])
+        resp = jsonify(csrf=_ensure_csrf_token(), folder=folder or '', family=FAMILY_FOLDER)
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    methods = list(_PROXY_METHODS) if m['writes'] else ['GET', 'HEAD']
+    taken = {r.rule for r in app.url_map.iter_rules()}
+    for rule, view, name, how in ((path, root, 'root', ['GET']), (path + '/_csrf', token, 'csrf', ['GET']),
+                                  (path + '/_session', whoami, 'session', ['GET'])):
+        if rule not in taken:
+            app.add_url_rule(rule, f'{key}_{name}', login_required(view), methods=how)
+    app.add_url_rule(path + '/', key, login_required(forward), defaults={'sub': ''}, methods=methods)
+    app.add_url_rule(path + '/<path:sub>', key + '_sub', login_required(forward), methods=methods)
+
+
+PLUGIN_MOUNTS = _read_plugin_mounts()
+for _mount in PLUGIN_MOUNTS:
+    _carry_mount(_mount)
+
+
 if __name__ == '__main__':
     # No init_backup_db(). It was called here and defined nowhere: the backup
     # history it set up belongs to `home-backups`, a service upstream ships and

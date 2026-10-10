@@ -11,8 +11,10 @@ long-lived HttpOnly cookie and is dropped straight into /chat?embed=1.
 """
 import asyncio
 import ipaddress
+import json
 import logging
 import os
+import re
 import html
 
 import httpx
@@ -1129,3 +1131,52 @@ async def proxy_theme(request: Request, rest: str):
     return await _forward_to_homeweb(
         request, _upstream_url("/theme", rest, request.url.query), user
     )
+
+
+# -- Plugin mounts ------------------------------------------------------------
+# A household plugin's pages that the portal carries under its own origin
+# (`mounts:` in its plugin.yml; deploy.py `plugin_mounts`). Only the prefix and
+# its gates reach this copy -- PLUGIN_MOUNTS here never says where the plugin
+# answers. Routed like /camaras: signed in, forwarded to the portal, which signs
+# the request into the plugin as the member. A mount that is house only (the
+# default) is refused from anywhere else before the auth branch, 404 like any
+# prefix this host does not serve, and not through HOUSE_ONLY_APPS: that list
+# lets everything through when a name is missing from it, and a member's own
+# data must not depend on it being right.
+_MOUNT_PATH = re.compile(r"/[a-z0-9][a-z0-9-]{0,31}")
+
+
+def _read_plugin_mounts() -> list[dict]:
+    try:
+        raw = json.loads(os.environ.get("PLUGIN_MOUNTS") or "[]")
+    except ValueError:
+        logger.warning("PLUGIN_MOUNTS is not JSON: no plugin pages are routed")
+        return []
+    return [{"path": m["path"], "house_only": m.get("house_only") is not False,
+             "writes": m.get("writes") is not False}
+            for m in (raw if isinstance(raw, list) else [])
+            if isinstance(m, dict) and _MOUNT_PATH.fullmatch(str(m.get("path") or ""))]
+
+
+def _route_mount(mount: dict) -> None:
+    path = mount["path"]
+
+    async def carry(request: Request, rest: str):
+        if mount["house_only"] and not _from_house(request):
+            return JSONResponse({"error": "No disponible fuera de la casa"}, status_code=404)
+        user = _current_user(request)
+        if not user:
+            if request.method == "GET":
+                return RedirectResponse("/login", status_code=302)
+            return JSONResponse({"error": "No autenticado"}, status_code=401)
+        return await _forward_to_homeweb(request, _upstream_url(path, rest, request.url.query), user)
+
+    methods = (["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH"] if mount["writes"]
+               else ["GET", "HEAD"])
+    app.add_api_route(path + "{rest:path}", carry, methods=methods,
+                      name="mount" + path.replace("/", "_").replace("-", "_"))
+
+
+PLUGIN_MOUNTS = _read_plugin_mounts()
+for _mount in PLUGIN_MOUNTS:
+    _route_mount(_mount)

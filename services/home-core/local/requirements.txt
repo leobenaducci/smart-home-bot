@@ -18,5 +18,9 @@ pillow>=10.1
 # app from booting. python-docx pulls lxml, which has aarch64 wheels — no
 # compiler needed on the pi.
 pypdf>=4.0
+# An explainer's source PDF, page by page as pictures for the house's vision
+# model to read: a text layer turns a fraction into three lines and a power
+# into a stray digit. A self-contained wheel (PDFium), nothing to compile.
+pypdfium2>=4.30
 python-docx>=1.1
 openpyxl>=3.1

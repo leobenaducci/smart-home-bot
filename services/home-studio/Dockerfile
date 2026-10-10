@@ -36,6 +36,9 @@ RUN git clone -q https://github.com/KwaiVGI/LivePortrait.git /opt/liveportrait &
 # WanGP's settings for this house: Triton INT8 kernels (Comfy Kitchen's refuse
 # ACE-Step's layer shapes on this card), checkpoints on the mounted volume.
 COPY wgp_config.json /opt/wangp/wgp_config.json
+# The hand an explainer's written points are drawn in (studio/handwriting.py).
+# Its own layer, late, so adding it did not rebuild the torch and WanGP ones.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-comic-neue && rm -rf /var/lib/apt/lists/*
 COPY studio /app/studio
 WORKDIR /app
 ENV WANGP_ROOT=/opt/wangp STUDIO_DATA=/data

@@ -26,6 +26,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("SESSION_SIGNING_KEY", "0" * 32)
 os.environ.setdefault("HOMECORE_LOCAL_URL", "http://127.0.0.1:9")
+# Plugin mounts as deploy.py hands them to a proxy: the prefix and its gates,
+# never where the plugin answers. Invented names.
+os.environ["PLUGIN_MOUNTS"] = (
+    '[{"path":"/garden","house_only":true,"writes":false},'
+    '{"path":"/recipes","house_only":false,"writes":true},{"path":"../x"}]')
 
 import main  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
@@ -71,6 +76,33 @@ check("the default is 'not the house'", main.IS_LAN_COPY is False, main.IS_LAN_C
 for path in ("/camaras/", "/camaras/api/cams"):
     r = client.get(path, follow_redirects=False)
     check(f"{path} -> 404 from the VPS", r.status_code == 404, r.status_code)
+
+print("\na plugin's mounts are routed as declared")
+check("the well-formed ones are routed, the rest dropped",
+      [m["path"] for m in main.PLUGIN_MOUNTS] == ["/garden", "/recipes"]
+      and {"/garden", "/recipes"} <= {r.path.split("{")[0] for r in main.app.routes if hasattr(r, "path")},
+      main.PLUGIN_MOUNTS)
+_saved_apps, _saved_nets = main.HOUSE_ONLY_APPS, main.HOME_NETWORKS
+main.HOUSE_ONLY_APPS = set()
+try:
+    r = client.get("/garden/", follow_redirects=False)
+    check("a house-only mount is not there from the VPS -- whatever HOUSE_ONLY_APPS says",
+          r.status_code == 404, r.status_code)
+    main.HOME_NETWORKS = main._parse_home_networks(main.DEFAULT_HOME_NETWORKS)
+    r = client.get("/garden/", follow_redirects=False, headers={"X-Forwarded-For": "100.101.102.103"})
+    check("  from the VPN it reaches the login", r.status_code == 302 and r.headers.get("location") == "/login",
+          (r.status_code, r.headers.get("location")))
+    r = client.post("/garden/x", follow_redirects=False, headers={"X-Forwarded-For": "100.101.102.103"})
+    check("  a read-only mount takes no writes", r.status_code == 405, r.status_code)
+    main.HOME_NETWORKS = _saved_nets
+    r = client.get("/recipes/", follow_redirects=False)
+    check("one the plugin opens to the world is served from anywhere, signed in",
+          r.status_code == 302 and r.headers.get("location") == "/login", (r.status_code, r.headers.get("location")))
+    r = client.post("/recipes/api", follow_redirects=False)
+    check("  and takes writes, signed in", r.status_code == 401, r.status_code)
+finally:
+    main.HOUSE_ONLY_APPS = _saved_apps
+    main.HOME_NETWORKS = _saved_nets
 
 print("\nand the copy at home serves them normally")
 main.IS_LAN_COPY = True

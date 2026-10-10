@@ -216,3 +216,35 @@ def test_a_smaller_or_missing_server_window_keeps_the_floor(monkeypatch):
     assert _native_num_ctx() == _NUM_CTX        # never ask for less than what answers fit in
     monkeypatch.setenv("OLLAMA_CONTEXT_LENGTH", "banana")
     assert _native_num_ctx() == _NUM_CTX
+
+
+# --- a local Ollama on any port: no reasoning on the provider path ---------
+
+
+class _Spec:
+    def __init__(self, name):
+        self.name = name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_name, expect_none", [
+    ("ollama_text", True),
+    ("ollama", True),
+    ("ollama_vision", True),
+    ("ollama_cloud", False),
+    ("openrouter", False),
+])
+async def test_local_ollama_is_asked_not_to_reason(tmp_path, spec_name, expect_none):
+    """A thinking vision model on a worksheet photo reasoned past the 60s limit.
+    Only the household's own Ollama is sent the switch; a hosted provider may
+    refuse a level it does not know."""
+    provider = FakeProvider(api_base="http://host.docker.internal:11437/v1",
+                            response=LLMResponse(content="Tres ejercicios."))
+    provider._spec = _Spec(spec_name)
+    rel = _write_image(tmp_path)
+
+    result = await _tool(tmp_path, provider).execute(path=rel)
+
+    assert result == "Tres ejercicios."
+    sent = provider.calls[-1]
+    assert (sent.get("reasoning_effort") == "none") is expect_none

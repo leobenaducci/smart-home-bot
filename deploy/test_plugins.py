@@ -653,6 +653,66 @@ except D.DeployError as exc:
     check("  and the message names where and what",
           "solar" in str(exc) and "casa" in str(exc), str(exc))
 
+# --- mounts: a plugin's pages, carried by the portal ---------------------------
+# Declared in plugin.yml rather than written into the portal and the proxy, so a
+# household's own service never needs a commit in this repository naming it.
+print("\na plugin can ask the portal to carry its pages (`mounts:`, contract 2)")
+MOUNTED = """
+contract: 2
+name: garden
+services:
+  garden:
+    role: hub
+    units:
+      - name: web
+        dir: svc
+        compose: docker-compose.yml
+mounts:
+  - path: /garden
+    writes: false
+    wasm: true
+    max_upload_mb: 64
+"""
+write_plugin("garden", MOUNTED)
+_mcfg = cfg_with("garden", hosts={"hub": {"address": "127.0.0.1"}},
+                 services={"garden": {"enabled": True, "port": 21999}})
+_mounts = D.plugin_mounts(_mcfg)
+check("a switched-on plugin's mount is carried, at its service's address",
+      _mounts == [{"path": "/garden", "upstream": "http://127.0.0.1:21999", "house_only": True,
+                   "writes": False, "max_bytes": 64 * 1024 * 1024, "wasm": True}], _mounts)
+check("  house only unless the plugin says otherwise", _mounts and _mounts[0]["house_only"] is True)
+_off = cfg_with("garden", hosts={"hub": {"address": "127.0.0.1"}},
+                services={"garden": {"enabled": False, "port": 21999}})
+check("switched off, it is not carried at all", D.plugin_mounts(_off) == [])
+for name, body, why, expect in (
+        ("old-contract", MOUNTED.replace("contract: 2", "contract: 1").replace("garden", "oldc"),
+         "mounts on contract 1 are refused, not half-read", "contract: 2"),
+        ("bad-path", MOUNTED.replace("path: /garden", "path: /Garden/Beds").replace("name: garden", "name: badp"),
+         "a mount path is one lower-case segment", "one lower-case segment"),
+        ("core-path", MOUNTED.replace("path: /garden", "path: /files").replace("name: garden", "name: corep"),
+         "a path the stack answers is refused", "stack itself answers"),
+        ("shadowed", MOUNTED.replace("path: /garden", "path: /family-photos").replace("name: garden", "name: shad"),
+         "a path a proxy prefix route would swallow is refused", "/family"),
+        ("bad-flag", MOUNTED.replace("wasm: true", "wasm: yes please").replace("name: garden", "name: flag"),
+         "a flag is true or false", "true or false"),
+        ("bad-size", MOUNTED.replace("max_upload_mb: 64", "max_upload_mb: 0").replace("name: garden", "name: size"),
+         "an upload cap is a sane whole number", "max_upload_mb")):
+    write_plugin(name, body)
+    raises(f"  {why}", lambda n=name: D.load_plugins(cfg_with(n)), expect)
+write_plugin("garden-two", MOUNTED.replace("name: garden", "name: garden2").replace("  garden:\n", "  garden2:\n"))
+raises("two plugins mounting one path are refused",
+       lambda: D.plugin_mounts(cfg_with("garden", "garden-two", hosts={"hub": {"address": "127.0.0.1"}},
+                                        services={"garden": {"enabled": True, "port": 21999},
+                                                  "garden2": {"enabled": True, "port": 21998}})),
+       "two plugins mount")
+write_plugin("garden-beds", MOUNTED.replace("name: garden", "name: beds").replace("  garden:\n", "  beds:\n")
+             .replace("path: /garden", "path: /gardenbeds"))
+raises("  and so is one that starts with another's -- the proxy would hand it the other's requests",
+       lambda: D.plugin_mounts(cfg_with("garden", "garden-beds", hosts={"hub": {"address": "127.0.0.1"}},
+                                        services={"garden": {"enabled": True, "port": 21999},
+                                                  "beds": {"enabled": True, "port": 21998}})),
+       "overlap")
+
 # --- the floor marker is one string in two repositories ----------------------
 # The deployer writes it beside a staged floor; nanobot reads it to tell a
 # floor from a skill this package ships. Renamed on one side only, the two

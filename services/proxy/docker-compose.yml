@@ -25,6 +25,8 @@ services:
       USERS_FILE: ${USERS_FILE:-}
       AUTH_MODE: ${AUTH_MODE:-upstream}
       HOUSE_ONLY_APPS: ${HOUSE_ONLY_APPS:-cameras}
+      # The plugins' mounts, prefixes only (deploy.py `plugin_mounts`).
+      PLUGIN_MOUNTS: ${PLUGIN_MOUNTS:-[]}
       # Which source addresses count as inside the house on this copy: the VPN,
       # and whatever else the household names. A real default, not `${VAR:-}`:
       # the deployer exports an empty string when nothing is configured, and an

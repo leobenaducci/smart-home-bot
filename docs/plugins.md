@@ -181,7 +181,8 @@ be up in order to be legible.
 ## Pages
 
 A plugin does not contribute a page to `home-core`. It serves its own page from
-its own container and contributes a tile.
+its own container and contributes a tile -- or declares a mount (below), and the
+portal carries that page under its own origin.
 
 There is no shared stylesheet and there must not be one, for the reason above.
 A plugin page carries its own copy of the style block.
@@ -198,6 +199,53 @@ plugin is a plugin that only works on the machine it was written on.
 There is deliberately no status probe. Painting a live dot means the portal
 dialling every tile on every page load, which is the background thread the old
 dashboard was replaced to be rid of.
+
+## Mounts: a page the portal carries
+
+A tile links to wherever the plugin answers -- its own port, plain HTTP, its
+own login. When a page should instead live *inside* the portal, declare a
+mount:
+
+```yaml
+contract: 2
+mounts:
+  - path: /garden          # one lower-case segment; what the address bar shows
+    service: garden        # optional when the plugin has one service
+    house_only: true       # default: refused from outside the house (VPN counts as home)
+    writes: true           # false: GET and HEAD only
+    max_upload_mb: 32      # optional; the portal's own cap otherwise
+    wasm: false            # true: its pages may compile WebAssembly and start blob workers
+```
+
+The portal then serves `/garden/…` as the signed-in member, over its own HTTPS,
+forwarding to the service with the trusted-proxy pair (`X-Proxy-User`,
+`X-Proxy-Secret`, `X-Forwarded-Prefix`) exactly as it carries the cameras, and
+both proxies route the prefix to it. A tile points at `/garden/`.
+
+- **House only by default**, enforced by the portal and by each proxy directly
+  -- not through `HOUSE_ONLY_APPS`, which lets a name through when it is
+  missing from the list. A mount carries a member's own data more often than
+  not, and the safe way to be wrong is closed.
+- **`<path>/_csrf` and `<path>/_session`** are answered by the portal itself,
+  never forwarded: the token a page needs to write anything through the
+  portal, and with `_session` the member's folder on the family share too. A
+  page uses them to reach the portal's own APIs as the person (`/files/api/*`,
+  say).
+- **`wasm: true`** gives that mount's pages a policy with `'wasm-unsafe-eval'`
+  and blob workers; every other page keeps the portal's baseline.
+- Refused at load, naming the plugin: a path the stack itself answers, one that
+  starts with a prefix the proxy routes (`/family-photos` would be taken by
+  `/family`), two plugins on one path or one path starting with another's,
+  and `mounts:` on `contract: 1`.
+
+The deployer derives the list (`plugin_mounts`): the portal is told where each
+mount answers, the proxies only its prefix and gates -- the cloud copy holds no
+household address. Switching a mounted service on or moving its port offers to
+redeploy the portal and both proxies as well as the plugin.
+
+Before mounts, a household that wanted this wrote the routes into the portal
+and the proxy by hand, and kept those commits out of the published repository.
+Nothing about a household's own service belongs in this one.
 
 ## A plugin, or just a link?
 
@@ -227,7 +275,9 @@ newer than it understands rather than half-merging it. The failure this whole
 deployer is written against is "green deploy, nothing happened"; a plugin the
 deployer silently half-read is that failure with a new cause.
 
-Current contract: **1**.
+Current contract: **2**. A plugin declaring 1 loads exactly as before; one
+that declares `mounts:` must say 2, so an older deployer refuses it rather than
+deploying the service and silently leaving its pages unreachable.
 
 ## Failing loudly
 

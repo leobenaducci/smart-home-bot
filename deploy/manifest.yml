@@ -198,6 +198,9 @@ services:
           HOME_STACK_DEFAULT_LOCALE: "{locale.default}"
           HOME_STACK_LOCALES: "{derived.locales_available}"
           HOUSE_ONLY_APPS: "{derived.house_only_apps}"
+          # Pages the household's plugins ask the portal to carry (`mounts:` in
+          # their plugin.yml), with where each answers.
+          PLUGIN_MOUNTS: '{derived.plugin_mounts}'
           # Who lives here. The portal keys the share folders, chore editing
           # and the adult-only pages on the *login* id; users.json says which
           # login is which member, and these say what a member is. All three
@@ -2317,6 +2320,9 @@ services:
           SESSION_SIGNING_KEY: $PROXY_SESSION_SIGNING_KEY
           AUTH_MODE: upstream
           HOUSE_ONLY_APPS: "{derived.house_only_apps}"
+          # The plugins' mounts, without where they answer: this copy only routes
+          # the prefix to the portal and keeps a house-only one to the house.
+          PLUGIN_MOUNTS: '{derived.plugin_mounts_public}'
           CHAT_PROXY_DATA_DIR: "{paths.state}/local-proxy"
           # When `cloud.vps.home_address_is_home` is on, this copy tells the
           # VPS where the house is, every few minutes, so the app on the home
@@ -2410,6 +2416,9 @@ optional_services:
           # physically control, for a check the home side can answer anyway.
           AUTH_MODE: upstream
           HOUSE_ONLY_APPS: "{derived.house_only_apps}"
+          # The plugins' mounts, without where they answer: this copy only routes
+          # the prefix to the portal and keeps a house-only one to the house.
+          PLUGIN_MOUNTS: '{derived.plugin_mounts_public}'
           # Which addresses count as inside the house on the public copy. The
           # app always arrives here, so the VPN is what distinguishes it. Empty
           # falls through to the compose default rather than meaning "nobody".

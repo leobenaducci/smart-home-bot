@@ -257,6 +257,21 @@ check("a tile with no menu: is in no group at all",
               for rows in _home.values() for t in rows))
 A._dashboard_cache.update(key=None)
 
+_grown = {"name": "Ledger", "url": "/ledger/", "icon": "*", "menu": "casa", "adults": True}
+_menu_names = lambda m: [t["name"] for t in m["casa"]]
+check("an adults-only extension is not offered to somebody who is not one",
+      "Ledger" not in _menu_names(menu_from(HOME, [_grown, _any])),
+      _menu_names(menu_from(HOME, [_grown, _any])))
+A.ADVANCED_USERS = {USER1}
+services_file = os.path.join(tmp, "services.json")
+with A.app.test_request_context("/", headers=HOME):
+    A._proxy_auth()
+    A.session["user"] = USER1
+    _adult_menu = A._extension_menu_links()
+check("and is offered to an adult", "Ledger" in _menu_names(_adult_menu), _menu_names(_adult_menu))
+A.ADVANCED_USERS = set()
+A._dashboard_cache.update(key=None)
+
 # The Studio, house-only when the household keeps it so (2026-09-28): a phone
 # away without the VPN is refused, one on the wifi or the VPN is not, and the
 # person's own assistant -- its member token, no X-Proxy-Lan -- is not either.
