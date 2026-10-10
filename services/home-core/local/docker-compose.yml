@@ -51,6 +51,8 @@ services:
       - NANOBOT_API_PORT_BASE=${NANOBOT_API_PORT_BASE:-21301}
       - NANOBOT_WEBSOCKET_PORT_BASE=${NANOBOT_WEBSOCKET_PORT_BASE:-21201}
       - HOUSE_ONLY_APPS=${HOUSE_ONLY_APPS:-cameras}
+      # The plugins' mounts (deploy.py `plugin_mounts`); none by default.
+      - PLUGIN_MOUNTS=${PLUGIN_MOUNTS:-[]}
       # Who lives here. `HOMECORE_MEMBER_FOLDERS` is `user1:ana,user2:bo` --
       # member id to the folder on the share, which is what the house calls
       # that person. No defaults on purpose: an empty member list gives

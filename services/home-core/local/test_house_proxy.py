@@ -67,9 +67,10 @@ class _Upstream(http.server.BaseHTTPRequestHandler):
             self.send_header('Location', '/login?next=/settings')
             self.end_headers()
             return
-        body = b'{"ok":true}'
+        page = self.path.endswith('.html')
+        body = b'<!doctype html><title>x</title>' if page else b'{"ok":true}'
         self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Type', 'text/html' if page else 'application/json')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -78,6 +79,15 @@ class _Upstream(http.server.BaseHTTPRequestHandler):
 _srv = socketserver.TCPServer(('127.0.0.1', 0), _Upstream)
 threading.Thread(target=_srv.serve_forever, daemon=True).start()
 os.environ['CAMERAS_APP_URL'] = 'http://127.0.0.1:%d' % _srv.server_address[1]
+# Two plugin mounts (deploy.py `plugin_mounts`): a read-only WebAssembly app,
+# and a writable one with its own upload cap. Invented names, as everywhere.
+import json as _json  # noqa: E402
+os.environ['PLUGIN_MOUNTS'] = _json.dumps([
+    {'path': '/garden', 'upstream': os.environ['CAMERAS_APP_URL'], 'house_only': True, 'writes': False,
+     'max_bytes': None, 'wasm': True},
+    {'path': '/ledger', 'upstream': os.environ['CAMERAS_APP_URL'], 'house_only': True, 'writes': True,
+     'max_bytes': 64, 'wasm': False},
+    {'path': '/Bad Path', 'upstream': 'http://x'}])
 
 _tmp = tempfile.mkdtemp(prefix='homecore-house-proxy-')
 shutil.copytree(os.path.dirname(os.path.abspath(__file__)),
@@ -145,6 +155,45 @@ check('the redirect keeps the prefix',
 print('\nthe bare mount is the far side\'s root')
 r = client.get('/camaras/')
 check('forwarded as /', _seen.get('path') == '/', _seen.get('path'))
+
+
+print('\na plugin\'s pages, carried as declared (`mounts:`)')
+check('a malformed mount is skipped, the good ones kept',
+      [m['path'] for m in A.PLUGIN_MOUNTS] == ['/garden', '/ledger'], A.PLUGIN_MOUNTS)
+r = client.get('/garden')
+check('the bare path goes to the directory its pages resolve against',
+      r.status_code == 302 and r.headers.get('Location', '').endswith('/garden/'), r.headers.get('Location'))
+_seen.clear()
+r = client.get('/garden/app/index.html')
+check('a page is forwarded with the mount stripped, as the member',
+      r.status_code == 200 and _seen.get('path') == '/app/index.html' and _seen.get('user') == 'user1'
+      and _seen.get('prefix') == '/garden', (r.status_code, _seen))
+check('  and, being WebAssembly, may compile it and start workers from blobs -- that mount only',
+      "'wasm-unsafe-eval'" in r.headers.get('Content-Security-Policy', '')
+      and "'wasm-unsafe-eval'" not in client.get('/ledger/x.html').headers.get('Content-Security-Policy', '')
+      and "'wasm-unsafe-eval'" not in client.get('/camaras/x.html').headers.get('Content-Security-Policy', ''),
+      r.headers.get('Content-Security-Policy'))
+r = client.get('/garden/_session')
+_ms = r.get_json(silent=True) or {}
+check('its page can ask who is here: the token and the member\'s folder, answered here',
+      r.status_code == 200 and _ms.get('csrf') and 'folder' in _ms and _ms.get('family')
+      and 'no-store' in r.headers.get('Cache-Control', ''), (r.status_code, _ms))
+_seen.clear()
+r = client.post('/garden/app/x', headers={'X-CSRF-Token': _ms.get('csrf') or ''})
+check('a read-only mount takes no writes', r.status_code == 405 and not _seen, (r.status_code, _seen))
+_seen.clear()
+r = client.post('/ledger/api/x', data=b'y' * 10, headers={'X-CSRF-Token': _ms.get('csrf') or ''})
+check('a writable one does, with the token', r.status_code == 200 and _seen.get('path') == '/api/x', (r.status_code, _seen))
+r = client.post('/ledger/api/x', data=b'y' * 65, headers={'X-CSRF-Token': _ms.get('csrf') or ''})
+check('  within its own upload cap', r.status_code == 413, r.status_code)
+_saved_home = A._at_home
+A._at_home = lambda: False
+try:
+    _seen.clear()
+    r = client.get('/garden/app/index.html')
+    check('away from home a house-only mount is not there', r.status_code == 404 and not _seen, (r.status_code, _seen))
+finally:
+    A._at_home = _saved_home
 
 
 print("\nthose pages are given the token they need to change anything")

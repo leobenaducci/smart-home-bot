@@ -1607,6 +1607,9 @@ def derive(cfg: dict, secrets: dict) -> dict:
     """
     add_container_addresses(cfg)
     fill_blank_dns_names(cfg)
+    # Raises, naming the plugin, on a mount it cannot carry: dropped here, the
+    # deploy would go green with a route nobody can reach.
+    mounts = plugin_mounts(cfg)
     alias_alfred_mcp_port(cfg)
     endpoints = ollama_endpoints(cfg, secrets)
     check_models_reachable(cfg, enabled_providers(cfg, secrets, endpoints))
@@ -1953,6 +1956,13 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # has no name: an empty one hides the page and its menu entry, where an
         # address that answers nothing would offer a studio that is not there.
         "studio_url": studio_url(cfg),
+        # Pages the household's plugins ask the portal to carry (`mounts:`):
+        # in full for the portal, which forwards to them; without where they
+        # answer for the proxies, which only route the prefix and gate it.
+        "plugin_mounts": json.dumps(mounts, separators=(",", ":")),
+        "plugin_mounts_public": json.dumps(
+            [{k: m[k] for k in ("path", "house_only", "writes")} for m in mounts],
+            separators=(",", ":")),
         # Whatever GPU exporter the household already runs, or empty. See the
         # note in the example config for why this stack does not ship one.
         "gpu_exporter_url": str(
@@ -5520,7 +5530,110 @@ def migrate_compose_volumes(unit: dict, compose_files: list[str], legacy: str,
 # mis-read. Refusing is the point: half-merging a plugin the deployer does not
 # understand is the "green deploy, nothing happened" failure this stack is
 # written against.
-PLUGIN_CONTRACT = 1
+#   1  services, tiles, impact, contributes
+#   2  `mounts:` -- a page the portal carries under its own origin (below)
+PLUGIN_CONTRACT = 2
+
+# A mount is one path segment, lower case: what a person sees in the address
+# bar, and what both the portal and the proxies route as a prefix.
+MOUNT_PATH_RE = re.compile(r"/[a-z0-9][a-z0-9-]{0,31}\Z")
+# Top-level paths the portal or the proxies already answer. A mount on one would
+# shadow a page of the stack's own, or be shadowed by it, depending on which
+# registered first -- both of which read as the plugin being broken.
+CORE_PREFIXES = frozenset("""
+    _code _house account alfred api camaras chat credentials debug devices enroll
+    family family-chat files geo grocery healthz improve login logout luces
+    mailboxes menu ping profiles projects static stats studio tasks theme x
+""".split())
+# What the proxy routes as a bare string prefix (`/family{rest:path}`): those
+# match `/family-photos` too, and a core route registered first wins, so a
+# mount that merely starts with one of these would never be reached through it.
+PROXY_PREFIX_ROUTES = frozenset("""
+    _code account alfred camaras chat credentials devices family family-chat
+    files grocery geo improve luces mailboxes menu profiles projects static stats
+    studio tasks theme
+""".split())
+MOUNT_MAX_UPLOAD_MB = 2048
+
+
+def _check_mounts(doc: dict, spec_file: Path) -> None:
+    """A plugin's `mounts:`, refused rather than half-read when malformed."""
+    mounts = doc.get("mounts")
+    if mounts is None:
+        return
+    if doc.get("contract", 0) < 2:
+        raise DeployError(f"{spec_file} declares `mounts:`, which needs `contract: 2`")
+    services = list((doc.get("services") or {}).keys())
+    if not isinstance(mounts, list):
+        raise DeployError(f"{spec_file}: `mounts:` must be a list")
+    for m in mounts:
+        path = str((m or {}).get("path") or "")
+        if not MOUNT_PATH_RE.fullmatch(path):
+            raise DeployError(f"{spec_file}: mount path {path!r} must be one lower-case segment, like /garden")
+        if path[1:] in CORE_PREFIXES:
+            raise DeployError(f"{spec_file}: mount {path} is a path the stack itself answers")
+        shadow = next((p for p in sorted(PROXY_PREFIX_ROUTES) if path[1:].startswith(p)), None)
+        if shadow:
+            raise DeployError(f"{spec_file}: mount {path} starts with /{shadow}, which the proxy "
+                              f"routes as a prefix -- it would never reach the mount")
+        service = m.get("service") or (services[0] if len(services) == 1 else None)
+        if service not in services:
+            raise DeployError(f"{spec_file}: mount {path} must name one of this plugin's services "
+                              f"({', '.join(services) or 'none'}) as `service:`")
+        for key in ("house_only", "writes", "wasm"):
+            if key in m and not isinstance(m[key], bool):
+                raise DeployError(f"{spec_file}: mount {path}: `{key}` is true or false")
+        mb = m.get("max_upload_mb")
+        if mb is not None and not (isinstance(mb, int) and 1 <= mb <= MOUNT_MAX_UPLOAD_MB):
+            raise DeployError(f"{spec_file}: mount {path}: `max_upload_mb` is a whole number, 1-{MOUNT_MAX_UPLOAD_MB}")
+
+
+def plugin_service_url(cfg: dict, name: str) -> str:
+    """Where the portal reaches a plugin's service: its role's address and its
+    port, or "" while it is off. An address from `hosts:` rather than a `dns:`
+    name -- a plugin has no `dns:` entry, and the portal runs on host
+    networking, so loopback on a one-box install -- and no default port: a
+    guessed number is some other service's."""
+    svc = (cfg.get("services") or {}).get(name) or {}
+    if not svc.get("enabled") or not isinstance(svc.get("port"), int):
+        return ""
+    role = str(svc.get("host") or "hub")
+    address = str(((cfg.get("hosts") or {}).get(role) or {}).get("address") or "").strip()
+    return f"http://{address}:{svc['port']}" if address else ""
+
+
+def plugin_mounts(cfg: dict, plugins: list | None = None) -> list[dict]:
+    """Every mount of a plugin service that is switched on, as the portal reads
+    it: `{path, upstream, house_only, writes, max_bytes, wasm}`. House only and
+    writable unless the plugin says otherwise: a mount carries a member's own
+    data more often than not, and the safe way to be wrong is closed."""
+    out = []
+    for plugin in plugins if plugins is not None else load_plugins(cfg):
+        doc = plugin.get("doc") or {}
+        services = list((doc.get("services") or {}).keys())
+        for m in doc.get("mounts") or []:
+            service = m.get("service") or services[0]
+            upstream = plugin_service_url(cfg, service)
+            if not upstream:
+                continue
+            mb = m.get("max_upload_mb")
+            out.append({"path": m["path"], "upstream": upstream,
+                        "house_only": m.get("house_only", True) is not False,
+                        "writes": m.get("writes", True) is not False,
+                        "max_bytes": mb * 1024 * 1024 if mb else None,
+                        "wasm": bool(m.get("wasm"))})
+    seen: dict[str, int] = {}
+    for m in out:
+        seen[m["path"]] = seen.get(m["path"], 0) + 1
+    clash = sorted(p for p, n in seen.items() if n > 1)
+    if clash:
+        raise DeployError(f"two plugins mount {', '.join(clash)}")
+    # The proxy matches mounts as string prefixes too: /garden would take
+    # /gardens' requests.
+    overlap = sorted(f"{a} and {b}" for a in seen for b in seen if a != b and b.startswith(a))
+    if overlap:
+        raise DeployError(f"plugin mounts {', '.join(overlap)} overlap: one starts with the other")
+    return out
 
 
 def plugin_dirs(cfg: dict) -> list[Path]:
@@ -5594,6 +5707,7 @@ def load_plugins(cfg: dict) -> list[dict]:
                 f"understands up to {PLUGIN_CONTRACT}. Upgrade the package "
                 f"rather than deploying a plugin it cannot read."
             )
+        _check_mounts(doc, spec_file)
 
         name = str(doc.get("name") or directory.name)
         if name in seen:

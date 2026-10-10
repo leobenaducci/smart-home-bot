@@ -960,6 +960,23 @@ def _revoke_device_token(raw):
     conn.close()
 
 
+# A plugin mount's pages that are WebAssembly (`wasm: true`): compiling it needs
+# 'wasm-unsafe-eval', and some start a worker from a blob. Only there -- no page
+# of this app runs either, and the baseline below stays as it is.
+MOUNT_WASM_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; "
+    "worker-src 'self' blob:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self' data: blob:; "
+    "media-src 'self' data: blob:; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self';"
+)
+
+
 @app.after_request
 def _security_headers(response):
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
@@ -1008,7 +1025,8 @@ def _security_headers(response):
         # worker, so the `default-src` fallback covers it. A proxied page --
         # /camaras/, /luces/ -- is same-origin by construction and reaches its
         # own assets through a relative mount prefix, so it is covered too.
-        response.headers['Content-Security-Policy'] = (
+        wasm = any(m['wasm'] and request.path.startswith(m['path'] + '/') for m in PLUGIN_MOUNTS)
+        response.headers['Content-Security-Policy'] = MOUNT_WASM_CSP if wasm else (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
@@ -5026,22 +5044,24 @@ def _relay_and_release(resp):
         resp.close()
 
 
-def _house_proxy(upstream_base, prefix, path):
+def _house_proxy(upstream_base, prefix, path, max_bytes=None):
     """Forward to another house server as the logged-in member.
 
     Same trusted-proxy pair finance gets, plus X-Forwarded-Prefix: unlike the
     finance dashboard, these apps write their own absolute paths, and they can
     only keep them inside this mount if they are told what the mount is.
+    `max_bytes`: a cap of the caller's own (a plugin mount's `max_upload_mb`).
     """
+    cap = max_bytes or HOUSE_PROXY_MAX_BYTES
     # Before a byte is read where the size is declared, and by reading no more
     # than the cap where it is not. `content_length` alone was not enough: a
     # chunked request declares nothing, so the `and` short-circuited and the
     # whole stream went into RAM anyway — the exact thing the cap is for.
-    if request.content_length and request.content_length > HOUSE_PROXY_MAX_BYTES:
+    if request.content_length and request.content_length > cap:
         return jsonify(error='That is too large to send through here.'), 413
     body = request.get_data() if request.content_length is not None \
-        else request.stream.read(HOUSE_PROXY_MAX_BYTES + 1)
-    if len(body) > HOUSE_PROXY_MAX_BYTES:
+        else request.stream.read(cap + 1)
+    if len(body) > cap:
         return jsonify(error='That is too large to send through here.'), 413
     user = session['user']
     headers = {k: v for k, v in request.headers if k.lower() not in _PROXY_SKIP_HEADERS}
@@ -25016,6 +25036,82 @@ def _studio_attachment(name, sub):
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Plugin mounts
+# ---------------------------------------------------------------------------
+# A household plugin may ask this portal to carry its pages under its own
+# origin (`mounts:` in the plugin's plugin.yml; deploy.py `plugin_mounts`
+# derives PLUGIN_MOUNTS): signed in as the member, over HTTPS, forwarded with the
+# trusted-proxy pair like the cameras, and -- unless the plugin says otherwise --
+# only at home. Declared there rather than written here, so a household's own
+# service never needs a line in this file naming it.
+#
+# Each mount also answers, here and never forwarded, `<path>/_csrf` (the token a
+# page needs to write through this app) and `<path>/_session` (that token, and
+# the member's folder on the share) -- what a page carried from elsewhere cannot
+# otherwise learn.
+_MOUNT_PATH = re.compile(r'/[a-z0-9][a-z0-9-]{0,31}')
+
+
+def _read_plugin_mounts():
+    try:
+        raw = json.loads(os.environ.get('PLUGIN_MOUNTS') or '[]')
+    except ValueError:
+        app.logger.warning('PLUGIN_MOUNTS is not JSON: no plugin pages are carried')
+        return []
+    out = []
+    for m in raw if isinstance(raw, list) else []:
+        if not isinstance(m, dict):
+            continue
+        path, upstream = str(m.get('path') or ''), str(m.get('upstream') or '').rstrip('/')
+        if not _MOUNT_PATH.fullmatch(path) or not upstream.startswith(('http://', 'https://')):
+            app.logger.warning('plugin mount %r skipped: no usable path or upstream', m)
+            continue
+        out.append({'path': path, 'upstream': upstream,
+                    'house_only': m.get('house_only') is not False,
+                    'writes': m.get('writes') is not False,
+                    'max_bytes': m['max_bytes'] if isinstance(m.get('max_bytes'), int) else None,
+                    'wasm': m.get('wasm') is True})
+    return out
+
+
+def _carry_mount(m):
+    path, key = m['path'], 'mount_' + m['path'][1:].replace('-', '_')
+
+    def root():
+        return redirect(path + '/')
+
+    def forward(sub=''):
+        if m['house_only'] and not _at_home():
+            return jsonify(error='Available only at home or over the VPN.'), 404
+        return _house_proxy(m['upstream'], path, sub, max_bytes=m['max_bytes'])
+
+    def token():
+        resp = jsonify(csrf=_ensure_csrf_token())
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    def whoami():
+        folder, _is_admin = _files_access(session['user'])
+        resp = jsonify(csrf=_ensure_csrf_token(), folder=folder or '', family=FAMILY_FOLDER)
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    methods = list(_PROXY_METHODS) if m['writes'] else ['GET', 'HEAD']
+    taken = {r.rule for r in app.url_map.iter_rules()}
+    for rule, view, name, how in ((path, root, 'root', ['GET']), (path + '/_csrf', token, 'csrf', ['GET']),
+                                  (path + '/_session', whoami, 'session', ['GET'])):
+        if rule not in taken:
+            app.add_url_rule(rule, f'{key}_{name}', login_required(view), methods=how)
+    app.add_url_rule(path + '/', key, login_required(forward), defaults={'sub': ''}, methods=methods)
+    app.add_url_rule(path + '/<path:sub>', key + '_sub', login_required(forward), methods=methods)
+
+
+PLUGIN_MOUNTS = _read_plugin_mounts()
+for _mount in PLUGIN_MOUNTS:
+    _carry_mount(_mount)
+
+
 if __name__ == '__main__':
     # No init_backup_db(). It was called here and defined nowhere: the backup
     # history it set up belongs to `home-backups`, a service upstream ships and

@@ -425,6 +425,30 @@ check("and is linked by address and port",
       _tiles["mqtt"]["url"] == "http://192.168.1.11:1884"
       or _tiles["mqtt"]["url"].endswith(":1884"), _tiles["mqtt"]["url"])
 
+# A plugin's mounts reach the portal with where they answer, and the proxies
+# without: the cloud copy routes the prefix and holds no household address.
+print("\nthe portal and the proxies are told the plugins' mounts")
+_mdir = pathlib.Path(tempfile.mkdtemp(prefix="mounts-")) / "garden"
+(_mdir / "svc").mkdir(parents=True)
+(_mdir / "plugin.yml").write_text(
+    "contract: 2\nname: garden\nservices:\n  garden:\n    role: hub\n    units:\n"
+    "      - {name: web, dir: svc, compose: docker-compose.yml}\n"
+    "mounts:\n  - {path: /garden, writes: false}\n", encoding="utf-8")
+(_mdir / "svc" / "docker-compose.yml").write_text("services:\n  web:\n    image: busybox\n")
+_mc = copy.deepcopy(CFG)
+_mc["plugins"] = [str(_mdir)]
+_mc["services"]["garden"] = {"enabled": True, "port": 21999}
+_md = D.derive(_mc, {})["derived"]
+_portal, _proxies = json.loads(_md["plugin_mounts"]), json.loads(_md["plugin_mounts_public"])
+check("the portal: path, gates and the address it forwards to",
+      _portal and _portal[0]["path"] == "/garden" and _portal[0]["upstream"].endswith(":21999")
+      and _portal[0]["writes"] is False and _portal[0]["house_only"] is True, _portal)
+check("the proxies: the path and its gates, and nothing about where it answers",
+      _proxies == [{"path": "/garden", "house_only": True, "writes": False}], _proxies)
+check("no plugin, no mounts -- an empty list, never an unset variable",
+      json.loads(D.derive(copy.deepcopy(CFG), {})["derived"]["plugin_mounts"]) == []
+      or CFG.get("plugins"), "")
+
 # A tile the portal cannot name is a service id on the wall -- `home-paperless`
 # where a person expects «Documents». The deployer's English is only a
 # fallback, so a missing catalogue entry shows up nowhere until somebody looks

@@ -1338,6 +1338,19 @@ def plugin_impact() -> tuple[dict, dict]:
                 row = secret_rows.setdefault(str(key), [])
                 if name not in row:
                     row.append(str(name))
+
+        # A service the portal carries (`mounts:`): the portal forwards to its
+        # address and both proxies route its prefix, so switching it on or
+        # moving its port is theirs to redeploy too -- derivable, like secrets.
+        services = list((doc.get("services") or {}).keys())
+        for mount in doc.get("mounts") or []:
+            service = (mount or {}).get("service") or (services[0] if services else None)
+            if not service:
+                continue
+            row = config_rows.setdefault(f"services.{service}", [])
+            for target in ("home-core", "local-proxy", "cloud-proxy"):
+                if target not in row:
+                    row.append(target)
     return config_rows, secret_rows
 
 
