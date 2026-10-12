@@ -6033,6 +6033,117 @@ def all_services(manifest: dict, cfg: dict) -> dict:
     return services
 
 
+# --------------------------------------------------------------------------
+# The entry page on a web host
+# --------------------------------------------------------------------------
+
+# The file a publish adds, so the check afterwards can tell *this* upload from
+# whatever the host was already serving. A page that answers 200 proves only
+# that the host is up: the copy it served before the deploy answers 200 too,
+# and a script that uploaded into the wrong folder looks exactly like success.
+ENTRY_PAGE_STAMP = "version.txt"
+# How long the host gets to serve it. Generous: shared hosting can take a while
+# to notice a file that changed under its cache.
+ENTRY_PAGE_VERIFY_TIMEOUT = 90
+
+# Where the credentials live. Secrets, not config: the config file is the one
+# the admin page shows in full. The script receives them as DEPLOY_USER and
+# DEPLOY_PASSWORD, the names a Programmer project's deploy script gets, so one
+# script can serve both places.
+ENTRY_PAGE_USER_KEY = "ENTRY_PAGE_DEPLOY_USER"
+ENTRY_PAGE_PASSWORD_KEY = "ENTRY_PAGE_DEPLOY_PASSWORD"
+
+
+def entry_page_settings(cfg: dict) -> dict:
+    """`cloud.entry_page`, with every key present. Off unless switched on."""
+    return {"publish": False, "url": "", "deploy_script": "",
+            **((cfg.get("cloud") or {}).get("entry_page") or {})}
+
+
+def publish_entry_page(target: Target, unit: dict, cfg: dict, secrets: dict,
+                       remote_dir: str) -> None:
+    """Copy the entry page to the household's web host, if it has one.
+
+    The page is part of the portal, so deploying the portal updates it -- it
+    used to be a separate job that nobody ran, and the public copy was months
+    older than the one at home. How it reaches the host is the household's own
+    script (`cloud.entry_page.deploy_script`): hosts differ in protocol, port,
+    folder layout and which files are theirs, and none of that belongs in this
+    package. What the package owns is what is published and the proof it
+    arrived.
+
+    The script runs in a folder holding exactly what is published -- the
+    unit's build context minus `publish.exclude` -- plus `version.txt`, which
+    carries a value made for this run. Afterwards that file is fetched from
+    `cloud.entry_page.url` and must carry the same value, or the deploy fails.
+
+    Never published: the user store. It is state, so it is not in the build
+    context, and a script that deletes what it did not upload would remove
+    the host's own copy -- which is why the script, not this function, decides
+    what it may delete.
+    """
+    conf = entry_page_settings(cfg)
+    if not conf.get("publish"):
+        return
+    script = str(conf.get("deploy_script") or "").strip()
+    url = str(conf.get("url") or "").strip().rstrip("/")
+    missing = [what for what, value in (("deploy script", script), ("address", url))
+               if not value]
+    if missing:
+        raise DeployError(
+            f"cloud.entry_page.publish is on, but its {' and '.join(missing)} "
+            f"{'is' if len(missing) == 1 else 'are'} empty. Fill "
+            f"{'it' if len(missing) == 1 else 'them'} in on the admin page "
+            f"(Site, Cloud), or turn publishing off.")
+    if not url.startswith(("https://", "http://")):
+        raise DeployError(f"cloud.entry_page.url must start with https:// "
+                          f"(it is {url!r})")
+
+    out.sub(f"publishing the entry page to {url}")
+    stamp = os.urandom(8).hex()
+    # A sibling of the unit's directory, not inside it: that one is pushed
+    # with --delete, and is what the local container is built from.
+    staging = f"{remote_dir}.publish"
+    excludes = " ".join(f"--exclude={shlex.quote(p)}"
+                        for p in (unit.get("publish") or {}).get("exclude", []))
+    target.run(
+        f"rm -rf {shlex.quote(staging)} && mkdir -p {shlex.quote(staging)} && "
+        f"rsync -a {excludes} {shlex.quote(remote_dir + '/')} "
+        f"{shlex.quote(staging + '/')} && "
+        f"printf '%s\\n' {shlex.quote(stamp)} > "
+        f"{shlex.quote(staging + '/' + ENTRY_PAGE_STAMP)}")
+
+    # The script travels in the environment and never on a command line, for
+    # the reason Target.run gives for secrets: it is the household's, and it
+    # names their host. The credentials go the same way.
+    env = {
+        "HOME_STACK_PUBLISH_SCRIPT": script,
+        "PUBLISH_URL": url,
+        "DEPLOY_USER": secrets.get(ENTRY_PAGE_USER_KEY, ""),
+        "DEPLOY_PASSWORD": secrets.get(ENTRY_PAGE_PASSWORD_KEY, ""),
+    }
+    result = target.run('bash -eo pipefail -c "$HOME_STACK_PUBLISH_SCRIPT"',
+                        cwd=staging, env=env, check=False, timeout=1200)
+    if result.returncode != 0:
+        raise DeployError(f"the entry page's deploy script failed "
+                          f"(exit {result.returncode}); its output is above")
+    out.ok("deploy script done")
+
+    # The query string is for the host's cache, not for the page: LiteSpeed and
+    # friends happily serve the last version.txt they saw for minutes.
+    verify(target, [
+        {"http": f"{url}/{ENTRY_PAGE_STAMP}?v={stamp}", "expect": stamp,
+         "timeout": ENTRY_PAGE_VERIFY_TIMEOUT,
+         "fail_message": f"{url}/{ENTRY_PAGE_STAMP} does not carry this "
+                         f"publish's value -- the script uploaded somewhere "
+                         f"that address does not serve, or nothing at all"},
+        {"http": f"{url}/", "expect_status": 200,
+         "timeout": min(30, ENTRY_PAGE_VERIFY_TIMEOUT),
+         "fail_message": f"the files arrived but {url}/ does not answer 200"},
+    ], {}, {}, staging)
+    target.run(f"rm -rf {shlex.quote(staging)}", check=False)
+
+
 def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                    targets: dict[str, Target], only: str | None,
                    remote_root: str, plugins: list | None = None) -> None:
@@ -6827,6 +6938,11 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
 
         if unit.get("verify"):
             verify(target, unit["verify"], cfg, env, remote_dir)
+
+        # After the local copy is verified: a page that does not start at home
+        # has no business being published.
+        if unit.get("publish"):
+            publish_entry_page(target, unit, cfg, secrets, remote_dir)
 
 
 # --------------------------------------------------------------------------

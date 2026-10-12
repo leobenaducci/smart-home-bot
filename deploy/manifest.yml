@@ -310,6 +310,12 @@ services:
           # has. Same class as the literal port above.
           HOME_STACK_PORTAL_URL: "https://{dns.portal}:{services.home-core.port}"
           HOME_STACK_DOMAIN: "{site.domain}"
+        # Also copied to the household's web host when
+        # `cloud.entry_page.publish` is on (publish_entry_page in deploy.py):
+        # the build context, minus what only builds the local container.
+        publish:
+          exclude: [Dockerfile, docker-compose.yml, .dockerignore,
+                    manage_users.py, "*.md", __pycache__]
         state:
           - { path: "{paths.state}/home-core/users.json",
               mount: /var/www/html/users.json,

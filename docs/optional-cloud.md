@@ -94,6 +94,46 @@ If you enable it, note the split horizon: your internal DNS must answer the
 public name with the home machine, and that machine must pin the real external
 address in its own `/etc/hosts`, or the deploy loops back on itself.
 
+## The entry page on a web host — `cloud.entry_page.publish`
+
+A different thing from the proxy above. Some households also keep a copy of
+the entry page on shared hosting they already rent, under its own name. That
+copy is the portal's page, so the portal's deploy updates it: with
+`cloud.entry_page.publish` on, every `./home-stack deploy home-core` -- or just
+`./home-stack deploy home-core --only cloud` -- does this after the local copy
+has passed its checks:
+
+1. copies the `cloud` unit's build context, minus what only builds the
+   container (`publish.exclude` in the manifest), into a fresh folder, and adds
+   `version.txt` holding a value made for this run;
+2. runs `cloud.entry_page.deploy_script` with bash in that folder, with
+   `$DEPLOY_USER` and `$DEPLOY_PASSWORD` from `ENTRY_PAGE_DEPLOY_USER` and
+   `ENTRY_PAGE_DEPLOY_PASSWORD` in the secrets file, and `$PUBLISH_URL`;
+3. fetches `$PUBLISH_URL/version.txt` and fails the deploy unless it holds that
+   value, then asks for `$PUBLISH_URL/` and wants a 200.
+
+The third step is the point. A host that answers proves only that it is up --
+the copy from before the deploy answers too -- and a script that uploaded into
+the wrong folder looks exactly like one that worked.
+
+How the files get there is the script's business, because hosts differ in
+protocol, port and folder layout. It must leave the host's own files alone:
+the page's user store (`users.json`) is never published and lives only on the
+host, and so do the host's `.htaccess`, `.user.ini` and the like. An `rsync`
+without `--delete` and with those excluded is the safe shape:
+
+```bash
+# Shared hosting with ssh on a non-standard port and a password.
+export SSHPASS="$DEPLOY_PASSWORD"
+rsync -rlt --itemize-changes \
+  -e "sshpass -e ssh -p 2222 -o StrictHostKeyChecking=accept-new" \
+  --exclude=/users.json --exclude=/.htaccess --exclude=/.user.ini \
+  ./ "$DEPLOY_USER@host.example.com:domains/home.example.com/public_html/"
+```
+
+All of it is set on the admin page (Site, Cloud): the switch, the address, the
+script, and the two credentials, which are write-only there.
+
 ## Assistant extras
 
 Each is a feature that is simply off when its key is empty — an absent key

@@ -73,8 +73,12 @@ import bench as model_bench  # noqa: E402
 # the first Save, which is a bad trade for a checkbox.
 try:
     from ruamel.yaml import YAML as _RoundTripYAML
+    # A multi-line value (the entry page's deploy script) written as a block,
+    # so the file stays readable and hand-editable after a Save.
+    from ruamel.yaml.scalarstring import LiteralScalarString
 except ImportError:  # pragma: no cover - install.sh installs it
     _RoundTripYAML = None
+    LiteralScalarString = None
 
 
 def _round_trip_yaml():
@@ -1227,6 +1231,8 @@ IMPACT = {
     "cloud.notifications": ["ntfy", "home-core", "nanobot", "nanobot-house", "mqtt"],
     "cloud.certificates": ["home-core"],
     "cloud.vps": ["local-proxy", "cloud-proxy"],
+    # Published by home-core's `cloud` unit (publish_entry_page in deploy.py).
+    "cloud.entry_page": ["home-core"],
     "cloud.optional_integrations": ["nanobot", "nanobot-house"],
     # Both self-hosted model endpoints. The assistants read them, and so do
     # the portal's titler and Paperless's AI whenever `assistant.models.titles`
@@ -1251,6 +1257,10 @@ SECRET_IMPACT = {
     "OPENCODE_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "HOMECORE_SECRET_KEY": ["home-core"],
     "HOMECORE_DEBUG_API_KEY": ["home-core"],
+    # Read by the deployer when it publishes the entry page, never by a
+    # container -- home-core is the deploy that uses them.
+    "ENTRY_PAGE_DEPLOY_USER": ["home-core"],
+    "ENTRY_PAGE_DEPLOY_PASSWORD": ["home-core"],
     "ADMIN_SECRET_KEY": ["admin"],
     # Not deployed anywhere: the admin page reads it from the file it already
     # edits, so a password change takes effect on the next request rather than
@@ -4689,6 +4699,29 @@ def site():
             pass
         vps["serve_entry_page"] = request.form.get("vps_entry_page") == "on"
 
+        # The entry page's copy on a web host. The script is kept as typed,
+        # bar the line endings a browser adds; the credentials go to the
+        # secrets file, and an empty box keeps what is there -- the page never
+        # shows them, so an empty box is the normal state of a saved one.
+        entry = cfg["cloud"].setdefault("entry_page", {})
+        entry["publish"] = request.form.get("entry_publish") == "on"
+        entry["url"] = request.form.get(
+            "entry_url", entry.get("url", "")).strip().rstrip("/")
+        if "entry_script" in request.form:
+            script = request.form["entry_script"].replace("\r\n", "\n").strip()
+            entry["deploy_script"] = (LiteralScalarString(script + "\n")
+                                      if script and LiteralScalarString else script)
+        entry_secrets = [(key, request.form.get(field, "").strip())
+                         for field, key in (("entry_user", "ENTRY_PAGE_DEPLOY_USER"),
+                                            ("entry_password", "ENTRY_PAGE_DEPLOY_PASSWORD"))]
+        if any("\n" in v or "\r" in v for _, v in entry_secrets):
+            flash(t("admin.cloud.entry_newline"), "error")
+            return redirect(url_for("site"))
+        for key, value in entry_secrets:
+            if value:
+                set_secret(key, value)
+                note_pending(secret_impact(key))
+
         notifications = cfg["cloud"].setdefault("notifications", {})
         notifications["mode"] = request.form.get("notifications", "local")
         notifications["external_url"] = request.form.get(
@@ -4749,6 +4782,8 @@ def site():
                               **((cfg.get("cloud") or {}).get("notifications") or {})},
             "certificates": {**{"mode": "local-ca", "acme_dns_provider": ""},
                              **((cfg.get("cloud") or {}).get("certificates") or {})},
+            "entry_page": {**{"publish": False, "url": "", "deploy_script": ""},
+                           **((cfg.get("cloud") or {}).get("entry_page") or {})},
         },
     }
     return render_template(
@@ -4760,6 +4795,9 @@ def site():
         all_locales=[
             {"code": c, "name": translator.name_of(c)} for c in translator.available
         ],
+        # Whether each is saved, never the value: the boxes are write-only.
+        entry_secrets={k: secret_keys_present().get(k, False)
+                       for k in ("ENTRY_PAGE_DEPLOY_USER", "ENTRY_PAGE_DEPLOY_PASSWORD")},
     )
 
 
@@ -6125,6 +6163,7 @@ def secrets_page():
             "TAVILY_API_KEY", "BRAVE_API_KEY",
             "KAGI_API_KEY", "JINA_API_KEY", "NANOBOT_N8N_API_KEY",
             "PAPERLESS_MAIL_PASSWORD", "BRIGHTDATA_API_TOKEN",
+            "ENTRY_PAGE_DEPLOY_USER", "ENTRY_PAGE_DEPLOY_PASSWORD",
         ],
     }
     return render_template("secrets.html", groups=groups, present=present,
