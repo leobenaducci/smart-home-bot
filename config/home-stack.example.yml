@@ -1091,6 +1091,20 @@ cloud:
     # the portal was, which read as a rule that the two must match. They do not.
     tunnel_port: 21100
 
+  # A copy of the entry page on a web host you rent -- a different thing from
+  # the VPS above, which forwards to the page at home rather than holding one.
+  # On, every deploy of home-core (or `home-core --only cloud`) runs
+  # `deploy_script` in a folder holding exactly the files to publish, then
+  # fetches `url`/version.txt and fails unless it carries the value this run
+  # wrote. The script gets $DEPLOY_USER and $DEPLOY_PASSWORD from
+  # ENTRY_PAGE_DEPLOY_USER / ENTRY_PAGE_DEPLOY_PASSWORD in the secrets file.
+  # It must leave the host's own files alone -- users.json above all, which is
+  # never published. docs/optional-cloud.md has an example script.
+  entry_page:
+    publish: false
+    url: ""                  # e.g. https://home.example.com
+    deploy_script: ""
+
   # `local` runs an ntfy container on the hub and notifies on the LAN only.
   # `external` points at a server you host elsewhere.
   notifications:

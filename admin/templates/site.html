@@ -282,6 +282,58 @@
     </div>
   </div>
 
+  {# The entry page's copy on a rented web host. Not the VPS: that one holds no
+     page and forwards to the one at home. The credentials are write-only --
+     the page says whether one is saved and never what it is. #}
+  <div class="field">
+    <label class="row-tight">
+      <input type="checkbox" name="entry_publish"
+             {% if cfg.cloud.entry_page.publish %}checked{% endif %}>
+      {{ t('admin.cloud.entry_publish') }}
+    </label>
+    <p class="help">{{ t('admin.cloud.entry_publish_help') }}</p>
+    <div class="fields" style="margin:10px 0 0 24px;padding:0">
+      <div class="field wide">
+        <label for="entry_url">{{ t('admin.cloud.entry_url') }}</label>
+        <input type="text" id="entry_url" name="entry_url"
+               value="{{ cfg.cloud.entry_page.url }}" class="mono"
+               placeholder="https://home.example.com">
+        <p class="help">{{ t('admin.cloud.entry_url_help') }}</p>
+      </div>
+      <div class="field wide">
+        <label for="entry_script">{{ t('admin.cloud.entry_script') }}</label>
+        <textarea id="entry_script" name="entry_script" class="mono" rows="12"
+                  spellcheck="false">{{ cfg.cloud.entry_page.deploy_script }}</textarea>
+        <p class="help">{{ t('admin.cloud.entry_script_help') }}</p>
+      </div>
+      <div class="field">
+        <label for="entry_user">{{ t('admin.cloud.entry_user') }}</label>
+        <input type="text" id="entry_user" name="entry_user" class="mono"
+               autocomplete="off"
+               placeholder="{{ t('admin.cloud.entry_saved') if entry_secrets.ENTRY_PAGE_DEPLOY_USER else '' }}">
+      </div>
+      <div class="field">
+        <label for="entry_password">{{ t('admin.cloud.entry_password') }}</label>
+        <input type="password" id="entry_password" name="entry_password"
+               autocomplete="new-password"
+               placeholder="{{ t('admin.cloud.entry_saved') if entry_secrets.ENTRY_PAGE_DEPLOY_PASSWORD else '' }}">
+        <p class="help">{{ t('admin.cloud.entry_credentials_help') }}</p>
+      </div>
+      {# Submits this form elsewhere so the CSRF token comes along; the route
+         publishes what is saved and ignores the rest. #}
+      <div class="field wide">
+        {% set entry_ready = cfg.cloud.entry_page.publish and cfg.cloud.entry_page.url
+                             and cfg.cloud.entry_page.deploy_script %}
+        <button type="submit" class="ghost"
+                formaction="{{ url_for('publish_entry_page') }}" formmethod="post"
+                {% if not entry_ready %}disabled{% endif %}>
+          {{ t('admin.cloud.entry_publish_now') }}</button>
+        <p class="help">{{ t('admin.cloud.entry_publish_now_help') if entry_ready
+                           else t('admin.cloud.entry_publish_unsaved') }}</p>
+      </div>
+    </div>
+  </div>
+
   <div class="fields">
   <div class="field">
     <label for="notifications">{{ t('admin.cloud.notifications') }}</label>

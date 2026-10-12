@@ -3606,6 +3606,8 @@ _UNIT_KEYS = {
     "opencode_config", "portal_dashboard", "pull", "self_urls", "skill_floors",
     # collect_env drops these when empty; see the paperless index checks.
     "env_omit_empty",
+    # The entry page's copy on a web host (publish_entry_page).
+    "publish",
 }
 _seen = set()
 for _svc, _spec in ((_manifest.get("services") or {}).items()):
@@ -4477,6 +4479,95 @@ check("  and threads the portal knows",
       and _app["groups"][0]["members"] == ["999000111", "999000222", "999000333"], _app["groups"])
 check("  an inactive member is in no group and not in the list",
       "user4" not in json.dumps(_app), _app)
+
+print("the entry page is published to a web host, and the proof is the file it serves")
+import functools as _ft
+import http.server as _hs
+import threading as _th
+
+with tempfile.TemporaryDirectory() as _ep:
+    _ep = pathlib.Path(_ep)
+    _unit_dir = _ep / "home-core" / "cloud"          # what the deployer pushed
+    (_unit_dir / "src" / "pages").mkdir(parents=True)
+    (_unit_dir / "index.php").write_text("<?php echo 'Hi';")
+    (_unit_dir / "src" / "pages" / "home.php").write_text("<?php")
+    (_unit_dir / "Dockerfile").write_text("FROM php")
+    (_unit_dir / "README.md").write_text("notes")
+    _host = _ep / "host"                               # what the web host serves
+    _host.mkdir()
+    (_host / "index.html").write_text("old page")
+    (_host / "users.json").write_text('[{"username": "999000111"}]')
+    (_host / "version.txt").write_text("from-an-earlier-publish\n")
+    _seen = _ep / "seen-credentials"
+
+    _handler = _ft.partial(_hs.SimpleHTTPRequestHandler, directory=str(_host))
+    _handler.log_message = lambda *a, **k: None
+    _srv = _hs.ThreadingHTTPServer(("127.0.0.1", 0), _handler)
+    _th.Thread(target=_srv.serve_forever, daemon=True).start()
+    _url = f"http://127.0.0.1:{_srv.server_address[1]}"
+
+    _unit = {"name": "cloud", "publish": {"exclude": ["Dockerfile", "*.md"]}}
+    _tgt = D.Target("hub", {"address": "127.0.0.1"}, False)
+    _secrets = {"ENTRY_PAGE_DEPLOY_USER": "u-test", "ENTRY_PAGE_DEPLOY_PASSWORD": "p-test",
+                "PROXY_SHARED_SECRET": "not-for-the-script"}
+    _good = (f'printf "%s/%s/%s" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "${{PROXY_SHARED_SECRET-}}" > {_seen}\n'
+             f'rsync -a --exclude=/users.json ./ {_host}/\n')
+
+    def _publish(conf):
+        cfg = {"cloud": {"entry_page": conf}}
+        try:
+            D.publish_entry_page(_tgt, _unit, cfg, _secrets, str(_unit_dir))
+            return None
+        except D.DeployError as exc:
+            return str(exc)
+
+    _saved_timeout = D.ENTRY_PAGE_VERIFY_TIMEOUT
+    D.ENTRY_PAGE_VERIFY_TIMEOUT = 2
+    try:
+        check("  off: nothing is staged and the host is untouched",
+              _publish({"publish": False, "url": _url, "deploy_script": _good}) is None
+              and not (_ep / "home-core" / "cloud.publish").exists()
+              and (_host / "index.html").read_text() == "old page")
+        _err = _publish({"publish": True, "url": _url, "deploy_script": "  "})
+        check("  on with no script: refused, naming what is missing",
+              _err is not None and "deploy script" in _err, _err)
+        _err = _publish({"publish": True, "url": "", "deploy_script": _good})
+        check("  on with no address: refused too", _err is not None and "address" in _err, _err)
+
+        _err = _publish({"publish": True, "url": _url + "/", "deploy_script": _good})
+        check("  a script that uploads: the deploy passes", _err is None, _err)
+        check("  the page's files arrived",
+              (_host / "index.php").exists() and (_host / "src" / "pages" / "home.php").exists())
+        check("  what only builds the container did not",
+              not (_host / "Dockerfile").exists() and not (_host / "README.md").exists(),
+              sorted(x.name for x in _host.iterdir()))
+        check("  the host's own user store is untouched",
+              "999000111" in (_host / "users.json").read_text())
+        check("  version.txt was replaced by this publish's value",
+              (_host / "version.txt").read_text().strip() not in ("", "from-an-earlier-publish"))
+        check("  the script got the two credentials and no other secret",
+              _seen.read_text() == "u-test/p-test/", _seen.read_text())
+        check("  the staging folder is removed after a good publish",
+              not (_ep / "home-core" / "cloud.publish").exists())
+
+        (_host / "version.txt").write_text("from-an-earlier-publish\n")
+        _err = _publish({"publish": True, "url": _url, "deploy_script": "true"})
+        check("  a script that exits 0 but uploads nothing fails the deploy",
+              _err is not None and "verification failed" in _err, _err)
+        _err = _publish({"publish": True, "url": _url,
+                         "deploy_script": "echo uploading\nfalse\necho never"})
+        check("  a script that fails stops at its first failing line",
+              _err is not None and "exit 1" in _err, _err)
+        _err = _publish({"publish": True, "url": "ftp://somewhere", "deploy_script": _good})
+        check("  an address that is not http(s) is refused", _err is not None and "https://" in _err, _err)
+    finally:
+        D.ENTRY_PAGE_VERIFY_TIMEOUT = _saved_timeout
+        _srv.shutdown()
+
+_cloud = next(u for u in _manifest["services"]["home-core"]["units"] if u["name"] == "cloud")
+check("  the manifest publishes the cloud unit and keeps the build files back",
+      {"Dockerfile", "docker-compose.yml"} <= set((_cloud.get("publish") or {}).get("exclude", [])),
+      _cloud.get("publish"))
 
 print()
 if failures:

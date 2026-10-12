@@ -38,7 +38,12 @@ their own histories; the packaging layer around them (`home-stack`, `deploy/`,
 Everything runs on one PC by default. The model providers' keys are the only
 credentials that leave the network -- `OPENCODE_API_KEY` by default, and any the
 household adds (NanoGPT, OpenRouter, Together; `docs/nanogpt.md`) -- and the
-optional VPS proxy is the only thing that runs off that machine.
+optional VPS proxy is the only thing that runs off that machine. The one
+exception is opt-in and holds no household data from here: a copy of the PHP
+entry page on a web host the household rents (`cloud.entry_page`), which the
+portal's deploy publishes with the household's own script and credentials
+(`publish_entry_page`, `docs/optional-cloud.md`). Its user store stays on the
+host and is never uploaded.
 
 **Go belongs to the coding harness. Everything else uses Zen.** One account
 opens both — `https://opencode.ai/zen/v1` is Zen, per token; `/zen/go/v1` is the
