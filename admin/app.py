@@ -6200,18 +6200,27 @@ def _run_deploy_job(argv, targets, dry_run, clear_all):
             save_pending(set(load_pending()) - set(targets))
 
 
-def _start_deploy(targets, dry_run):
+def _start_deploy(targets, dry_run, only=None):
+    """Start one deploy in the background. False when one is already running.
+
+    `only` names a single unit of a single service. Such a run deploys part of
+    the service, so it settles nothing that is pending for it.
+    """
     argv = [sys.executable, str(DEPLOYER), *targets, "--no-color"]
+    if only:
+        argv += ["--only", only]
     if dry_run:
         argv.append("--dry-run")
     with _deploy_lock:
         if _deploy_job["running"]:
             return False
-        _deploy_job.update(running=True, failed=None, targets=targets,
+        shown = [f"{t} --only {only}" for t in targets] if only else targets
+        _deploy_job.update(running=True, failed=None, targets=shown,
                            dry_run=dry_run, started=time.time(), finished=None)
-    clear_all = targets == ["all"] or set(targets) >= set(load_pending() or ["-"])
+    clear_all = (not only and (targets == ["all"]
+                               or set(targets) >= set(load_pending() or ["-"])))
     threading.Thread(target=_run_deploy_job,
-                     args=(argv, targets, dry_run, clear_all),
+                     args=(argv, [] if only else targets, dry_run, clear_all),
                      daemon=True).start()
     return True
 
@@ -9288,6 +9297,32 @@ def backups():
                            encrypt=bool((cfg.get("backups") or {}).get("encrypt")),
                            has_key=bool(get_secret("BACKUP_ENCRYPTION_KEY")),
                            job=job, has_log=DEPLOY_LOG.exists())
+
+
+@app.route("/site/publish-entry-page", methods=["POST"])
+def publish_entry_page():
+    """The Site page's "Publish now": deploy only the entry page's unit, which
+    ends by copying it to the web host (publish_entry_page in deploy.py).
+
+    From what is *saved*: the button submits the Site form here so the CSRF
+    token travels with it, and everything else in that form is ignored -- a
+    publish that also saved half-typed settings would be two actions behind
+    one button.
+    """
+    cfg = load_config()
+    entry = (cfg.get("cloud") or {}).get("entry_page") or {}
+    if not (entry.get("publish") and entry.get("url") and entry.get("deploy_script")):
+        flash(t("admin.cloud.entry_publish_unsaved"), "error")
+        return redirect(url_for("site"))
+    blocked = cannot_deploy_from_here(cfg)
+    if blocked:
+        flash(translator("admin.deploy.blocked_container",
+                         locale=current_locale(cfg), roles=blocked), "error")
+        return redirect(url_for("site"))
+    if not _start_deploy(["home-core"], False, only="cloud"):
+        flash(translator("admin.deploy.busy", locale=current_locale(cfg)), "error")
+        return redirect(url_for("site"))
+    return redirect(url_for("deploy"))
 
 
 @app.route("/deploy", methods=["GET", "POST"])

@@ -319,6 +319,18 @@
                placeholder="{{ t('admin.cloud.entry_saved') if entry_secrets.ENTRY_PAGE_DEPLOY_PASSWORD else '' }}">
         <p class="help">{{ t('admin.cloud.entry_credentials_help') }}</p>
       </div>
+      {# Submits this form elsewhere so the CSRF token comes along; the route
+         publishes what is saved and ignores the rest. #}
+      <div class="field wide">
+        {% set entry_ready = cfg.cloud.entry_page.publish and cfg.cloud.entry_page.url
+                             and cfg.cloud.entry_page.deploy_script %}
+        <button type="submit" class="ghost"
+                formaction="{{ url_for('publish_entry_page') }}" formmethod="post"
+                {% if not entry_ready %}disabled{% endif %}>
+          {{ t('admin.cloud.entry_publish_now') }}</button>
+        <p class="help">{{ t('admin.cloud.entry_publish_now_help') if entry_ready
+                           else t('admin.cloud.entry_publish_unsaved') }}</p>
+      </div>
     </div>
   </div>
 
