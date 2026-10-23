@@ -8,9 +8,11 @@ second is the reason this file exists at all.
 
 **It read the page.** `/health` answers 200 from a server whose Chromium never
 started, and `/md` on a broken crawler returns `success: true` with an empty
-string. So the assertion is on the text: example.com's body carries "Example
-Domain" as its heading, and a crawler that fetched an error page, a captcha or
-nothing does not have it.
+string. So the assertion is on the text: example.com's body says it is "for use
+in documentation examples", and a crawler that fetched an error page, a captcha
+or nothing does not have it. (It used to be the "Example Domain" heading; by
+October 2026 that survives only in the <title>, which the Markdown drops, and
+the body grew translations. The sentence is what stayed.)
 
 **It still refuses to fetch the house.** crawl4ai runs on the container network
 with an LLM choosing its URLs, which makes it a fetch-anything primitive
@@ -35,7 +37,7 @@ import urllib.error
 import urllib.request
 
 PAGE = "https://example.com/"
-EXPECT = "example domain"
+EXPECT = "documentation examples"
 
 # Addresses a crawler on this network must refuse. The first is cloud metadata
 # (credentials, on any VM); the second is this stack's own admin page, which is
