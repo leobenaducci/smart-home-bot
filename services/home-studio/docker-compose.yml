@@ -17,6 +17,10 @@ services:
     restart: unless-stopped
     environment:
       - STUDIO_SECRET=${STUDIO_SECRET}
+      # For a program on the LAN to reserve the card (/api/gpu), and nothing
+      # else: it opens no project and no queue.
+      - STUDIO_GPU_TOKEN=${STUDIO_GPU_TOKEN}
+      - STUDIO_GPU_DEVICE=${STUDIO_GPU_DEVICE:-0}
       - STUDIO_NOTIFY_URL=${STUDIO_NOTIFY_URL:-}
       - STUDIO_IDLE_S=${STUDIO_IDLE_S:-600}
       # The Studio's audio.cpp (the `audio` unit): vocals and lyric timing for

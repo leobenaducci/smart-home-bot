@@ -123,6 +123,9 @@ thing to run for any other.
 ./home-stack ollama --library             the model library: what is on disk, how each tested
 ./home-stack llamacpp                     which llama.cpp builds exist (vanilla, PrismML)
 ./home-stack llamacpp build [flavor]      compile one for these cards and this CPU
+./home-stack card                         who has the Studio's card reserved, who waits
+./home-stack card run -m 30 -- CMD        reserve it, run CMD on it, give it back
+./home-stack card --token                 the token a program on the LAN reserves it with
 ./home-stack plan                         full plan, changes nothing
 ./home-stack deploy                       deploy everything enabled
 ./home-stack deploy home-core             one service

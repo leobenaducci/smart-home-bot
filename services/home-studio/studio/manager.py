@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import analysis, media, recipes, score
+from .gpu import Reservations
 from .projects import ProjectError, Projects
 from .store import Store
 
@@ -118,8 +119,12 @@ class Manager:
     def __init__(self, store: Store, projects: Projects, scratch: Path, logs: Path,
                  idle_s: float = 600, notify: Callable[[dict], None] | None = None,
                  worker_factory: Callable[[], Worker] | None = None,
-                 audio: "analysis.AudioServer | None" = None, characters=None):
+                 audio: "analysis.AudioServer | None" = None, characters=None,
+                 reservations: Reservations | None = None):
         self.store, self.projects = store, projects
+        # Who has the card after the Studio (gpu.py). While anybody holds or
+        # waits for it, no job starts here.
+        self.gpu = reservations or Reservations()
         self.audio, self.characters = audio, characters
         self.scratch, self.logs = Path(scratch), Path(logs)
         self.scratch.mkdir(parents=True, exist_ok=True)
@@ -194,8 +199,12 @@ class Manager:
         None."""
         self.paused, self.pause_reason = True, reason
         self.wake()
-        if not now:
-            return None
+        return self.yield_card() if now else None
+
+    def yield_card(self) -> str | None:
+        """Stop the generator's job on the card and put it back in the queue,
+        for a pause or a reservation that will not wait for it. The job
+        stopped, or None."""
         job = self.store.running()
         if not job or job["kind"] in ("analyze", "repaint", "score"):
             return None
@@ -210,28 +219,36 @@ class Manager:
         return job["id"]
 
     def status(self) -> dict:
+        held = self.gpu.granted()
         return {"worker": bool(self.worker and self.worker.alive()),
                 "model": self.worker.model if self.worker else "",
                 "paused": self.paused, "pause_reason": self.pause_reason if self.paused else "",
-                "card_busy_mb": self.card_busy}
+                "card_busy_mb": self.card_busy,
+                # Lent: who has the card by reservation, and how many wait.
+                "lent": self.gpu.public(held) if held else None,
+                "lent_waiting": sum(r["state"] == "waiting" for r in self.gpu.all())}
 
     # -- the loop -----------------------------------------------------------
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
                 self._fail_blocked()
-                job = None if self.paused else self.store.next_job(self.worker.model if self.worker else "")
+                lent = self.gpu.active()
+                job = None if self.paused or lent else self.store.next_job(self.worker.model if self.worker else "")
                 if job is None:
-                    # Paused, the card is lent -- the Programmer's local model
-                    # waits for this worker to go (programmer-local.sh) -- so an
-                    # idle one goes now, not after `idle_s`: it held the card for
-                    # ten minutes with nothing to do while the Programmer waited
+                    # Paused or reserved, somebody is waiting for the card --
+                    # the Programmer's local model, the coding benchmark, a
+                    # program on the LAN (gpu.py) -- so an idle worker goes
+                    # now, not after `idle_s`: it held the card for ten minutes
+                    # with nothing to do while the Programmer waited
                     # (2026-10-01).
-                    if self.worker and (self.paused or time.time() - self.worker.last_used > self.idle_s):
+                    if self.worker and (self.paused or lent or time.time() - self.worker.last_used > self.idle_s):
                         log.info("%s: stopping the worker, the card is free",
-                                 "paused" if self.paused else f"idle for {int(self.idle_s)}s")
+                                 "paused" if self.paused else "reserved" if lent else f"idle for {int(self.idle_s)}s")
                         self.worker.stop()
                         self.worker = None
+                    if lent:
+                        self._lend()
                     self._wake.wait(timeout=5)
                     self._wake.clear()
                     continue
@@ -253,6 +270,23 @@ class Manager:
             except Exception:                                  # noqa: BLE001 -- the loop must not die
                 log.exception("manager round failed")
                 time.sleep(5)
+
+    def _lend(self) -> None:
+        """The next reservation gets the card once nothing is on it: this
+        worker gone (the loop stops it first) and no more than FOREIGN_MB in
+        use -- the Studio's audio unit unloads a few seconds after its last
+        job, and a holder who just let go may still be unloading."""
+        if self.worker is not None or self.gpu.granted():
+            self.card_busy = 0
+            return
+        used = self.card_used()
+        if used is not None and used > FOREIGN_MB:
+            self.card_busy = used
+            return
+        self.card_busy = 0
+        r = self.gpu.grant_next()
+        if r:
+            log.info("the card is lent to %s (%s)", r["holder"], r["purpose"] or "no reason given")
 
     def _fail_blocked(self) -> None:
         for job in self.store.blocked_forever():

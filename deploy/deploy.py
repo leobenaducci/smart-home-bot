@@ -2484,6 +2484,13 @@ def derive_studio_secret(shared_secret: str) -> str:
     return hashlib.sha256(f"{shared_secret}:home-studio".encode()).hexdigest()
 
 
+def derive_studio_gpu_token(shared_secret: str) -> str:
+    """What a program of the household's own presents to reserve the Studio's
+    card. Separate from the Studio's secret because that one opens every
+    person's projects; this reaches `/api/gpu` and nothing else."""
+    return hashlib.sha256(f"{shared_secret}:home-studio:gpu".encode()).hexdigest()
+
+
 def derive_service_token(shared_secret: str, service: str) -> str:
     """A token that says "I am this container", not "I am this person".
 
@@ -2550,6 +2557,7 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
             "CRAWL4AI_API_TOKEN": derive_crawl4ai_secret(shared, "token"),
             "CRAWL4AI_SECRET_KEY": derive_crawl4ai_secret(shared, "jwt"),
             "STUDIO_SECRET": derive_studio_secret(shared),
+            "STUDIO_GPU_TOKEN": derive_studio_gpu_token(shared),
             # The file still wins if somebody set one by hand: this is a
             # convenience, not a policy, and an operator who wants a specific
             # token should be able to have one.

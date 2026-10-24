@@ -1530,8 +1530,10 @@ services:
             timeout: 300
     secrets:
       # Derived from PROXY_SHARED_SECRET (derive_studio_secret): the portal
-      # holds the same one, and there is nothing to type.
-      required: [STUDIO_SECRET]
+      # holds the same one, and there is nothing to type. STUDIO_GPU_TOKEN is
+      # the card token for a program on the LAN (derive_studio_gpu_token);
+      # `./home-stack card --token` prints it.
+      required: [STUDIO_SECRET, STUDIO_GPU_TOKEN]
 
   home-voice:
     description: Voice gateway; panels reach the shared assistant through it.
