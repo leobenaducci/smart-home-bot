@@ -155,6 +155,45 @@ with tempfile.TemporaryDirectory() as tmp:
     check("one whose own run was cut short removes what it left",
           ("rm", "-f", "codebench-server") in calls and ("rm", "-f", "codebench-run-x-cpp-lru") in calls, calls)
     check("and says so", r._read("status.json", {}).get("state") == "idle")
+    asked = []
+    r._card_api = lambda m, path, body=None, timeout=20: (asked.append((m, path)), (200, {}))[1]
+    r._status("running", run="x", reservation="rid-1")
+    r.recover()
+    check("and gives back the card it had reserved", ("DELETE", "/api/gpu/reservations/rid-1") in asked, asked)
+
+print("\nthe card, reserved from the Studio")
+with tempfile.TemporaryDirectory() as tmp:
+    r = C.Runner(ROOT, pathlib.Path(tmp), gpu=lambda: 1, studio=lambda: ("http://studio", "s"),
+                 ollama_url=lambda: "", build_dir=lambda f: pathlib.Path("/x"), models_dir="/m",
+                 server_image="img")
+    r.kick = lambda: None
+    r.add(dict(ok), "999000111")
+    r.card_used_mb = lambda gpu: 200
+    asked, answers = [], [(201, {"id": "rid-2", "state": "waiting", "studio": {"running": False}}),
+                          (200, {"id": "rid-2", "state": "waiting", "starts_in": 300, "studio": {"running": False}}),
+                          (200, {"reservations": [{"holder": "Programmer", "state": "granted"}]}),
+                          (200, {"id": "rid-2", "state": "granted"})]
+
+    def fake(method, path, body=None, timeout=20):
+        asked.append((method, path, body))
+        return answers.pop(0) if answers else (200, {})
+    r._card_api = fake
+    seen = []
+    keep = r._status
+    r._status = lambda state, **kw: (seen.append(dict(kw, state=state)), keep(state, **kw))
+    gpu, rid = r._borrow_card(interrupt=False)
+    check("it asks for the card with an estimate, and waits its turn",
+          gpu == 1 and rid == "rid-2" and asked[0][1] == "/api/gpu/reservations"
+          and asked[0][2]["minutes"] == 2 + 5 * len(ok["problems"]) and asked[0][2]["now"] is False, asked[:1])
+    check("while waiting, the page says who has the card first",
+          any(x.get("why") == "reserved" and x.get("holder") == "Programmer" for x in seen), seen)
+    r._held.set()
+    r._release(rid)
+    check("and gives it back by its id", asked[-1][:2] == ("DELETE", "/api/gpu/reservations/rid-2"), asked[-1])
+    asked.clear()
+    answers[:] = [(0, None)]
+    check("no Studio answering: it goes by the card's memory alone",
+          r._borrow_card(interrupt=True) == (1, ""), asked)
 
 print()
 if failures:
