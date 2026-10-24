@@ -4706,6 +4706,69 @@ def apply_service_wiring(config_json: str, wiring: dict, cfg: dict) -> str:
     return json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
 
 
+_NANOBOT_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _interpolate_keeping_env_refs(value, cfg: dict):
+    """`interpolate()`, leaving nanobot's own `${VAR}` references alone.
+
+    An MCP entry is written in nanobot's config language, where `${HOMECORE_USER_ID}`
+    is resolved by each assistant from its own environment -- which is how one
+    entry carries a different member's identity in every container. The
+    deployer's `{services.x.port}` uses the same braces, so without the mask
+    `{HOMECORE_USER_ID}` would be looked up in the site config and refused.
+    """
+    if isinstance(value, dict):
+        return {k: _interpolate_keeping_env_refs(v, cfg) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate_keeping_env_refs(v, cfg) for v in value]
+    if not isinstance(value, str):
+        return value
+    refs: list[str] = []
+
+    def stash(match: re.Match) -> str:
+        refs.append(match.group(0))
+        return f"\x00{len(refs) - 1}\x00"
+
+    out = interpolate(_NANOBOT_ENV_REF.sub(stash, value), cfg)
+    return re.sub("\x00(\\d+)\x00", lambda m: refs[int(m.group(1))], out)
+
+
+def add_plugin_mcp_servers(config_json: str, servers: dict, cfg: dict) -> str:
+    """Add the MCP servers plugins contribute to one assistant config.
+
+    An entry goes in only while the plugin service that answers it is switched
+    on -- the `disable_mcp` rule in `apply_service_wiring`, from the other side:
+    nanobot dials whatever is listed, and a server nobody deployed is a failed
+    connect on the path of every message.
+
+    A plugin adds a server; it never replaces one. A name the config already
+    has is an error rather than an overwrite, because the entry it would replace
+    is one this package ships and documents.
+    """
+    if not servers:
+        return config_json
+    doc = json.loads(config_json)
+    services = cfg.get("services") or {}
+    changed = False
+    for name, entry in servers.items():
+        svc = entry.get("service")
+        if not bool((services.get(svc) or {}).get("enabled", True)):
+            continue
+        existing = ((doc.get("tools") or {}).get("mcpServers") or {})
+        if name in existing:
+            raise DeployError(
+                f"plugin {entry.get('plugin')} contributes MCP server {name!r}, which "
+                f"this assistant's config already has. A plugin adds a server; it "
+                f"does not replace one -- rename it.")
+        doc.setdefault("tools", {}).setdefault("mcpServers", {})[name] = \
+            _interpolate_keeping_env_refs(dict(entry.get("config") or {}), cfg)
+        changed = True
+    if not changed:
+        return config_json
+    return json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
+
+
 ASSISTANT_DEFAULT_NAME = "Alfred"
 _ASSISTANT_NAME_RE = re.compile(r"\bAlfred\b")
 
@@ -5532,7 +5595,9 @@ def migrate_compose_volumes(unit: dict, compose_files: list[str], legacy: str,
 # written against.
 #   1  services, tiles, impact, contributes
 #   2  `mounts:` -- a page the portal carries under its own origin (below)
-PLUGIN_CONTRACT = 2
+#   3  `contributes.<assistant>.mcp_servers:` -- an MCP server the assistants
+#      dial, present only while the plugin service behind it is switched on
+PLUGIN_CONTRACT = 3
 
 # A mount is one path segment, lower case: what a person sees in the address
 # bar, and what both the portal and the proxies route as a prefix.
@@ -5586,6 +5651,56 @@ def _check_mounts(doc: dict, spec_file: Path) -> None:
         mb = m.get("max_upload_mb")
         if mb is not None and not (isinstance(mb, int) and 1 <= mb <= MOUNT_MAX_UPLOAD_MB):
             raise DeployError(f"{spec_file}: mount {path}: `max_upload_mb` is a whole number, 1-{MOUNT_MAX_UPLOAD_MB}")
+
+
+# An MCP server's name is the key nanobot files it under and the middle of every
+# tool it offers (`mcp_<server>_<tool>`), so it is held to the same shape as a
+# skill name.
+MCP_SERVER_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
+
+
+def _check_mcp_servers(doc: dict, spec_file: Path) -> None:
+    """A plugin's `contributes.<service>.mcp_servers:`, refused when malformed.
+
+    Each entry names the plugin service that answers it, because that service's
+    `enabled:` is what decides whether the entry reaches the assistant at all --
+    nanobot dials every server it is given, and one pointed at a container
+    nobody deployed is a failed connect on the path of every message.
+
+    Only a URL. A `command:` would be a process started *inside the assistant's
+    container*, which is the core's image and not something a plugin gets to
+    run code in; a plugin serves MCP from its own container and says where.
+    """
+    services = list((doc.get("services") or {}).keys())
+    for target, block in ((doc.get("contributes") or {}).items()):
+        servers = (block or {}).get("mcp_servers")
+        if servers is None:
+            continue
+        if doc.get("contract", 0) < 3:
+            raise DeployError(
+                f"{spec_file} contributes `mcp_servers:` to {target}, which needs `contract: 3`")
+        if not isinstance(servers, dict):
+            raise DeployError(f"{spec_file}: `mcp_servers:` under {target} must be a mapping")
+        for name, entry in servers.items():
+            if not MCP_SERVER_NAME_RE.fullmatch(str(name)):
+                raise DeployError(
+                    f"{spec_file}: MCP server name {name!r} must be lower case letters, "
+                    f"digits, - and _ (it becomes part of every tool name)")
+            entry = entry or {}
+            service = entry.get("service") or (services[0] if len(services) == 1 else None)
+            if service not in services:
+                raise DeployError(
+                    f"{spec_file}: MCP server {name} must name one of this plugin's services "
+                    f"({', '.join(services) or 'none'}) as `service:`")
+            config = entry.get("config")
+            if not isinstance(config, dict):
+                raise DeployError(f"{spec_file}: MCP server {name} has no `config:` mapping")
+            if "command" in config or "args" in config:
+                raise DeployError(
+                    f"{spec_file}: MCP server {name} is a `command:`. That would run inside the "
+                    f"assistant's container; serve it from the plugin's own and give its `url:`")
+            if not re.match(r"https?://", str(config.get("url") or "")):
+                raise DeployError(f"{spec_file}: MCP server {name} needs an http(s) `url:`")
 
 
 def plugin_service_url(cfg: dict, name: str) -> str:
@@ -5708,6 +5823,7 @@ def load_plugins(cfg: dict) -> list[dict]:
                 f"rather than deploying a plugin it cannot read."
             )
         _check_mounts(doc, spec_file)
+        _check_mcp_servers(doc, spec_file)
 
         name = str(doc.get("name") or directory.name)
         if name in seen:
@@ -5767,9 +5883,11 @@ def plugin_contributions(manifest: dict, service: str, cfg: dict) -> dict:
     deployer lets one service contribute to another, and nothing else should.
 
     Returns `{"env": {...}, "skills": [(name, var, rewrite)], "allowed_env_keys":
-    [...], "floors": [(name, Path)]}`.
+    [...], "floors": [(name, Path)], "mcp_servers": {name: {"service", "config",
+    "plugin"}}}`.
     """
     env: dict[str, str] = {}
+    mcp_servers: dict[str, dict] = {}
     skills: list[tuple[str, str, str | None]] = []
     allowed: list[str] = []
     floors: list[tuple[str, Path]] = []
@@ -5815,9 +5933,21 @@ def plugin_contributions(manifest: dict, service: str, cfg: dict) -> dict:
                     )
                 floors.append((str(name), path))
         allowed += [str(k) for k in (block.get("allowed_env_keys") or [])]
+        services = list((plugin["doc"].get("services") or {}).keys())
+        for server, entry in ((block.get("mcp_servers") or {}).items()):
+            if server in mcp_servers:
+                raise DeployError(
+                    f"two plugins contribute MCP server {server!r} to {service}: "
+                    f"{mcp_servers[server]['plugin']} and {plugin['name']}")
+            entry = entry or {}
+            mcp_servers[str(server)] = {
+                "service": entry.get("service") or (services[0] if len(services) == 1 else None),
+                "config": entry.get("config") or {},
+                "plugin": plugin["name"],
+            }
 
     return {"env": env, "skills": skills, "allowed_env_keys": allowed,
-            "floors": floors}
+            "floors": floors, "mcp_servers": mcp_servers}
 
 
 def skill_services_value(skills: list) -> str:
@@ -6762,6 +6892,10 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                     # git stays the documented default.
                     patched = apply_service_wiring(
                         patched, unit.get("when_service") or {}, cfg)
+                    # MCP servers a plugin serves from its own container, while
+                    # that container is switched on.
+                    patched = add_plugin_mcp_servers(
+                        patched, contributions.get("mcp_servers") or {}, cfg)
                     patched = apply_household_language(patched, cfg)
                     patched = apply_site_timezone(patched, cfg)
                     target_file.write_text(patched, encoding="utf-8")
