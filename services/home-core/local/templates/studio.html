@@ -457,7 +457,17 @@
       var why = q.status.pause_reason === 'update' ? S.card_paused_update
         : q.status.pause_reason === 'programmer' ? S.card_paused_programmer
         : q.status.pause_reason === 'bench' ? S.card_paused_bench : S.card_paused;
-      $('#gpu-text').textContent = q.status.paused && run
+      // Reserved (home-studio's studio/gpu.py): somebody has the card, and
+      // nothing of the Studio's starts until they give it back.
+      var lent = q.status.lent;
+      var lentWho = lent ? (lent.purpose ? lent.holder + ' (' + lent.purpose + ')' : lent.holder) : '';
+      if (lent) g.classList.add('paused');
+      $('#gpu-text').textContent = lent
+        ? fmt(lent.overdue ? 'card_lent_over' : 'card_lent', { who: lentWho, min: Math.max(1, Math.ceil((lent.ends_in || 0) / 60)) })
+        : run && q.status.lent_waiting && !q.status.paused
+        ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) }) +
+          ' · ' + S.card_reserved_next
+        : q.status.paused && run
         ? fmt('card_busy', { what: run.what, who: run.mine ? S.yours : run.owner_name, pct: Math.round(run.progress * 100) }) +
           ' · ' + fmt('card_paused_after', { why: why })
         : q.status.paused ? why : run
