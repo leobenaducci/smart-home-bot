@@ -1,4 +1,8 @@
-FROM node:20-alpine
+# Pinned to the patch, not `node:22-alpine`: a build reuses whatever image the
+# floating tag last pulled, so only an exact tag guarantees the fix. 22.23.4
+# carries the fix for CVE-2026-111497 (Brotli decoder); Node 20 is end of life
+# and never got one.
+FROM node:22.23.4-alpine
 
 WORKDIR /app
 

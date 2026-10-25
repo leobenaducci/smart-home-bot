@@ -275,9 +275,10 @@ newer than it understands rather than half-merging it. The failure this whole
 deployer is written against is "green deploy, nothing happened"; a plugin the
 deployer silently half-read is that failure with a new cause.
 
-Current contract: **2**. A plugin declaring 1 loads exactly as before; one
+Current contract: **3**. A plugin declaring 1 or 2 loads exactly as before; one
 that declares `mounts:` must say 2, so an older deployer refuses it rather than
-deploying the service and silently leaving its pages unreachable.
+deploying the service and silently leaving its pages unreachable, and one that
+contributes `mcp_servers:` must say 3, for the same reason about its tools.
 
 ## Failing loudly
 
@@ -377,6 +378,44 @@ refused: `../skills/file-share` would land in the workspace, which outranks
 both the cache and the builtin copy, and what is written there is not inert --
 the runner executes the `python` fence out of `SKILL_PYTHON.md` with the exec
 tool's credentials.
+
+### MCP servers
+
+A service that speaks the Model Context Protocol can be handed to the
+assistants directly, as a server beside `crawl4ai` and `browser-use` rather
+than as a skill. Contract **3**:
+
+```yaml
+contract: 3
+contributes:
+  nanobot:
+    mcp_servers:
+      lathe:                       # nanobot files it as `mcp_lathe_<tool>`
+        service: lathe-mcp         # this plugin's service that answers it
+        config:                    # nanobot's own MCP entry, as in its config.json
+          type: streamableHttp
+          url: "http://lathe-mcp:8080/mcp"
+          headers:
+            X-Proxy-User: "${HOMECORE_USER_ID}"
+          toolTimeout: 300
+          enabledTools: [read, write]
+```
+
+- **It follows `service:`'s `enabled:`.** Off, the entry is not written at
+  all -- the same rule as `disable_mcp` for the shipped servers: nanobot dials
+  every server it is given, and one pointed at a container nobody deployed is a
+  failed connect on the path of every message.
+- **A URL, never a `command:`.** A stdio server would be a process inside the
+  assistant's container, which is this package's image; serve it from your
+  own container on `nanobot-net` and give its address.
+- **`{placeholders}` are the deployer's, `${VAR}` are nanobot's.** The first
+  are filled in from the config at deploy time; the second are left for each
+  assistant to resolve from its own environment, which is how one entry carries
+  a different member's identity in every container.
+- **It adds, never replaces.** A name the assistant's config already has, or
+  one two plugins both contribute, is an error.
+- **Every tool it lists is in every prompt.** Trim with `enabledTools`, or
+  offer a small index tool and a call tool, as `crawl4ai` was trimmed to `md`.
 
 ### The address to use
 

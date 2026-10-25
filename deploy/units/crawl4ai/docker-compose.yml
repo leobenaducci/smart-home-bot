@@ -18,7 +18,13 @@ services:
     # hardcoded to "mysecret" in the public source. 0.8.7 is the fix; this is
     # well past it. A floating tag on a container that fetches URLs an LLM
     # chose is the wrong place to find out what changed.
-    image: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.3}
+    # The pin is the build's base; the image that runs is that plus a patched
+    # Brotli (see Dockerfile beside this file).
+    build:
+      context: .
+      args:
+        CRAWL4AI_BASE: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.3}
+    image: crawl4ai-house:local
     container_name: crawl4ai
     restart: unless-stopped
     environment:

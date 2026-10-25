@@ -713,6 +713,92 @@ raises("  and so is one that starts with another's -- the proxy would hand it th
                                                   "beds": {"enabled": True, "port": 21998}})),
        "overlap")
 
+# --- mcp_servers: an MCP server the assistants dial --------------------------
+#
+# The plugin serves MCP from its own container and says where. The entry must
+# follow that container's `enabled:` -- nanobot dials every server it is given,
+# and one pointed at a container nobody deployed is a failed connect on every
+# message -- and it must never replace a server this package ships.
+print("\nmcp_servers")
+
+MCP_PLUGIN = """
+contract: 3
+name: lathe
+services:
+  lathe-mcp:
+    role: hub
+    units:
+      - name: app
+        dir: svc
+        compose: docker-compose.yml
+contributes:
+  nanobot:
+    mcp_servers:
+      lathe:
+        service: lathe-mcp
+        config:
+          type: streamableHttp
+          url: "http://lathe-mcp:{services.lathe-mcp.port}/mcp"
+          headers:
+            X-Proxy-User: "${HOMECORE_USER_ID}"
+          toolTimeout: 300
+"""
+write_plugin("lathe", MCP_PLUGIN)
+lathe_cfg = cfg_with("lathe", services={"lathe-mcp": {"port": 8080}})
+lathe = D.plugin_contributions(manifest_with(lathe_cfg), "nanobot", lathe_cfg)
+check("a contributed MCP server is carried",
+      set(lathe["mcp_servers"]) == {"lathe"}, lathe["mcp_servers"])
+check("other services get none",
+      D.plugin_contributions(manifest_with(lathe_cfg), "nanobot-house",
+                             lathe_cfg)["mcp_servers"] == {})
+
+base_cfg_json = _json.dumps({"tools": {"mcpServers": {"crawl4ai": {"url": "http://c/mcp/sse"}}}})
+added = _json.loads(D.add_plugin_mcp_servers(base_cfg_json, lathe["mcp_servers"], lathe_cfg))
+entry = added["tools"]["mcpServers"].get("lathe") or {}
+check("it is added beside the shipped ones",
+      set(added["tools"]["mcpServers"]) == {"crawl4ai", "lathe"}, added)
+check("the deployer's {placeholders} are interpolated",
+      entry.get("url") == "http://lathe-mcp:8080/mcp", entry)
+check("nanobot's own ${VAR} references are left for each assistant to resolve",
+      entry.get("headers") == {"X-Proxy-User": "${HOMECORE_USER_ID}"}, entry)
+
+off_cfg = cfg_with("lathe", services={"lathe-mcp": {"port": 8080, "enabled": False}})
+check("switched off, the entry is not written at all",
+      D.add_plugin_mcp_servers(base_cfg_json, lathe["mcp_servers"], off_cfg)
+      == base_cfg_json)
+check("contributing nothing leaves the file byte-identical",
+      D.add_plugin_mcp_servers(base_cfg_json, {}, lathe_cfg) == base_cfg_json)
+
+raises("a plugin cannot replace a server the config already has",
+       lambda: D.add_plugin_mcp_servers(
+           _json.dumps({"tools": {"mcpServers": {"lathe": {"url": "http://x"}}}}),
+           lathe["mcp_servers"], lathe_cfg),
+       "does not replace")
+
+write_plugin("lathe-old", MCP_PLUGIN.replace("contract: 3", "contract: 2")
+             .replace("name: lathe", "name: lathe-old"))
+raises("mcp_servers on contract 2 is refused",
+       lambda: D.load_plugins(cfg_with("lathe-old")), "needs `contract: 3`")
+
+write_plugin("lathe-cmd", MCP_PLUGIN.replace("name: lathe", "name: lathe-cmd")
+             .replace('type: streamableHttp', 'command: /bin/sh'))
+raises("a stdio command is refused -- it would run in the assistant's container",
+       lambda: D.load_plugins(cfg_with("lathe-cmd")), "command")
+
+write_plugin("lathe-svc", MCP_PLUGIN.replace("name: lathe", "name: lathe-svc")
+             .replace("service: lathe-mcp", "service: someone-else"))
+raises("an entry must name one of the plugin's own services",
+       lambda: D.load_plugins(cfg_with("lathe-svc")), "one of this plugin's services")
+
+write_plugin("lathe-two", MCP_PLUGIN.replace("name: lathe\n", "name: lathe-two\n")
+             .replace("  lathe-mcp:\n", "  lathe-two-mcp:\n")
+             .replace("service: lathe-mcp", "service: lathe-two-mcp"))
+two_cfg = cfg_with("lathe", "lathe-two", services={"lathe-mcp": {"port": 1},
+                                                   "lathe-two-mcp": {"port": 2}})
+raises("two plugins cannot contribute the same MCP server name",
+       lambda: D.plugin_contributions(manifest_with(two_cfg), "nanobot", two_cfg),
+       "two plugins contribute MCP server")
+
 # --- the floor marker is one string in two repositories ----------------------
 # The deployer writes it beside a staged floor; nanobot reads it to tell a
 # floor from a skill this package ships. Renamed on one side only, the two

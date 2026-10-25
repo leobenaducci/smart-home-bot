@@ -2068,8 +2068,11 @@ services:
       - name: crawl4ai
         dir: deploy/units/crawl4ai
         compose: docker-compose.yml
-        build: false
-        pull: true
+        # Built: the pinned upstream image plus Brotli 1.2.1 (CVE-2026-111497),
+        # in deploy/units/crawl4ai/Dockerfile. Not pulled -- the tag that runs is
+        # local, and the base is an exact pin a pull would not move.
+        build: true
+        pull: false
         # The assistants' network. They declare this too; whichever of the two
         # deploys first creates it, and `up` fails outright on a fresh host if
         # neither does.

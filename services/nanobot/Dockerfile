@@ -1,6 +1,9 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS base
 
-# Node.js 20 for the WhatsApp bridge.
+# Node.js 22 for the WhatsApp bridge and the pi harness. Not 20: it went end of
+# life in April 2026 and gets no security releases -- CVE-2026-111497, a Brotli
+# decoder overflow reachable through any `fetch` of a hostile server, is fixed
+# in 22.23.4 and will never be fixed on 20.
 # tmux backs the skill of the same name, which drives interactive CLIs by
 # sending keystrokes to a detached session and scraping the pane. Without the
 # binary the skill still appeared in the model's list and was offered to the
@@ -16,7 +19,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git tmux bubblewrap openssh-client chromium && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get purge -y gnupg && \
@@ -56,10 +59,14 @@ RUN useradd -m -u 1000 -s /bin/bash nanobot && \
 WORKDIR /app
 
 # Python dependencies, resolved from pyproject alone (cached until it changes).
+# brotli is nobody's direct dependency -- aiohttp, httpx and urllib3 pull it in
+# as an extra and decode every `Content-Encoding: br` reply with it, which makes
+# it the decoder for each page web_fetch reads. 1.2.0 has CVE-2026-111497, so
+# the floor is stated here rather than left to whatever the extras resolve to.
 COPY pyproject.toml README.md LICENSE ./
 RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
     uv pip install --system --no-cache . && \
-    uv pip install --system --no-cache paho-mqtt smbprotocol pandas && \
+    uv pip install --system --no-cache paho-mqtt smbprotocol pandas "brotli>=1.2.1" && \
     rm -rf nanobot bridge
 
 # pi (pi.dev): the harness long background tasks run on (nanobot/harness/
