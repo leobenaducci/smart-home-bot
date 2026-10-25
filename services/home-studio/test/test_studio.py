@@ -161,6 +161,58 @@ check("  and a job running long looks slow, never finished",
 check("  steps still win where they exist",
       overall_progress({"phase": "Denoising", "step": 5, "steps": 10}, 0.9) == round(0.2 + 0.75 * 0.5, 3))
 
+print("\nreservations of the card")
+from studio import gpu as G  # noqa: E402
+clock = [1000.0]
+rs = G.Reservations(tmp / "gpu" / "r.json", clock=lambda: clock[0])
+try:
+    rs.reserve("Render farm", None)
+    check("  a reservation without an estimate is refused", False)
+except G.ReservationError as exc:
+    check("  a reservation without an estimate is refused, saying what is wanted", "minutes" in str(exc), exc)
+a = rs.reserve("Render farm", 30, "a long Blender job")
+b = rs.reserve("Programmer", 20)
+check("  first come first served: nobody has it until the Studio grants it",
+      rs.granted() is None and rs.public(a)["position"] == 1 and rs.public(b)["position"] == 2)
+check("  and the second in line is told the first one's estimate", rs.public(b)["starts_in"] == 30 * 60,
+      rs.public(b))
+check("  others see who and what for, never the id", "id" not in rs.public(a) and rs.public(a, with_id=True)["id"])
+g = rs.grant_next()
+check("  the first in line is granted, and only one at a time", g["id"] == a["id"] and rs.grant_next() is None)
+clock[0] += 10 * 60
+check("  ten minutes in, twenty of its thirty to go",
+      rs.public(rs.granted())["ends_in"] == 20 * 60 and not rs.public(rs.granted())["overdue"])
+rs.heartbeat(a["id"], minutes=45)
+rs.heartbeat(b["id"])
+check("  a heartbeat can correct the estimate, counted from now",
+      rs.public(rs.granted())["ends_in"] == 45 * 60 and rs.public(b)["starts_in"] == 45 * 60,
+      (rs.public(rs.granted()), rs.public(b)))
+clock[0] += 14 * 60
+check("  fourteen minutes after its last heartbeat, a waiting reservation is still there",
+      b["id"] not in [r["id"] for r in rs.expire()] and rs.heartbeat(b["id"]) is not None)
+clock[0] += 2 * 60
+gone = [r["id"] for r in rs.expire()]
+check("  fifteen without one and it is gone -- a holder that died gives the card back",
+      gone == [a["id"]] and rs.granted() is None, (gone, rs.all()))
+check("  while the one that kept beating stays", [r["id"] for r in rs.all()] == [b["id"]], rs.all())
+c_ = rs.reserve("Script", 5)
+again = G.Reservations(tmp / "gpu" / "r.json", clock=lambda: clock[0])
+check("  kept on disk: a Studio restart does not end a loan",
+      [r["id"] for r in again.all()] == [b["id"], c_["id"]], again.all())
+clock[0] += 14 * 60
+check("  and the time it was down does not count against the holders",
+      len(again.all()) == 2, again.all())
+check("  releasing is by id", again.release(c_["id"]) and not again.release(c_["id"]))
+ok_wait = again.grant_next()
+check("  waiting for a reservation already granted answers at once",
+      again.wait(b["id"], 30)["state"] == "granted" and ok_wait["id"] == b["id"])
+for bad in (0, 721, "soon"):
+    try:
+        again.reserve("x", bad)
+        check(f"  minutes={bad!r} is refused", False)
+    except G.ReservationError:
+        pass
+
 print("\nthe manager, end to end with a stand-in generator")
 
 
@@ -877,6 +929,71 @@ else:
     mgr3.stop()
     store2.cancel(jl["id"])
 
+    print("\na reservation has the card after the Studio's job, and the Studio waits for it")
+    slow2 = SlowWorker(tmp / "scratch")
+    slow2._out.append({"kind": "ready"})
+    mgr4 = Manager(store2, projects, tmp / "scratch", tmp / "logs", idle_s=3600,
+                   notify=notified.append, worker_factory=lambda: slow2)
+    mgr4.card_used = lambda: 0
+    mgr4.start()
+    jr = store2.add(owner=JUANA, owner_name="Juana", kind="image", model=recipes.IMAGE_MODEL,
+                    params={"prompt": "un barco", "size": "1024x1024"})
+    mgr4.wake()
+    deadline = time.time() + 15
+    while time.time() < deadline and store2.get(jr["id"])["state"] != "running":
+        time.sleep(0.1)
+    res = mgr4.gpu.reserve("Programmer", 20)
+    mgr4.wake()
+    time.sleep(1.5)
+    check("  asked while a job runs, it waits: the job is not stopped for it",
+          store2.get(jr["id"])["state"] == "running" and mgr4.gpu.granted() is None)
+    with slow2._lock:                                  # the job finishes
+        slow2._out.append({"kind": "done", "id": jr["id"], "success": False, "files": [], "errors": ["x"]})
+        slow2._lock.notify_all()
+    deadline = time.time() + 15
+    while time.time() < deadline and not mgr4.gpu.granted():
+        time.sleep(0.1)
+    check("  then the worker goes and the reservation is granted",
+          mgr4.worker is None and (mgr4.gpu.granted() or {}).get("id") == res["id"], mgr4.status())
+    check("  and the page can say who has the card", (mgr4.status()["lent"] or {}).get("holder") == "Programmer",
+          mgr4.status())
+    jn = store2.add(owner=JUANA, owner_name="Juana", kind="image", model=recipes.IMAGE_MODEL,
+                    params={"prompt": "un puerto", "size": "1024x1024"})
+    mgr4.wake()
+    time.sleep(1.5)
+    check("  a job queued while the card is lent waits", store2.get(jn["id"])["state"] == "queued")
+    mgr4.paused = False                                 # a parent pressing resume
+    mgr4.wake()
+    time.sleep(1)
+    check("  nor does a parent's resume end the loan", store2.get(jn["id"])["state"] == "queued")
+    other = mgr4.gpu.reserve("Benchmark", 10)
+    mgr4.card_used = lambda: 9000
+    mgr4.gpu.release(res["id"])
+    mgr4.wake()
+    time.sleep(1.5)
+    check("  the next in line waits until the one before has let go of the memory",
+          mgr4.gpu.granted() is None and mgr4.status()["card_busy_mb"] == 9000 and
+          store2.get(jn["id"])["state"] == "queued", mgr4.status())
+    mgr4.card_used = lambda: 100
+    mgr4.wake()
+    deadline = time.time() + 10
+    while time.time() < deadline and not mgr4.gpu.granted():
+        time.sleep(0.1)
+    check("  then it has it, still ahead of the Studio's queue",
+          (mgr4.gpu.granted() or {}).get("id") == other["id"] and store2.get(jn["id"])["state"] == "queued")
+    with slow2._lock:
+        slow2._out.append({"kind": "ready"})
+        slow2._lock.notify_all()
+    mgr4.gpu.release(other["id"])
+    mgr4.wake()
+    deadline = time.time() + 15
+    while time.time() < deadline and store2.get(jn["id"])["state"] == "queued":
+        time.sleep(0.1)
+    check("  and once nobody wants the card, the Studio takes its next job",
+          store2.get(jn["id"])["state"] == "running", store2.get(jn["id"]))
+    mgr4.stop()
+    store2.cancel(jn["id"])
+
 print("\na project's words under version control")
 import json  # noqa: E402
 from studio.history import History
@@ -1028,6 +1145,44 @@ check("  and a parent's pause has no reason to show",
       c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]["pause_reason"] == "")
 c.post("/api/admin/resume", json={}, headers=h(MORA, "Mora", admin=True))
 check("  and a child cannot pause the card", c.post("/api/admin/pause", json={}, headers=h(JUANA, "Juana")).status_code == 403)
+
+A.GPU_TOKEN = "g" * 32
+tok = {"Authorization": "Bearer " + "g" * 32}
+check("  the card token reserves the card and opens nothing else",
+      c.get("/api/gpu", headers=tok).status_code == 200 and c.get("/api/queue", headers=tok).status_code == 401
+      and c.get("/api/gpu", headers={"Authorization": "Bearer nope"}).status_code == 401)
+r = c.post("/api/gpu/reservations", json={"holder": "Render farm"}, headers=tok)
+check("  a reservation needs an estimate", r.status_code == 400 and "minutes" in r.json()["detail"], r.text)
+r = c.post("/api/gpu/reservations", json={"holder": "Render farm", "minutes": 30, "now": True}, headers=tok)
+check("  and the token cannot take the card from a running job", r.status_code == 403, r.text)
+r = c.post("/api/gpu/reservations", json={"holder": "Render farm", "minutes": 30, "purpose": "Blender"}, headers=tok)
+rv = r.json()
+check("  granted or waiting, the holder gets its id and when to beat",
+      r.status_code == 201 and rv["id"] and rv["state"] == "waiting" and rv["heartbeat_every"] == 600
+      and rv["expires_in"] == 900 and rv["device"] is not None, rv)
+A.manager.card_busy = 5400
+why = c.get(f"/api/gpu/reservations/{rv['id']}", headers=tok).json()
+check("  a wait behind memory nobody reserved says so, and how much",
+      why["waiting_for"] == "card" and why["card_busy_mb"] == 5400, why)
+check("  the list says it too", c.get("/api/gpu", headers=tok).json()["reservations"][0]["waiting_for"] == "card")
+A.manager.card_busy = 0
+second = c.post("/api/gpu/reservations", json={"holder": "Second", "minutes": 5}, headers=tok).json()
+check("  the one behind it waits for a reservation", second["waiting_for"] == "reservation", second)
+c.delete(f"/api/gpu/reservations/{second['id']}", headers=tok)
+hb = c.post(f"/api/gpu/reservations/{rv['id']}/heartbeat", json={"minutes": 40}, headers=tok)
+check("  a heartbeat answers with the new estimate", hb.status_code == 200 and hb.json()["minutes"] == 40, hb.text)
+listed = c.get("/api/gpu", headers=tok).json()["reservations"]
+check("  the list says who waits and what for, without ids",
+      listed and listed[0]["holder"] == "Render farm" and "id" not in listed[0], listed)
+check("  a parent's tool sees the ids, to end one",
+      c.get("/api/gpu", headers=h(MORA, "Mora", admin=True)).json()["reservations"][0]["id"] == rv["id"])
+check("  the queue's status says the card is spoken for",
+      c.get("/api/queue", headers=h(JUANA, "Juana")).json()["status"]["lent_waiting"] == 1)
+check("  released, it is gone", c.delete(f"/api/gpu/reservations/{rv['id']}", headers=tok).status_code == 200
+      and c.get(f"/api/gpu/reservations/{rv['id']}", headers=tok).status_code == 404)
+A.GPU_TOKEN = ""
+check("  with no token configured, the token door is shut",
+      c.get("/api/gpu", headers=tok).status_code == 401)
 check("  Juana cannot open Tomi's projects",
       c.get(f"/api/projects/{pj['id']}", headers=h(TOMI, "Tomi")).status_code == 404)
 

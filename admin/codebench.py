@@ -220,6 +220,8 @@ class Runner:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # Set when a run lets go of the card: stops its reservation's heartbeat.
+        self._held = threading.Event()
         self._proc: subprocess.Popen | None = None
         self._live: dict = {}
 
@@ -323,8 +325,9 @@ class Runner:
             for name in self._docker_out("ps", "-a", "--format", "{{.Names}}").split():
                 if name == SERVER or name.startswith(RUN_PREFIX):
                     self._docker("rm", "-f", name)
-            if st.get("studio_paused_by_us"):
-                self._studio("resume")
+            self._release(st.get("reservation", ""))
+            if st.get("studio_paused_by_us"):              # a run from before reservations
+                self._card_api("POST", "/api/admin/resume", {})
             self._status("idle", note="interrupted: the admin page restarted during a run")
         self.kick()
 
@@ -364,61 +367,108 @@ class Runner:
         except (IndexError, ValueError):
             return None
 
-    # -- the Studio --
-    def _studio(self, action: str, body: dict | None = None, method: str = "POST") -> dict | None:
+    # -- the Studio's card --
+    def _card_api(self, method: str, path: str, body: dict | None = None,
+                  timeout: float = 20) -> tuple[int, dict | None]:
+        """(status, answer) from the Studio; (0, None) when there is no Studio
+        or it did not answer."""
         url, secret = self.studio()
         if not url or not secret:
-            return None
-        path = "/api/queue" if action == "queue" else f"/api/admin/{action}"
+            return 0, None
         req = urllib.request.Request(
-            url.rstrip("/") + path, method="GET" if action == "queue" else method,
-            data=None if action == "queue" else json.dumps(body or {}).encode(),
+            url.rstrip("/") + path, method=method,
+            data=None if body is None else json.dumps(body).encode(),
             headers={"X-Studio-Secret": secret, "X-Studio-User": "codebench", "X-Studio-Name": "Coding benchmark",
                      "X-Studio-Admin": "1", "Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return json.load(r)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as exc:
+            return exc.code, None
         except (OSError, ValueError, urllib.error.URLError):
-            return None
+            return 0, None
+
+    def _release(self, rid: str) -> None:
+        if rid:
+            self._card_api("DELETE", f"/api/gpu/reservations/{rid}")
+
+    def _heartbeat(self, rid: str, every: float = 600) -> None:
+        """Every ten minutes while the run holds the card (the Studio's
+        reservations end after fifteen without one), until the run ends."""
+        def beat():
+            while not self._held.wait(every):
+                if self._card_api("POST", f"/api/gpu/reservations/{rid}/heartbeat", {})[0] == 404:
+                    return
+        self._held.clear()
+        threading.Thread(target=beat, name="codebench-heartbeat", daemon=True).start()
 
     # -- the work --
     def _wait(self, seconds: float) -> bool:
         """Sleep; False when a stop came."""
         return not self._stop.wait(seconds)
 
-    def _borrow_card(self, interrupt: bool) -> tuple[int | None, bool]:
-        """(the card, whether the Studio was paused here). None when stopped."""
+    def _estimate_minutes(self) -> int:
+        """What the queue will take, roughly: a load and five minutes a
+        problem, which is about what the slow ones took (docs/coding-benchmark.md)."""
+        with self._lock:
+            q = self.queue()
+        return max(1, min(720, sum(2 + 5 * len(e.get("problems") or ()) for e in q) or 10))
+
+    def _borrow_card(self, interrupt: bool) -> tuple[int | None, str]:
+        """(the card, the Studio reservation holding it -- "" without a
+        Studio). The card is None when stopped.
+
+        Reserved, not paused: the Studio's reservations put this in line
+        with the Programmer's local model and anything else that wants the
+        card, and the Studio's own job finishes first unless the person
+        starting the run asked for it now (`interrupt`)."""
         gpu = self.gpu()
         if gpu is None:
             raise BenchError("There is no card for the benchmark: the Studio's card is not configured.")
-        q = self._studio("queue")
-        ours = False
-        if q is not None:
-            st = q.get("status") or {}
-            if not st.get("paused") or (interrupt and q.get("running")):
-                self._studio("pause", {"reason": "bench", "now": interrupt})
-                ours = not st.get("paused")
-            self._status("waiting", gpu=gpu, studio_paused_by_us=ours, why="studio")
-            while True:
-                q = self._studio("queue") or {}
-                st = q.get("status") or {}
-                if not (st.get("worker") or q.get("running")):
-                    break
-                running = q.get("running") or {}
-                self._status("waiting", gpu=gpu, studio_paused_by_us=ours, why="studio",
-                             what=running.get("what", ""), progress=running.get("progress"))
-                if not self._wait(10):
-                    return None, ours
+        code, r = self._card_api("POST", "/api/gpu/reservations",
+                                 {"holder": "Coding benchmark", "purpose": "local coding models",
+                                  "minutes": self._estimate_minutes(), "now": interrupt})
+        rid = (r or {}).get("id", "") if code == 201 else ""
+        if rid:
+            self._status("waiting", gpu=gpu, reservation=rid, why="studio")
+            while (r or {}).get("state") != "granted":
+                if self._stop.is_set():
+                    self._release(rid)
+                    return None, ""
+                code, r = self._card_api("GET", f"/api/gpu/reservations/{rid}?wait=20", timeout=40)
+                if code == 404:
+                    raise BenchError("The Studio ended the benchmark's reservation of the card before its turn.")
+                if code != 200:
+                    if not self._wait(10):
+                        self._release(rid)
+                        return None, ""
+                    continue
+                self._status("waiting", gpu=gpu, reservation=rid, **self._waiting_for(r))
+            self._heartbeat(rid)
         while True:
             used = self.card_used_mb(gpu)
             if used is not None and used <= FOREIGN_MB:
-                return gpu, ours
-            self._status("waiting", gpu=gpu, studio_paused_by_us=ours, why="card", used_mb=used)
+                return gpu, rid
+            self._status("waiting", gpu=gpu, reservation=rid, why="card", used_mb=used)
             if not self._wait(15):
-                return None, ours
+                self._release(rid)
+                return None, ""
+
+    def _waiting_for(self, r: dict) -> dict:
+        """What the page says while the reservation waits: the Studio's job,
+        or whoever reserved the card first."""
+        if r.get("state") == "granted":
+            return {"why": "card"}
+        if (r.get("studio") or {}).get("running"):
+            q = (self._card_api("GET", "/api/queue")[1] or {}).get("running") or {}
+            return {"why": "studio", "what": q.get("what", ""), "progress": q.get("progress")}
+        ahead = [x for x in (self._card_api("GET", "/api/gpu")[1] or {}).get("reservations", [])
+                 if x.get("state") == "granted"]
+        return {"why": "reserved", "holder": ahead[0]["holder"] if ahead else "",
+                "starts_in": r.get("starts_in")}
 
     def _work(self) -> None:
-        gpu, ours, note = None, False, ""
+        gpu, rid, note = None, "", ""
         try:
             while not self._stop.is_set():
                 with self._lock:
@@ -428,10 +478,10 @@ class Runner:
                 entry = q[0]
                 try:
                     if gpu is None:
-                        gpu, ours = self._borrow_card(entry.get("interrupt", False))
+                        gpu, rid = self._borrow_card(entry.get("interrupt", False))
                         if gpu is None:
                             break
-                    self._run_entry(entry, gpu, ours)
+                    self._run_entry(entry, gpu, rid)
                 finally:
                     self.remove(entry["id"])
         except Exception as exc:                                  # noqa: BLE001 -- the page says it
@@ -439,8 +489,8 @@ class Runner:
         finally:
             self._docker("rm", "-f", SERVER)
             self._live = {}
-            if ours:
-                self._studio("resume")
+            self._held.set()
+            self._release(rid)
             self._status("idle", note=note or ("stopped" if self._stop.is_set() else ""))
             # Something queued while the last entry finished.
             if not self._stop.is_set() and self.queue():
@@ -558,7 +608,7 @@ class Runner:
         tmp.write_text(json.dumps(run, ensure_ascii=False))
         tmp.replace(self.results / f"{run['id']}.json")
 
-    def _run_entry(self, entry: dict, gpu: int, ours: bool) -> None:
+    def _run_entry(self, entry: dict, gpu: int, rid: str) -> None:
         run = {"id": entry["id"], "model": entry["model"], "engine": entry["engine"],
                "context": entry["context"], "gpu": gpu, "by": entry.get("by", ""), "started": time.time(),
                "state": "running", "problems": {}}
@@ -566,7 +616,7 @@ class Runner:
         self._live = {"run": run["id"], "model": entry["model"], "engine": entry["engine"], "steps": []}
         try:
             image = self._ensure_image()
-            self._status("loading", gpu=gpu, studio_paused_by_us=ours, run=run["id"], model=entry["model"])
+            self._status("loading", gpu=gpu, reservation=rid, run=run["id"], model=entry["model"])
             t0 = time.time()
             name, base_url = self._start_server(entry, gpu)
             self._wait_loaded(entry, name)
@@ -577,7 +627,7 @@ class Runner:
             for pid in entry["problems"]:
                 if self._stop.is_set():
                     break
-                self._status("running", gpu=gpu, studio_paused_by_us=ours, run=run["id"],
+                self._status("running", gpu=gpu, reservation=rid, run=run["id"],
                              model=entry["model"], problem=pid)
                 run["problems"][pid] = self._attempt(image, run["id"], pid, name, base_url, entry["context"])
                 run["server"] = self._server_facts()

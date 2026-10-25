@@ -188,6 +188,7 @@
     idle: {{ t('admin.codebench.state_idle') | tojson }},
     interrupted: {{ t('admin.codebench.state_interrupted') | tojson }},
     wait_studio: {{ t('admin.codebench.state_wait_studio') | tojson }},
+    wait_reserved: {{ t('admin.codebench.state_wait_reserved') | tojson }},
     wait_card: {{ t('admin.codebench.state_wait_card') | tojson }},
     building: {{ t('admin.codebench.state_building') | tojson }},
     loading: {{ t('admin.codebench.state_loading') | tojson }},
@@ -312,6 +313,8 @@
     var text, live = st.live || {};
     if (st.state === 'waiting' && st.why === 'studio')
       text = fill(S.wait_studio, { what: st.what || '', pct: st.progress != null ? Math.round(st.progress * 100) : '…' });
+    else if (st.state === 'waiting' && st.why === 'reserved')
+      text = fill(S.wait_reserved, { holder: st.holder || '?', min: st.starts_in != null ? Math.ceil(st.starts_in / 60) : '?' });
     else if (st.state === 'waiting') text = fill(S.wait_card, { gb: st.used_mb != null ? (st.used_mb / 1024).toFixed(1) : '?' });
     else if (st.state === 'building') text = S.building;
     else if (st.state === 'loading') text = fill(S.loading, { model: st.model || '' });

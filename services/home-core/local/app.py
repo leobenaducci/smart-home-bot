@@ -22967,7 +22967,7 @@ STUDIO_UI_KEYS = (
     'lyrics_ph', 'style', 'style_ph', 'inst_ph', 'seconds', 'bpm', 'voice_sample',
     'voice_sample_help', 'voice_text', 'voice_text_ph', 'add_image', 'image_prompt',
     'image_prompt_ph', 'size', 'size_square', 'size_wide', 'size_tall', 'upload', 'upload_ref',
-    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_paused_bench', 'card_taken', 'card_paused_after', 'rec_retry',
+    'upload_voice', 'uploading', 'no_files', 'queue', 'card_free', 'card_busy', 'card_paused', 'card_paused_update', 'card_paused_programmer', 'card_paused_bench', 'card_taken', 'card_paused_after', 'card_lent', 'card_lent_over', 'card_reserved_next', 'rec_retry',
     'pause_after', 'pause_now', 'pause_stop_running', 'pause_now_about', 'pause_now_confirm',
     'rec_pc', 'rec_apart', 'rec_pc_none', 'rec_track_failed', 'cam_off', 'cam_tl', 'cam_tr', 'cam_bl', 'cam_br',
     'cam_size', 'cam_small', 'cam_medium', 'cam_large', 'cam_help', 'vol_mic', 'vol_pc', 'vol_help',

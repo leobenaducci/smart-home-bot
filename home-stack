@@ -73,6 +73,7 @@ usage() {
     ./home-stack ollama --apply          make them match the list (sudo, restarts)
     ./home-stack llamacpp                which llama.cpp builds exist
     ./home-stack llamacpp build [flavor] compile vanilla or prism (or both) for these cards
+    ./home-stack card                    who has the Studio's card reserved; card run -m MIN -- CMD
     sudo ./home-stack ollama --install-trigger   once: let the admin page apply it
 
     ./home-stack improve collect         yesterday's turns, redacted, for the evaluator
@@ -304,6 +305,7 @@ case "$verb" in
     models)            exec ./.venv/bin/python ./deploy/models.py "$@" ;;
     ollama)            exec ./.venv/bin/python ./deploy/ollama_host.py "$@" ;;
     llamacpp)          exec ./.venv/bin/python ./deploy/llamacpp.py "$@" ;;
+    card)              exec ./.venv/bin/python ./deploy/card.py "$@" ;;
     improve)           exec ./.venv/bin/python ./deploy/improve/cli.py "$@" ;;
     check)             exec ./deploy/deploy.py all --check-contract ;;
     logs)

@@ -34,6 +34,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import analysis, handwriting, media, recipes, story
+from .gpu import ReservationError, Reservations
 from .manager import Manager
 from .characters import Characters
 from .history import LABELS, History
@@ -46,6 +47,11 @@ log = logging.getLogger("studio")
 
 DATA = Path(os.environ.get("STUDIO_DATA", "/data"))
 SECRET = os.environ.get("STUDIO_SECRET", "")
+# What a program of the household's own presents to reserve the card, and
+# nothing else (deploy.py, derive_studio_gpu_token). Empty: only the portal
+# and the house's own tools can.
+GPU_TOKEN = os.environ.get("STUDIO_GPU_TOKEN", "")
+GPU_DEVICE = os.environ.get("STUDIO_GPU_DEVICE", "")
 NOTIFY_URL = os.environ.get("STUDIO_NOTIFY_URL", "")
 IDLE_S = float(os.environ.get("STUDIO_IDLE_S", "600"))
 MAX_UPLOAD = 200 * 1024 * 1024
@@ -101,7 +107,8 @@ def _notify(job: dict) -> None:
 
 
 manager = Manager(store, projects, DATA / "scratch", DATA / "logs", idle_s=IDLE_S, notify=_notify,
-                  audio=analysis.AudioServer(os.environ.get("STUDIO_AUDIO_URL", "")), characters=characters)
+                  audio=analysis.AudioServer(os.environ.get("STUDIO_AUDIO_URL", "")), characters=characters,
+                  reservations=Reservations(DATA / "queue" / "gpu-reservations.json"))
 app = FastAPI(title="home-studio", docs_url=None, redoc_url=None)
 
 
@@ -324,6 +331,130 @@ def admin(action: str, body: dict | None = None, me: Who = Depends(who)):
     else:
         raise HTTPException(404, "unknown action")
     return {"ok": True, **manager.status()}
+
+
+# -- reserving the card ---------------------------------------------------------
+# For anything that needs the Studio's card to itself for a while: the
+# Programmer's local model, the coding benchmark, or a program on the LAN with
+# the card token (docs/home-studio.md, "Reserving the card").
+class GpuClient:
+    def __init__(self, name: str, trusted: bool):
+        self.name, self.trusted = name, trusted
+
+
+def gpu_client(authorization: str = Header(""), x_studio_secret: str = Header(""),
+               x_studio_user: str = Header(""), x_studio_admin: str = Header("")) -> GpuClient:
+    """The Studio's secret with a parent's flag (the house's own tools), or
+    the card token (anything else). Only the first may take the card from a
+    running job; the token reaches these routes and nothing else."""
+    if SECRET and x_studio_secret and hmac.compare_digest(x_studio_secret.encode(), SECRET.encode()):
+        return GpuClient(x_studio_user or "house", x_studio_admin == "1")
+    scheme, _, token = authorization.partition(" ")
+    if GPU_TOKEN and scheme.lower() == "bearer" and hmac.compare_digest(token.strip().encode(), GPU_TOKEN.encode()):
+        return GpuClient("token", False)
+    raise HTTPException(401, "not authorised")
+
+
+def _card() -> dict:
+    running = store.running()
+    left = 0
+    if running and running.get("started"):
+        left = max(0, round(running["started"] + store.seconds_for_job(running) - time.time()))
+    return {"device": GPU_DEVICE, "studio": {"running": bool(running), "ends_in": left,
+                                             "worker": manager.status()["worker"],
+                                             "paused": manager.paused, "queued": len(store.active())},
+            "card_busy_mb": manager.card_busy}
+
+
+def _waiting_for(out: dict, card: dict) -> str | None:
+    """What a waiting reservation is waiting for: another holder ahead of it,
+    the Studio still on the card, or memory in use by something that is
+    neither -- a program on the card that never reserved it, often the very
+    one asking (2026-10-24: a private Ollama kept its own reservation
+    waiting, and all it was told was "starts in ~1 min"). None: it is about
+    to be granted."""
+    if out["position"] > 1 or manager.gpu.granted():
+        return "reservation"
+    if card["studio"]["running"] or card["studio"]["worker"]:
+        return "studio"
+    return "card" if card["card_busy_mb"] else None
+
+
+def _reservation(r: dict, with_id: bool = True, with_card: bool = True) -> dict:
+    """A reservation as its holder sees it, with the card beside it. A wait's
+    `starts_in` includes the Studio job still on the card, which finishes
+    first."""
+    card, out = _card(), manager.gpu.public(r, with_id=with_id)
+    if out["state"] == "waiting":
+        if not manager.gpu.granted():
+            out["starts_in"] += card["studio"]["ends_in"]
+        out["waiting_for"] = _waiting_for(out, card)
+        if out["waiting_for"] == "card":
+            out["card_busy_mb"] = card["card_busy_mb"]
+    return {**out, **card} if with_card else out
+
+
+@app.get("/api/gpu")
+def gpu_status(me: GpuClient = Depends(gpu_client)):
+    """Who has the card and who waits. Ids only to a parent's tool, which
+    may end somebody else's reservation."""
+    return {**_card(), "reservations": [_reservation(r, with_id=me.trusted, with_card=False)
+                                       for r in manager.gpu.all()]}
+
+
+@app.post("/api/gpu/reservations", status_code=201)
+def gpu_reserve(body: dict | None = None, me: GpuClient = Depends(gpu_client)):
+    body = body or {}
+    holder = str(body.get("holder") or "").strip()
+    if not holder:
+        raise HTTPException(400, "say who is asking: holder")
+    try:
+        wait = float(body.get("wait") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "wait is seconds")
+    now = bool(body.get("now"))
+    if now and not me.trusted:
+        raise HTTPException(403, "only the house's own tools may stop a job for the card; wait for it")
+    try:
+        r = manager.gpu.reserve(holder, body.get("minutes"), body.get("purpose", ""), preempt=now, by=me.name)
+    except ReservationError as exc:
+        raise HTTPException(400, str(exc))
+    stopped = manager.yield_card() if now else None
+    manager.wake()
+    if wait:
+        r = manager.gpu.wait(r["id"], wait) or r
+    return {**_reservation(r), "stopped": stopped}
+
+
+@app.get("/api/gpu/reservations/{rid}")
+def gpu_reservation(rid: str, wait: float = 0, me: GpuClient = Depends(gpu_client)):
+    """Its state; asking is a heartbeat too. `wait` (seconds, up to 60)
+    answers as soon as it is granted, or when the time is up."""
+    r = manager.gpu.wait(rid, wait) if wait else manager.gpu.heartbeat(rid)
+    if r is None:
+        raise HTTPException(404, "no such reservation: it was released, or it expired")
+    return _reservation(r)
+
+
+@app.post("/api/gpu/reservations/{rid}/heartbeat")
+def gpu_heartbeat(rid: str, body: dict | None = None, me: GpuClient = Depends(gpu_client)):
+    """Still here -- every ten minutes; fifteen without one ends it. With
+    `minutes`, how much longer it now expects to need the card."""
+    try:
+        r = manager.gpu.heartbeat(rid, (body or {}).get("minutes"))
+    except ReservationError as exc:
+        raise HTTPException(400, str(exc))
+    if r is None:
+        raise HTTPException(404, "no such reservation: it was released, or it expired")
+    return _reservation(r)
+
+
+@app.delete("/api/gpu/reservations/{rid}")
+def gpu_release(rid: str, me: GpuClient = Depends(gpu_client)):
+    if not manager.gpu.release(rid):
+        raise HTTPException(404, "no such reservation: it was released, or it expired")
+    manager.wake()
+    return {"ok": True}
 
 
 # -- projects -------------------------------------------------------------------

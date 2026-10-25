@@ -48,6 +48,67 @@ own process, so one process decides what is on the card at any moment.
 - **Alfred** writes and polishes lyrics and shot prompts, and can submit and
   report on jobs through the same API.
 
+## Reserving the card
+
+The card is the Studio's whenever nobody has asked for it. Anything else that
+needs it to itself -- the Programmer's local model, the coding benchmark, a
+program of the household's own on the LAN -- **reserves** it
+(`studio/gpu.py`) and waits its turn:
+
+- **One holder at a time, first come first served.** The Studio's running job
+  finishes first; no Studio job starts while any reservation holds or waits.
+  Only the house's own tools (the Studio's secret with a parent's flag) may
+  ask for the card *now*, which stops the job on it and queues it again; the
+  card token may not.
+- **Every reservation says roughly how long** (`minutes`, 1-720). It is an
+  estimate, not a limit: the page and the ones waiting are told when the card
+  should come back, running over is shown and never enforced, and a heartbeat
+  may correct it.
+- **A heartbeat every ten minutes; fifteen without one ends it.** Any request
+  about a reservation counts. A holder that dies gives the card back on its
+  own. Reservations are kept on disk (`queue/gpu-reservations.json`), so a
+  Studio restart does not end one, and each gets a fresh fifteen minutes after
+  it.
+- **Granted only when the card is free**: the Studio's worker stopped and at
+  most 1.5 GB in use. The Studio checks the same before every job, so a holder
+  that lost its reservation but still has a model loaded is waited for, not
+  run over. A waiting reservation says what it waits for (`waiting_for`):
+  `reservation` (another is ahead), `studio` (its job finishes first) or
+  `card`, with `card_busy_mb` -- memory held by something that never
+  reserved the card, often the program asking. That one does not clear on
+  its own: unload, then reserve, or let `card run` start the program after
+  the grant.
+
+Before this the card was lent with the parent's pause and a reason -- one
+in-memory flag shared by every borrower, each checking the others by hand.
+`/api/admin/pause` still exists for parents and for updates; borrowers no
+longer use it.
+
+### The API
+
+On the Studio's port (`services.home-studio.port`, on the LAN at
+`dns.studio`). Authenticate with either the Studio's secret headers or
+`Authorization: Bearer <card token>`. The token reaches these routes and
+nothing else: `./home-stack card --token` prints it (derived from
+`PROXY_SHARED_SECRET`, `derive_studio_gpu_token`).
+
+| | |
+|---|---|
+| `GET /api/gpu` | the card (`device`, the Studio's job and its `ends_in`) and every reservation: holder, purpose, state, `minutes`, `ends_in` / `starts_in` |
+| `POST /api/gpu/reservations` | `{"holder", "minutes", "purpose"?, "wait"?}` → 201 with its `id`; `wait` (s, ≤60) answers as soon as it is granted |
+| `GET /api/gpu/reservations/<id>?wait=55` | its state (`waiting_for` while it waits), and a heartbeat; `wait` as above |
+| `POST /api/gpu/reservations/<id>/heartbeat` | `{"minutes"?}`: still here, and optionally how much longer from now |
+| `DELETE /api/gpu/reservations/<id>` | give the card back |
+
+404 on a reservation means it ended -- released, expired, or ended by a
+parent -- and the holder should stop using the card. The id is the only
+handle on it; the list shows ids only to a parent's tool.
+
+From this machine, `./home-stack card run -m 30 -n "Name" -- <command>` does
+all of it: reserves, waits, runs the command with `CUDA_VISIBLE_DEVICES` set to
+the card, sends the heartbeat, and releases when the command exits.
+`./home-stack card` shows who has it.
+
 ## How the pieces fit
 
     phone / browser ── portal /studio (page) ── /studio/api/* ──┐
