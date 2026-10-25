@@ -72,7 +72,12 @@ program of the household's own on the LAN -- **reserves** it
 - **Granted only when the card is free**: the Studio's worker stopped and at
   most 1.5 GB in use. The Studio checks the same before every job, so a holder
   that lost its reservation but still has a model loaded is waited for, not
-  run over.
+  run over. A waiting reservation says what it waits for (`waiting_for`):
+  `reservation` (another is ahead), `studio` (its job finishes first) or
+  `card`, with `card_busy_mb` -- memory held by something that never
+  reserved the card, often the program asking. That one does not clear on
+  its own: unload, then reserve, or let `card run` start the program after
+  the grant.
 
 Before this the card was lent with the parent's pause and a reason -- one
 in-memory flag shared by every borrower, each checking the others by hand.
@@ -91,7 +96,7 @@ nothing else: `./home-stack card --token` prints it (derived from
 |---|---|
 | `GET /api/gpu` | the card (`device`, the Studio's job and its `ends_in`) and every reservation: holder, purpose, state, `minutes`, `ends_in` / `starts_in` |
 | `POST /api/gpu/reservations` | `{"holder", "minutes", "purpose"?, "wait"?}` → 201 with its `id`; `wait` (s, ≤60) answers as soon as it is granted |
-| `GET /api/gpu/reservations/<id>?wait=55` | its state, and a heartbeat; `wait` as above |
+| `GET /api/gpu/reservations/<id>?wait=55` | its state (`waiting_for` while it waits), and a heartbeat; `wait` as above |
 | `POST /api/gpu/reservations/<id>/heartbeat` | `{"minutes"?}`: still here, and optionally how much longer from now |
 | `DELETE /api/gpu/reservations/<id>` | give the card back |
 

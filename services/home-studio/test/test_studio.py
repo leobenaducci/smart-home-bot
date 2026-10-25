@@ -1160,6 +1160,15 @@ rv = r.json()
 check("  granted or waiting, the holder gets its id and when to beat",
       r.status_code == 201 and rv["id"] and rv["state"] == "waiting" and rv["heartbeat_every"] == 600
       and rv["expires_in"] == 900 and rv["device"] is not None, rv)
+A.manager.card_busy = 5400
+why = c.get(f"/api/gpu/reservations/{rv['id']}", headers=tok).json()
+check("  a wait behind memory nobody reserved says so, and how much",
+      why["waiting_for"] == "card" and why["card_busy_mb"] == 5400, why)
+check("  the list says it too", c.get("/api/gpu", headers=tok).json()["reservations"][0]["waiting_for"] == "card")
+A.manager.card_busy = 0
+second = c.post("/api/gpu/reservations", json={"holder": "Second", "minutes": 5}, headers=tok).json()
+check("  the one behind it waits for a reservation", second["waiting_for"] == "reservation", second)
+c.delete(f"/api/gpu/reservations/{second['id']}", headers=tok)
 hb = c.post(f"/api/gpu/reservations/{rv['id']}/heartbeat", json={"minutes": 40}, headers=tok)
 check("  a heartbeat answers with the new estimate", hb.status_code == 200 and hb.json()["minutes"] == 40, hb.text)
 listed = c.get("/api/gpu", headers=tok).json()["reservations"]

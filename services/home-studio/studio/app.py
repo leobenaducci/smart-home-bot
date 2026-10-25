@@ -366,13 +366,31 @@ def _card() -> dict:
             "card_busy_mb": manager.card_busy}
 
 
+def _waiting_for(out: dict, card: dict) -> str | None:
+    """What a waiting reservation is waiting for: another holder ahead of it,
+    the Studio still on the card, or memory in use by something that is
+    neither -- a program on the card that never reserved it, often the very
+    one asking (2026-10-24: a private Ollama kept its own reservation
+    waiting, and all it was told was "starts in ~1 min"). None: it is about
+    to be granted."""
+    if out["position"] > 1 or manager.gpu.granted():
+        return "reservation"
+    if card["studio"]["running"] or card["studio"]["worker"]:
+        return "studio"
+    return "card" if card["card_busy_mb"] else None
+
+
 def _reservation(r: dict, with_id: bool = True, with_card: bool = True) -> dict:
     """A reservation as its holder sees it, with the card beside it. A wait's
     `starts_in` includes the Studio job still on the card, which finishes
     first."""
     card, out = _card(), manager.gpu.public(r, with_id=with_id)
-    if out["state"] == "waiting" and not manager.gpu.granted():
-        out["starts_in"] += card["studio"]["ends_in"]
+    if out["state"] == "waiting":
+        if not manager.gpu.granted():
+            out["starts_in"] += card["studio"]["ends_in"]
+        out["waiting_for"] = _waiting_for(out, card)
+        if out["waiting_for"] == "card":
+            out["card_busy_mb"] = card["card_busy_mb"]
     return {**out, **card} if with_card else out
 
 

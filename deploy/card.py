@@ -59,6 +59,15 @@ def _mins(seconds) -> str:
     return f"~{max(1, round((seconds or 0) / 60))} min"
 
 
+def _why(r: dict) -> str:
+    """What a waiting reservation waits for, in words."""
+    why = r.get("waiting_for")
+    if why == "card":
+        return (f"; {r.get('card_busy_mb', 0) / 1024:.1f} GB on the card is in use by something that did "
+                "not reserve it -- if that is yours, unload it")
+    return {"studio": "; the Studio's job finishes first", "reservation": "; behind another reservation"}.get(why, "")
+
+
 def show() -> int:
     code, st = _api("GET", "/api/gpu")
     if code != 200:
@@ -74,7 +83,8 @@ def show() -> int:
             print(f"  has it   {r['holder']}{what}: " +
                   ("over its estimate" if r["overdue"] else f"{_mins(r['ends_in'])} left of {r['minutes']}"))
         else:
-            print(f"  waits #{r['position']} {r['holder']}{what}: {r['minutes']} min, starts in {_mins(r['starts_in'])}")
+            print(f"  waits #{r['position']} {r['holder']}{what}: {r['minutes']} min, "
+                  f"starts in {_mins(r['starts_in'])}{_why(r)}")
     if not st["reservations"]:
         print("  nobody has reserved it")
     return 0
@@ -89,8 +99,8 @@ def run(name: str, minutes: int, purpose: str, cmd: list[str]) -> int:
     rid = r["id"]
     try:
         while r.get("state") != "granted":
-            print(f"waiting for the card: #{r.get('position')} in line, starts in {_mins(r.get('starts_in'))}",
-                  file=sys.stderr)
+            print(f"waiting for the card: #{r.get('position')} in line, starts in {_mins(r.get('starts_in'))}"
+                  f"{_why(r)}", file=sys.stderr)
             code, r = _api("GET", f"/api/gpu/reservations/{rid}?wait=55")
             if code == 404:
                 print("the reservation ended before its turn", file=sys.stderr)
