@@ -2143,6 +2143,7 @@
   "programmer.local_failed": "El modelo de la casa se trabó ({why}) y OpenCode Go no está disponible por {reset}. Me detuve acá: lo que cambió sigue en los archivos.",
   "programmer.local_why_repeat": "hizo la misma llamada {n} veces",
   "programmer.local_why_idle": "{n} pasos sin cambiar ningún archivo",
+  "programmer.local_why_errors": "fallaron {n} llamadas seguidas",
   "programmer.local_why_tests": "sus tests seguían fallando",
   "programmer.local_why_error": "su modelo dejó de responder",
   "programmer.retry_go_q": "Respondió el modelo de la casa.",

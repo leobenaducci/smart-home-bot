@@ -43,6 +43,9 @@ services:
       - CHAT_NAME=${CHAT_NAME:-}
       - CODE_NAME=${CODE_NAME:-}
       - HOMECORE_PORT=${HOMECORE_PORT:-21001}
+      # `opencode:<password>`, base64, sent on to opencode's own interface on
+      # CODE_NAME (opencode_basic_auth). Empty on a house without it.
+      - OPENCODE_BASIC_AUTH=${OPENCODE_BASIC_AUTH:-}
     healthcheck:
       # Answers on the admin endpoint, which exists whatever the site config
       # does — a 000 here means Caddy failed to load the Caddyfile, most likely

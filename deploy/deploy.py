@@ -20,6 +20,7 @@ never shipped, until this has run.
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import hashlib
 import json
@@ -1227,28 +1228,23 @@ OPENCODE_PROVIDER_KEYS = (
 
 
 def opencode_api(cfg: dict) -> str:
-    """Which of opencode's two HTTP surfaces to drive: `v1` or `v2`.
+    """Which opencode is installed: `v1` (OpenCode 1, 1.18.x) or `v2`
+    (OpenCode 2, 2.x).
 
-    They are served by one process and are not a rename of each other. v2 puts
-    the agent and the working directory on the session, streams per session
-    rather than globally, and -- on 1.18.27 -- carries no text deltas, so an
-    answer arrives whole instead of word by word.
+    Two programs behind one binary name, and they share no routes: v1 serves
+    `/session` and a directory-scoped `/event`; v2 serves `/api/*`, requires a
+    password, and hands MCP tools to the model through one `execute` tool.
+    Installing OpenCode 2 over 1 changes which this must say, and nothing else
+    tells -- `_opencode_version_mismatch` asks the binary the unit starts, and
+    the deploy says so when the two disagree.
 
-    `v2` names the `/api/*` routes on the OpenCode **1** binary. It is not
-    OpenCode 2, which is a separate program (`@opencode-ai/cli`, binary
-    `opencode2`) this stack has never run.
-
-    **v1 is not the timid choice here.** On 1.18.27 an `/api` session resolves
-    opencode's own thirteen tools and none of the MCP ones, while `GET /mcp`
-    still reports the bridge connected -- so the Programmer loses the broker,
-    the share and delegation, and keeps `bash`, which is git without the
-    broker. Its prompts are also sometimes admitted and then never run. The
-    same agent and model on v1 calls `alfred_list_projects` on the first turn.
-    `docs/opencode-programmer.md` has the measurements.
+    (Before 2026-10-28 `v2` named the `/api/*` routes on the OpenCode 1
+    binary, an experimental surface that never mounted MCP tools. Nothing
+    here drives that any more.)
 
     Refused rather than defaulted when it is neither: a typo would quietly mean
     v1, and the household would be told nothing while wondering why the
-    Programmer still streams.
+    Programmer answers as the assistant.
     """
     given = ((cfg.get("cloud") or {}).get("opencode") or {}).get("api")
     # Absent means v1; anything *written* is read as written. `or "v1"` would
@@ -1258,9 +1254,43 @@ def opencode_api(cfg: dict) -> str:
     if raw not in ("v1", "v2"):
         raise DeployError(
             f"cloud.opencode.api is {raw!r}; it must be v1 or v2.\n"
-            f"    v1 streams word by word. v2 puts the agent on the session "
-            f"and answers in one piece.")
+            f"    v1 is OpenCode 1 (1.18.x), v2 is OpenCode 2 (2.x) -- "
+            f"whichever `opencode --version` says is installed.")
     return raw
+
+
+def _opencode_version_mismatch(target, member: str, cfg: dict) -> str:
+    """Why the installed opencode is not the one `cloud.opencode.api` names,
+    or "" when it is -- or when there is no way to tell.
+
+    OpenCode 2 installs over OpenCode 1 under the same name, and nothing else
+    notices: the unit crash-loops or serves routes the portal does not call,
+    and the Programmer quietly answers on the assistant. It did for four days
+    (2026-10-24 to 10-28). The binary asked is the one the unit actually
+    starts -- `OPENCODE_BIN` as systemd resolves it, drop-ins included -- not
+    whatever `opencode` the shell finds.
+    """
+    shown = target.run(
+        f"systemctl --user show -p Environment opencode-serve@{shlex.quote(member)}",
+        capture=True, check=False)
+    env_line = getattr(shown, "stdout", "") or ""
+    m = re.search(r"(?:^|\s)OPENCODE_BIN=(\S+)", env_line)
+    if not m:
+        return ""
+    ver = target.run(f"{shlex.quote(m.group(1))} --version 2>/dev/null",
+                     capture=True, check=False)
+    found = re.search(r"(\d+)\.\d+\.\d+", getattr(ver, "stdout", "") or "")
+    if not found:
+        return ""
+    major = int(found.group(1))
+    want = opencode_api(cfg)
+    if (want == "v1") == (major == 1):
+        return ""
+    return (f"{m.group(1)} is OpenCode {found.group(0)}, but cloud.opencode.api "
+            f"is {want}. Set cloud.opencode.api to "
+            f"{'v2' if major >= 2 else 'v1'} and deploy again, or point the "
+            f"unit's OPENCODE_BIN at an OpenCode {'1' if want == 'v1' else '2'} "
+            f"build.")
 
 
 def _opencode_restart_remedy(target) -> str:
@@ -2491,6 +2521,25 @@ def derive_studio_gpu_token(shared_secret: str) -> str:
     return hashlib.sha256(f"{shared_secret}:home-studio:gpu".encode()).hexdigest()
 
 
+def derive_opencode_password(shared_secret: str) -> str:
+    """The password every `opencode serve` here is started with, and that the
+    portal and Caddy present to it.
+
+    OpenCode 2 refuses every request without HTTP basic auth, and a server
+    given no password makes up its own at each start and prints it in the log.
+    So it is derived, the crawl4ai shape: three ends must hold the same string,
+    there is nobody to obtain it from, and nothing has to be typed or stored.
+    OpenCode 1 honours the same variable.
+    """
+    return hashlib.sha256(f"{shared_secret}:opencode-server".encode()).hexdigest()
+
+
+def opencode_basic_auth(password: str) -> str:
+    """The `Authorization: Basic` value for *password* as user `opencode`,
+    which is what Caddy sends on for opencode's own interface."""
+    return base64.b64encode(f"opencode:{password}".encode()).decode()
+
+
 def derive_service_token(shared_secret: str, service: str) -> str:
     """A token that says "I am this container", not "I am this person".
 
@@ -2558,6 +2607,9 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
             "CRAWL4AI_SECRET_KEY": derive_crawl4ai_secret(shared, "jwt"),
             "STUDIO_SECRET": derive_studio_secret(shared),
             "STUDIO_GPU_TOKEN": derive_studio_gpu_token(shared),
+            "OPENCODE_PASSWORD": derive_opencode_password(shared),
+            "OPENCODE_BASIC_AUTH": opencode_basic_auth(
+                derive_opencode_password(shared)),
             # The file still wins if somebody set one by hand: this is a
             # convenience, not a policy, and an operator who wants a specific
             # token should be able to have one.
@@ -6598,7 +6650,12 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
             write_programmer_local(target, cfg, cfgroot, fallback, secrets, out)
 
             started, failed, unchanged = [], [], []
-            for index, member in enumerate(gen.members(cfg)):
+            server_password = (derive_opencode_password(secrets["PROXY_SHARED_SECRET"])
+                               if secrets.get("PROXY_SHARED_SECRET") else "")
+            members_here = list(gen.members(cfg))
+            mismatch = (_opencode_version_mismatch(target, members_here[0], cfg)
+                        if members_here else "")
+            for index, member in enumerate(members_here):
                 mroot = f"{root}/{member}"
                 target.run(f"mkdir -p {shlex.quote(mroot)}/agents")
                 # Everything this member's server reads at startup, hashed, so a
@@ -6667,14 +6724,19 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                     f"# Written by ./home-stack deploy for {member}.\n"
                     f"OPENCODE_SERVE_PORT={base + index}\n"
                     f"OPENCODE_CONFIG={mroot}/opencode.json\n"
-                    f"OPENCODE_CONFIG_DIR={mroot}\n")
+                    f"OPENCODE_CONFIG_DIR={mroot}\n"
+                    # What the portal and Caddy present (derive_opencode_password).
+                    # OpenCode 2 makes up its own at every start without it.
+                    + (f"OPENCODE_SERVER_PASSWORD={server_password}\n"
+                       if server_password else ""))
                 digest.update(instance_env.encode("utf-8"))
                 inst = Path(tempfile.mkstemp(suffix=".env")[1])
                 inst.write_text(instance_env, encoding="utf-8")
+                dest_inst = f"{cfgroot}/home-stack/opencode-serve-{member}.env"
                 try:
-                    target.push_file(
-                        inst,
-                        f"{cfgroot}/home-stack/opencode-serve-{member}.env")
+                    target.push_file(inst, dest_inst)
+                    # It carries the server's password now.
+                    target.run(f"chmod 600 {shlex.quote(dest_inst)}")
                 finally:
                     inst.unlink(missing_ok=True)
 
@@ -6706,6 +6768,11 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 if same:
                     unchanged.append(member)
                     continue
+                if mismatch:
+                    # Restarting would only start the crash loop, or a server
+                    # the portal cannot speak to. Said once, below.
+                    failed.append(member)
+                    continue
 
                 restarted = target.run(
                     f"systemctl --user restart opencode-serve@{member}",
@@ -6727,7 +6794,10 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
             if unchanged:
                 out.ok(f"opencode unchanged for {', '.join(unchanged)}; left "
                        f"running")
-            if failed:
+            if failed and mismatch:
+                out.warn(f"opencode-serve was not restarted for "
+                         f"{', '.join(failed)}: {mismatch}")
+            elif failed:
                 out.warn(
                     f"opencode-serve did not restart for {', '.join(failed)} -- "
                     f"it reads its config only at startup, so the Programmer "

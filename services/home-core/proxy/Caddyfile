@@ -166,8 +166,14 @@ sin escribir ninguna dirección.</p>
 		}
 		# The port travels, never a host. Even if the strip above were somehow
 		# bypassed, the worst reachable is a port on this machine.
+		#
+		# The password is added here, after the portal's own check passed, and
+		# whatever the browser sent under that name is replaced. OpenCode 2
+		# answers nothing without it, and its page has no way to ask -- the
+		# person reaching this already signed in to the portal.
 		reverse_proxy 127.0.0.1:{http.request.header.X-Code-Port} {
 			flush_interval -1
+			header_up Authorization "Basic {$OPENCODE_BASIC_AUTH}"
 		}
 	}
 }

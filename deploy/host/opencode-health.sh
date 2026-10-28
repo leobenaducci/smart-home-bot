@@ -22,11 +22,29 @@ set -eu
 
 port="${1:?usage: opencode-health.sh <port> [seconds]}"
 deadline="${2:-60}"
-url="http://127.0.0.1:${port}/global/health"
+# Two opencodes answer here, and neither knows the other's door. OpenCode 1
+# says `{"healthy":true}` on /global/health; OpenCode 2 has no such route and
+# answers it with its web page, so it is asked for /api/info and must name its
+# version. Both behind the password when the unit has one (the env file the
+# unit reads is this script's environment too).
+v1="http://127.0.0.1:${port}/global/health"
+v2="http://127.0.0.1:${port}/api/info"
+auth=""
+[ -n "${OPENCODE_SERVER_PASSWORD:-}" ] && auth="opencode:${OPENCODE_SERVER_PASSWORD}"
 
+ask() {
+    if [ -n "$auth" ]; then
+        curl -s -m 5 -u "$auth" "$1" 2>/dev/null
+    else
+        curl -s -m 5 "$1" 2>/dev/null
+    fi
+}
+
+url="$v1 or $v2"
 i=0
 while [ "$i" -lt "$deadline" ]; do
-    if curl -s -m 5 "$url" 2>/dev/null | grep -q '"healthy"[[:space:]]*:[[:space:]]*true'; then
+    if ask "$v1" | grep -q '"healthy"[[:space:]]*:[[:space:]]*true' \
+            || ask "$v2" | grep -q '"version"[[:space:]]*:[[:space:]]*"'; then
         exit 0
     fi
     i=$((i + 1))

@@ -7056,20 +7056,28 @@ OPENCODE_WORKSPACE_ROOT = os.environ.get('OPENCODE_WORKSPACE_ROOT', '')
 # cancel in `_turn_cancel` and the tests cannot drift apart.
 OPENCODE_SPACE = 'programmer'
 
-# Which of opencode's two HTTP surfaces to drive. Both are served by the same
-# process; they are not a rename of each other.
+# Which opencode this is: `v1` is OpenCode 1 (1.18.x), `v2` is OpenCode 2
+# (2.x), a different program behind the same `opencode` binary name. They share
+# no routes.
 #
-#   v1  POST /session, POST /session/{id}/message {agent, parts}, GET /event
-#       with `message.part.delta` increments and `session.idle`.
-#   v2  POST /api/session {agent, model, location}, POST .../prompt {prompt},
-#       GET /api/session/{id}/event -- per session, so nothing has to be
-#       filtered -- and the answer arriving whole on `session.next.text.ended`.
+#   v1  POST /session, POST /session/{id}/prompt_async {agent, parts}, GET
+#       /event scoped by ?directory= with `message.part.delta` increments,
+#       ending on `session.idle`.
+#   v2  POST /api/session {agent, model, location}, POST .../prompt {text},
+#       GET /api/event -- global, so filtered by session like v1's -- with
+#       `session.text.delta` increments, ending on `session.execution.*`.
 #
-# v2 has no text deltas on this build, so the Programmer answers in one piece
-# there rather than word by word. That is the cost of the move and it is
-# visible to whoever is typing, which is why this is a setting rather than a
-# rewrite: `cloud.opencode.api` picks one, and v1 is still there.
+# `cloud.opencode.api` names the one installed. The two cannot be told apart
+# from here before a call fails, and the failure is quiet: the space falls
+# back to the assistant (see `_opencode_ready`). That is how the Programmer
+# answered as the assistant for four days after OpenCode 2 was installed
+# (2026-10-24 to 10-28).
 OPENCODE_API = (os.environ.get('OPENCODE_API') or 'v1').strip().lower()
+# OpenCode 2 refuses every request without HTTP basic auth, and makes up a
+# password of its own at each start when it is given none. So the deployer
+# derives one (`opencode_server_password`) and hands it to the server and to
+# this app. v1 honours the same variable, so it is sent to both.
+OPENCODE_PASSWORD = os.environ.get('OPENCODE_PASSWORD') or ''
 
 # The Programmer's local model when OpenCode Go is out -- `<provider>/<model>`
 # from `cloud.opencode.fallback` (deploy.py `opencode_fallback`), or "".
@@ -7214,9 +7222,12 @@ def _opencode_handover(username, conv, since_ms, engine):
 
 
 def _opencode_local_model():
-    """opencode's `model` for the local engine, or None when there is none."""
+    """opencode's `model` for the local engine, or None when there is none.
+    v1 names it per prompt as `modelID`; v2 per session, as `id`."""
     provider, _, model = OPENCODE_FALLBACK.partition('/')
-    return {'providerID': provider, 'modelID': model} if provider and model else None
+    if not (provider and model):
+        return None
+    return {'providerID': provider, ('id' if OPENCODE_API == 'v2' else 'modelID'): model}
 
 
 def _go_is_out():
@@ -7281,7 +7292,7 @@ def _opencode_engine(turn, msg_content=''):
     runs the local model first; then Go still takes the turn when the local
     model already failed in it, the conversation is on Go (it failed there
     before, or the person pressed "Retry on Go"), or the Studio is rendering."""
-    if not OPENCODE_FALLBACK or OPENCODE_API == 'v2' or not _opencode_local_model():
+    if not OPENCODE_FALLBACK or not _opencode_local_model():
         return 'go'
     if _go_is_out():
         return 'local'
@@ -7307,6 +7318,11 @@ def _opencode_engine(turn, msg_content=''):
 # - the same call again: a tool with the same input three times, or one file
 #   read four times (a long file is read in pieces, so reads are counted by
 #   path rather than by range);
+# - its calls failing: four tool errors in a row. On OpenCode 2 every
+#   household tool is reached through one `execute` tool taking JavaScript,
+#   and gemma wrapped that JavaScript in JSON twenty times running, each try
+#   spelled slightly differently -- so the same-call rule never fired
+#   (2026-10-28);
 # - too long without changing anything: forty tool calls and no edit;
 # - its tests red at the end of a turn in which it changed files.
 #
@@ -7316,6 +7332,7 @@ def _opencode_engine(turn, msg_content=''):
 LOCAL_REPEAT_LIMIT = 3
 LOCAL_READ_LIMIT = 4
 LOCAL_IDLE_STEPS = 40
+LOCAL_ERROR_LIMIT = 4
 LOCAL_EDIT_TOOLS = frozenset(('edit', 'write', 'patch', 'multiedit', 'apply_patch'))
 _TEST_CMD_RE = re.compile(r'\bpytest\b|\btest_\w+\.py\b|\bunittest\b|\b(?:npm|pnpm|yarn|go|cargo) test\b|'
                           r'\bimprove test\b')
@@ -7331,6 +7348,8 @@ class _LocalWatch:
         self.counted = set()
         self.steps = 0
         self.edits = 0
+        self.errors = 0             # tool errors in a row
+        self.ended = set()          # tool parts whose result was counted
         self.tests = None           # 'red' or 'green': the last test run's result
         self.why = ''               # in English, for the log and for Go
         self.reason = ('', {})      # the same for the person: an i18n key and its values
@@ -7360,6 +7379,12 @@ class _LocalWatch:
             elif self.steps >= LOCAL_IDLE_STEPS and not self.edits and not self.why:
                 self.why = f'made {self.steps} tool calls without changing a file'
                 self.reason = ('programmer.local_why_idle', {'n': self.steps})
+        if status in ('completed', 'error') and pid and pid not in self.ended:
+            self.ended.add(pid)
+            self.errors = self.errors + 1 if status == 'error' else 0
+            if self.errors >= LOCAL_ERROR_LIMIT and not self.why:
+                self.why = f'had {self.errors} tool calls fail in a row'
+                self.reason = ('programmer.local_why_errors', {'n': self.errors})
         if status == 'completed' and name == 'bash' and _TEST_CMD_RE.search(str(args.get('command') or '')):
             out = str(state.get('output') or '')
             if _TEST_RED_RE.search(out):
@@ -7427,6 +7452,12 @@ def _oc_data(payload):
     if OPENCODE_API == 'v2' and isinstance(payload, dict) and 'data' in payload:
         return payload['data']
     return payload
+
+
+def _oc_auth():
+    """The `auth=` for every request to opencode, or None when it has no
+    password. `opencode` is the user name it expects unless told another."""
+    return ('opencode', OPENCODE_PASSWORD) if OPENCODE_PASSWORD else None
 
 # The reason this is per member, and not optional.
 #
@@ -7505,8 +7536,24 @@ def _opencode_ready(base):
         return seen['ok']
     ok = False
     try:
-        r = requests.get(f'{base}{_oc("/agent")}', timeout=5)
-        if r.ok:
+        r = requests.get(f'{base}{_oc("/agent")}', auth=_oc_auth(), timeout=5)
+        if r.status_code == 401:
+            # Its own line, because it is not "down": the server answers, and
+            # every turn would be refused the same way.
+            app.logger.warning(
+                'opencode %s: refused our password (HTTP 401) -- the Programmer '
+                'stays on the assistant until OPENCODE_PASSWORD matches the '
+                "server's", base)
+        elif r.ok and 'html' in ((getattr(r, 'headers', None) or {}).get('content-type') or ''):
+            # OpenCode 2 answers v1's paths with its web page, 200 and all, so
+            # a 200 is not proof of the surface. Said apart from "unreachable"
+            # because the fix is a setting, not a restart.
+            app.logger.warning(
+                'opencode %s: %s answered with a page, not JSON -- is '
+                'cloud.opencode.api (%s) the opencode that is installed? The '
+                'Programmer stays on the assistant', base, _oc('/agent'),
+                OPENCODE_API)
+        elif r.ok:
             listed = _oc_data(r.json()) or []
             # v1 calls it `name`, v2 calls it `id`. Both are read rather than
             # one being chosen: the readiness check is the thing that decides
@@ -7613,7 +7660,7 @@ def _opencode_carry(conn, chat_id):
                         earlier[0], chat_id)
 
 
-def _opencode_session(base, chat_id, directory, made=None):
+def _opencode_session(base, chat_id, directory, made=None, model=None):
     """The opencode session for this conversation, making one if needed.
 
     Stored rather than derived: opencode allocates the id, and the mapping is
@@ -7652,7 +7699,8 @@ def _opencode_session(base, chat_id, directory, made=None):
         if row:
             sid = row[0]
             try:
-                r = requests.get(f'{base}{_oc("/session/" + sid)}', timeout=10)
+                r = requests.get(f'{base}{_oc("/session/" + sid)}', auth=_oc_auth(),
+                                 timeout=10)
                 if r.ok:
                     return sid
             except Exception:                          # noqa: BLE001
@@ -7664,19 +7712,24 @@ def _opencode_session(base, chat_id, directory, made=None):
             app.logger.info('opencode: session %s is gone; starting a new one', sid)
 
         if OPENCODE_API == 'v2':
-            # The agent and the working directory belong to the *session* here,
-            # not to each prompt -- v2's prompt body has no `agent` field at
-            # all. The model is deliberately absent: v2 reads it off the
-            # agent's front matter, which is where `cloud.opencode.model` puts
-            # it, so naming it here would be a second place to keep in step.
-            body = {'agent': OPENCODE_AGENT}
+            # The agent, the working directory and the model belong to the
+            # *session* here, not to each prompt -- v2's prompt body has none of
+            # them. The model is named only for the local engine, whose session
+            # is its own (OPENCODE_LOCAL_PREFIX); Go's is read off the agent's
+            # front matter, which is where `cloud.opencode.model` puts it, so
+            # naming it here would be a second place to keep in step.
+            body = {'agent': OPENCODE_AGENT, 'title': 'Programmer'}
             if directory:
                 body['location'] = {'directory': directory}
-            r = requests.post(f'{base}/api/session', json=body, timeout=30)
+            if model:
+                body['model'] = model
+            r = requests.post(f'{base}/api/session', json=body, auth=_oc_auth(),
+                              timeout=30)
         else:
             params = {'directory': directory} if directory else None
             r = requests.post(f'{base}/session', params=params,
-                              json={'title': 'Programmer'}, timeout=30)
+                              json={'title': 'Programmer'}, auth=_oc_auth(),
+                              timeout=30)
         r.raise_for_status()
         sid = (_oc_data(r.json()) or {}).get('id')
         if not sid:
@@ -7716,7 +7769,7 @@ def _opencode_abort(base, chat_id):
         # `interrupt` on v2, `abort` on v1 -- the same job under two names.
         stop = 'interrupt' if OPENCODE_API == 'v2' else 'abort'
         requests.post(f'{base}{_oc("/session/" + row[0] + "/" + stop)}',
-                      timeout=5)
+                      auth=_oc_auth(), timeout=5)
     except Exception as e:                             # noqa: BLE001
         app.logger.info('opencode: could not abort %s: %s', row[0], e)
 
@@ -7812,26 +7865,36 @@ def _bgtask_set_result(username, task_id, text):
 def _code_task_worker(username, task_id, base, directory, prompt, chat_id):
     """Run one opencode job to completion, then say what happened.
 
-    `/session/{id}/message` and not the streaming pair the chat turn uses: there
-    is nobody watching this one token by token, and the blocking call returns
-    the whole answer with no event loop to get wrong.
+    On v1, `/session/{id}/message` and not the streaming pair the chat turn
+    uses: there is nobody watching this one token by token, and the blocking
+    call returns the whole answer with no event loop to get wrong. v2 has no
+    blocking call, so it listens to the run end to end (`_oc2_collect`).
     """
     text, status = '', 'error'
     try:
         session_id = _opencode_session(base, chat_id or f'code:{task_id}',
                                        directory)
-        params = {'directory': directory} if directory else None
-        r = requests.post(f'{base}/session/{session_id}/message', params=params,
-                          json={'agent': OPENCODE_AGENT,
-                                'parts': [{'type': 'text', 'text': prompt}]},
-                          timeout=(10, CODE_TASK_TIMEOUT_S))
-        if r.ok:
-            text = _code_task_text(_oc_data(r.json()) or r.json())
-            status = 'done' if text else 'error'
-            if not text:
+        if OPENCODE_API == 'v2':
+            text, failed = _oc2_collect(base, session_id, prompt,
+                                        timeout=(10, CODE_TASK_TIMEOUT_S))
+            status = 'done' if text and not failed else 'error'
+            if failed:
+                text = f'{text}\n\n(opencode: {failed})'.strip()
+            elif not text:
                 text = 'opencode finished without saying anything.'
         else:
-            text = f'opencode said HTTP {r.status_code}.'
+            params = {'directory': directory} if directory else None
+            r = requests.post(f'{base}/session/{session_id}/message', params=params,
+                              json={'agent': OPENCODE_AGENT,
+                                    'parts': [{'type': 'text', 'text': prompt}]},
+                              auth=_oc_auth(), timeout=(10, CODE_TASK_TIMEOUT_S))
+            if r.ok:
+                text = _code_task_text(_oc_data(r.json()) or r.json())
+                status = 'done' if text else 'error'
+                if not text:
+                    text = 'opencode finished without saying anything.'
+            else:
+                text = f'opencode said HTTP {r.status_code}.'
     except Exception as exc:                # noqa: BLE001 - reported, never raised
         app.logger.exception('code: task %s failed for %s', task_id, username)
         text = f'The coding job could not be finished: {exc}'
@@ -8402,6 +8465,268 @@ def improve_request_prompt(rid):
     return jsonify(ok=True, id=rid, prompt=_improve_prompt(row, session['user']))
 
 
+def _opencode_say_local(turn):
+    """Tell the person, once per turn, that the local model is answering --
+    and that it is waiting for the Studio's card, when it is."""
+    if turn.get('local'):
+        return
+    turn['local'] = True
+    username = turn['user']
+    _turn_emit(turn, {'hint': t_for(username, 'programmer.go_out_local',
+                                    reset=_go_out['reset'] or '?')
+                      if _go_is_out() else t_for(username, 'programmer.on_local')})
+    if _studio_holds_card():
+        _turn_emit(turn, {'hint': t_for(username, 'programmer.waiting_card')})
+
+
+class _OcRefused(Exception):
+    """opencode answered a request of ours with an HTTP error."""
+
+    def __init__(self, what, status):
+        super().__init__(f'opencode refused the {what}: HTTP {status}')
+        self.status = status
+
+
+def _oc2_stream(base, session_id, text, timeout=(10, 310), opened=None):
+    """Post *text* to a v2 session and yield `(type, data)` for its events.
+
+    The stream is opened first and the prompt posted into it. v2's /api/event
+    is global and answers at once (`server.connected`), so -- unlike the
+    per-session stream 1.18's /api had, which sent no headers until its
+    session had an event and deadlocked a prompt sent after it -- listening
+    first loses nothing, and posting first could lose the opening of the
+    answer. Global means filtered: only this session's events come out, or two
+    people in the Programmer at once would each receive the other's answer.
+
+    *opened(response)* is called once the stream is up; returning False stops
+    before anything is posted (a cancel that came in while connecting). After
+    the prompt is accepted, `('prompted', {})` is yielded once. Raises
+    `_OcRefused` when the stream or the prompt is refused.
+    """
+    with requests.get(f'{base}/api/event', stream=True, auth=_oc_auth(),
+                      timeout=timeout) as r:
+        if opened and opened(r) is False:
+            r.close()
+            return
+        if not r.ok:
+            raise _OcRefused('event stream', r.status_code)
+        p = requests.post(f'{base}/api/session/{session_id}/prompt',
+                          json={'text': text}, auth=_oc_auth(), timeout=30)
+        if not p.ok:
+            raise _OcRefused('prompt', p.status_code)
+        yield 'prompted', {}
+        for raw in r.iter_lines():
+            if not raw or not raw.startswith(b'data:'):
+                continue
+            try:
+                ev = json.loads(raw[5:].strip())
+            except ValueError:
+                continue
+            data = ev.get('data') if isinstance(ev, dict) else None
+            if isinstance(data, dict) and data.get('sessionID') == session_id:
+                yield ev.get('type') or '', data
+
+
+def _oc2_error_text(err):
+    """The words out of a v2 error, whatever shape it came in."""
+    if isinstance(err, dict):
+        if not err:
+            return ''
+        inner = err.get('data') if isinstance(err.get('data'), dict) else {}
+        return str(err.get('message') or inner.get('message') or err.get('name')
+                   or json.dumps(err)[:200])
+    return str(err or '')
+
+
+def _oc2_tool_output(data):
+    """A v2 tool result's text: its `content` parts, joined."""
+    parts = data.get('content') or []
+    if isinstance(parts, str):
+        return parts
+    return '\n'.join(str(c.get('text') or '') for c in parts
+                     if isinstance(c, dict) and c.get('type') == 'text')
+
+
+# Which tool a v2 step is, for the line the person sees. MCP tools do not
+# arrive under their own names: v2 hands the model one `execute` tool that runs
+# a few lines of JavaScript calling `tools.alfred.list_projects()` and the like,
+# and says which of those it called in `session.tool.progress`. So `execute`
+# itself is never shown -- it would read as the Programmer running some code --
+# and the calls inside it are, as the household knows them.
+OC2_CODE_TOOL = 'execute'
+
+
+def _oc2_shown(name):
+    name = str(name or '')
+    for prefix in ('alfred.', 'alfred_'):
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def _turn_opencode_v2(turn, base, session_id, msg_content, watch, conv, seen_key):
+    """The v2 half of `_turn_attempt_opencode`: same contract."""
+    username = turn['user']
+    if watch:
+        _opencode_say_local(turn)
+    tools = {}          # tool call id -> {'name', 'input'}
+    shown = set()       # what has been announced, so a step is said once
+    last_block = None   # (message id, ordinal) of the text being streamed
+    step_error = ''
+    ended = False
+
+    def opened(r):
+        with turn['cond']:
+            turn['response'] = r
+        return not turn['cancelled']
+
+    try:
+        for kind, d in _oc2_stream(base, session_id, msg_content, opened=opened):
+            if kind == 'prompted':
+                # This engine has now been told everything up to here.
+                if conv:
+                    _opencode_seen(seen_key, set_ms=time.time() * 1000)
+            elif kind == 'session.text.delta':
+                text = d.get('delta') or ''
+                if not text:
+                    continue
+                block = (d.get('assistantMessageID'), d.get('ordinal'))
+                if last_block is not None and block != last_block and turn['text'] \
+                        and not turn['text'].endswith('\n'):
+                    # A new message: "I'll look at the files." and the finding
+                    # that follows it are two paragraphs, not one run-on line.
+                    text = '\n\n' + text
+                last_block = block
+                with turn['cond']:
+                    turn['text'] += text
+                _turn_emit(turn, {'text': text})
+            elif kind == 'session.tool.input.started':
+                tools[d.get('id')] = {'name': d.get('name') or '', 'input': {}}
+                name = d.get('name') or ''
+                if name and name != OC2_CODE_TOOL and d.get('id') not in shown:
+                    shown.add(d.get('id'))
+                    _turn_emit(turn, {'step': {'type': 'tool', 'name': _oc2_shown(name)}})
+            elif kind == 'session.tool.progress':
+                calls = ((d.get('metadata') or {}).get('toolCalls') or [])
+                for i, call in enumerate(calls):
+                    key = f"{d.get('id')}:{i}"
+                    if key not in shown and isinstance(call, dict) and call.get('tool'):
+                        shown.add(key)
+                        _turn_emit(turn, {'step': {'type': 'tool',
+                                                   'name': _oc2_shown(call['tool'])}})
+            elif kind in ('session.tool.called', 'session.tool.success',
+                          'session.tool.failed'):
+                tool = tools.setdefault(d.get('id'), {'name': d.get('name') or '', 'input': {}})
+                if kind == 'session.tool.called':
+                    tool['input'] = d.get('input') or {}
+                if not watch:
+                    continue
+                # In the shape `_LocalWatch` reads -- v1's tool part -- so the
+                # signs of a local turn going nowhere are counted the same way
+                # on both.
+                state = {'status': {'session.tool.called': 'running',
+                                    'session.tool.success': 'completed',
+                                    'session.tool.failed': 'error'}[kind],
+                         'input': tool['input']}
+                if kind != 'session.tool.called':
+                    state['output'] = _oc2_tool_output(d)
+                    # `execute` reports its JavaScript failing as a *success*
+                    # carrying `metadata.error` -- the call ran, the code did
+                    # not.
+                    if (d.get('metadata') or {}).get('error'):
+                        state['status'] = 'error'
+                if watch.tool({'id': d.get('id'), 'tool': tool['name'], 'state': state}):
+                    return _local_failed(turn, base, watch.why, watch.reason)
+            elif kind in ('session.retry.scheduled', 'session.status'):
+                # Go out of allowance does not fail the turn: opencode retries,
+                # and says why only here. Anything else it retries on its own.
+                refusal = (_go_refused(d) if kind == 'session.status' else
+                           (lambda m: m if _GO_LIMIT_RE.search(m) else None)(
+                               _oc2_error_text(d.get('error'))))
+                if not refusal:
+                    continue
+                seconds, words = _go_reset(refusal)
+                _go_out.update(until=time.time() + seconds, reset=words)
+                app.logger.warning('opencode: Go refused on its usage limit (back in %s); %s',
+                                   words or 'an unknown time',
+                                   'running on the local model' if OPENCODE_FALLBACK
+                                   else 'no local fallback')
+                _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
+                if OPENCODE_FALLBACK and not turn.get('local_tried'):
+                    return 'OpenCode Go is out; the local model takes the turn', True
+                return t_for(username, 'programmer.go_out', reset=words or '?'), False
+            elif kind == 'permission.asked':
+                # The same as v1: nobody here can answer it, so the turn ends
+                # saying what was asked rather than waiting in silence.
+                what = d.get('permission') or d.get('action') or 'something outside its workspace'
+                where = d.get('patterns') or d.get('pattern') or d.get('resource') or ''
+                if isinstance(where, list):
+                    where = ', '.join(str(x) for x in where)
+                _turn_emit(turn, {'step': {'type': 'tool', 'name': 'permiso',
+                                           'detail': str(where)[:80]}})
+                _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
+                detail = f'{what}{" for " + str(where)[:200] if where else ""}'
+                return (f'opencode stopped to ask permission for {detail}, '
+                        f'and this space has no way to ask you. Nothing was '
+                        f'changed.'), False
+            elif kind == 'session.step.failed':
+                step_error = _oc2_error_text(d.get('error')) or 'a step failed'
+            elif kind == 'session.execution.failed':
+                detail = _oc2_error_text(d.get('error')) or step_error or 'the turn failed'
+                if watch:
+                    # The local model's server did not answer, or the history
+                    # did not fit: Go can take it.
+                    return _local_failed(turn, base, f'failed: {detail[:200]}',
+                                         ('programmer.local_why_error', {}))
+                return f'opencode: {detail}', _turn_retryable()
+            elif kind == 'session.execution.interrupted':
+                if turn['cancelled']:
+                    return None, False
+                reason = d.get('reason') or 'unknown'
+                return (f'opencode stopped the turn ({reason})',
+                        reason in ('shutdown', 'inactivity'))
+            elif kind == 'session.execution.succeeded':
+                ended = True
+                break
+    except _OcRefused as e:
+        return str(e), _turn_retryable(status=e.status)
+    if turn['cancelled']:
+        return None, False
+    if not ended:
+        # The stream stopped without the turn ending: opencode exited or was
+        # restarted under it. Same reasoning and wording as v1's.
+        app.logger.warning('turn: %s for %s ended without session.execution.*',
+                           turn['id'], username)
+        return ('opencode stopped answering part way through -- its server went '
+                'away mid-turn. Nothing was lost; ask again.'), True
+    if watch and watch.at_end():
+        return _local_failed(turn, base, watch.why, watch.reason)
+    return None, False
+
+
+def _oc2_collect(base, session_id, text, timeout):
+    """Run one v2 prompt to the end without anybody watching: (answer, error).
+    For handed-off coding jobs, where v1 had a blocking call and v2 has none."""
+    out, last_block, step_error = [], None, ''
+    for kind, d in _oc2_stream(base, session_id, text, timeout=timeout):
+        if kind == 'session.text.delta' and d.get('delta'):
+            block = (d.get('assistantMessageID'), d.get('ordinal'))
+            if last_block is not None and block != last_block:
+                out.append('\n\n')
+            last_block = block
+            out.append(d['delta'])
+        elif kind == 'session.step.failed':
+            step_error = _oc2_error_text(d.get('error'))
+        elif kind == 'session.execution.failed':
+            return ''.join(out).strip(), (_oc2_error_text(d.get('error')) or step_error
+                                          or 'the job failed')
+        elif kind == 'session.execution.interrupted':
+            return ''.join(out).strip(), f"interrupted ({d.get('reason') or 'unknown'})"
+        elif kind == 'session.execution.succeeded':
+            return ''.join(out).strip(), ''
+    return ''.join(out).strip(), 'opencode stopped answering part way through'
+
+
 def _turn_attempt_opencode(turn, msg_content):
     """One go at running a Programmer turn against opencode.
 
@@ -8432,7 +8757,8 @@ def _turn_attempt_opencode(turn, msg_content):
         asked_go = engine == 'go' and _opencode_asked_for_go(username, msg_content)
         turn['oc_key'] = (OPENCODE_LOCAL_PREFIX if local else '') + turn['chat_id']
         made = []
-        session_id = _opencode_session(base, turn['oc_key'], directory, made)
+        session_id = _opencode_session(base, turn['oc_key'], directory, made,
+                                       model=local if OPENCODE_API == 'v2' else None)
         conv, _space = _chat_id_conv(turn['chat_id'].split(':'))
         seen_key = f'{username}:{conv}:{engine}'
         seen = _opencode_seen(seen_key) if conv else None
@@ -8460,77 +8786,26 @@ def _turn_attempt_opencode(turn, msg_content):
                            + msg_content)
         watch = _LocalWatch() if local else None
 
-        # The two surfaces want opposite orders, and this is the one thing
-        # about v2 that cannot be guessed from v1.
-        #
-        # v1's /event is global and always streaming, so the stream is opened
-        # first and the prompt posted into it -- otherwise the answer has gone
-        # past before anyone is listening.
-        #
-        # v2 streams per *session*, which is strictly better once it runs (v1
-        # forces every turn to filter by sessionID, or two people in the
-        # Programmer at once receive each other's answers). But that stream
-        # sends nothing until its session has an event -- response headers
-        # included -- so opening it first blocks the very request that would
-        # produce one, and the turn deadlocks until the read timeout. Every
-        # time, on a server that is working perfectly.
-        #
-        # So on v2 the prompt goes first, and nothing is lost by listening
-        # late: every event carries a durable sequence, the prompt returns the
-        # one it was admitted at, and `after` replays from just before it.
-        stream_params = None
         if OPENCODE_API == 'v2':
-            if turn['cancelled']:
-                # Nothing posted yet, so there is nothing to interrupt: a
-                # prompt sent now would start a whole opencode turn for a
-                # question the person has already taken back.
-                return None, False
-            # No model named here on purpose. Which model answers is
-            # opencode's own business, pinned to the agent in its front matter
-            # by the deployer -- `cloud.opencode.model`. Sending one from this
-            # side would mean two places deciding, and this is the one with
-            # less information about what opencode can actually route.
-            # The agent is already on the session; the prompt is only text.
-            p = requests.post(f'{base}/api/session/{session_id}/prompt',
-                              json={'prompt': {'text': msg_content}},
-                              timeout=30)
-            if not p.ok:
-                return (f'opencode refused the prompt: HTTP {p.status_code}',
-                        _turn_retryable(status=p.status_code))
-            try:
-                admitted = int((_oc_data(p.json()) or {}).get('admittedSeq'))
-            except (TypeError, ValueError):
-                # Not defaulted to 1. `after=0` replays the session from its
-                # *first* event, and these sessions outlive a turn -- the last
-                # answer would arrive as this one's, with the previous turn's
-                # `step.ended` closing the loop before the real reply started.
-                # Listening from now on loses at most the opening of an answer
-                # that has only just been admitted.
-                app.logger.info(
-                    'opencode: no admittedSeq on the prompt for %s; the stream '
-                    'starts from now rather than replaying the session',
-                    session_id)
-                admitted = None
-            stream_url = f'{base}/api/session/{session_id}/event'
-            stream_params = ({'after': max(0, admitted - 1)}
-                             if admitted is not None else None)
-        else:
-            # Scoped to the same directory the session was made in. v1's
-            # /event is global but no longer *unscoped*: without this it
-            # accepts the connection, holds it open and sends nothing, which
-            # from here is indistinguishable from a model thinking for five
-            # minutes. Measured on 1.18.27 -- 0 events without it, 41 with.
-            stream_url = f'{base}/event'
-            stream_params = {'directory': directory} if directory else None
-            if not stream_params:
-                # Said out loud, because the symptom is not a failure: an
-                # unscoped /event holds the connection open and sends nothing,
-                # so the turn sits there until the read timeout looking like a
-                # long think. OPENCODE_WORKSPACE_ROOT unset is the way here.
-                app.logger.warning(
-                    'opencode: no workspace directory for %s, so the v1 event '
-                    'stream is unscoped and may deliver nothing -- set '
-                    'OPENCODE_WORKSPACE_ROOT', username)
+            return _turn_opencode_v2(turn, base, session_id, msg_content, watch,
+                                     conv, seen_key)
+
+        # Scoped to the same directory the session was made in. v1's /event is
+        # global but no longer *unscoped*: without this it accepts the
+        # connection, holds it open and sends nothing, which from here is
+        # indistinguishable from a model thinking for five minutes. Measured on
+        # 1.18.27 -- 0 events without it, 41 with.
+        stream_url = f'{base}/event'
+        stream_params = {'directory': directory} if directory else None
+        if not stream_params:
+            # Said out loud, because the symptom is not a failure: an unscoped
+            # /event holds the connection open and sends nothing, so the turn
+            # sits there until the read timeout looking like a long think.
+            # OPENCODE_WORKSPACE_ROOT unset is the way here.
+            app.logger.warning(
+                'opencode: no workspace directory for %s, so the v1 event '
+                'stream is unscoped and may deliver nothing -- set '
+                'OPENCODE_WORKSPACE_ROOT', username)
 
         # partID -> part type, learned from `message.part.updated`. One turn's
         # worth: the stream is global and long-lived, but a part id belongs to
@@ -8540,51 +8815,38 @@ def _turn_attempt_opencode(turn, msg_content):
         # Whether opencode said the turn was over, as opposed to the stream
         # merely stopping. See the check after the loop.
         idle = False
+        # The stream first and the prompt into it: /event is global and always
+        # streaming, so a prompt posted before it is open has its answer go
+        # past before anyone is listening.
         with requests.get(stream_url, params=stream_params, stream=True,
-                          timeout=(10, 310)) as r:
+                          auth=_oc_auth(), timeout=(10, 310)) as r:
             with turn['cond']:
                 turn['response'] = r
             if turn['cancelled']:
                 # Closed *and* returned, unlike the nanobot branch below where
                 # the request is already in flight by this point.
                 r.close()
-                if OPENCODE_API == 'v2':
-                    # Told again, because on v2 the prompt is already posted
-                    # and the cancel may have run *before* it was admitted --
-                    # in which case `_turn_cancel`'s interrupt found nothing to
-                    # stop and opencode is now working on an answer nobody will
-                    # read, holding the session busy against the next question.
-                    # Interrupting twice is free; missing it is not.
-                    _opencode_abort(base, turn.get('oc_key') or turn['chat_id'])
                 return None, False
             if not r.ok:
                 return (f'opencode said HTTP {r.status_code}',
                         _turn_retryable(status=r.status_code))
 
-            if OPENCODE_API != 'v2':
-                body = {'agent': OPENCODE_AGENT,
-                        'parts': [{'type': 'text', 'text': msg_content}]}
-                # Go is out: name the local model on this message. The agent's
-                # own model (Go) stays its default for when Go is back.
-                if local:
-                    body['model'] = local
-                    if not turn.get('local'):
-                        turn['local'] = True
-                        _turn_emit(turn, {'hint': t_for(username, 'programmer.go_out_local',
-                                                        reset=_go_out['reset'] or '?')
-                                          if _go_is_out() else
-                                          t_for(username, 'programmer.on_local')})
-                        if _studio_holds_card():
-                            _turn_emit(turn, {'hint': t_for(username, 'programmer.waiting_card')})
-                params = {'directory': directory} if directory else None
-                p = requests.post(f'{base}/session/{session_id}/prompt_async',
-                                  params=params, json=body, timeout=30)
-                if not p.ok:
-                    return (f'opencode refused the prompt: HTTP {p.status_code}',
-                            _turn_retryable(status=p.status_code))
-                # This engine has now been told everything up to here.
-                if conv:
-                    _opencode_seen(seen_key, set_ms=time.time() * 1000)
+            body = {'agent': OPENCODE_AGENT,
+                    'parts': [{'type': 'text', 'text': msg_content}]}
+            # Go is out: name the local model on this message. The agent's
+            # own model (Go) stays its default for when Go is back.
+            if local:
+                body['model'] = local
+                _opencode_say_local(turn)
+            params = {'directory': directory} if directory else None
+            p = requests.post(f'{base}/session/{session_id}/prompt_async',
+                              params=params, json=body, auth=_oc_auth(), timeout=30)
+            if not p.ok:
+                return (f'opencode refused the prompt: HTTP {p.status_code}',
+                        _turn_retryable(status=p.status_code))
+            # This engine has now been told everything up to here.
+            if conv:
+                _opencode_seen(seen_key, set_ms=time.time() * 1000)
 
             for raw in r.iter_lines():
                 if not raw:
@@ -8596,36 +8858,12 @@ def _turn_attempt_opencode(turn, msg_content):
                 except Exception:
                     continue
                 kind = ev.get('type') or ''
-                # v1 puts the payload under `properties`, v2 under `data`.
-                props = ev.get('properties') or ev.get('data') or {}
+                props = ev.get('properties') or {}
                 # The stream is global -- every session on this server shares
                 # it -- so everything is filtered by session before it is
                 # believed. Without this, two people in the Programmer at once
                 # would each receive the other's answer.
                 if props.get('sessionID') not in (session_id, None):
-                    continue
-                if OPENCODE_API == 'v2':
-                    # No deltas on this build: the answer arrives whole on
-                    # `session.next.text.ended`, so the turn does not stream
-                    # word by word the way the assistant's does. Said here
-                    # rather than left to be noticed, because it is the one
-                    # behaviour a person sees change.
-                    if kind == 'session.next.text.ended':
-                        text = props.get('text') or ''
-                        if text:
-                            with turn['cond']:
-                                turn['text'] += text
-                            _turn_emit(turn, {'text': text})
-                    elif kind == 'session.next.step.failed':
-                        err = props.get('error') or {}
-                        detail = (err.get('message') if isinstance(err, dict)
-                                  else str(err)) or 'the step failed'
-                        return f'opencode: {detail}', _turn_retryable()
-                    elif kind == 'session.next.step.ended':
-                        # v2's "the turn is over", the same thing `session.idle`
-                        # says on v1 -- so it answers the same check below.
-                        idle = True
-                        break
                     continue
                 if kind == 'session.status':
                     refusal = _go_refused(props)
@@ -9294,13 +9532,34 @@ def _opencode_unfiled(msgs, last_filed_ms):
     return (text, int(finished)) if text else None
 
 
+def _oc2_as_v1_messages(payload):
+    """v2's message list in the shape `_opencode_unfiled` reads.
+
+    v2 answers newest first, under `data`, and an assistant message keeps its
+    parts in `content`; v1 answers oldest first with `{info, parts}`. Its
+    `idle` entries mark a run ending and carry nothing to file.
+    """
+    items = payload.get('data') if isinstance(payload, dict) else payload
+    out = []
+    for m in reversed(items or []):
+        if not isinstance(m, dict) or m.get('type') not in ('user', 'assistant'):
+            continue
+        out.append({'info': {'role': m['type'], 'time': m.get('time') or {}},
+                    'parts': m.get('content') or []})
+    return out
+
+
 def _opencode_recover_once():
-    if OPENCODE_API != 'v1' or not os.path.exists(OPENCODE_DB_PATH):
+    if not os.path.exists(OPENCODE_DB_PATH):
         return 0
     conn = _opencode_conn()
     try:
-        rows = conn.execute('SELECT chat_id, session_id, directory FROM sessions WHERE created > ?',
-                            (int(time.time()) - OPENCODE_RECOVER_DAYS * 86400,)).fetchall()
+        # Only sessions made on the opencode now installed: another's ids mean
+        # nothing to this one, or worse, name something it migrated.
+        rows = conn.execute('SELECT chat_id, session_id, directory FROM sessions '
+                            'WHERE created > ? AND api = ?',
+                            (int(time.time()) - OPENCODE_RECOVER_DAYS * 86400,
+                             OPENCODE_API)).fetchall()
     finally:
         conn.close()
     filed = 0
@@ -9316,9 +9575,15 @@ def _opencode_recover_once():
         if not base or space != OPENCODE_SPACE or _queue_running(user, chat_id):
             continue            # a turn in flight files its own answer
         try:
-            r = requests.get(f'{base}/session/{sid}/message',
-                             params={'directory': directory} if directory else None, timeout=10)
-            msgs = r.json() if r.ok else []
+            if OPENCODE_API == 'v2':
+                r = requests.get(f'{base}/api/session/{sid}/message', auth=_oc_auth(),
+                                 timeout=10)
+                msgs = _oc2_as_v1_messages(r.json()) if r.ok else []
+            else:
+                r = requests.get(f'{base}/session/{sid}/message', auth=_oc_auth(),
+                                 params={'directory': directory} if directory else None,
+                                 timeout=10)
+                msgs = r.json() if r.ok else []
         except Exception:                                         # noqa: BLE001
             continue
         history = [m for m in load_user_history(user, day, space)

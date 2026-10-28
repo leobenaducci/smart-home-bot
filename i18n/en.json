@@ -2141,6 +2141,7 @@
   "programmer.local_failed": "This house's model got stuck ({why}), and OpenCode Go is out for {reset}. Stopped here: what it changed is still in the files.",
   "programmer.local_why_repeat": "it made the same call {n} times",
   "programmer.local_why_idle": "{n} steps without changing a file",
+  "programmer.local_why_errors": "{n} of its tool calls failed in a row",
   "programmer.local_why_tests": "its tests were still failing",
   "programmer.local_why_error": "its model stopped answering",
   "programmer.retry_go_q": "Answered by this house's model.",

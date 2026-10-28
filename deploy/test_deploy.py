@@ -1648,6 +1648,64 @@ _health_code = "\n".join(l for l in _health.splitlines()
 check("  readiness asserts the payload",
       '"healthy"' in _health_code and "curl -sf" not in _health_code,
       "a 200 is not readiness; /global/health answers before it will serve")
+# OpenCode 2 has no /global/health -- it answers that path with its web page --
+# and refuses everything without the password. Both opencodes, one script.
+check("  readiness knows OpenCode 2's door too, and brings the password",
+      "/api/info" in _health_code and '"version"' in _health_code
+      and "OPENCODE_SERVER_PASSWORD" in _health_code)
+# OpenCode 1 takes only `INFO`, OpenCode 2 only `info`, and the wrong one is a
+# crash at startup: 2,650 restarts before anybody noticed (2026-10-24 to 10-28).
+_unit_code = "\n".join(l for l in _unit.splitlines() if not l.lstrip().startswith("#"))
+check("  the unit names no log level either version would refuse",
+      "--log-level" not in _unit_code)
+
+print("\nopencode's password is derived, and each end gets the same one")
+_pw = D.derive_opencode_password("s" * 32)
+check("  it is stable and depends on the shared secret",
+      _pw == D.derive_opencode_password("s" * 32) and _pw != D.derive_opencode_password("t" * 32))
+import base64 as _b64  # noqa: E402
+check("  Caddy's header is basic auth for the user opencode",
+      _b64.b64decode(D.opencode_basic_auth(_pw)).decode() == "opencode:" + _pw)
+_ce = D.collect_env({"secrets": {"required": ["PROXY_SHARED_SECRET"],
+                                 "optional": ["OPENCODE_PASSWORD", "OPENCODE_BASIC_AUTH"]}},
+                    {"name": "t"}, {"PROXY_SHARED_SECRET": "s" * 32}, copy.deepcopy(CFG))
+check("  a service that declares them receives them without the env file naming them",
+      _ce.get("OPENCODE_PASSWORD") == _pw
+      and _ce.get("OPENCODE_BASIC_AUTH") == D.opencode_basic_auth(_pw), sorted(_ce))
+_hc = (_manifest["services"]["home-core"].get("secrets") or {}).get("optional") or []
+check("  and home-core declares both: the portal and Caddy present it",
+      "OPENCODE_PASSWORD" in _hc and "OPENCODE_BASIC_AUTH" in _hc, _hc)
+
+
+class _VerTarget:
+    """Answers `systemctl show` and `--version` the way a host would."""
+
+    def __init__(self, env_line, version):
+        self.env_line, self.version, self.ran = env_line, version, []
+
+    def run(self, cmd, capture=False, check=True):
+        self.ran.append(cmd)
+        out = self.env_line if "systemctl" in cmd else self.version
+        return type("R", (), {"stdout": out, "returncode": 0})()
+
+
+print("\nthe deploy says when the installed opencode is not the configured one")
+_bin = "Environment=OPENCODE_SERVE_PORT=4096 OPENCODE_BIN=/home/u/.opencode/bin/opencode"
+_v1cfg = {"cloud": {"opencode": {"api": "v1"}}}
+_v2cfg = {"cloud": {"opencode": {"api": "v2"}}}
+check("  OpenCode 1 under api v1 is fine",
+      D._opencode_version_mismatch(_VerTarget(_bin, "1.18.27"), "user1", _v1cfg) == "")
+check("  OpenCode 2 under api v2 is fine",
+      D._opencode_version_mismatch(_VerTarget(_bin, "opencode v2.1.3"), "user1", _v2cfg) == "")
+_mm = D._opencode_version_mismatch(_VerTarget(_bin, "opencode v2.1.3"), "user1", _v1cfg)
+check("  OpenCode 2 under api v1 is named, with the setting that fixes it",
+      "2.1.3" in _mm and "cloud.opencode.api" in _mm and "v2" in _mm, _mm)
+_t = _VerTarget(_bin.replace("/home/u/.opencode/bin/opencode", "/opt/oc1/opencode"), "1.18.27")
+check("  and the binary asked is the one the unit starts, drop-ins included",
+      "OpenCode 1" in D._opencode_version_mismatch(_t, "user1", _v2cfg)
+      and any(c.startswith("/opt/oc1/opencode") for c in _t.ran), _t.ran)
+check("  a host it cannot ask is not a mismatch",
+      D._opencode_version_mismatch(_VerTarget("", ""), "user1", _v2cfg) == "")
 
 print("\nevery bridge is one member's, derived from one member id")
 _gen = D._generator(D.GENERATORS["alfred-mcp"])

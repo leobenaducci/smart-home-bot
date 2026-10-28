@@ -64,19 +64,22 @@ WorkingDirectory=%S/opencode-serve/%i
 #
 # 127.0.0.1, and this is the security boundary rather than a default worth
 # tidying. This is an agent with a shell: anything that can reach the port can
-# run `bash` as whoever started the unit, with no authentication in front of
-# it. The interface makes that plainer, not different -- on startup the binary
-# itself says `OPENCODE_SERVER_PASSWORD is not set; server is unsecured`, and
-# that password is basic auth over plain HTTP, which is not a substitute for
-# not listening. Nothing proxies this port: the portal drives the *API* from
-# the host side and serves no route to the interface, so reaching `/` already
-# means being on this machine. The containers reach the same loopback through
+# run `bash` as whoever started the unit. It has a password now --
+# OPENCODE_SERVER_PASSWORD, in the per-member env file, derived by the deployer
+# -- because OpenCode 2 refuses every request without one and makes up its own
+# at each start when given none. But that is basic auth over plain HTTP, which
+# is not a substitute for not listening. Nothing proxies this port except
+# Caddy's `dns.code` site, behind the portal's own login: the portal drives the
+# *API* from the host side, and the containers reach the same loopback through
 # host.docker.internal.
+#
+# No `--log-level`. OpenCode 1 accepts only `INFO`, OpenCode 2 only `info`, and
+# a wrong spelling is a crash at startup -- every five seconds, 2,650 times
+# between 2026-10-24 and 10-28. Both default to it anyway.
 ExecStart=/bin/sh -c 'exec "$OPENCODE_BIN" serve \
   --hostname 127.0.0.1 \
   --port "$OPENCODE_SERVE_PORT" \
-  --print-logs \
-  --log-level INFO'
+  --print-logs'
 
 # Ready means it answers, not that the port is open and not that it returned a
 # 200: the port opens before the server will serve a session, and `curl -sf`
