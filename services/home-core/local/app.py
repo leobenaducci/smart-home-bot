@@ -7519,13 +7519,49 @@ def _opencode_on(space, username=None):
 # the second, and a single flag would answer for both.
 _OPENCODE_READY = {}
 OPENCODE_READY_TTL_S = 60
-# How long v2 is given to finish loading a directory before its agent list is
-# believed. OpenCode 2 loads config, agents and MCP per directory, evicts one
-# that sits idle, and rebuilds it on the next request -- answering that request
-# with what it has so far: nothing, then part of the list, then all of it, over
-# about 0.3 s. Read once, an evicted directory looked like an opencode without
-# the agent, and a Go retry on 2026-10-28 was answered by the assistant.
-OPENCODE_READY_WAIT_S = 3
+# How long v2 is given to finish loading a directory before it is believed.
+# OpenCode 2 loads config, agents and MCP per directory, evicts one that has sat
+# idle for about an hour, and rebuilds it on the next request -- answering with
+# what it has so far: no agents, then its own seven, then ours (0.7-1 s), then
+# the MCP servers `pending`, then `connected` (0.1 s later; 2.8 s on one cold
+# reload). Both halves cost a turn on 2026-10-28. Read once, an evicted
+# directory looked like an opencode without the agent, and a Go retry was
+# answered by the assistant; and a turn that started 44 ms before the household
+# tools connected was answered by a model that had none, and made the projects
+# list up.
+OPENCODE_READY_WAIT_S = 6
+
+
+def _oc_mcp_settle(base, params, give_up):
+    """Wait, until `give_up`, for v2's MCP servers in this directory to stop
+    being `pending`, and say which of them did not connect.
+
+    A server that failed does not make opencode unready: the Programmer still
+    reads and writes code without the household's tools, and the assistant
+    would have them no more than it does. It is logged by name, because a
+    Programmer without them answers questions about projects from imagination.
+    """
+    servers = []
+    try:
+        while True:
+            r = requests.get(f'{base}/api/mcp', params=params,
+                             auth=_oc_auth(), timeout=5)
+            servers = (_oc_data(r.json()) or []) if r.ok else []
+            pending = [s for s in servers if isinstance(s, dict)
+                       and (s.get('status') or {}).get('status') == 'pending']
+            if not pending or time.time() >= give_up:
+                break
+            time.sleep(0.1)
+    except Exception as e:                             # noqa: BLE001
+        app.logger.info('opencode %s: could not read its MCP servers (%s)', base, e)
+        return
+    for s in servers:
+        status = (s.get('status') or {}) if isinstance(s, dict) else {}
+        if status.get('status') not in ('connected', 'disabled'):
+            app.logger.warning(
+                'opencode %s: MCP server %s is %s%s -- the Programmer runs '
+                'without its tools', base, s.get('name'), status.get('status'),
+                f" ({status['error']})" if status.get('error') else '')
 
 
 def _oc_agent_names(r):
@@ -7595,6 +7631,10 @@ def _opencode_ready(base, directory=''):
         elif r.ok:
             names = _oc_agent_names(r)
             ok = OPENCODE_AGENT in names
+            if ok and v2:
+                # A turn that started before the tools connected used none of
+                # them, so the turn waits for them too.
+                _oc_mcp_settle(base, params, give_up)
             if not ok:
                 app.logger.info(
                     'opencode %s: no %s agent yet (has: %s) -- the Programmer '

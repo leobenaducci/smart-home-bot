@@ -658,7 +658,8 @@ for field, surface in (("name", "v1"), ("id", "v2")):
     # shapes are here because the unwrap is as easy to get wrong as the field.
     rows = [{field: A.OPENCODE_AGENT}, {field: "build"}]
     A.requests = Recorder(get=lambda u, kw, r=rows, s=surface: FakeResp(
-        ok=True, payload=({"data": r} if s == "v2" else r)))
+        ok=True, payload=({"data": [] if u.endswith("/api/mcp") else r}
+                          if s == "v2" else r)))
     check("  %s names the agent by `%s`" % (surface, field),
           A._opencode_ready(BASE),
           "a field name guessed wrong reads exactly like the agent missing")
@@ -676,14 +677,35 @@ A.OPENCODE_READY_WAIT_S = _saved_wait
 # once, that was "no agent" -- and a Go retry went to the assistant.
 _loading = iter([[], [{"id": "build"}], [{"id": "build"}, {"id": A.OPENCODE_AGENT}]])
 A._OPENCODE_READY.clear()
-rec_load = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": next(_loading)}))
+rec_load = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": (
+    [] if u.endswith("/api/mcp") else next(_loading))}))
 A.requests = rec_load
 check("  a directory still loading is waited for, not taken for a missing agent",
       A._opencode_ready(BASE, "/ws/user1"), f"{len(rec_load.gets)} calls")
 check("  and it is asked about the member's own directory",
       all((kw.get("params") or {}).get("location[directory]") == "/ws/user1"
-          for _, kw in rec_load.gets) and len(rec_load.gets) == 3,
+          for _, kw in rec_load.gets)
+      and [u for u, _ in rec_load.gets].count(BASE + "/api/agent") == 3,
       rec_load.gets)
+
+# Then its MCP servers come up `pending`, and `connected` a moment later. A turn
+# that started in between was given no household tools and made an answer up.
+_mcp = iter([[{"name": "alfred", "status": {"status": "pending"}}],
+             [{"name": "alfred", "status": {"status": "connected"}}]])
+A._OPENCODE_READY.clear()
+rec_mcp = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": (
+    next(_mcp) if u.endswith("/api/mcp") else [{"id": A.OPENCODE_AGENT}])}))
+A.requests = rec_mcp
+check("  and its household tools are waited for until they connect",
+      A._opencode_ready(BASE, "/ws/user1")
+      and [u for u, _ in rec_mcp.gets].count(BASE + "/api/mcp") == 2,
+      rec_mcp.gets)
+A._OPENCODE_READY.clear()
+A.requests = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": (
+    [{"name": "alfred", "status": {"status": "failed", "error": "refused"}}]
+    if u.endswith("/api/mcp") else [{"id": A.OPENCODE_AGENT}])}))
+check("  but tools that failed do not keep the Programmer from coding",
+      A._opencode_ready(BASE, "/ws/user1"))
 A._OPENCODE_READY.clear()
 A.requests = Recorder(get=lambda u, kw: FakeResp(ok=False, status=401))
 check("  nor one that refuses the password", not A._opencode_ready(BASE))
