@@ -7519,14 +7519,41 @@ def _opencode_on(space, username=None):
 # the second, and a single flag would answer for both.
 _OPENCODE_READY = {}
 OPENCODE_READY_TTL_S = 60
+# How long v2 is given to finish loading a directory before its agent list is
+# believed. OpenCode 2 loads config, agents and MCP per directory, evicts one
+# that sits idle, and rebuilds it on the next request -- answering that request
+# with what it has so far: nothing, then part of the list, then all of it, over
+# about 0.3 s. Read once, an evicted directory looked like an opencode without
+# the agent, and a Go retry on 2026-10-28 was answered by the assistant.
+OPENCODE_READY_WAIT_S = 3
 
 
-def _opencode_ready(base):
+def _oc_agent_names(r):
+    """The agents an `/agent` answer lists; empty when it is not a list at all.
+
+    v1 calls it `name`, v2 calls it `id`. Both are read rather than one being
+    chosen: the readiness check is the thing that decides whether this space
+    moves at all, and a field name it guesses wrong reads exactly like the
+    agent not being installed -- which is what it did, silently, on the first
+    v2 boot.
+    """
+    try:
+        listed = _oc_data(r.json()) or []
+    except ValueError:
+        return set()
+    return {a.get('name') or a.get('id') for a in listed if isinstance(a, dict)}
+
+
+def _opencode_ready(base, directory=''):
     """Is this member's opencode up and carrying the agent we answer as?
 
     Cached for a minute: this is on the path of every Programmer turn, and a
     turn is not the moment to pay for an extra round trip. Short enough that
     installing the agent takes effect without a restart.
+
+    `directory` is where this member's sessions run. v2 answers for the
+    directory it is asked about, and unasked it answers for its own working
+    directory, which nothing else uses and which is therefore usually evicted.
     """
     if not base:
         return False
@@ -7535,8 +7562,20 @@ def _opencode_ready(base):
     if seen and now - seen['at'] < OPENCODE_READY_TTL_S:
         return seen['ok']
     ok = False
+    v2 = OPENCODE_API == 'v2'
+    params = {'location[directory]': directory} if v2 and directory else None
+    give_up = now + (OPENCODE_READY_WAIT_S if v2 else 0)
     try:
-        r = requests.get(f'{base}{_oc("/agent")}', auth=_oc_auth(), timeout=5)
+        r = requests.get(f'{base}{_oc("/agent")}', params=params,
+                         auth=_oc_auth(), timeout=5)
+        # Every OpenCode 2 has agents of its own (`build`, `plan`), so a list
+        # without ours is far more often a directory still loading than one
+        # that lacks it. Asked again until it has it or the wait is up.
+        while (v2 and r.ok and time.time() < give_up
+               and OPENCODE_AGENT not in _oc_agent_names(r)):
+            time.sleep(0.25)
+            r = requests.get(f'{base}{_oc("/agent")}', params=params,
+                             auth=_oc_auth(), timeout=5)
         if r.status_code == 401:
             # Its own line, because it is not "down": the server answers, and
             # every turn would be refused the same way.
@@ -7554,14 +7593,7 @@ def _opencode_ready(base):
                 'Programmer stays on the assistant', base, _oc('/agent'),
                 OPENCODE_API)
         elif r.ok:
-            listed = _oc_data(r.json()) or []
-            # v1 calls it `name`, v2 calls it `id`. Both are read rather than
-            # one being chosen: the readiness check is the thing that decides
-            # whether this space moves at all, and a field name it guesses
-            # wrong reads exactly like the agent not being installed -- which
-            # is what it did, silently, on the first v2 boot.
-            names = {a.get('name') or a.get('id')
-                     for a in listed if isinstance(a, dict)}
+            names = _oc_agent_names(r)
             ok = OPENCODE_AGENT in names
             if not ok:
                 app.logger.info(
@@ -9203,7 +9235,7 @@ def _turn_attempt(turn, api, nanobot_id, msg_content, powerful, profile):
     # Asked once: `_opencode_url` reads users.json through `find_user`, and
     # `_opencode_on` asks the same question a second time otherwise.
     base = _opencode_url(username) if _opencode_on(turn.get('space')) else ''
-    if base and _opencode_ready(base):
+    if base and _opencode_ready(base, _opencode_directory(username)):
         # Recorded on the turn, not re-decided at cancel time. `_opencode_ready`
         # is cached and can flip between a turn starting and somebody pressing
         # Stop -- and a cancel that asks again could abort an opencode session

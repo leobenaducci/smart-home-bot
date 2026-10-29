@@ -663,10 +663,27 @@ for field, surface in (("name", "v1"), ("id", "v2")):
           A._opencode_ready(BASE),
           "a field name guessed wrong reads exactly like the agent missing")
 A.OPENCODE_API = "v2"
+_saved_wait = A.OPENCODE_READY_WAIT_S
+A.OPENCODE_READY_WAIT_S = 0
 A._OPENCODE_READY.clear()
 A.requests = Recorder(get=lambda u, kw: FakeResp(
     ok=True, payload={"data": [{"id": "build"}, {"id": "plan"}]}))
 check("  and an opencode without it is not ready", not A._opencode_ready(BASE))
+A.OPENCODE_READY_WAIT_S = _saved_wait
+
+# v2 evicts a directory nobody has used for a while and rebuilds it on the next
+# request, answering that request with nothing, then part of the list. Read
+# once, that was "no agent" -- and a Go retry went to the assistant.
+_loading = iter([[], [{"id": "build"}], [{"id": "build"}, {"id": A.OPENCODE_AGENT}]])
+A._OPENCODE_READY.clear()
+rec_load = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": next(_loading)}))
+A.requests = rec_load
+check("  a directory still loading is waited for, not taken for a missing agent",
+      A._opencode_ready(BASE, "/ws/user1"), f"{len(rec_load.gets)} calls")
+check("  and it is asked about the member's own directory",
+      all((kw.get("params") or {}).get("location[directory]") == "/ws/user1"
+          for _, kw in rec_load.gets) and len(rec_load.gets) == 3,
+      rec_load.gets)
 A._OPENCODE_READY.clear()
 A.requests = Recorder(get=lambda u, kw: FakeResp(ok=False, status=401))
 check("  nor one that refuses the password", not A._opencode_ready(BASE))
