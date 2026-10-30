@@ -780,6 +780,15 @@ class _PlannerStandIn:
     scores the step model alone, so a step that dead-ends on it lands here and
     is recorded as a failure rather than quietly rescued."""
 
+    class provider:
+        """What the step runner asks of the fallback's provider once a step
+        has landed on it: where the usage is billed. Without it a dead-ended
+        step raised AttributeError instead of reading as one."""
+
+        @staticmethod
+        def serving_route(model=None):
+            return model or "planner", "planner"
+
     async def run(self, spec):
         from nanobot.agent.runner import AgentRunResult
         return AgentRunResult(final_content="", messages=[], stop_reason="step_dead_end")
