@@ -92,6 +92,15 @@ variants = repo("Q-9B-Q4_K_M.gguf", "Q-9B-MTP-Q4_K_M.gguf", "Q-9B-MTP-Q8_0.gguf"
 check("  Qwythos' plain + MTP builds: the plain one's size, not the sum",
       B.gguf_quants("x/y", variants)["Q4_K_M"] == 5_630_000_000, B.gguf_quants("x/y", variants))
 
+print("\n'run again' on a server removed since runs on the benchmark's Ollama")
+ids = {"main", "bench", "text"}
+check("  ollama-chat: (gone) becomes ollama:",
+      B.rehome_model("ollama-chat:gemma4:e4b", ids)[0] == "ollama:gemma4:e4b")
+check("  and the page is told why", "ollama-chat:" in B.rehome_model("ollama-chat:gemma4:e4b", ids)[1])
+for kept in ("ollama-text:gemma4:e4b", "ollama:gemma4:e4b", "ollama-cloud:gpt-oss:120b",
+             "together:Qwen/X", "deepseek-v4-flash"):
+    check(f"  {kept} is left alone", B.rehome_model(kept, ids) == (kept, ""), B.rehome_model(kept, ids))
+
 print("\nonly a model nothing uses may be removed")
 cfg = {"assistant": {"models": {"everyday": "ollama:ornith-1.5:9b",
                                 "fallback": ["ollama:ornith-1.5:9b", "together:Q"],

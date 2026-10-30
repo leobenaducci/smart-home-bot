@@ -7312,6 +7312,8 @@ def bench_start():
             model, note = model_bench.resolve_model(line)
         except model_bench.ResolveError as exc:
             return _bench_reply(False, 400, reason=f"{line}: {exc}")
+        model, moved = model_bench.rehome_model(model, OI.by_id(cfg))
+        note = "; ".join(n for n in (moved, note) if n)
         models.append(model)
         notes.append(f"{model}  ({note})" if note else model)
     roles = [r for r in request.form.getlist("roles") if r in model_bench.ROLES]

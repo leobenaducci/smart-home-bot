@@ -314,6 +314,24 @@ def _named_models(cfg: dict) -> set[str]:
     return names
 
 
+def rehome_model(model: str, instance_ids) -> tuple[str, str]:
+    """(model to run, note): an `ollama-<id>:` name whose instance is gone runs
+    as `ollama:`.
+
+    "Run again" replays the name a result was recorded under, and that can name
+    an instance removed since -- `ollama-chat:` from September. The assistant
+    has no provider for it and the run died on "No API key". A local model runs
+    on the benchmark's own Ollama either way, so only the label was wrong.
+    `ollama-cloud:` is ollama.com, not an instance, and is left alone.
+    """
+    prefix, _, rest = model.partition(":")
+    m = re.fullmatch(r"ollama-([a-z][a-z0-9]{0,15})", prefix.lower())
+    if not (rest and m) or m.group(1) == "cloud" or m.group(1) in set(instance_ids):
+        return model, ""
+    return (f"ollama:{rest}", f"{prefix}: is no longer one of the house's Ollama "
+                              f"servers, so it runs as ollama:{rest}")
+
+
 def removable(cfg: dict, model: str) -> bool:
     """A local model nothing in the house is configured to use."""
     name, prefix = split_model(model)
