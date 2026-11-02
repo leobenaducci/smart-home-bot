@@ -106,6 +106,15 @@ for _page in pages:
     _bad = re.findall(r'=\s*"[^"]*\{\{[^}]*\|\s*tojson', _page.read_text(encoding="utf-8"))
     check(f"  {_page.name}: no tojson inside a double-quoted attribute", not _bad, _bad[:1])
 
+print("\n'run again' takes the card's current tests and options, not the old run's")
+_models_page = (TEMPLATES / "models.html").read_text(encoding="utf-8")
+_start = re.search(r"function start\(f\) \{.*?\n  \}\n", _models_page, re.S)
+check("  start() was found", _start)
+if _start:
+    check("  the request is built from the card's form", "new FormData(form)" in _start.group(0))
+    check("  a result row gives only its model", "new FormData(f)" not in _start.group(0)
+          and "body.set('model', f.elements.model.value)" in _models_page)
+
 print("\nevery endpoint the navigation names is a route that exists")
 # `url_for` raises BuildError on an unknown endpoint, and base.html builds the
 # nav on *every* page -- so one missing route is not one broken link, it is a

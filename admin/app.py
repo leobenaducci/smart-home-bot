@@ -7258,7 +7258,7 @@ def _run_bench_job(models: list[str], roles: str, repeat: int, effort: str,
                      "effort": effort, "container": container}
             while batch and not _bench_stopping():
                 ms = batch["models"]
-                _bench_save_state(models=ms, roles=batch["roles"].split(","))
+                _bench_save_state(models=ms, roles=batch["roles"].split(","), repeat=batch["repeat"])
                 for i, model in enumerate(ms, 1):
                     if _bench_stopping():
                         break
@@ -7363,7 +7363,7 @@ def _bench_launch(models: list[str], roles: list[str], repeat: int, effort: str,
     _bench_save_state(running=True, stopped=False, stop_requested=False, failed=None,
                       models=models, model=models[0],
                       index=1, started=time.time(), finished=None, results=[],
-                      log=log_path.name, container=container, roles=roles)
+                      log=log_path.name, container=container, roles=roles, repeat=repeat)
     threading.Thread(target=_run_bench_job,
                      args=(models, ",".join(roles), repeat, effort, container, cfg,
                            lock_fd, log_path),
@@ -7424,6 +7424,7 @@ def bench_log():
         failed=state.get("failed"), stopped=state.get("stopped"),
         model=state.get("model", ""), index=state.get("index", 0),
         count=len(state.get("models") or []), results=state.get("results") or [],
+        roles=state.get("roles") or [], repeat=state.get("repeat") or 1,
         queue=[m for e in _bench_queue() for m in e.get("models") or []],
         elapsed=round((state.get("finished") or time.time()) - started, 1) if started else 0,
     )

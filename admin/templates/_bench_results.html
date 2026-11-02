@@ -52,8 +52,9 @@
           <form method="post" action="{{ url_for('bench_start') }}" class="bench-rerun">
             <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
             <input type="hidden" name="model" value="{{ run.model }}">
+            {# Only for a plain post, when the script died: the script sends the card's settings instead. #}
             {% for role in bench_roles %}<input type="hidden" name="roles" value="{{ role }}">{% endfor %}
-            <button type="submit" class="linkish">{{ t('admin.models.bench_again') }}</button>
+            <button type="submit" class="linkish" title="{{ t('admin.models.bench_again_help') }}">{{ t('admin.models.bench_again') }}</button>
           </form>
           <form method="post" action="{{ url_for('bench_delete') }}" data-inplace>
             <input type="hidden" name="_csrf" value="{{ csrf_token() }}">

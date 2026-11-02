@@ -466,6 +466,8 @@
   }
   function poll() {
     fetch(LOG_URL + '?offset=' + offset).then(function (r) { return r.json(); }).then(function (d) {
+      // The run going, which a queued one with other tests is not until its turn.
+      if (d.roles && d.roles.length) { perModel = d.roles.reduce(function (n, r) { return n + (counts[r] || 0); }, 0) * (d.repeat || 1); }
       offset = d.offset; eat(d.lines); showQueue(d.queue);
       if (d.model !== currentModel) { currentModel = d.model; doneCases = 0; }
       modelEl.textContent = d.model || '';
@@ -478,11 +480,16 @@
       statusEl.textContent = d.stopped ? T.stopped : (d.failed ? T.failed : T.done);
     }).catch(function () { setTimeout(poll, 3000); });
   }
+  // A result row names only the model: the tests and options are the card's, as set now.
+  function withModel(body, f) {
+    if (f !== form) body.set('model', f.elements.model.value);
+    return body;
+  }
   function start(f) {
     var wasBusy = goBtn.disabled;
-    if (!wasBusy) { busy(true); logEl.textContent = ''; casesEl.textContent = ''; offset = 0; doneCases = 0; fill.style.width = '0'; }
-    perModel = planned(); statusEl.textContent = T.running;
-    fetch(f.action, {method: 'POST', body: new FormData(f), headers: {'X-Requested-With': 'fetch'}})
+    if (!wasBusy) { busy(true); logEl.textContent = ''; casesEl.textContent = ''; offset = 0; doneCases = 0; fill.style.width = '0'; perModel = planned(); }
+    statusEl.textContent = T.running;
+    fetch(f.action, {method: 'POST', body: withModel(new FormData(form), f), headers: {'X-Requested-With': 'fetch'}})
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { if (!wasBusy) { busy(false); stopBtn.hidden = true; } statusEl.textContent = d.reason; return; }
         if (d.queued) { statusEl.textContent = T.queued; if (!wasBusy) poll(); return; }
@@ -493,7 +500,7 @@
   form.addEventListener('submit', function (ev) { ev.preventDefault(); start(form); });
   // The result rows' own controls, bound again every time the card is swapped in.
   function bindResults() {
-    // "Again" on a result row: the same run, queued if one is going.
+    // "Again" on a result row: this model on the card's current settings, queued if one is going.
     resultsEl.querySelectorAll('form.bench-rerun').forEach(function (f) {
       f.addEventListener('submit', function (ev) { ev.preventDefault(); start(f); });
     });

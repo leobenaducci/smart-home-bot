@@ -331,6 +331,7 @@
   "admin.models.assumed_short": "Todavía no hay uso registrado, así que los precios suponen un millón de tokens de entrada al mes.",
   "admin.models.audio": "Audio",
   "admin.models.bench_again": "correr de nuevo",
+  "admin.models.bench_again_help": "Corre este modelo con las pruebas y opciones elegidas arriba; queda en cola si hay una corrida en curso.",
   "admin.models.bench_best_for": "mejor · {kind}",
   "admin.models.bench_busy": "Ya hay un benchmark corriendo.",
   "admin.models.bench_calls": "Llamadas al modelo",

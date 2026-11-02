@@ -331,6 +331,7 @@
   "admin.models.assumed_short": "No usage recorded yet, so prices assume a million input tokens a month.",
   "admin.models.audio": "Audio",
   "admin.models.bench_again": "run again",
+  "admin.models.bench_again_help": "Run this model with the tests and options selected above; queued if a run is going.",
   "admin.models.bench_best_for": "best · {kind}",
   "admin.models.bench_busy": "A benchmark is already running.",
   "admin.models.bench_calls": "Model calls",
