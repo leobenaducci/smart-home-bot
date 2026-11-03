@@ -350,6 +350,16 @@ check("nor a hosted model, a typed URL or the flat plan",
 check("and the rule is Private's alone: other roles may still go hosted",
       not A._not_local_for("everyday", "gpt-6-luna") and not A._not_local_for("private", ""))
 
+print("\nA hosted benchmark row names its cloud")
+check("a bare model is OpenCode Zen", A._bench_host({}, "deepseek-v4-flash") == "OpenCode Zen")
+check("a prefix names its provider, in any case",
+      A._bench_host({}, "nanogpt:deepseek/x") == "NanoGPT"
+      and A._bench_host({}, "Together:a/b") == "Together AI"
+      and A._bench_host({}, "ollama-cloud:gemma4:31b") == "Ollama cloud")
+check("an OpenAI-compatible server is called what the household called it",
+      A._bench_host({"cloud": {"openai_compatible": {"label": "the GPU box"}}},
+                    "openai-compatible:m") == "the GPU box")
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))

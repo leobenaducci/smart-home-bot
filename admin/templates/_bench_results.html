@@ -16,7 +16,7 @@
     <div class="bench-run {{ 'grade-' ~ run.grade }}"{% for kind in bench_kinds %} data-rank-{{ kind }}="{{ run.rank.get(kind, 9999) }}"{% endfor %}>
       <div class="bench-run-main">
         <div class="bench-run-name">
-          <span class="bench-src {{ 'src-' ~ run.source }}">{{ t('admin.models.bench_src_' ~ run.source) }}</span>
+          <span class="bench-src {{ 'src-' ~ run.source }}">{{ t('admin.models.bench_src_' ~ run.source) }}{% if run.host %} · {{ run.host }}{% endif %}</span>
           {% for kind in run.best_for %}<span class="bench-best" data-kind="{{ kind }}">★ {{ t('admin.models.bench_best_for', kind=t('admin.models.bench_kind_' ~ kind)) }}</span>{% endfor %}
           {% if run.parts.owner %}<div class="bench-owner muted small">{{ run.parts.owner }}/</div>{% endif %}
           <b class="bench-name" title="{{ run.model }}">{{ run.parts.name }}</b>{% if run.variant %}<span class="bench-tag">{{ run.variant }}</span>{% endif %}{% if run.params %}<span class="bench-params" title="{{ t('admin.models.bench_params_help') }}">{{ run.params }}</span>{% endif %}

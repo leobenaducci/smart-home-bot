@@ -8976,6 +8976,26 @@ def _bench_kind_args() -> dict:
             "bench_kind_of": model_bench.KIND_OF_ROLE}
 
 
+# Short names for the hosted badge: the picker's "NanoGPT -- pay per token" is a
+# heading, too long for a chip, and the cost split is not what the row is about.
+_BENCH_HOST_NAMES = {
+    "opencode_zen": "OpenCode Zen", "openrouter": "OpenRouter", "together": "Together AI",
+    "nanogpt": "NanoGPT", "openai": "OpenAI", "ollama_cloud": "Ollama cloud",
+}
+
+
+def _bench_host(cfg: dict, model: str) -> str:
+    """Which cloud a hosted row ran on. A bare "hosted" left a household
+    guessing whether that was Zen, NanoGPT or Together -- the same resolution
+    the Test button uses, so the badge names where the requests really went."""
+    prefix, sep, rest = str(model or "").strip().partition(":")
+    source = (_PROBE_PREFIXES.get(prefix.lower()) if sep and rest else None) or "opencode_zen"
+    if source == "openai_compatible":
+        compat = (cfg.get("cloud") or {}).get("openai_compatible") or {}
+        return str(compat.get("label") or "").strip() or t("admin.models.source_openai_compatible")
+    return _BENCH_HOST_NAMES.get(source, "")
+
+
 def _bench_views(cfg: dict) -> list[dict]:
     """The results card's rows: one per model, best first, the best one marked."""
     current = _cases_digest()
@@ -8986,6 +9006,7 @@ def _bench_views(cfg: dict) -> list[dict]:
     for run in runs:
         run["removable"] = model_bench.removable(cfg, str(run.get("model") or ""))
         view = model_bench.run_view(run, params_lookup=params)
+        view["host"] = _bench_host(cfg, view["model"]) if view["source"] == "hosted" else ""
         # A run the current cases would not have produced is not comparable with
         # one they would. Unstamped runs predate the stamp, so they are stale too.
         view["stale_cases"] = bool(current) and view["cases_digest"] != current
