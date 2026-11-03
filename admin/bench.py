@@ -449,6 +449,29 @@ def variant_of(shown: str) -> str:
     return tag
 
 
+def quant_chip(model: str, shown: str, lookup: dict | None = None) -> str:
+    """The quantization to put on the card: Q4_K_M, Q8_0, BF16. "" when the
+    tag already says it (`e4b-it-q8_0`, an hf `:Q4_K_M`) or nothing reports one.
+
+    A bare `gemma4:e4b` is Q4_K_M, and comparing it with `e4b-it-q8_0` means
+    nothing unless the card says so. It is the build pulled under that name
+    *now*, as the size chip is.
+    """
+    if not lookup:
+        return ""
+    name, _prefix = split_model(model)
+    quant = ""
+    for key in (name, name + ":latest", name.lower(), model):
+        quant = lookup.get("quant:" + key) or ""
+        if quant:
+            break
+    if not quant:
+        return ""
+    if quant.lower().replace("_", "") in variant_of(shown).lower().replace("_", "").replace("-", ""):
+        return ""
+    return quant
+
+
 def run_view(run: dict, roles=ROLES, params_lookup: dict | None = None) -> dict:
     """One run, shaped for the results card. Pure, so it is tested rather than eyeballed."""
     summary = run.get("summary") or {}
@@ -487,6 +510,8 @@ def run_view(run: dict, roles=ROLES, params_lookup: dict | None = None) -> dict:
         # identity and a size would be a guess.
         "params": size_chip(str(run.get("model") or ""), shown, params_lookup)
                   if source in ("local", "hf") else "",
+        "quant": quant_chip(str(run.get("model") or ""), shown, params_lookup)
+                 if source in ("local", "hf") else "",
         "source": source, "started": str(run.get("started") or "")[:16].replace("T", " "),
         "minutes": round((run.get("seconds") or 0) / 60, 1),
         "roles": role_rows, "passed": total.get("passed", 0), "total": total.get("total", 0),

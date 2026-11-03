@@ -368,6 +368,7 @@
   "admin.models.bench_on_bench": "benchmark GPU",
   "admin.models.bench_on_cpu": "{pct}% on CPU",
   "admin.models.bench_params_help": "Parameter count, from Ollama where the name does not say.",
+  "admin.models.bench_quant_help": "Quantization of the build pulled under this name, as Ollama reports it.",
   "admin.models.bench_prefill": "prompt",
   "admin.models.bench_pulling": "Downloading",
   "admin.models.bench_queue": "Queued",

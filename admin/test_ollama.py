@@ -360,6 +360,16 @@ check("an OpenAI-compatible server is called what the household called it",
       A._bench_host({"cloud": {"openai_compatible": {"label": "the GPU box"}}},
                     "openai-compatible:m") == "the GPU box")
 
+print("\nA local benchmark row names its quantization")
+_q = {"quant:gemma4:e4b": "Q4_K_M", "quant:gemma4:e4b-it-q8_0": "Q8_0", "quant:hf.co/a/b:Q4_K_M": "Q4_K_M"}
+check("a bare tag gets the server's quantization",
+      A.model_bench.quant_chip("ollama:gemma4:e4b", "gemma4:e4b", _q) == "Q4_K_M")
+check("a tag that already says it gets no chip",
+      A.model_bench.quant_chip("ollama:gemma4:e4b-it-q8_0", "gemma4:e4b-it-q8_0", _q) == ""
+      and A.model_bench.quant_chip("ollama:hf.co/a/b:Q4_K_M", "a/b:Q4_K_M", _q) == "")
+check("nothing reported, nothing shown",
+      A.model_bench.quant_chip("ollama:x:1b", "x:1b", _q) == "" and A.model_bench.quant_chip("ollama:x", "x", None) == "")
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))

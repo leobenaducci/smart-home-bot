@@ -368,6 +368,7 @@
   "admin.models.bench_on_bench": "GPU de benchmark",
   "admin.models.bench_on_cpu": "{pct}% en CPU",
   "admin.models.bench_params_help": "Cantidad de parámetros; la da Ollama cuando el nombre no la dice.",
+  "admin.models.bench_quant_help": "Cuantización de la versión descargada con este nombre, según Ollama.",
   "admin.models.bench_prefill": "prompt",
   "admin.models.bench_pulling": "Descargando",
   "admin.models.bench_queue": "En cola",

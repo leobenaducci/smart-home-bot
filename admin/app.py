@@ -7654,10 +7654,17 @@ def _ollama_params(cfg: dict) -> dict:
             continue                                       # a server that is down costs nothing
         for m in doc.get("models") or []:
             name = m.get("name") or m.get("model") or ""
-            size = ((m.get("details") or {}).get("parameter_size") or "").strip()
+            details = m.get("details") or {}
+            size = (details.get("parameter_size") or "").strip()
             if name and size:
                 out.setdefault(name, size)
                 out.setdefault(name.lower(), size)
+            # The quantization, under its own key so params_of never reads it as
+            # a size: `gemma4:e4b` is Q4_K_M, and only the server says so.
+            quant = (details.get("quantization_level") or "").strip()
+            if name and quant:
+                out.setdefault("quant:" + name, quant)
+                out.setdefault("quant:" + name.lower(), quant)
     if out:
         _PARAMS_CACHE.update(at=now, map=out)
     return out or _PARAMS_CACHE["map"]
