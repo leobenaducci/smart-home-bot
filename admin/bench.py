@@ -414,7 +414,7 @@ def size_chip(model: str, shown: str, lookup: dict | None = None) -> str:
     # pulled to ask, the size is parsed from that same tag -- so the card read
     # "gemma4 e2b E2B". Whatever is already on the card wins; the size chip only
     # earns its place by saying something new.
-    if variant_of(shown).upper() == flat:
+    if split_tag(variant_of(shown))[0].upper() == flat:
         return ""
     base = shown.rpartition(":")[0] if ":" in shown else shown
     m = _SIZE_IN_NAME.search(base or "")
@@ -449,27 +449,41 @@ def variant_of(shown: str) -> str:
     return tag
 
 
-def quant_chip(model: str, shown: str, lookup: dict | None = None) -> str:
-    """The quantization to put on the card: Q4_K_M, Q8_0, BF16. "" when the
-    tag already says it (`e4b-it-q8_0`, an hf `:Q4_K_M`) or nothing reports one.
+# A quantization at the end of a tag: `-q8_0`, `-bf16`, an hf `Q4_K_M`.
+_QUANT_IN_TAG = re.compile(
+    r"(?i)(?:^|[-_.])((?:i?q\d(?:_[0-9a-z]+)*)|bf16|fp16|f16|f32|mxfp4|int4|int8)$")
 
-    A bare `gemma4:e4b` is Q4_K_M, and comparing it with `e4b-it-q8_0` means
-    nothing unless the card says so. It is the build pulled under that name
-    *now*, as the size chip is.
+
+def split_tag(tag: str) -> tuple[str, str]:
+    """`e2b-it-q8_0` -> ("e2b", "Q8_0"); `Q4_K_M` -> ("", "Q4_K_M"); `12b` -> ("12b", "").
+
+    The quantization goes in its own chip and the instruction-tuned `-it` goes,
+    so rows of one family read `[e2b] Q8_0` beside `[e4b] Q4_K_M` -- with the
+    quant inside the tag, `e2b-it-q8_0` and `e4b-it-q8_0` were read as the
+    same model twice.
     """
-    if not lookup:
-        return ""
+    m = _QUANT_IN_TAG.search(tag)
+    if not m:
+        return tag, ""
+    rest = tag[:m.start()]
+    rest = re.sub(r"(?i)[-_](?:it|instruct)$", "", rest)
+    return rest, m.group(1).upper()
+
+
+def quant_chip(model: str, shown: str, lookup: dict | None = None) -> str:
+    """The quantization to put on the card: Q4_K_M, Q8_0, BF16. What the server
+    reports for the build pulled under that name now, as the size chip is; else
+    what the tag says; else "".
+
+    A bare `gemma4:e4b` is Q4_K_M, and comparing it with a Q8 build means
+    nothing unless the card says so.
+    """
     name, _prefix = split_model(model)
-    quant = ""
     for key in (name, name + ":latest", name.lower(), model):
-        quant = lookup.get("quant:" + key) or ""
+        quant = (lookup or {}).get("quant:" + key) or ""
         if quant:
-            break
-    if not quant:
-        return ""
-    if quant.lower().replace("_", "") in variant_of(shown).lower().replace("_", "").replace("-", ""):
-        return ""
-    return quant
+            return quant
+    return split_tag(variant_of(shown))[1]
 
 
 def run_view(run: dict, roles=ROLES, params_lookup: dict | None = None) -> dict:
@@ -505,7 +519,7 @@ def run_view(run: dict, roles=ROLES, params_lookup: dict | None = None) -> dict:
         "file": run.get("file", ""), "model": run.get("model", ""), "shown": shown,
         "parts": name_parts(shown),
         # The tag, minus the ones that only restate the size.
-        "variant": variant_of(shown),
+        "variant": split_tag(variant_of(shown))[0],
         # Empty for a hosted model, where the vendor name is the whole
         # identity and a size would be a guess.
         "params": size_chip(str(run.get("model") or ""), shown, params_lookup)
