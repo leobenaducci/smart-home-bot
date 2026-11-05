@@ -75,9 +75,10 @@
   }
 </style>
 
-<h1>{{ t('admin.codebench.heading') }}</h1>
+{% set view = 'coding' %}
+{% include "_models_tabs.html" %}
+<h2>{{ t('admin.codebench.heading') }}</h2>
 <p class="intro">{{ t('admin.codebench.intro') }}</p>
-<p class="row"><a class="button ghost" href="{{ url_for('models_page') }}">← {{ t('admin.nav.models') }}</a></p>
 
 {% if gpu is none %}
 <div class="notice">{{ t('admin.codebench.no_card') }}</div>
@@ -392,7 +393,16 @@
       '<div class="sub">' + esc(r.tool_calls == null ? '' : r.tool_calls + ' ' + S.steps) + (note ? ' · ' + esc(note) : '') + '</div></button></td>';
   }
   var lastRuns = [];
+  // Best first: the share of problems passed, then how many, then the newest.
+  // A run still going stays on top, where its cells fill in.
+  function byScore(a, b) {
+    var live = (b.state === 'running') - (a.state === 'running');
+    if (live) return live;
+    var na = Object.keys(a.problems || {}).length || 1, nb = Object.keys(b.problems || {}).length || 1;
+    return (b.passed / nb - a.passed / na) || (b.passed - a.passed) || ((b.started || 0) - (a.started || 0));
+  }
   function drawRuns(runs) {
+    runs = runs.slice().sort(byScore);
     lastRuns = runs;
     $('#cb-empty').hidden = !!runs.length;
     $('#cb-runs').innerHTML = runs.map(function (run) {

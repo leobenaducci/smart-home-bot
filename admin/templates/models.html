@@ -49,11 +49,6 @@
   .role-controls .pick { min-width: 0; }
   .role-controls .pick select { width: 100%; max-width: none; }
   .role-controls .probe { margin: 0; }
-  /* The Models page's two tabs: settings, and the catalog. */
-  .subtabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--edge); }
-  .subtabs a { padding: 7px 12px; text-decoration: none; color: var(--ink-soft);
-               border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .subtabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--live); font-weight: 600; }
   /* Provider, then model: two pickers drawn over the one the form submits
      (hidden, kept), so saving, "show all" and the filter box are unchanged. */
   .pick-pair { display: grid; grid-template-columns: minmax(0, 15em) minmax(0, 1fr); gap: 6px; }
@@ -122,10 +117,7 @@
    the catalog is what somebody reads before changing a setting, not what they
    change, so it has its own page and a tab back. Same context for both, so
    the two can never disagree about a model. #}
-<nav class="subtabs" aria-label="{{ t('admin.nav.models') }}">
-  <a href="{{ url_for('models_page') }}"{% if view != 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_settings') }}</a>
-  <a href="{{ url_for('models_catalog') }}"{% if view == 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_catalog') }}</a>
-</nav>
+{% include "_models_tabs.html" %}
 
 {# Both tabs: the Ollama card's cards and rows live here too (moved out of the
    catalog-only part, where the split into tabs had left them). #}
@@ -344,8 +336,6 @@
    while it runs, which the intro says. #}
 <div class="card wide" id="bench">
   <h2>{{ t('admin.models.bench_heading') }}</h2>
-  <div class="row stack-s"><a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a>
-    <span class="help">{{ t('admin.codebench.open_about') }}</span></div>
   <p class="intro">{{ t('admin.models.bench_intro') }}</p>
 
   <form id="bench-form" method="post" action="{{ url_for('bench_start') }}"
@@ -1317,7 +1307,6 @@
     <label class="check-row"><input type="checkbox" name="code_local_lan" value="1" {% if code_local.lan %}checked{% endif %}>
       {{ t('admin.models.code_local_lan') }}</label>
     <p class="stack row"><button type="submit">{{ t('common.save') }}</button>
-      <a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a>
       {% if code_local.model %}<a class="button ghost" href="{{ url_for('codebench_page') }}#programmer">{{ t('admin.models.code_local_reserve') }}</a>{% endif %}</p>
   </form>
   {% else %}
