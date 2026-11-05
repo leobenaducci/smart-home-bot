@@ -1317,7 +1317,8 @@
     <label class="check-row"><input type="checkbox" name="code_local_lan" value="1" {% if code_local.lan %}checked{% endif %}>
       {{ t('admin.models.code_local_lan') }}</label>
     <p class="stack row"><button type="submit">{{ t('common.save') }}</button>
-      <a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a></p>
+      <a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a>
+      {% if code_local.model %}<a class="button ghost" href="{{ url_for('codebench_page') }}#programmer">{{ t('admin.models.code_local_reserve') }}</a>{% endif %}</p>
   </form>
   {% else %}
   <p class="help">{{ t('admin.models.code_no_roster') }}</p>
