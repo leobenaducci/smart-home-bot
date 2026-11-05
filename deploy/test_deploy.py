@@ -3880,6 +3880,54 @@ check("  and its proxy loads the model and lets it go after fifteen idle minutes
       "--exit-idle-time=15min 127.0.0.1:11461" in _dem["programmer-local-lan-proxy.service"]
       and "Requires=programmer-local.service" in _dem["programmer-local-lan-proxy.service"]
       and "PartOf" not in _dem["programmer-local-lan-proxy.service"])
+class _RecordingTarget:
+    """Records what write_programmer_local asks systemd to do."""
+
+    def __init__(self):
+        self.cmds = []
+
+    def run(self, cmd, check=True, capture=False):
+        self.cmds.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    def push_file(self, src, dest):
+        self.cmds.append(f"push {dest}")
+
+
+class _Out:
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _lan_cmds(fb_conf, secrets=None):
+    t = _RecordingTarget()
+    cfg = {"paths": {"state": "/scratch/state"},
+           "cloud": {"opencode": {"fallback": fb_conf}}}
+    D.write_programmer_local(t, cfg, "/scratch/cfg", D.opencode_fallback(cfg),
+                             {"PROXY_SHARED_SECRET": "s"} if secrets is None else secrets, _Out())
+    return [c for c in t.cmds if "programmer-local-lan" in c and not c.startswith("push")]
+
+
+_strata = {"model": _gguf, "engine": "strata"}
+for _mode in ("demand", "reserved", "off"):
+    _c = " ".join(_lan_cmds(dict(_strata, lan=_mode)))
+    check(f"  `{_mode}`: a deploy stops the LAN proxy before it touches the socket",
+          "stop programmer-local-lan-proxy.service" in _c
+          and _c.index("stop programmer-local-lan-proxy.service")
+          < _c.index("restart programmer-local-lan.socket"), _c)
+_c = " ".join(_lan_cmds(dict(_strata, lan="demand")))
+check("  `demand` enables the socket, so it outlives a reboot",
+      "enable programmer-local-lan.socket" in _c and "disable" not in _c, _c)
+_c = " ".join(_lan_cmds(dict(_strata, lan="off")))
+check("  otherwise it is disabled and opens only for a reservation, running or queued",
+      "disable programmer-local-lan.socket" in _c
+      and "is-active -q programmer-local-hold.service" in _c
+      and "show -P Job programmer-local-hold.service" in _c
+      and "stop programmer-local-lan.socket" in _c, _c)
+_c = " ".join(_lan_cmds(dict(_strata, lan="demand"), secrets={}))
+check("  a setup that cannot be written closes a socket left from `demand`",
+      "disable programmer-local-lan.socket" in _c
+      and "stop programmer-local-lan-proxy.service programmer-local-lan.socket" in _c, _c)
 check("  the reservation needs the model, so starting it loads the model",
       "Requires=programmer-local.service" in (D.ROOT / "deploy/host/programmer-local-hold.service").read_text())
 _sh = (D.ROOT / "deploy/host/programmer-local.sh").read_text()

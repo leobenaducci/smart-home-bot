@@ -1401,62 +1401,22 @@ def programmer_local_hold_file(cfg: dict) -> str:
 PROGRAMMER_LOCAL_UNITS = ("programmer-local.socket", "programmer-local-proxy.service",
                           "programmer-local.service", "programmer-local-hold.service",
                           "programmer-local-hold-sync.service")
-# Rendered rather than copied: each names a value only the config knows.
-PROGRAMMER_LOCAL_RENDERED = ("programmer-local-hold.path", "programmer-local-lan.socket",
-                             "programmer-local-lan-proxy.service")
 
 
 def render_programmer_local_units(fallback: dict, hold_file: str) -> dict[str, str]:
-    """The units that carry a configured value: the .path watching the admin
-    page's hold file, and the LAN socket and its proxy. `lan` "off" listens on
-    loopback only (still useful: a client on this machine), "reserved" on
-    every address; both open and close with the reservation. "demand" listens
-    always, starts the model on the first request and lets it go after
-    fifteen idle minutes -- the loopback socket's behaviour, on the LAN."""
+    """The units that carry a configured value, rendered rather than copied:
+    the .path watching the admin page's hold file, and the LAN socket and its
+    proxy. `lan` "off" listens on loopback only (still useful: a client on
+    this machine), "reserved" on every address; both open and close with the
+    reservation, and the proxy has no idle exit. "demand" listens always,
+    starts the model on the first request and lets it go after fifteen idle
+    minutes -- the loopback socket's behaviour, on the LAN."""
     mode = fallback.get("lan") or "off"
-    listen = f"{'127.0.0.1' if mode == 'off' else '0.0.0.0'}:{fallback['lan_port']}"
     demand = mode == "demand"
-    if demand:
-        socket_head = [
-            "# Written by ./home-stack deploy. The model for a coding client on the",
-            "# LAN, on demand: the first request reserves the Studio's card and loads",
-            "# the model; the proxy's idle exit gives it back. The model asks for its key.",
-            "[Unit]",
-            "Description=The Programmer's local model (LAN, on demand)"]
-        proxy = [
-            "# Written by ./home-stack deploy. Forwards the LAN socket to the model and",
-            "# exits after fifteen idle minutes, which (StopWhenUnneeded on the model)",
-            "# unloads it and gives the card back -- unless a reservation holds it.",
-            "[Unit]",
-            "Description=The Programmer's local model (LAN proxy, on demand)",
-            "Requires=programmer-local.service",
-            "After=programmer-local.service",
-            "",
-            "[Service]",
-            "ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=15min "
-            f"127.0.0.1:{fallback['backend']}",
-            ""]
-    else:
-        socket_head = [
-            "# Written by ./home-stack deploy. The model for a coding client on the",
-            "# LAN, only while the card is reserved for coding (started and stopped",
-            "# with programmer-local-hold.service). The model asks for its key.",
-            "[Unit]",
-            "Description=The Programmer's local model (LAN, while reserved)",
-            "PartOf=programmer-local-hold.service"]
-        proxy = [
-            "# Written by ./home-stack deploy. Forwards the LAN socket to the model while",
-            "# the card is reserved for coding. No idle exit: the hold decides how long",
-            "# the model stays, not the traffic.",
-            "[Unit]",
-            "Description=The Programmer's local model (LAN proxy)",
-            "Requires=programmer-local.service",
-            "After=programmer-local.service",
-            "PartOf=programmer-local-hold.service",
-            "",
-            "[Service]",
-            f"ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:{fallback['backend']}",
-            ""]
+    listen = f"{'127.0.0.1' if mode == 'off' else '0.0.0.0'}:{fallback['lan_port']}"
+    when = "on demand" if demand else "while reserved"
+    with_hold = [] if demand else ["PartOf=programmer-local-hold.service"]
+    idle = "--exit-idle-time=15min " if demand else ""
     return {
         "programmer-local-hold.path": "\n".join([
             "# Written by ./home-stack deploy. Watches the admin page's \"reserve the",
@@ -1471,14 +1431,62 @@ def render_programmer_local_units(fallback: dict, hold_file: str) -> dict[str, s
             "[Install]",
             "WantedBy=default.target",
             ""]),
-        "programmer-local-lan.socket": "\n".join(socket_head + [
+        "programmer-local-lan.socket": "\n".join([
+            "# Written by ./home-stack deploy. The model for a coding client on the",
+            ("# LAN, always: the first request reserves the Studio's card and loads it."
+             if demand else
+             "# LAN, only while the card is reserved for coding (with the hold)."),
+            "# The model asks for its key.",
+            "[Unit]",
+            f"Description=The Programmer's local model (LAN, {when})",
+            *with_hold,
             "",
             "[Socket]",
             f"ListenStream={listen}",
             "Service=programmer-local-lan-proxy.service",
-            ""] + (["[Install]", "WantedBy=sockets.target", ""] if demand else [])),
-        "programmer-local-lan-proxy.service": "\n".join(proxy),
+            "",
+            *(["[Install]", "WantedBy=sockets.target", ""] if demand else [])]),
+        "programmer-local-lan-proxy.service": "\n".join([
+            "# Written by ./home-stack deploy. Forwards the LAN socket to the model.",
+            ("# Fifteen idle minutes end it, which (StopWhenUnneeded on the model) gives"
+             "\n# the card back unless a reservation holds it." if demand else
+             "# No idle exit: the reservation decides how long the model stays."),
+            "[Unit]",
+            f"Description=The Programmer's local model (LAN proxy, {when})",
+            "Requires=programmer-local.service",
+            "After=programmer-local.service",
+            *with_hold,
+            "",
+            "[Service]",
+            f"ExecStart=/usr/lib/systemd/systemd-socket-proxyd {idle}127.0.0.1:{fallback['backend']}",
+            ""]),
     }
+
+
+# Closes the LAN door: the proxy first, because a running systemd-socket-proxyd
+# keeps its own copy of the listening socket (and systemd refuses to start a
+# socket whose service is still running), then the socket.
+_LAN_CLOSE = ("systemctl --user disable programmer-local-lan.socket >/dev/null 2>&1; "
+              "systemctl --user stop programmer-local-lan-proxy.service "
+              "programmer-local-lan.socket >/dev/null 2>&1; true")
+
+
+def programmer_local_lan_command(mode: str) -> str:
+    """What a deploy runs to put the LAN socket in `mode`, whatever it was in.
+    The proxy always stops first (see _LAN_CLOSE): a deploy cuts a LAN request
+    in flight, the price of the new units taking effect. "demand" then opens
+    the socket for good. Otherwise it opens only while a reservation wants it
+    -- the hold running, or queued behind the model's load (a start job with
+    the unit still inactive), which pulled the socket in through Wants=."""
+    stop_proxy = "systemctl --user stop programmer-local-lan-proxy.service >/dev/null 2>&1; "
+    if mode == "demand":
+        return (stop_proxy + "systemctl --user enable programmer-local-lan.socket >/dev/null 2>&1; "
+                "systemctl --user restart programmer-local-lan.socket")
+    return (stop_proxy + "systemctl --user disable programmer-local-lan.socket >/dev/null 2>&1; "
+            "if systemctl --user is-active -q programmer-local-hold.service "
+            "|| [ -n \"$(systemctl --user show -P Job programmer-local-hold.service)\" ]; then "
+            "systemctl --user restart programmer-local-lan.socket; else "
+            "systemctl --user stop programmer-local-lan.socket; fi")
 
 
 def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
@@ -1500,12 +1508,14 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     if fallback["engine"] == "llamacpp" and not (build / "bin" / "llama-server").is_file():
         out.warn("cloud.opencode.fallback is set but llama.cpp is not built; run "
                  "./home-stack llamacpp build -- the Programmer has no local model until then")
+        target.run(_LAN_CLOSE, check=False)
         return
     studio = studio_url(cfg)
     shared = (secrets.get("PROXY_SHARED_SECRET") or "").strip()
     if not shared:
         out.warn("cloud.opencode.fallback is set but PROXY_SHARED_SECRET is not; "
                  "the local model has no key to ask for, so it is not set up")
+        target.run(_LAN_CLOSE, check=False)
         return
     hold_file = programmer_local_hold_file(cfg)
     env_text = "\n".join([
@@ -1551,17 +1561,7 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     target.run("systemctl --user daemon-reload", check=False)
     if hold_file:
         target.run("systemctl --user enable --now programmer-local-hold.path", check=False)
-    if fallback["lan"] == "demand":
-        # Always listening; a restart picks up a changed address now.
-        target.run("systemctl --user enable programmer-local-lan.socket >/dev/null 2>&1; "
-                   "systemctl --user restart programmer-local-lan.socket", check=False)
-    else:
-        # Opened by a reservation only. One in progress keeps it, on the new
-        # address; none, and a socket left from "demand" closes now.
-        target.run("systemctl --user disable programmer-local-lan.socket >/dev/null 2>&1; "
-                   "if systemctl --user is-active -q programmer-local-hold.service; then "
-                   "systemctl --user try-restart programmer-local-lan.socket; else "
-                   "systemctl --user stop programmer-local-lan.socket; fi", check=False)
+    target.run(programmer_local_lan_command(fallback["lan"]), check=False)
     enabled = target.run("systemctl --user enable --now programmer-local.socket", check=False)
     if getattr(enabled, "returncode", 1) == 0:
         out.ok(f"the Programmer falls back to {fallback['model']} on card {fallback['gpu']} "

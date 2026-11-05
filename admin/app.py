@@ -3526,9 +3526,8 @@ def models_page():
                                     "Ollama name: kept on llama.cpp."), "warn")
                         engine = "llamacpp"
                     fb["engine"] = engine if engine in ("llamacpp", "strata") else "llamacpp"
-                    # deploy.py OPENCODE_FALLBACK_LAN_MODES
                     lan = request.form.get("code_local_lan") or "off"
-                    fb["lan"] = lan if lan in ("off", "reserved", "demand") else "off"
+                    fb["lan"] = lan if lan in _lan_modes() else "off"
                 else:
                     flash(_t_or("admin.codebench.programmer_bad",
                                 "That model cannot be the Programmer's: an Ollama name or a "
@@ -7515,17 +7514,24 @@ def codebench_page():
                            hold_hours=PROGRAMMER_HOLD_HOURS)
 
 
+def _lan_modes() -> tuple:
+    """deploy.py OPENCODE_FALLBACK_LAN_MODES, asked of the deployer itself."""
+    dep = _deployer()
+    return tuple(getattr(dep, "OPENCODE_FALLBACK_LAN_MODES", ("off", "reserved", "demand")))
+
+
 def _programmer_local(cfg: dict) -> dict:
     fb = ((cfg.get("cloud") or {}).get("opencode") or {}).get("fallback") or {}
-    # `lan` was true/false before "demand" (deploy.py opencode_fallback).
+    # `lan` was true/false before "demand" (deploy.py opencode_fallback reads
+    # it the same way). A value the deployer would refuse shows as off.
     mode = fb.get("lan")
-    mode = {True: "reserved", False: "off", None: "off"}.get(mode, mode) \
-        if isinstance(mode, bool) or mode is None else str(mode)
-    mode = mode if mode in ("off", "reserved", "demand") else "off"
+    mode = {True: "reserved", False: "off"}[mode] if isinstance(mode, bool) else str(mode or "off")
+    modes = _lan_modes()
+    mode = mode if mode in modes else "off"
     return {"model": str(fb.get("model") or ""), "context": int(fb.get("context") or 65536),
             "first": bool(fb.get("first")), "gpu": fb.get("gpu", 1),
             "engine": str(fb.get("engine") or "llamacpp"),
-            "lan": mode != "off", "lan_mode": mode}
+            "lan": mode != "off", "lan_mode": mode, "lan_modes": modes}
 
 
 # "Reserve the card for coding": the page writes a time into a file that a
