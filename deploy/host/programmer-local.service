@@ -4,10 +4,11 @@
 # Start: pause the Studio and wait for its running job to finish (a video shot
 # can take ~25 minutes -- the household chose waiting over refusing), then
 # serve, then wait until it answers. Stop: give the card back.
-# StopWhenUnneeded: the proxy is the only thing that needs this, so the proxy
-# exiting on idle is what stops it.
+# StopWhenUnneeded: the proxy -- and a reservation from the admin page
+# (programmer-local-hold.service) -- are what need this, so the proxy exiting
+# on idle with no reservation is what stops it.
 [Unit]
-Description=The Programmer's local model (llama-server on the Studio's card)
+Description=The Programmer's local model (llama-server or Strata on the Studio's card)
 StopWhenUnneeded=yes
 
 [Service]
@@ -18,3 +19,5 @@ ExecStart=%h/.config/home-stack/programmer-local.sh run
 ExecStartPost=%h/.config/home-stack/programmer-local.sh ready
 ExecStopPost=%h/.config/home-stack/programmer-local.sh resume
 TimeoutStartSec=infinity
+# Strata gets 60 s to stop its engine (resume waits on `docker stop -t 60`).
+TimeoutStopSec=150

@@ -1350,6 +1350,19 @@ def opencode_model(cfg: dict) -> str:
 OPENCODE_FALLBACK_PROVIDER = "home"
 OPENCODE_FALLBACK_PORT = 11460
 OPENCODE_FALLBACK_BACKEND = 11461
+# Where the model answers the LAN, while somebody has reserved the card for
+# coding from the admin page and the household switched `lan` on. A port of
+# its own: the loopback socket above starts the model on demand, and a LAN
+# that could do the same would let anything on the network take the card.
+OPENCODE_FALLBACK_LAN_PORT = 11462
+# The two engines that can serve it. Strata is a container with its own
+# llama.cpp, for the GGUFs only it runs (Qwen3.8-Flash-Next); pinned, because
+# the tag is what was measured here (5/5 on the coding problems, 2026-11-05).
+OPENCODE_FALLBACK_ENGINES = ("llamacpp", "strata")
+STRATA_IMAGE = "ghcr.io/niko1221/strata:0.2.11-cuda13"
+# The env var opencode reads the local model's key from ({env:...} in its
+# config), so the config itself stays free of credentials.
+OPENCODE_FALLBACK_KEY_ENV = "PROGRAMMER_LOCAL_API_KEY"
 _FALLBACK_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(:[A-Za-z0-9._-]{1,63})?"
                                 r"|/var/lib/home-stack/models/[\w./-]{1,300}\.gguf")
 
@@ -1380,13 +1393,82 @@ def opencode_fallback(cfg: dict) -> dict:
     first = conf.get("first", False)
     if not isinstance(first, bool):
         raise SystemExit("cloud.opencode.fallback.first is true or false")
+    lan = conf.get("lan", False)
+    if not isinstance(lan, bool):
+        raise SystemExit("cloud.opencode.fallback.lan is true or false")
+    engine = str(conf.get("engine") or "llamacpp").strip()
+    if engine not in OPENCODE_FALLBACK_ENGINES:
+        raise SystemExit(f"cloud.opencode.fallback.engine is {engine!r}: "
+                         + " or ".join(OPENCODE_FALLBACK_ENGINES))
+    if engine == "strata" and not model.endswith(".gguf"):
+        # Strata reads files, not Ollama's store: a split model is named by
+        # its first part, and the folder holding it is what it is given.
+        raise SystemExit("cloud.opencode.fallback: Strata serves a .gguf under "
+                         "/var/lib/home-stack/models, not an Ollama name")
     return {"model": model, "gpu": gpu, "context": context, "first": first,
+            "engine": engine, "lan": lan,
             "provider": OPENCODE_FALLBACK_PROVIDER, "port": OPENCODE_FALLBACK_PORT,
-            "backend": OPENCODE_FALLBACK_BACKEND}
+            "backend": OPENCODE_FALLBACK_BACKEND, "lan_port": OPENCODE_FALLBACK_LAN_PORT}
+
+
+def derive_programmer_local_key(shared_secret: str) -> str:
+    """The key the Programmer's local model asks of every caller: opencode on
+    this machine, and a coding client of the household's own on the LAN, which
+    the admin page shows it to. Derived like the Studio's, so a rotated
+    PROXY_SHARED_SECRET rotates it on the next deploy. Strata will not serve
+    without one, and the LAN listener must not serve without one either."""
+    return hashlib.sha256(f"{shared_secret}:programmer-local".encode()).hexdigest()
+
+
+def programmer_local_hold_file(cfg: dict) -> str:
+    """Where the admin page writes "keep the model up until": in its own state
+    directory, which it mounts at the same path, and which a user .path unit on
+    the host watches (programmer-local-hold.path). "" without a state path."""
+    state = str((base_paths(cfg) or {}).get("state") or "").rstrip("/")
+    return f"{state}/admin/programmer-local/hold.json" if state else ""
 
 
 PROGRAMMER_LOCAL_UNITS = ("programmer-local.socket", "programmer-local-proxy.service",
-                          "programmer-local.service")
+                          "programmer-local.service", "programmer-local-hold.service",
+                          "programmer-local-hold-sync.service",
+                          "programmer-local-lan-proxy.service")
+# Rendered rather than copied: each names a value only the config knows.
+PROGRAMMER_LOCAL_RENDERED = ("programmer-local-hold.path", "programmer-local-lan.socket")
+
+
+def render_programmer_local_units(fallback: dict, hold_file: str) -> dict[str, str]:
+    """The two units that carry a configured value: the .path watching the
+    admin page's hold file, and the LAN socket -- on every address when the
+    household switched `lan` on, else on loopback only (still useful: a client
+    on this machine, and the same unit either way)."""
+    listen = f"{'0.0.0.0' if fallback.get('lan') else '127.0.0.1'}:{fallback['lan_port']}"
+    return {
+        "programmer-local-hold.path": "\n".join([
+            "# Written by ./home-stack deploy. Watches the admin page's \"reserve the",
+            "# card for coding\" file; a change starts or stops the hold.",
+            "[Unit]",
+            "Description=The Programmer's local model (reservations from the admin page)",
+            "",
+            "[Path]",
+            f"PathModified={hold_file}",
+            "Unit=programmer-local-hold-sync.service",
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            ""]),
+        "programmer-local-lan.socket": "\n".join([
+            "# Written by ./home-stack deploy. The model for a coding client on the",
+            "# LAN, only while the card is reserved for coding (started and stopped",
+            "# with programmer-local-hold.service). The model asks for its key.",
+            "[Unit]",
+            "Description=The Programmer's local model (LAN, while reserved)",
+            "PartOf=programmer-local-hold.service",
+            "",
+            "[Socket]",
+            f"ListenStream={listen}",
+            "Service=programmer-local-lan-proxy.service",
+            ""]),
+    }
 
 
 def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
@@ -1398,27 +1480,38 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     user_units = f"{cfgroot}/systemd/user"
     if not fallback:
         target.run("systemctl --user disable --now programmer-local.socket "
+                   "programmer-local-hold.path programmer-local-hold.service "
+                   "programmer-local-lan.socket programmer-local-lan-proxy.service "
                    "programmer-local-proxy.service programmer-local.service "
                    ">/dev/null 2>&1 || true", check=False)
         return
     import llamacpp  # noqa: PLC0415 -- only the Programmer's fallback needs it
     build = llamacpp.build_dir("vanilla")
-    if not (build / "bin" / "llama-server").is_file():
+    if fallback["engine"] == "llamacpp" and not (build / "bin" / "llama-server").is_file():
         out.warn("cloud.opencode.fallback is set but llama.cpp is not built; run "
                  "./home-stack llamacpp build -- the Programmer has no local model until then")
         return
     studio = studio_url(cfg)
     shared = (secrets.get("PROXY_SHARED_SECRET") or "").strip()
+    if not shared:
+        out.warn("cloud.opencode.fallback is set but PROXY_SHARED_SECRET is not; "
+                 "the local model has no key to ask for, so it is not set up")
+        return
+    hold_file = programmer_local_hold_file(cfg)
     env_text = "\n".join([
         "# Written by ./home-stack deploy from cloud.opencode.fallback.",
+        f"ENGINE={fallback['engine']}",
         f"MODEL={fallback['model']}",
         f"GPU={fallback['gpu']}",
         f"CONTEXT={fallback['context']}",
         f"BACKEND_PORT={fallback['backend']}",
         f"LLAMA_BIN={build / 'bin'}",
+        f"STRATA_IMAGE={STRATA_IMAGE}",
+        f"API_KEY={derive_programmer_local_key(shared)}",
+        f"HOLD_FILE={hold_file}",
         # The Studio owns the card this borrows; empty when there is no Studio.
         f"STUDIO_URL={studio}",
-        f"STUDIO_SECRET={derive_studio_secret(shared) if studio and shared else ''}",
+        f"STUDIO_SECRET={derive_studio_secret(shared) if studio else ''}",
     ]) + "\n"
     target.run(f"mkdir -p {shlex.quote(user_units)} {shlex.quote(cfgroot)}/home-stack")
     tmp = Path(tempfile.mkstemp(suffix=".env")[1])
@@ -1434,7 +1527,23 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     target.run(f"chmod 700 {shlex.quote(cfgroot)}/home-stack/programmer-local.sh")
     for unit_file in PROGRAMMER_LOCAL_UNITS:
         target.push_file(ROOT / "deploy/host" / unit_file, f"{user_units}/{unit_file}")
+    for unit_file, text in render_programmer_local_units(fallback, hold_file).items():
+        tmp = Path(tempfile.mkstemp(suffix=".unit")[1])
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            target.push_file(tmp, f"{user_units}/{unit_file}")
+        finally:
+            tmp.unlink(missing_ok=True)
+    if hold_file:
+        # The page writes the file; the directory must exist for the .path to
+        # watch it, and an absent file reads as "not reserved".
+        target.run(f"mkdir -p {shlex.quote(str(Path(hold_file).parent))}")
     target.run("systemctl --user daemon-reload", check=False)
+    if hold_file:
+        target.run("systemctl --user enable --now programmer-local-hold.path", check=False)
+    # A LAN socket already up (a reservation in progress) is listening on the
+    # old address: restart it so a change of `lan` takes effect now.
+    target.run("systemctl --user try-restart programmer-local-lan.socket", check=False)
     enabled = target.run("systemctl --user enable --now programmer-local.socket", check=False)
     if getattr(enabled, "returncode", 1) == 0:
         out.ok(f"the Programmer falls back to {fallback['model']} on card {fallback['gpu']} "
@@ -3792,7 +3901,10 @@ def build_opencode_config(member: str, token: str, port: int,
         conf["provider"] = {fallback["provider"]: {
             "npm": "@ai-sdk/openai-compatible",
             "name": "This house (local)",
-            "options": {"baseURL": f"http://127.0.0.1:{fallback['port']}/v1"},
+            # The key by reference: opencode fills {env:...} from the
+            # provider credentials file, so this file still holds none.
+            "options": {"baseURL": f"http://127.0.0.1:{fallback['port']}/v1",
+                        "apiKey": f"{{env:{OPENCODE_FALLBACK_KEY_ENV}}}"},
             "models": {fallback["model"]: {
                 "name": f"{fallback['model']} (local)",
                 "tool_call": True,
@@ -6616,6 +6728,11 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 value = (secrets.get(key) or "").strip()
                 if value:
                     lines.append(f"{key}={value}")
+            # The Programmer's local model asks for a key too; the `home`
+            # provider block names this variable rather than the value.
+            if opencode_fallback(cfg) and (secrets.get("PROXY_SHARED_SECRET") or "").strip():
+                lines.append(f"{OPENCODE_FALLBACK_KEY_ENV}="
+                             f"{derive_programmer_local_key(secrets['PROXY_SHARED_SECRET'].strip())}")
             tmp = Path(tempfile.mkstemp(suffix=".env")[1])
             tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
             try:

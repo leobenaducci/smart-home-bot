@@ -3881,9 +3881,43 @@ check("  and the config file it writes carries no credentials",
 
 print("\nthe Programmer's local fallback, for when OpenCode Go is out")
 _fb = D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b"}}}})
-check("  a model name is enough: the Studio's card, a 64k window, the home provider",
+check("  a model name is enough: the Studio's card, a 64k window, llama.cpp, loopback only",
       _fb == {"model": "ornith:9b", "gpu": 1, "context": 65536, "first": False,
-              "provider": "home", "port": 11460, "backend": 11461}, _fb)
+              "engine": "llamacpp", "lan": False,
+              "provider": "home", "port": 11460, "backend": 11461, "lan_port": 11462}, _fb)
+_gguf = "/var/lib/home-stack/models/hf/a/b/IQ1_M/m-00001-of-00002.gguf"
+check("  Strata serves a .gguf",
+      D.opencode_fallback({"cloud": {"opencode": {"fallback": {
+          "model": _gguf, "engine": "strata", "lan": True}}}})["engine"] == "strata")
+for _bad_fb, _why in (({"model": "ornith:9b", "engine": "strata"}, "an Ollama name on Strata"),
+                      ({"model": "ornith:9b", "engine": "vllm"}, "an engine it has no way to run"),
+                      ({"model": "ornith:9b", "lan": "yes"}, "a `lan` that is not true or false")):
+    try:
+        D.opencode_fallback({"cloud": {"opencode": {"fallback": _bad_fb}}})
+        check(f"  refuses {_why}", False)
+    except SystemExit:
+        check(f"  refuses {_why}", True)
+_units = D.render_programmer_local_units(dict(_fb, lan=True), "/s/admin/programmer-local/hold.json")
+check("  with `lan` the reservation socket listens on every address, at its own port",
+      "ListenStream=0.0.0.0:11462" in _units["programmer-local-lan.socket"]
+      and "PartOf=programmer-local-hold.service" in _units["programmer-local-lan.socket"])
+check("  and without it on loopback only",
+      "ListenStream=127.0.0.1:11462" in D.render_programmer_local_units(_fb, "/h")["programmer-local-lan.socket"])
+check("  the .path watches the admin page's hold file",
+      "PathModified=/s/admin/programmer-local/hold.json" in _units["programmer-local-hold.path"])
+check("  which lives in the page's own state directory",
+      D.programmer_local_hold_file({"paths": {"state": "/st"}}) == "/st/admin/programmer-local/hold.json"
+      and D.programmer_local_hold_file({}) == "")
+_lan_proxy = (D.ROOT / "deploy/host/programmer-local-lan-proxy.service").read_text()
+check("  the LAN proxy has no idle exit (the reservation decides) and goes with it",
+      "--exit-idle-time" not in _lan_proxy and "PartOf=programmer-local-hold.service" in _lan_proxy)
+check("  the reservation needs the model, so starting it loads the model",
+      "Requires=programmer-local.service" in (D.ROOT / "deploy/host/programmer-local-hold.service").read_text())
+_sh = (D.ROOT / "deploy/host/programmer-local.sh").read_text()
+check("  both engines ask for the key",
+      '--api-key "$API_KEY"' in _sh and '-e API_KEY="$API_KEY"' in _sh)
+check("  and the key is derived, not stored",
+      D.derive_programmer_local_key("s") == D.hashlib.sha256(b"s:programmer-local").hexdigest())
 check("  and none is none", D.opencode_fallback({}) == {})
 check("  `first` puts the local model ahead of Go",
       D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b",
@@ -3902,9 +3936,11 @@ for _bad in ("ornith:9b; rm -rf ~", "/etc/shadow", "/var/lib/home-stack/models/.
     except SystemExit:
         check(f"  refuses {_bad!r}: it ends up on a command line", True)
 _prov = json.loads(D.build_opencode_config("user1", "t", 21999, fallback=_fb)).get("provider") or {}
-check("  opencode gets a `home` provider at the loopback socket, with the model and no key",
-      _prov.get("home", {}).get("options") == {"baseURL": "http://127.0.0.1:11460/v1"}
-      and "ornith:9b" in _prov["home"]["models"] and "apiKey" not in json.dumps(_prov), _prov)
+check("  opencode gets a `home` provider at the loopback socket, with the model, and the key "
+      "only by the name of the variable that holds it",
+      _prov.get("home", {}).get("options") == {"baseURL": "http://127.0.0.1:11460/v1",
+                                               "apiKey": "{env:PROGRAMMER_LOCAL_API_KEY}"}
+      and "ornith:9b" in _prov["home"]["models"], _prov)
 check("  and without a fallback, no provider block at all",
       "provider" not in json.loads(D.build_opencode_config("user1", "t", 21999)))
 _sock = (D.ROOT / "deploy/host/programmer-local.socket").read_text()

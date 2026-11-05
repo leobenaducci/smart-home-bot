@@ -151,13 +151,18 @@ request #10 did on 2026-09-30.
 The model runs on the host, on demand, on the Studio's card:
 
 - opencode knows it as the `home` provider at `127.0.0.1:11460`
-  (`build_opencode_config`), an address on this machine and no key.
+  (`build_opencode_config`), an address on this machine. The model asks for a
+  key (`derive_programmer_local_key`, from `PROXY_SHARED_SECRET`); opencode's
+  config names it as `{env:PROGRAMMER_LOCAL_API_KEY}` and the value sits in
+  `opencode-providers.env` with the other credentials, so the config still
+  holds none.
 - `programmer-local.socket` holds that port. The first request starts
   `programmer-local.service`, which pauses the Studio (reason `programmer`, so
   its page says the card is lent, not that a parent stopped it), **waits for the
   running job to finish** -- a video shot can take ~25 minutes, and waiting is
   what the household chose over refusing -- then serves the model with the
-  house's llama.cpp build and waits until it answers.
+  house's llama.cpp build, or with Strata (`engine: strata`, below), and waits
+  until it answers.
 - `programmer-local-proxy.service` forwards to it and exits after fifteen idle
   minutes; the model's unit is `StopWhenUnneeded`, so it stops too, and its
   stop resumes the Studio.
@@ -210,6 +215,45 @@ The model is picked on the admin page, in the Programmer card of **Models**
 `alfred-mcp` and `home-core` for deploy. Candidates are compared on the
 **coding benchmark** (`docs/coding-benchmark.md`), whose ★ on a llama.cpp run
 sets the same thing.
+
+### Two engines: llama.cpp and Strata
+
+`cloud.opencode.fallback.engine` is `llamacpp` (the default) or `strata`.
+Strata is a container (`STRATA_IMAGE` in `deploy.py`, pinned) with its own
+llama.cpp, the only engine for Qwen3.8-Flash-Next's files. `model` then names
+the first part of a split `.gguf` under the models directory; the folder
+holding it is mounted read-only and Strata reads the model from the files.
+Its engine, settings and speculative-decoding draft layer live in the
+`programmer-local-strata` volume, so the **first start downloads ~5 GB and
+prepares the model once** (several minutes); later starts load in ~80 s. The
+script's readiness wait allows ten minutes for that.
+
+Measured on one 3060 with 64 GB of RAM: Qwen3.8-Flash-Next-Coder IQ1_M (58 GB
+of files) takes 11.3 GB of the card and ~26 GB of RAM at a 32k-128k window, at
+24-32 tokens/s. It passed all five coding problems in pi where the best model that fits
+the card whole passed three -- the only model here allowed to spill onto the
+CPU, because it is the one that earned it.
+
+### Reserving the card for coding, and the LAN
+
+The coding benchmark page's Programmer card has **Reserve the card for coding**
+(1-12 hours) and *Give the card back*. The page writes the time to
+`<paths.state>/admin/programmer-local/hold.json`; the page cannot reach
+systemd, so a user `.path` unit on the host watches that file
+(`programmer-local-hold.path` -> `programmer-local.sh sync`) and starts or
+stops `programmer-local-hold.service`. That unit *requires* the model, so it
+loads it -- after the Studio's running job, as for a turn -- and keeps it up
+until the time, whatever the traffic. A release writes `until: 0` rather than
+deleting the file, so the `.path` sees it; the model then goes as soon as the
+idle proxy is not holding it.
+
+While reserved, `programmer-local-lan.socket` listens on port 11462 -- on every
+address when `cloud.opencode.fallback.lan` is true, loopback otherwise -- and
+forwards to the model with no idle exit. Its own port on purpose: the on-demand
+socket on 11460 starts the model, and a LAN that could do that would let
+anything on the network take the Studio's card. The model asks every caller
+for the key, which the page shows on request, along with the steps to point
+pi at it.
 
 ### The other way round: the local model first
 

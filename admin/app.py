@@ -3532,6 +3532,15 @@ def models_page():
                     fb["context"] = ctx if 4096 <= ctx <= 262144 else 65536
                     fb.setdefault("gpu", _codebench_gpu() if _codebench_gpu() is not None else 1)
                     fb["first"] = request.form.get("code_local_first") == "1"
+                    # Strata serves files only (deploy.py opencode_fallback).
+                    engine = request.form.get("code_local_engine") or "llamacpp"
+                    if engine == "strata" and not local.endswith(".gguf"):
+                        flash(_t_or("admin.codebench.strata_needs_file",
+                                    "Strata serves a .gguf from the models folder, not an "
+                                    "Ollama name: kept on llama.cpp."), "warn")
+                        engine = "llamacpp"
+                    fb["engine"] = engine if engine in ("llamacpp", "strata") else "llamacpp"
+                    fb["lan"] = request.form.get("code_local_lan") == "1"
                 else:
                     flash(_t_or("admin.codebench.programmer_bad",
                                 "That model cannot be the Programmer's: an Ollama name or a "
@@ -7523,13 +7532,103 @@ def codebench_page():
                            engine_labels=code_bench.ENGINE_LABELS, contexts=code_bench.CONTEXTS,
                            default_context=code_bench.DEFAULT_CONTEXT, gpu=_codebench_gpu(),
                            studio_on=bool(_codebench_studio()[0]), runs=runner.runs(),
-                           programmer=_programmer_local(load_config()))
+                           programmer=_programmer_local(load_config()),
+                           hold_hours=PROGRAMMER_HOLD_HOURS)
 
 
 def _programmer_local(cfg: dict) -> dict:
     fb = ((cfg.get("cloud") or {}).get("opencode") or {}).get("fallback") or {}
     return {"model": str(fb.get("model") or ""), "context": int(fb.get("context") or 65536),
-            "first": bool(fb.get("first")), "gpu": fb.get("gpu", 1)}
+            "first": bool(fb.get("first")), "gpu": fb.get("gpu", 1),
+            "engine": str(fb.get("engine") or "llamacpp"), "lan": bool(fb.get("lan"))}
+
+
+# "Reserve the card for coding": the page writes a time into a file that a
+# user .path unit on the host watches (deploy.py programmer_local_hold_file,
+# programmer-local.sh hold/sync). The page cannot reach systemd; the file is
+# the whole interface, and the host checks what it reads.
+PROGRAMMER_HOLD_HOURS = (1, 2, 4, 8, 12)
+_PROGRAMMER_BACKEND = 11461    # deploy.py OPENCODE_FALLBACK_BACKEND
+_PROGRAMMER_LAN_PORT = 11462   # deploy.py OPENCODE_FALLBACK_LAN_PORT
+
+
+def _programmer_hold_file(cfg: dict) -> Path | None:
+    state = str((cfg.get("paths") or {}).get("state") or "").rstrip("/")
+    return Path(f"{state}/admin/programmer-local/hold.json") if state else None
+
+
+def _programmer_key() -> str:
+    """deploy.py derive_programmer_local_key: what the model asks callers for."""
+    for line in _read_secrets().splitlines():
+        if line.startswith("PROXY_SHARED_SECRET="):
+            shared = line.split("=", 1)[1].strip()
+            if shared:
+                return hashlib.sha256(f"{shared}:programmer-local".encode()).hexdigest()
+    return ""
+
+
+def _programmer_hold_state(cfg: dict) -> dict:
+    """The reservation as the page shows it: until when, and whether the model
+    is answering yet -- asked of its own port on this host (the page runs on
+    the host's network), which never starts it the way the socket would."""
+    path = _programmer_hold_file(cfg)
+    until = 0
+    with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+        until = int(float(json.loads(path.read_text()).get("until") or 0)) if path else 0
+    now = int(time.time())
+    served = ""
+    key = _programmer_key()
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{_PROGRAMMER_BACKEND}/v1/models",
+                                     headers={"Authorization": f"Bearer {key}"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = json.loads(r.read().decode() or "{}").get("data") or []
+            served = str((data[0] or {}).get("id") or "") if data else ""
+    except Exception:  # noqa: BLE001 - not running is the usual answer
+        served = ""
+    local = _programmer_local(cfg)
+    host = (request.host or "").rsplit(":", 1)[0] if has_request_context() else ""
+    return {"held": until > now, "until": until if until > now else 0,
+            "loaded": bool(served), "served": served, "lan": local["lan"],
+            "url": f"http://{host}:{_PROGRAMMER_LAN_PORT}/v1" if host else "",
+            "configured": bool(local["model"]), "can_hold": path is not None}
+
+
+def _write_programmer_hold(cfg: dict, until: int) -> None:
+    path = _programmer_hold_file(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"until": until, "by": session.get("user", ""),
+                               "at": int(time.time())}) + "\n")
+    # A rename is one event for the .path unit, and never a half-written file.
+    os.replace(tmp, path)
+
+
+@app.get("/models/coding/reserve")
+def programmer_hold_get():
+    return jsonify(ok=True, **_programmer_hold_state(load_config()))
+
+
+@app.get("/models/coding/reserve/key")
+def programmer_hold_key():
+    """The key, asked for on purpose rather than printed into the page."""
+    return jsonify(ok=True, key=_programmer_key())
+
+
+@app.post("/models/coding/reserve")
+def programmer_hold_set():
+    """Reserve the card for coding for some hours (0 releases it). The model
+    loads now -- after the Studio's running job, as for a Programmer turn --
+    and stays loaded until then, served on the LAN when `lan` is on."""
+    cfg = load_config()
+    if not _programmer_local(cfg)["model"] or _programmer_hold_file(cfg) is None:
+        return jsonify(ok=False, error=_t_or("admin.codebench.hold_unset",
+                                             "There is no local model to reserve the card for.")), 400
+    hours = request.form.get("hours", type=int)
+    if hours is None or (hours and hours not in PROGRAMMER_HOLD_HOURS):
+        return jsonify(ok=False, error="hours: 0 or " + ", ".join(map(str, PROGRAMMER_HOLD_HOURS))), 400
+    _write_programmer_hold(cfg, int(time.time()) + hours * 3600 if hours else 0)
+    return jsonify(ok=True, **_programmer_hold_state(cfg))
 
 
 # deploy.py's _FALLBACK_MODEL_RE: what programmer-local.sh can serve.
@@ -7555,6 +7654,8 @@ def codebench_programmer():
     cfg = load_config()
     fb = cfg.setdefault("cloud", {}).setdefault("opencode", {}).setdefault("fallback", {})
     fb["model"], fb["context"] = model, context
+    # ★ is given to a llama.cpp result: that is the engine it was measured on.
+    fb["engine"] = "llamacpp"
     fb.setdefault("gpu", _codebench_gpu() if _codebench_gpu() is not None else 1)
     if "first" in request.form:
         fb["first"] = request.form.get("first") == "1"

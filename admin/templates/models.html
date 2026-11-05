@@ -1302,8 +1302,20 @@
         </select>
       </div>
     </div>
+    <div class="fields">
+      <div class="field">
+        <label for="code-local-engine">{{ t('admin.models.code_local_engine') }}</label>
+        <select id="code-local-engine" name="code_local_engine">
+          <option value="llamacpp" {% if code_local.engine != 'strata' %}selected{% endif %}>llama.cpp</option>
+          <option value="strata" {% if code_local.engine == 'strata' %}selected{% endif %}>Strata</option>
+        </select>
+        <p class="help">{{ t('admin.models.code_local_engine_help') }}</p>
+      </div>
+    </div>
     <label class="check-row"><input type="checkbox" name="code_local_first" value="1" {% if code_local.first %}checked{% endif %}>
       {{ t('admin.codebench.programmer_first_label') }}</label>
+    <label class="check-row"><input type="checkbox" name="code_local_lan" value="1" {% if code_local.lan %}checked{% endif %}>
+      {{ t('admin.models.code_local_lan') }}</label>
     <p class="stack row"><button type="submit">{{ t('common.save') }}</button>
       <a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a></p>
   </form>

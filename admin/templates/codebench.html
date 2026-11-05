@@ -93,6 +93,33 @@
     <p class="row"><a class="button ghost" href="{{ url_for('models_page') }}#code">{{ t('admin.codebench.programmer_change') }}</a>
       <span class="tiny" id="cb-prog-msg"></span></p>
   </div>
+  {% if programmer.model %}
+  {# Reserve the card for coding: the model loads now and stays loaded until
+     the time chosen, for the Programmer and -- with `lan` on -- for a coding
+     client of the household's own (programmer_hold_set in app.py). #}
+  <h3>{{ t('admin.codebench.hold_heading') }}</h3>
+  <p class="help">{{ t('admin.codebench.hold_intro') }}</p>
+  <p class="row" id="cb-hold-buttons">
+    {% for h in hold_hours %}<button type="button" class="ghost" data-hours="{{ h }}">{{ t('admin.codebench.hold_for', h=h) }}</button>{% endfor %}
+    <button type="button" class="ghost" data-hours="0" id="cb-hold-release" hidden>{{ t('admin.codebench.hold_release') }}</button>
+  </p>
+  <p id="cb-hold-state" class="tiny"></p>
+  <div id="cb-pi" {% if not programmer.lan %}hidden{% endif %}>
+    <h3>{{ t('admin.codebench.pi_heading') }}</h3>
+    <ol class="help">
+      <li>{{ t('admin.codebench.pi_step_reserve') }}</li>
+      <li>{{ t('admin.codebench.pi_step_key') }}
+        <button type="button" class="ghost tiny" id="cb-pi-show-key">{{ t('admin.codebench.pi_show_key') }}</button>
+        <pre id="cb-pi-key-cmd">export HOUSE_CODER_KEY=…</pre></li>
+      <li>{{ t('admin.codebench.pi_step_models') }}
+        <pre id="cb-pi-models"></pre></li>
+      <li>{{ t('admin.codebench.pi_step_run') }}
+        <pre id="cb-pi-run"></pre></li>
+    </ol>
+    <p class="help">{{ t('admin.codebench.pi_note') }}</p>
+  </div>
+  {% if not programmer.lan %}<p class="help">{{ t('admin.codebench.pi_lan_off') }}</p>{% endif %}
+  {% endif %}
 </div>
 
 <div class="card">
@@ -460,6 +487,60 @@
   document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
   drawRuns({{ runs | tojson }});
   poll();
+
+  // ── Reserve the card for coding ────────────────────────────────────────
+  var HOLD = {
+    off: {{ t('admin.codebench.hold_off') | tojson }},
+    starting: {{ t('admin.codebench.hold_starting') | tojson }},
+    ready: {{ t('admin.codebench.hold_ready') | tojson }},
+    loaded: {{ t('admin.codebench.hold_loaded_idle') | tojson }},
+    context: {{ programmer.context | tojson }}
+  };
+  var holdState = document.getElementById('cb-hold-state');
+  var holdTimer = null;
+  function when(ts) {
+    return new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function drawPi(h) {
+    var models = document.getElementById('cb-pi-models');
+    if (!models) return;
+    var id = h.served || 'MODEL';
+    models.textContent = JSON.stringify({ providers: { house: {
+      baseUrl: h.url, api: 'openai-completions', apiKey: 'HOUSE_CODER_KEY',
+      compat: { supportsDeveloperRole: false, supportsReasoningEffort: true },
+      models: [{ id: id, contextWindow: HOLD.context, maxTokens: 16384, reasoning: true,
+                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }, null, 2);
+    document.getElementById('cb-pi-run').textContent = 'pi --provider house --model ' + id;
+  }
+  function drawHold(h) {
+    if (!holdState) return;
+    document.getElementById('cb-hold-release').hidden = !h.held;
+    var text = !h.held ? (h.loaded ? HOLD.loaded : HOLD.off)
+             : (h.loaded ? HOLD.ready : HOLD.starting).replace('{until}', when(h.until));
+    holdState.textContent = text;
+    drawPi(h);
+  }
+  async function holdPoll() {
+    clearTimeout(holdTimer);
+    var h = {};
+    try { var r = await fetch('/models/coding/reserve'); h = await r.json(); drawHold(h); } catch (e) {}
+    holdTimer = setTimeout(holdPoll, document.hidden ? 60000 : (h.held && !h.loaded) ? 5000 : 30000);
+  }
+  if (holdState) {
+    document.getElementById('cb-hold-buttons').addEventListener('click', async function (ev) {
+      var b = ev.target.closest('button[data-hours]'); if (!b) return;
+      try { drawHold(await post('/models/coding/reserve', { hours: b.dataset.hours })); holdPoll(); }
+      catch (e) { holdState.textContent = e.message; }
+    });
+    var showKey = document.getElementById('cb-pi-show-key');
+    if (showKey) showKey.addEventListener('click', async function () {
+      try {
+        var r = await fetch('/models/coding/reserve/key'); var k = await r.json();
+        document.getElementById('cb-pi-key-cmd').textContent = 'export HOUSE_CODER_KEY=' + k.key;
+      } catch (e) {}
+    });
+    holdPoll();
+  }
 })();
 </script>
 {% endblock %}

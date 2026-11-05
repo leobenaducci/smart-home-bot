@@ -1,0 +1,16 @@
+# "Reserve the card for coding" from the admin page: keeps the model up until
+# the time in the hold file, whether or not anything is talking to it, and
+# opens the LAN socket for a coding client of the household's own meanwhile.
+# Requires the model, so starting this loads it (reserving the Studio's card
+# first, the same wait as a Programmer turn); ending it leaves the model to
+# the idle proxy, which gives the card back after fifteen quiet minutes.
+[Unit]
+Description=The Programmer's local model (reserved for coding from the admin page)
+Requires=programmer-local.service
+After=programmer-local.service
+Wants=programmer-local-lan.socket
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/home-stack/programmer-local.env
+ExecStart=%h/.config/home-stack/programmer-local.sh hold
