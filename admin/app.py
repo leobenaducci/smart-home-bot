@@ -3526,7 +3526,10 @@ def models_page():
                                     "Ollama name: kept on llama.cpp."), "warn")
                         engine = "llamacpp"
                     fb["engine"] = engine if engine in ("llamacpp", "strata") else "llamacpp"
+                    # "1" is the checkbox this select replaced ("while
+                    # reserved"), from a tab opened before the change.
                     lan = request.form.get("code_local_lan") or "off"
+                    lan = "reserved" if lan == "1" else lan
                     fb["lan"] = lan if lan in _lan_modes() else "off"
                 else:
                     flash(_t_or("admin.codebench.programmer_bad",
@@ -7499,25 +7502,37 @@ def codebench_page():
     # The Code card (_code_card.html), moved here from the Models page: the
     # same roster and settings it read there.
     _oc = (cfg.get("cloud") or {}).get("opencode") or {}
+    local = _programmer_local(cfg)
     return render_template("codebench.html",
                            code_choices=model_catalogue.code_model_choices(
                                model_catalogue.load_cache(MODELS_CACHE)),
                            code_model=str(_oc.get("model") or ""),
-                           code_local=_programmer_local(cfg),
+                           code_local=local,
                            code_local_models=[m for m in _codebench_models() if "llamacpp" in m["engines"]],
                            code_enabled=bool(_oc.get("enabled")), problems=code_bench.problems(CODEBENCH_ROOT),
                            models=_codebench_models(), engines=code_bench.ENGINES,
                            engine_labels=code_bench.ENGINE_LABELS, contexts=code_bench.CONTEXTS,
                            default_context=code_bench.DEFAULT_CONTEXT, gpu=_codebench_gpu(),
                            studio_on=bool(_codebench_studio()[0]), runs=runner.runs(),
-                           programmer=_programmer_local(cfg),
+                           programmer=local,
                            hold_hours=PROGRAMMER_HOLD_HOURS)
 
 
+_LAN_MODES: tuple = ()
+
+
 def _lan_modes() -> tuple:
-    """deploy.py OPENCODE_FALLBACK_LAN_MODES, asked of the deployer itself."""
-    dep = _deployer()
-    return tuple(getattr(dep, "OPENCODE_FALLBACK_LAN_MODES", ("off", "reserved", "demand")))
+    """deploy.py OPENCODE_FALLBACK_LAN_MODES, asked of the deployer itself --
+    once: importing it runs all of deploy.py, and the reservation's poll reads
+    this every few seconds. A deployer that would not import is asked again."""
+    global _LAN_MODES
+    if not _LAN_MODES:
+        dep = _deployer()
+        modes = tuple(getattr(dep, "OPENCODE_FALLBACK_LAN_MODES", ("off", "reserved", "demand")))
+        if dep is None:
+            return modes
+        _LAN_MODES = modes
+    return _LAN_MODES
 
 
 def _programmer_local(cfg: dict) -> dict:
