@@ -1,3 +1,9 @@
+{# A model path as a person reads it: the file, without its folder, its
+   extension or a split model's "-00001-of-00002". #}
+{% macro _short(m) -%}
+  {%- set n = (m or '').split('/')[-1] | replace('.gguf', '') -%}
+  {{- n.split('-00001-of-')[0] if '-00001-of-' in n else n -}}
+{%- endmacro %}
 {# The Code space's model, and the only picker on the Models pages that may offer a
    flat-plan model. Go is not in models.SOURCES, so no role picker can reach
    one; this card reads its own roster. The reason for the split is in
@@ -48,9 +54,9 @@
           {% for m in code_local_models %}
             {% set picked = m.id == code_local.model or (m.id.startswith('hf:') and code_local.model.endswith('/' ~ m.id[3:])) %}
             {% if picked %}{% set ns.found = true %}{% endif %}
-            <option value="{{ m.id }}" {% if picked %}selected{% endif %}>{{ m.id }}{% if m.gib %} · {{ m.gib }} GB{% endif %}{% if m.verdicts.llamacpp == 'fail' %} — {{ t('admin.codebench.verdict_fail_short') }}{% endif %}</option>
+            <option value="{{ m.id }}" title="{{ m.id }}" {% if picked %}selected{% endif %}>{{ _short(m.id) }}{% if m.gib %} · {{ m.gib }} GB{% endif %}{% if m.verdicts.llamacpp == 'fail' %} — {{ t('admin.codebench.verdict_fail_short') }}{% endif %}</option>
           {% endfor %}
-          {% if code_local.model and not ns.found %}<option value="{{ code_local.model }}" selected>{{ code_local.model }}</option>{% endif %}
+          {% if code_local.model and not ns.found %}<option value="{{ code_local.model }}" title="{{ code_local.model }}" selected>{{ _short(code_local.model) }}</option>{% endif %}
         </select>
         <p class="help">{{ t('admin.models.code_local_help') }}</p>
       </div>

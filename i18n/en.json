@@ -2161,9 +2161,12 @@
   "admin.codebench.pi_lan_off": "To use it from another computer, switch on \"Serve it on the LAN while the card is reserved\" on the Models page and deploy.",
   "admin.models.code_local_engine": "Engine",
   "admin.models.code_local_engine_help": "llama.cpp for most models. Strata for the Qwen3.8-Flash-Next files it runs (choose the first part of a split .gguf).",
-  "admin.models.code_local_lan": "Serve it on the LAN while the card is reserved (it asks for a key, shown on the coding page)",
+  "admin.models.code_local_lan": "Serve it on the LAN while the card is reserved (it asks for a key, shown below)",
   "admin.codebench.pi_step_key_windows": "Windows, in PowerShell or cmd (saved for good; open a new terminal afterwards):",
   "admin.codebench.pi_show_key": "Show the key",
   "admin.codebench.harness": "in {name} (imported)",
-  "admin.models.tab_coding": "Code"
+  "admin.models.tab_coding": "Code",
+  "admin.codebench.hold_take": "Reserve for",
+  "admin.codebench.copy": "Copy",
+  "admin.codebench.copied": "Copied"
 }

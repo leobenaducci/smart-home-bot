@@ -7549,9 +7549,11 @@ def _programmer_hold_state(cfg: dict) -> dict:
     is answering yet -- asked of its own port on this host (the page runs on
     the host's network), which never starts it the way the socket would."""
     path = _programmer_hold_file(cfg)
-    until = 0
+    until = since = 0
     with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
-        until = int(float(json.loads(path.read_text()).get("until") or 0)) if path else 0
+        held = json.loads(path.read_text()) if path else {}
+        until = int(float(held.get("until") or 0))
+        since = int(float(held.get("at") or 0))
     now = int(time.time())
     served = ""
     key = _programmer_key()
@@ -7565,7 +7567,7 @@ def _programmer_hold_state(cfg: dict) -> dict:
         served = ""
     local = _programmer_local(cfg)
     host = (request.host or "").rsplit(":", 1)[0] if has_request_context() else ""
-    return {"held": until > now, "until": until if until > now else 0,
+    return {"held": until > now, "until": until if until > now else 0, "since": since,
             "loaded": bool(served), "served": served, "lan": local["lan"],
             "url": f"http://{host}:{_PROGRAMMER_LAN_PORT}/v1" if host else "",
             "configured": bool(local["model"]), "can_hold": path is not None}

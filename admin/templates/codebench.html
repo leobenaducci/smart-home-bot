@@ -46,7 +46,6 @@
   .cb-cell b { font-size: .9rem; }
   .cb-cell.pass { border-color: var(--live); background: color-mix(in srgb, var(--live) 12%, transparent); }
   .cb-cell.fail { border-color: var(--tag); background: var(--tag-wash); }
-  .cb-cell.part b { color: var(--attn-ink); }
   .cb-cell .sub { color: var(--ink-soft); font-family: var(--mono); font-size: .72rem; }
   .cb-score { font-family: var(--mono); font-weight: 700; font-size: 1rem; }
   dialog.cb-detail { width: min(980px, 96vw); max-height: 92vh; border: 1px solid var(--edge);
@@ -64,6 +63,63 @@
     max-height: 320px; overflow: auto; margin: 0; }
   .cb-diff .add { color: var(--live-ink); }
   .cb-diff .del { color: var(--tag-ink); }
+  /* ── The card's lease ──────────────────────────────────────────────────
+     The one bold thing on the page: whether the Studio's card is held for
+     coding, and for how long. A lamp, as on the panel the rest of the admin
+     is drawn after -- dark when free, amber while the model loads (or waits
+     for the Studio's job), --live while it answers -- and a bar that empties
+     as the reservation runs out. */
+  .cb-lease { border: 1px solid var(--edge); border-radius: var(--r); background: var(--plate);
+    padding: var(--s3); display: grid; gap: var(--s2); max-width: 760px; }
+  .cb-lease-head { display: flex; gap: 12px; align-items: flex-start; }
+  .cb-lease-what { min-width: 0; }
+  .cb-lease-what .strong { font-weight: 600; overflow-wrap: anywhere; }
+  .cb-lamp { flex: none; width: 14px; height: 14px; margin-top: 4px; border-radius: 50%;
+    background: var(--panel-3); box-shadow: inset 0 1px 2px rgba(0,0,0,.45); }
+  .cb-lease[data-state="starting"] .cb-lamp { background: var(--attn);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--attn) 22%, transparent); animation: cb-pulse 1.6s ease-in-out infinite; }
+  .cb-lease[data-state="ready"] .cb-lamp,
+  .cb-lease[data-state="loaded"] .cb-lamp { background: var(--live);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--live) 22%, transparent); }
+  @keyframes cb-pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--attn) 8%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { .cb-lease .cb-lamp { animation: none; } }
+  .cb-lease-state { margin: 0; font-size: .92rem; }
+  .cb-lease[data-state="ready"] .cb-lease-state { color: var(--live-ink); }
+  .cb-lease[data-state="starting"] .cb-lease-state { color: var(--attn-ink); }
+  .cb-lease-bar { height: 4px; border-radius: 2px; background: var(--edge); overflow: hidden; }
+  .cb-lease-bar span { display: block; height: 100%; width: 0; background: var(--live); transition: width .4s; }
+  .cb-lease[data-state="starting"] .cb-lease-bar span { background: var(--attn); }
+  .cb-lease[data-state="off"] .cb-lease-bar, .cb-lease[data-state="loaded"] .cb-lease-bar { display: none; }
+  .cb-lease-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .cb-seg { display: inline-flex; }
+  .cb-seg button { border-radius: 0; margin-left: -1px; padding: 6px 12px; }
+  .cb-seg button:first-child { border-radius: var(--r) 0 0 var(--r); margin-left: 0; }
+  .cb-seg button:last-child { border-radius: 0 var(--r) var(--r) 0; }
+  .cb-seg button[aria-pressed="true"] { background: var(--row-on); color: var(--live-ink); }
+  .cb-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .cb-tag { font-size: .72rem; padding: 1px 7px; border-radius: 10px; background: var(--plate-2);
+    border: 1px solid var(--edge); color: var(--ink-soft); white-space: nowrap; }
+  .cb-tag.pi { color: var(--live-ink); border-color: color-mix(in srgb, var(--live) 45%, transparent); }
+  /* Using it from pi: steps in order, each with what to copy under it. */
+  .cb-pi { margin-top: var(--s3); }
+  .cb-pi-steps { margin: var(--s2) 0 0; padding-left: 1.4em; max-width: 760px; font-size: .86rem; }
+  .cb-pi-steps li { margin-bottom: var(--s2); }
+  .cb-pi-steps p { margin: 0 0 6px; }
+  .cb-copy { position: relative; padding-right: 64px; }
+  .cb-copy-btn { position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: .72rem; }
+  h2.cb-section { margin-top: var(--s5); }
+  h2.cb-section + .intro { max-width: 78ch; color: var(--ink-soft); font-size: .88rem; margin: 4px 0 var(--s3); }
+  /* The score, and five lamps under it: one per problem, lit when passed. */
+  .cb-pips { display: flex; gap: 3px; margin-top: 5px; justify-content: flex-end; }
+  .cb-pips i { width: 7px; height: 7px; border-radius: 50%; background: var(--edge); }
+  .cb-pips i.on { background: var(--live); }
+  .cb-pips i.half { background: var(--attn); }
+  .cb-when { color: var(--ink-soft); font-size: .72rem; margin-top: 3px; }
+  .cb-note { color: var(--ink-soft); font-size: .72rem; margin-top: 3px; }
+  /* Half right -- the visible tests or the hidden ones, not both -- is its
+     own tone: it is not the same answer as nothing working. */
+  .cb-cell.half { border-color: var(--attn); background: var(--attn-wash); }
+  .cb-cell.half b { color: var(--attn-ink); }
   /* Live, a step is a line or two; the whole of it is in the run's detail. */
   #cb-live .io { max-height: 4.2em; overflow: hidden; }
   @media (max-width: 720px) {
@@ -79,51 +135,106 @@
 {% include "_models_tabs.html" %}
 {% include "_code_card.html" %}
 
-<h2>{{ t('admin.codebench.heading') }}</h2>
+{# A model path as a person reads it: the file, without its folder, its
+   extension or a split model's "-00001-of-00002". #}
+{% macro short_model(m) -%}
+  {%- set n = (m or '').split('/')[-1] | replace('.gguf', '') -%}
+  {{- n.split('-00001-of-')[0] if '-00001-of-' in n else n -}}
+{%- endmacro %}
+
+<div class="card" id="programmer">
+  <h2>{{ t('admin.codebench.hold_heading') }}</h2>
+  {% if programmer.model %}
+  {# The card's lease: who has it, until when, and the controls to take or
+     give it back -- the one thing on this page somebody does every day. The
+     model loads when reserved and stays loaded until the time chosen, for the
+     Programmer and, with `lan` on, for a coding client of the household's own
+     (programmer_hold_set in app.py). #}
+  <div><div class="cb-lease" id="cb-lease" data-state="off">
+    <div class="cb-lease-head">
+      <span class="cb-lamp" aria-hidden="true"></span>
+      <div class="cb-lease-what">
+        <div class="strong" title="{{ programmer.model }}">{{ short_model(programmer.model) }}</div>
+        <div class="cb-tags">
+          <span class="cb-tag">{{ 'Strata' if programmer.engine == 'strata' else 'llama.cpp' }}</span>
+          <span class="cb-tag">{{ programmer.context // 1024 }}k</span>
+          <span class="cb-tag">{{ t('admin.codebench.programmer_first') if programmer.first else t('admin.codebench.programmer_fallback') }}</span>
+        </div>
+      </div>
+    </div>
+    <p class="cb-lease-state" id="cb-hold-state" role="status" aria-live="polite">{{ t('admin.codebench.hold_off') }}</p>
+    <div class="cb-lease-bar" aria-hidden="true"><span id="cb-lease-fill"></span></div>
+    <div class="cb-lease-acts" id="cb-hold-buttons">
+      <span class="tiny muted">{{ t('admin.codebench.hold_take') }}</span>
+      <span class="cb-seg" role="group" aria-label="{{ t('admin.codebench.hold_take') }}">
+        {% for h in hold_hours %}<button type="button" class="ghost" data-hours="{{ h }}">{{ t('admin.codebench.hold_for', h=h) }}</button>{% endfor %}
+      </span>
+      <button type="button" class="ghost danger" data-hours="0" id="cb-hold-release" hidden>{{ t('admin.codebench.hold_release') }}</button>
+    </div>
+  </div></div>
+  <p class="help">{{ t('admin.codebench.hold_intro') }}</p>
+  <p class="row" hidden><span class="tiny" id="cb-prog-msg"></span></p>
+
+  {% if programmer.lan %}
+  <details class="cb-pi" id="cb-pi">
+    <summary class="reveal">{{ t('admin.codebench.pi_heading') }}</summary>
+    <ol class="cb-pi-steps">
+      <li><p>{{ t('admin.codebench.pi_step_reserve') }}</p></li>
+      <li><p>{{ t('admin.codebench.pi_step_key') }}
+          <button type="button" class="ghost tiny" id="cb-pi-show-key">{{ t('admin.codebench.pi_show_key') }}</button></p>
+        <pre class="cb-pre cb-copy" id="cb-pi-key-cmd"><code>export HOUSE_CODER_KEY=…</code></pre>
+        <p>{{ t('admin.codebench.pi_step_key_windows') }}</p>
+        <pre class="cb-pre cb-copy" id="cb-pi-key-cmd-win"><code>setx HOUSE_CODER_KEY "…"</code></pre></li>
+      <li><p>{{ t('admin.codebench.pi_step_models') }}</p>
+        <pre class="cb-pre cb-copy" id="cb-pi-models"><code></code></pre></li>
+      <li><p>{{ t('admin.codebench.pi_step_run') }}</p>
+        <pre class="cb-pre cb-copy" id="cb-pi-run"><code></code></pre></li>
+    </ol>
+    <p class="help">{{ t('admin.codebench.pi_note') }}</p>
+  </details>
+  {% else %}
+  <p class="help">{{ t('admin.codebench.pi_lan_off') }}</p>
+  {% endif %}
+  {% else %}
+  <p class="help">{{ t('admin.codebench.programmer_none') }}</p>
+  {% endif %}
+</div>
+
+<h2 class="cb-section">{{ t('admin.codebench.heading') }}</h2>
 <p class="intro">{{ t('admin.codebench.intro') }}</p>
 
 {% if gpu is none %}
 <div class="notice">{{ t('admin.codebench.no_card') }}</div>
 {% endif %}
 
-<div class="card" id="programmer">
-  <h2>{{ t('admin.codebench.programmer_heading') }}</h2>
-  <p class="intro">{{ t('admin.codebench.programmer_intro') }}</p>
+<div class="card">
+  <h2>{{ t('admin.codebench.results_heading') }}</h2>
+  <p class="intro">{{ t('admin.codebench.results_intro') }}</p>
+  <div class="scroll">
+    <table class="cb-matrix">
+      <thead><tr>
+        <th>{{ t('admin.codebench.model') }}</th>
+        <th class="num">{{ t('admin.codebench.score') }}</th>
+        {% for p in problems %}<th class="p" title="{{ p.title }}">{{ p.id }}</th>{% endfor %}
+        <th></th>
+      </tr></thead>
+      <tbody id="cb-runs"></tbody>
+    </table>
+  </div>
+  <p class="muted tiny" id="cb-empty" hidden>{{ t('admin.codebench.no_results') }}</p>
+</div>
+
+<div class="card" id="cb-now-card" hidden>
+  <h2>{{ t('admin.codebench.now_heading') }}</h2>
   <div>
-    <p>{% if programmer.model %}{{ t('admin.codebench.programmer_now', model=programmer.model, k=(programmer.context // 1024)) }}
-       · {{ t('admin.codebench.programmer_first') if programmer.first else t('admin.codebench.programmer_fallback') }}
-       {% else %}{{ t('admin.codebench.programmer_none') }}{% endif %}</p>
-    <p class="row"><span class="tiny" id="cb-prog-msg"></span></p>
+    <div class="cb-now">
+      <span class="what" id="cb-now">…</span>
+      <span class="grow"></span>
+      <button type="button" class="ghost danger" id="cb-stop" hidden>■ {{ t('admin.codebench.stop') }}</button>
+    </div>
+    <ol class="cb-steps" id="cb-live" hidden></ol>
+    <div id="cb-queue" class="stack-s"></div>
   </div>
-  {% if programmer.model %}
-  {# Reserve the card for coding: the model loads now and stays loaded until
-     the time chosen, for the Programmer and -- with `lan` on -- for a coding
-     client of the household's own (programmer_hold_set in app.py). #}
-  <h3>{{ t('admin.codebench.hold_heading') }}</h3>
-  <p class="help">{{ t('admin.codebench.hold_intro') }}</p>
-  <p class="row" id="cb-hold-buttons">
-    {% for h in hold_hours %}<button type="button" class="ghost" data-hours="{{ h }}">{{ t('admin.codebench.hold_for', h=h) }}</button>{% endfor %}
-    <button type="button" class="ghost" data-hours="0" id="cb-hold-release" hidden>{{ t('admin.codebench.hold_release') }}</button>
-  </p>
-  <p id="cb-hold-state" class="tiny"></p>
-  <div id="cb-pi" {% if not programmer.lan %}hidden{% endif %}>
-    <h3>{{ t('admin.codebench.pi_heading') }}</h3>
-    <ol class="help">
-      <li>{{ t('admin.codebench.pi_step_reserve') }}</li>
-      <li>{{ t('admin.codebench.pi_step_key') }}
-        <button type="button" class="ghost tiny" id="cb-pi-show-key">{{ t('admin.codebench.pi_show_key') }}</button>
-        <pre id="cb-pi-key-cmd">export HOUSE_CODER_KEY=…</pre>
-        {{ t('admin.codebench.pi_step_key_windows') }}
-        <pre id="cb-pi-key-cmd-win">setx HOUSE_CODER_KEY "…"</pre></li>
-      <li>{{ t('admin.codebench.pi_step_models') }}
-        <pre id="cb-pi-models"></pre></li>
-      <li>{{ t('admin.codebench.pi_step_run') }}
-        <pre id="cb-pi-run"></pre></li>
-    </ol>
-    <p class="help">{{ t('admin.codebench.pi_note') }}</p>
-  </div>
-  {% if not programmer.lan %}<p class="help">{{ t('admin.codebench.pi_lan_off') }}</p>{% endif %}
-  {% endif %}
 </div>
 
 <div class="card">
@@ -178,36 +289,6 @@
   </form>
 </div>
 
-<div class="card" id="cb-now-card">
-  <h2>{{ t('admin.codebench.now_heading') }}</h2>
-  <div>
-    <div class="cb-now">
-      <span class="what" id="cb-now">…</span>
-      <span class="grow"></span>
-      <button type="button" class="ghost danger" id="cb-stop" hidden>■ {{ t('admin.codebench.stop') }}</button>
-    </div>
-    <ol class="cb-steps" id="cb-live" hidden></ol>
-    <div id="cb-queue" class="stack-s"></div>
-  </div>
-</div>
-
-<div class="card">
-  <h2>{{ t('admin.codebench.results_heading') }}</h2>
-  <p class="intro">{{ t('admin.codebench.results_intro') }}</p>
-  <div class="scroll">
-    <table class="cb-matrix">
-      <thead><tr>
-        <th>{{ t('admin.codebench.model') }}</th>
-        <th class="num">{{ t('admin.codebench.score') }}</th>
-        {% for p in problems %}<th class="p" title="{{ p.title }}">{{ p.id }}</th>{% endfor %}
-        <th></th>
-      </tr></thead>
-      <tbody id="cb-runs"></tbody>
-    </table>
-  </div>
-  <p class="muted tiny" id="cb-empty" hidden>{{ t('admin.codebench.no_results') }}</p>
-</div>
-
 <dialog class="cb-detail" id="cb-detail"></dialog>
 
 <script>
@@ -215,6 +296,11 @@
   var CSRF = {{ csrf_token() | tojson }};
   var PROBLEMS = {{ problems | tojson }};
   var LABELS = {{ engine_labels | tojson }};
+  // A model path as a person reads it (the template's short_model, again).
+  function shortModel(m) {
+    var n = String(m || '').split('/').pop().replace(/\.gguf$/i, '');
+    return n.replace(/-0*1-of-\d+$/, '');
+  }
   var S = {
     idle: {{ t('admin.codebench.state_idle') | tojson }},
     interrupted: {{ t('admin.codebench.state_interrupted') | tojson }},
@@ -324,6 +410,7 @@
   // ── The Programmer's local model ───────────────────────────────────────
   async function saveProgrammer(data) {
     var msg = $('#cb-prog-msg');
+    msg.parentNode.hidden = false;
     try {
       await post('/models/coding/programmer', data);
       msg.className = 'tiny'; msg.innerHTML = S.programmer_saved;
@@ -349,13 +436,16 @@
       text = fill(S.wait_reserved, { holder: st.holder || '?', min: st.starts_in != null ? Math.ceil(st.starts_in / 60) : '?' });
     else if (st.state === 'waiting') text = fill(S.wait_card, { gb: st.used_mb != null ? (st.used_mb / 1024).toFixed(1) : '?' });
     else if (st.state === 'building') text = S.building;
-    else if (st.state === 'loading') text = fill(S.loading, { model: st.model || '' });
+    else if (st.state === 'loading') text = fill(S.loading, { model: shortModel(st.model) });
     else if (st.state === 'running') {
       var p = PROBLEMS.find(function (x) { return x.id === st.problem; });
-      text = fill(S.running, { model: st.model || '', problem: p ? p.title : st.problem || '',
+      text = fill(S.running, { model: shortModel(st.model), problem: p ? p.title : st.problem || '',
                                t: dur(live.started ? Date.now() / 1000 - live.started : null) });
     } else text = st.note && /interrupted/.test(st.note) ? S.interrupted : st.note ? S.idle + ' · ' + st.note : S.idle;
     $('#cb-now').textContent = text;
+    // Nothing running and nothing queued: the card has nothing to say.
+    $('#cb-now-card').hidden = (!st.state || st.state === 'idle') && !queue.length
+      && !(st.note && /interrupted/.test(st.note));
     $('#cb-stop').hidden = !(st.state && st.state !== 'idle') && !queue.length;
     var steps = live.steps || [], box = $('#cb-live');
     box.hidden = !(st.state === 'running' && steps.length);
@@ -363,7 +453,7 @@
     box.innerHTML = steps.map(stepRow).join('');
     if (atEnd) box.scrollTop = box.scrollHeight;
     $('#cb-queue').innerHTML = queue.length ? '<p class="tiny muted">' + S.queued + '</p>' + queue.map(function (e, i) {
-      return '<div class="row"><span class="mono tiny">' + (i + 1) + '.</span><span>' + esc(e.model) + ' · ' +
+      return '<div class="row"><span class="mono tiny">' + (i + 1) + '.</span><span>' + esc(shortModel(e.model)) + ' · ' +
         esc(LABELS[e.engine] || e.engine) + ' · ' + Math.round(e.context / 1024) + 'k · ' +
         esc(e.problems.join(', ')) + '</span>' +
         (i || st.state === 'idle' ? '<button type="button" class="ghost" data-remove="' + esc(e.id) + '">' + S.remove + '</button>' : '') +
@@ -385,12 +475,12 @@
     if (!r) return '<td><span class="muted tiny">' + (run.state === 'running' ? '…' : '') + '</span></td>';
     if (r.pass == null) return '<td><button type="button" class="cb-cell fail" data-run="' + esc(run.id) + '" data-p="' + esc(pid) + '">' +
       '<b>!</b><div class="sub">' + esc(S.failed_run) + '</div></button></td>';
-    var tone = r.pass ? 'pass' : (r.visible || r.hidden) ? 'fail part' : 'fail';
+    var tone = r.pass ? 'pass' : (r.visible || r.hidden) ? 'half' : 'fail';
     var note = r.timed_out ? S.timed_out : r.stopped ? S.stopped : r.tests_untouched === false ? S.edited
       : r.cut_off ? S.cut_off : '';
     return '<td><button type="button"' + cls('cb-cell', tone) + ' data-run="' + esc(run.id) + '" data-p="' + esc(pid) + '" title="' +
       esc(S.visible + ': ' + (r.visible ? '✓' : '✗') + ' · ' + S.hidden + ': ' + (r.hidden ? '✓' : '✗')) + '">' +
-      '<span class="nowrap"><b>' + (r.pass ? '✓' : r.visible ? '½' : '✗') + '</b> ' + esc(dur(r.seconds)) + '</span>' +
+      '<span class="nowrap"><b>' + (r.pass ? '✓' : (r.visible || r.hidden) ? '½' : '✗') + '</b> ' + esc(dur(r.seconds)) + '</span>' +
       '<div class="sub">' + esc(r.tool_calls == null ? '' : r.tool_calls + ' ' + S.steps) + (note ? ' · ' + esc(note) : '') + '</div></button></td>';
   }
   var lastRuns = [];
@@ -408,19 +498,24 @@
     $('#cb-empty').hidden = !!runs.length;
     $('#cb-runs').innerHTML = runs.map(function (run) {
       var srv = run.server || {};
-      var meta = [LABELS[run.engine] || run.engine, Math.round(run.context / 1024) + 'k'];
-      if (run.harness) meta.unshift(fill(S.harness, { name: run.harness }));
-      if (run.note) meta.push(run.note);
-      if (run.load_seconds != null) meta.push(S.load + ' ' + dur(run.load_seconds));
-      if (srv.gen_tok_s) meta.push(srv.gen_tok_s + ' tok/s');
-      if (srv.layers && !srv.all_on_gpu) meta.push(S.layers + ' ' + srv.layers);
-      // A file by its name, its whole path on hover; an error in a few lines,
-      // all of it on hover and in the run's detail.
-      var name = /^(hf:|\/)/.test(run.model) ? run.model.split('/').pop().replace(/\.gguf$/i, '') : run.model;
-      return '<tr><td class="who"><div class="strong" title="' + esc(run.model) + '">' + esc(name) + '</div><div class="tiny muted">' + esc(meta.join(' · ')) +
-        '</div>' + (run.error ? '<div class="tiny warn cb-err" title="' + esc(run.error) + '">' + esc(run.error) + '</div>' : '') +
-        '<div class="tiny muted">' + esc(new Date((run.started || 0) * 1000).toLocaleString()) + '</div></td>' +
-        '<td class="num"><span class="cb-score">' + run.passed + '/' + Object.keys(run.problems || {}).length + '</span></td>' +
+      var tags = [];
+      if (run.harness) tags.push('<span class="cb-tag pi">' + esc(fill(S.harness, { name: run.harness })) + '</span>');
+      tags.push('<span class="cb-tag">' + esc(LABELS[run.engine] || run.engine) + '</span>');
+      tags.push('<span class="cb-tag">' + Math.round(run.context / 1024) + 'k</span>');
+      if (srv.gen_tok_s) tags.push('<span class="cb-tag">' + esc(srv.gen_tok_s) + ' tok/s</span>');
+      if (run.load_seconds != null) tags.push('<span class="cb-tag">' + esc(S.load + ' ' + dur(run.load_seconds)) + '</span>');
+      if (srv.layers && !srv.all_on_gpu) tags.push('<span class="cb-tag">' + esc(S.layers + ' ' + srv.layers) + '</span>');
+      var total = Object.keys(run.problems || {}).length;
+      var pips = PROBLEMS.map(function (p) {
+        var r = (run.problems || {})[p.id];
+        return '<i' + cls(!r ? '' : r.pass ? 'on' : (r.visible || r.hidden) ? 'half' : '') + '></i>';
+      }).join('');
+      return '<tr><td class="who"><div class="strong" title="' + esc(run.model) + '">' + esc(shortModel(run.model)) + '</div>' +
+        '<div class="cb-tags">' + tags.join('') + '</div>' +
+        (run.note ? '<div class="cb-note">' + esc(run.note) + '</div>' : '') +
+        (run.error ? '<div class="tiny warn cb-err" title="' + esc(run.error) + '">' + esc(run.error) + '</div>' : '') +
+        '<div class="cb-when">' + esc(new Date((run.started || 0) * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })) + '</div></td>' +
+        '<td class="num"><span class="cb-score">' + run.passed + '/' + total + '</span><div class="cb-pips" aria-hidden="true">' + pips + '</div></td>' +
         PROBLEMS.map(function (p) { return cell(run, p.id); }).join('') +
         '<td class="acts"><div class="row-tight">' + (run.engine === 'llamacpp' && run.state !== 'running' && !run.harness
           ? '<button type="button" class="ghost" data-use="' + esc(run.id) + '" title="' + esc(S.use_for_programmer) + '">★</button>' : '') +
@@ -511,7 +606,9 @@
     starting: {{ t('admin.codebench.hold_starting') | tojson }},
     ready: {{ t('admin.codebench.hold_ready') | tojson }},
     loaded: {{ t('admin.codebench.hold_loaded_idle') | tojson }},
-    context: {{ programmer.context | tojson }}
+    context: {{ programmer.context | tojson }},
+    copy: {{ t('admin.codebench.copy') | tojson }},
+    copied: {{ t('admin.codebench.copied') | tojson }}
   };
   var holdState = document.getElementById('cb-hold-state');
   var holdTimer = null;
@@ -519,7 +616,7 @@
     return new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   }
   function drawPi(h) {
-    var models = document.getElementById('cb-pi-models');
+    var models = document.querySelector('#cb-pi-models code');
     if (!models) return;
     var id = h.served || 'MODEL';
     models.textContent = JSON.stringify({ providers: { house: {
@@ -527,14 +624,20 @@
       compat: { supportsDeveloperRole: false, supportsReasoningEffort: true },
       models: [{ id: id, contextWindow: HOLD.context, maxTokens: 16384, reasoning: true,
                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }, null, 2);
-    document.getElementById('cb-pi-run').textContent = 'pi --provider house --model ' + id;
+    document.querySelector('#cb-pi-run code').textContent = 'pi --provider house --model ' + id;
   }
+  var lease = document.getElementById('cb-lease');
   function drawHold(h) {
     if (!holdState) return;
+    var state = h.held ? (h.loaded ? 'ready' : 'starting') : (h.loaded ? 'loaded' : 'off');
+    lease.dataset.state = state;
     document.getElementById('cb-hold-release').hidden = !h.held;
-    var text = !h.held ? (h.loaded ? HOLD.loaded : HOLD.off)
-             : (h.loaded ? HOLD.ready : HOLD.starting).replace('{until}', when(h.until));
-    holdState.textContent = text;
+    holdState.textContent = (state === 'ready' ? HOLD.ready : state === 'starting' ? HOLD.starting
+                             : state === 'loaded' ? HOLD.loaded : HOLD.off).replace('{until}', when(h.until));
+    // How much of the reservation is left, from when it was taken.
+    var now = Date.now() / 1000, span = h.until - (h.since || now);
+    document.getElementById('cb-lease-fill').style.width =
+      h.held && span > 0 ? Math.max(2, Math.min(100, (h.until - now) / span * 100)) + '%' : '0';
     drawPi(h);
   }
   async function holdPoll() {
@@ -553,12 +656,25 @@
     if (showKey) showKey.addEventListener('click', async function () {
       try {
         var r = await fetch('/models/coding/reserve/key'); var k = await r.json();
-        document.getElementById('cb-pi-key-cmd').textContent = 'export HOUSE_CODER_KEY=' + k.key;
-        document.getElementById('cb-pi-key-cmd-win').textContent = 'setx HOUSE_CODER_KEY "' + k.key + '"';
+        document.querySelector('#cb-pi-key-cmd code').textContent = 'export HOUSE_CODER_KEY=' + k.key;
+        document.querySelector('#cb-pi-key-cmd-win code').textContent = 'setx HOUSE_CODER_KEY "' + k.key + '"';
       } catch (e) {}
     });
     holdPoll();
   }
+  // Each block in the pi steps gets a Copy button: the point of them is to
+  // end up in somebody else's terminal.
+  document.querySelectorAll('.cb-copy').forEach(function (pre) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'ghost cb-copy-btn'; b.textContent = HOLD.copy;
+    b.addEventListener('click', async function () {
+      var text = (pre.querySelector('code') || pre).textContent;
+      try { await navigator.clipboard.writeText(text); b.textContent = HOLD.copied; }
+      catch (e) { b.textContent = '✗'; }
+      setTimeout(function () { b.textContent = HOLD.copy; }, 1600);
+    });
+    pre.appendChild(b);
+  });
 })();
 </script>
 {% endblock %}
