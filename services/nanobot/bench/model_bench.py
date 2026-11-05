@@ -48,7 +48,7 @@ PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "ollama-vision": "ollama_vision",
     "openrouter": "openrouter", "together": "together_ai", "openai": "openai",
     "nanogpt": "nanogpt",
-    "openai-compatible": "openai_compatible", "freetoken": "freetoken",
+    "openai-compatible": "openai_compatible",
     # The llama.cpp router on the host, which is what cloud.openai_compatible
     # points at here. Its own name so a result says what it ran on.
     "llamacpp": "openai_compatible",
@@ -680,7 +680,7 @@ def harness_endpoint(config, name: str, provider_name: str):
         return None
     # Local engines only. A hosted provider's default base would be accepted by
     # pi and fail inside it, and the failure would count against the model.
-    if not (is_local_ollama(provider_name) or provider_name in ("openai_compatible", "freetoken")):
+    if not (is_local_ollama(provider_name) or provider_name == "openai_compatible"):
         return None
     prov = getattr(config.providers, provider_name, None)
     base = (getattr(prov, "api_base", None) or "") if prov is not None else ""
@@ -697,7 +697,7 @@ def harness_endpoint(config, name: str, provider_name: str):
                             api_key=(getattr(prov, "api_key", "") or "local") if prov is not None else "local",
                             context_window=int(os.environ.get("HARNESS_CONTEXT", "40960")),
                             # `reasoning_effort: "none"` is Ollama's; llama.cpp
-                            # and FreeToken are not asked for it.
+                            # is not asked for it.
                             reasoning=is_local_ollama(provider_name))
     return None if ep.check() else ep
 

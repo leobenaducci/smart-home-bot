@@ -224,7 +224,6 @@
   "admin.models.roster": "Was dieses Haus erreichen kann",
   "admin.models.roster_intro": "Pro Million Token. Was auf eigener Hardware läuft, kostet nichts pro Token — es kostet Strom.",
   "admin.models.saved": "Gespeichert. Der Assistent übernimmt es beim nächsten Deploy.",
-  "admin.models.source_freetoken": "FreeToken (eigene Hardware)",
   "admin.models.source_ollama_cloud": "Ollama Cloud (ollama.com)",
   "admin.models.source_ollama_local": "Ollama, auf eigener Hardware",
   "admin.models.source_ollama_vision": "Ein zweites ollama, für Vision",

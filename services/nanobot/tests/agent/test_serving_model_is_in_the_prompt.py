@@ -131,7 +131,7 @@ def test_a_cross_provider_fallback_is_routed_to_that_provider():
     of an outage, once per call, for the whole hour-long window.
     """
     provider = _Provider(fallback_model=[
-        {"model": "local-moe", "provider": "freetoken"}])
+        {"model": "local-moe", "provider": "openai_compatible"}])
     provider._mark_model_down("gpt-5.6-luna")
 
     routed, displaced, on_provider = provider._route_around_dead_model(
@@ -139,7 +139,7 @@ def test_a_cross_provider_fallback_is_routed_to_that_provider():
 
     assert routed["model"] == "local-moe"
     assert displaced == "gpt-5.6-luna"
-    assert on_provider == "freetoken"
+    assert on_provider == "openai_compatible"
     # The family is still told the truth about which model answers them.
     assert provider.serving_model("gpt-5.6-luna") == ("local-moe", "gpt-5.6-luna")
 
@@ -151,11 +151,11 @@ def test_one_provider_going_down_does_not_condemn_the_same_name_elsewhere():
     hosted one was, and route around the rescue that was working.
     """
     provider = _Provider(fallback_model=[
-        {"model": "deepseek-v4-flash", "provider": "freetoken"}])
+        {"model": "deepseek-v4-flash", "provider": "openai_compatible"}])
     provider._mark_model_down("deepseek-v4-flash")
 
     assert provider._model_is_down("deepseek-v4-flash")
-    assert not provider._model_is_down("deepseek-v4-flash", "freetoken")
+    assert not provider._model_is_down("deepseek-v4-flash", "openai_compatible")
 
 
 # --- one outage, every route that shares the gateway ------------------------

@@ -1239,7 +1239,6 @@ IMPACT = {
     # or `.documents` names one: the deployer resolves those roles to a URL
     # and key and exports them to home-core and home-paperless.
     "cloud.openai_compatible": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
-    "cloud.freetoken": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     # Where the household's own Ollama is, and the window it runs. Every
     # service with a `{derived.ollama*}`, `.title_*`, `.vision_model` or
     # `.paperless_*` export reads it; it had no entry at all until 2026-09-12,
@@ -1302,7 +1301,6 @@ SECRET_IMPACT = {
     "TOGETHER_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "NANOGPT_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "OPENAI_COMPATIBLE_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
-    "FREETOKEN_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     # alfred-mcp is the unit that writes opencode's provider file
     # (OPENCODE_PROVIDER_KEYS in deploy.py).
     "ANTHROPIC_API_KEY": ["alfred-mcp"],
@@ -2734,7 +2732,6 @@ MODEL_GROUPS = (
     {"provider": "ollama_vision", "key": "admin.models.source_ollama_vision"},
     {"provider": "ollama_cloud", "key": "admin.models.source_ollama_cloud"},
     {"provider": "openai_compatible", "key": "admin.models.source_openai_compatible"},
-    {"provider": "freetoken", "key": "admin.models.source_freetoken"},
 )
 
 # The three that have nothing to configure but a key. Filling one in is the
@@ -2768,15 +2765,11 @@ def model_groups(cfg: dict) -> list[dict]:
     cannot know."""
     compat = (cfg.get("cloud") or {}).get("openai_compatible") or {}
     label = str(compat.get("label") or "").strip()
-    ft_label = str(((cfg.get("cloud") or {}).get("freetoken") or {})
-                   .get("label") or "").strip()
     out = []
     for group in MODEL_GROUPS:
         name = t(group["key"])
         if group["provider"] == "openai_compatible" and label:
             name = label
-        if group["provider"] == "freetoken" and ft_label:
-            name = ft_label
         out.append({"provider": group["provider"], "label": name})
     return out
 
@@ -2792,7 +2785,6 @@ def _source_settings(cfg: dict) -> dict:
     local = conf.get("local") or {}
     cloud = conf.get("cloud") or {}
     compat = (cfg.get("cloud") or {}).get("openai_compatible") or {}
-    freetoken = (cfg.get("cloud") or {}).get("freetoken") or {}
     return {
         "ollama_local": {"enabled": bool(local.get("enabled", True)),
                          "host": local.get("host", "compute"),
@@ -2810,11 +2802,6 @@ def _source_settings(cfg: dict) -> dict:
         "compat": {"enabled": bool(compat.get("enabled")),
                    "url": compat.get("url", ""),
                    "label": compat.get("label", "")},
-        # Its own row beside compat, not instead of it: a household may point
-        # at FreeToken and at something else that speaks the same API.
-        "freetoken": {"enabled": bool(freetoken.get("enabled")),
-                      "url": freetoken.get("url", ""),
-                      "label": freetoken.get("label", "")},
     }
 
 
@@ -2936,13 +2923,12 @@ def model_endpoints(cfg: dict) -> dict:
         if key:
             out[source] = {"url": "", "key": key, "role": ""}
 
-    # Both self-hosted slots, and the same rule for each. A LAN address here is
+    # The self-hosted slot. A LAN address here is
     # somebody else's box far more often than it is this one, but when it *is*
     # this one the container translation applies -- that is what made a
     # catalogue refresh offer a household a choice it could not see.
     for source, block, secret in (
-            ("openai_compatible", "openai_compatible", "OPENAI_COMPATIBLE_API_KEY"),
-            ("freetoken", "freetoken", "FREETOKEN_API_KEY")):
+            ("openai_compatible", "openai_compatible", "OPENAI_COMPATIBLE_API_KEY"),):
         conf = (cfg.get("cloud") or {}).get(block) or {}
         if not (conf.get("enabled") and str(conf.get("url") or "").strip()):
             continue
@@ -3011,7 +2997,7 @@ def _not_local_for(role: str, value: str) -> bool:
 _PROBE_PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "openrouter": "openrouter",
     "together": "together", "openai": "openai", "nanogpt": "nanogpt",
-    "openai-compatible": "openai_compatible", "freetoken": "freetoken",
+    "openai-compatible": "openai_compatible",
     # The second ollama. Without it `ollama-vision:x` fell through to
     # OpenCode Zen, and the Test button failed every vision/documents model.
     "ollama-vision": "ollama_vision",
@@ -3033,7 +3019,7 @@ def _probe_target(cfg: dict, value: str) -> tuple[str, str, str, str]:
     endpoint = endpoints.get(source) or {}
     base = _PROBE_BASES.get(source) or ""
     if not base and endpoint.get("url"):
-        # A URL the household gave us: local Ollama, FreeToken, a vLLM box.
+        # A URL the household gave us: local Ollama, a vLLM box.
         base = f"{str(endpoint['url']).rstrip('/')}/v1"
     return model_id, base, str(endpoint.get("key") or ""), source
 
@@ -3610,23 +3596,10 @@ def models_page():
                                  locale=current_locale(cfg)), "error")
                 return redirect(url_for("models_page"))
 
-            ft_url = (request.form.get("freetoken_url") or "").strip()
-            parsed = urllib.parse.urlsplit(ft_url)
-            if ft_url and (parsed.scheme not in ("http", "https")
-                           or not parsed.hostname):
-                flash(translator("admin.models.invalid_url",
-                                 locale=current_locale(cfg)), "error")
-                return redirect(url_for("models_page"))
-
             compat = cloud.setdefault("openai_compatible", {})
             compat["enabled"] = request.form.get("compat") == "on"
             compat["url"] = compat_url
             compat["label"] = (request.form.get("compat_label") or "").strip()[:60]
-
-            freetoken = cloud.setdefault("freetoken", {})
-            freetoken["enabled"] = request.form.get("freetoken") == "on"
-            freetoken["url"] = ft_url
-            freetoken["label"] = (request.form.get("freetoken_label") or "").strip()[:60]
 
         # A setup a role now uses starts on the next Apply; one on Auto needs
         # a card first, as the Ollama card's own save would give it.
@@ -6806,12 +6779,11 @@ def _bench_pull(url: str, name: str, log) -> bool:
 
 # The local engines a benchmark brings up itself: `llamacpp:` is the llama.cpp
 # router (llamacpp-router.service on the host, reached through the stack's one
-# `cloud.openai_compatible` slot), `freetoken:` is FreeToken. Neither runs a
-# model all the time -- the card they use is the benchmark Ollama's -- so a run
+# `cloud.openai_compatible` slot). It does not run a model all the time -- the
+# card it uses is the benchmark Ollama's -- so a run
 # makes sure the engine answers and lists the model, clears the card, lets the
 # router load the model on the first request, and unloads it when done.
-_ENGINES = {"llamacpp": ("openai_compatible", "OPENAI_COMPATIBLE_API_KEY"),
-            "freetoken": ("freetoken", "FREETOKEN_API_KEY")}
+_ENGINES = {"llamacpp": ("openai_compatible", "OPENAI_COMPATIBLE_API_KEY")}
 
 
 def _bench_engine(cfg: dict, prefix: str) -> tuple[str, str]:
@@ -6848,14 +6820,6 @@ def _bench_engine_up(cfg: dict, prefix: str, name: str, bench_url: str, log) -> 
         log.write(f"not benchmarked: cloud.{slot} is switched off, so there is no {prefix} "
                   "engine to run it on.\n")
         return False
-    if prefix == "freetoken":
-        try:
-            _engine_call(url, "/v1/models", key).close()
-        except Exception as exc:                           # noqa: BLE001
-            log.write(f"not benchmarked: FreeToken is not answering at {url} ({exc}). It is "
-                      "not started from here -- start it on the host, then run again.\n")
-            return False
-        return True
     try:
         with _engine_call(url, "/models", key) as r:
             listed = [m.get("id") for m in (json.load(r).get("data") or [])]
@@ -6883,7 +6847,7 @@ def _bench_engine_up(cfg: dict, prefix: str, name: str, bench_url: str, log) -> 
 
 
 def _bench_engine_down(cfg: dict, prefix: str, name: str, log) -> None:
-    """Give the card back: unload *name* from the router. FreeToken is left as found."""
+    """Give the card back: unload *name* from the router."""
     if prefix != "llamacpp":
         return
     url, key = _bench_engine(cfg, prefix)

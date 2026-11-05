@@ -825,7 +825,6 @@ custom_services: []
 #   ollama-cloud:<name>  ollama.com. A key, and what you send it leaves.
 #   openrouter:<name>    openrouter.ai. One key, most models, per token.
 #   together:<name>      together.ai.
-#   freetoken:<name>     a FreeToken server on your own hardware.
 #
 # **Not the OpenCode Go plan, and this matters.** Go is the flat $10/month
 # subscription on the same account and the same sign-in, and it is the wrong
@@ -868,7 +867,7 @@ assistant:
     # The house talking to itself: a chore falling due, somebody arriving home.
     # Bounded -- measured at 32k tokens at the largest -- which is what makes
     # it the one household job a model on your own hardware can hold end to
-    # end. Point it at `ollama:` or `freetoken:` and it costs nothing per turn.
+    # end. Point it at `ollama:` and it costs nothing per turn.
     events: gpt-5.6-luna            # chores and location, always short
     # Every thirty minutes, in every assistant: "is there anything active?"
     # against a file a few hundred bytes long. Left blank it inherits the
@@ -924,7 +923,7 @@ assistant:
     # should name a different one. A fallback on the same provider as the roles
     # rescues one dead model behind a healthy gateway -- real, and worth having
     # -- but it cannot survive that provider going down, because then every
-    # model on it is gone, the rescue included. `ollama:` or `freetoken:` here,
+    # model on it is gone, the rescue included. `ollama:` here,
     # with the roles on a hosted provider, is the version that keeps answering
     # when the internet does not.
     #
@@ -1172,45 +1171,9 @@ cloud:
     label: ""                # what to call it on the admin page
     # Key (optional): OPENAI_COMPATIBLE_API_KEY
 
-  # FreeToken — a MoE serving engine you run on your own hardware. Pointed at,
-  # never deployed by this stack: the same relationship it has with Ollama.
-  #
-  # It has a slot of its own rather than using `openai_compatible` above,
-  # because there is exactly one of those and it is meant to stay free for
-  # whatever you are trying this week. Both can be live at once.
-  #
-  # Roles name it as `freetoken:<model>` in assistant.models. The key is
-  # optional and usually empty — a server on your own desk takes none.
-  # FreeToken: a local MoE engine (Qwen3.6-35B-A3B), pointed at rather than
-  # deployed. **Off, and think before switching it on.** Tried here on
-  # 2026-09-02 and switched off the same day, for reasons that are about the
-  # shape of the thing rather than a bug in it:
-  #
-  #   * It is slow for household work. A triage turn took ~35s against 0.6-4s
-  #     on a hosted model, and the roles it suits are the highest-volume,
-  #     smallest turns in the house.
-  #   * It wants the whole card. ~6-8 GB depending on the context ceiling, on
-  #     a 12 GB card that also runs the camera VLM and whisper, so the two
-  #     evict each other and both get slower.
-  #   * Its context ceiling is bought with VRAM. 48k would not allocate at all
-  #     beside a resident vision model, and the household's own event prompts
-  #     run 25.8k on average and 32.4k at the largest -- so the ceiling has to
-  #     be high, which makes the contention worse.
-  #   * It needs `reasoning_effort: none` on every role that uses it, or it
-  #     spends the whole budget reasoning and returns an empty answer.
-  #
-  # None of that makes it a bad engine; it makes it the wrong engine for
-  # short, frequent, latency-sensitive turns on a shared card. If you switch
-  # it on, set `assistant.reasoning_effort` for every role you point at it.
-  freetoken:
-    enabled: false
-    url: ""                  # e.g. http://desktop.home:8000
-    label: ""                # what to call it on the admin page
-    # Key (optional): FREETOKEN_API_KEY
-
   # OpenCode, which is what the Programmer profession runs on. Pointed at,
   # never deployed by this stack -- the same relationship it has with Ollama
-  # and the FreeToken slot above: you install it, you sign it in, and this only
+  # and the OpenAI-compatible slot above: you install it, you sign it in, and this only
   # says where its server is listening.
   #
   # It is **not** an OpenAI-compatible endpoint and does not belong in

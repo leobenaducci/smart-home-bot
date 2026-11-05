@@ -743,8 +743,6 @@ services:
           # than deployed -- the same relationship the stack has with Ollama.
           # Its own slot, so `openai-compatible:` stays free for whatever else
           # speaks that API.
-          FREETOKEN_URL: "{derived.freetoken_url}"
-          FREETOKEN_API_KEY: "{derived.freetoken_api_key}"
           # The second ollama, for vision/OCR. Empty when it is switched off:
           # nanobot reads every string for ${...} and refuses to start on an
           # unset reference, so the variable has to exist either way.
@@ -1018,8 +1016,6 @@ services:
           # than deployed -- the same relationship the stack has with Ollama.
           # Its own slot, so `openai-compatible:` stays free for whatever else
           # speaks that API.
-          FREETOKEN_URL: "{derived.freetoken_url}"
-          FREETOKEN_API_KEY: "{derived.freetoken_api_key}"
           # The second ollama, for vision/OCR. Empty when it is switched off:
           # nanobot reads every string for ${...} and refuses to start on an
           # unset reference, so the variable has to exist either way.

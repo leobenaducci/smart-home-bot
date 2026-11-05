@@ -138,12 +138,10 @@ def member_env(cfg: dict, mid: str, index: int) -> list[str]:
         "OLLAMA_CLOUD_URL=${OLLAMA_CLOUD_URL:-}",
         "OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-disabled}",
         "OPENAI_COMPATIBLE_URL=${OPENAI_COMPATIBLE_URL:-}",
-        "FREETOKEN_URL=${FREETOKEN_URL:-}",
         # The second ollama (vision). Defaulted like the rest: nanobot refuses
         # to start on an unset ${...}, so an endpoint nobody configured has to
         # be an empty string rather than absent.
         "OLLAMA_VISION_URL=${OLLAMA_VISION_URL:-}",
-        "FREETOKEN_API_KEY=${FREETOKEN_API_KEY:-disabled}",
         "OPENAI_COMPATIBLE_API_KEY=${OPENAI_COMPATIBLE_API_KEY:-disabled}",
         "OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}",
         "NANOGPT_API_KEY=${NANOGPT_API_KEY:-}",

@@ -439,12 +439,6 @@ MODEL_PROVIDERS = {
     # never heard of. One entry rather than one per vendor, because the only
     # thing that varies is the address -- see cloud.openai_compatible.
     "openai-compatible": "openai_compatible",
-    # A local MoE serving engine, and a slot of its own rather than a second
-    # use of `openai-compatible:`. There is exactly one of those, and spending
-    # it on FreeToken would mean a household running FreeToken can no longer
-    # point at a vLLM box, an LM Studio, or the provider this package has never
-    # heard of -- which is the whole job that entry exists for.
-    "freetoken": "freetoken",
     # A second ollama, for vision/OCR. Its own prefix rather than a flag on
     # `ollama:`, because it is a different server: OLLAMA_NUM_PARALLEL and
     # OLLAMA_CONTEXT_LENGTH are server-global, so the only way to give the text
@@ -617,8 +611,6 @@ def model_endpoint(cfg: dict, secrets: dict, value: str,
                 url = urlunsplit(parsed._replace(netloc=netloc))
     elif provider == "openai_compatible":
         url, key = openai_compatible_endpoint(cfg, secrets)
-    elif provider == "freetoken":
-        url, key = freetoken_endpoint(cfg, secrets)
     elif provider in HOSTED_API_BASE:
         base, secret = HOSTED_API_BASE[provider]
         key = secrets.get(secret, "")
@@ -1106,38 +1098,9 @@ PROVIDER_REQUIREMENT = {
     "nanogpt": "the NANOGPT_API_KEY credential",
     "openai": "the OPENAI_API_KEY credential",
     "openai_compatible": "cloud.openai_compatible",
-    "freetoken": "cloud.freetoken",
     "ollama_vision": "cloud.ollama.vision",
 }
 
-
-def freetoken_endpoint(cfg: dict, secrets: dict) -> tuple[str, str]:
-    """(base url, api key) for `cloud.freetoken`, or ("", "").
-
-    Same shape as `openai_compatible_endpoint` and deliberately not the same
-    entry. FreeToken runs on the household's own hardware and is the sort of
-    thing that stays configured for months; the generic slot is where you put
-    whatever you are trying this week. Sharing one entry would make those two
-    mutually exclusive for no reason other than that both speak the same API.
-
-    The key is optional and genuinely so -- a serving engine on your own desk
-    usually has none -- which is why the provider spec carries `is_local`:
-    without it nanobot refuses to build a keyless provider.
-    """
-    conf = (cfg.get("cloud") or {}).get("freetoken") or {}
-    if not conf.get("enabled"):
-        return "", ""
-    url = str(conf.get("url") or "").strip().rstrip("/")
-    if not url:
-        raise DeployError(
-            "cloud.freetoken.enabled is true but its url is empty.\n"
-            "    Give it the server's base address, or switch it off.")
-    # Same normalisation, same reason: people paste both forms out of a
-    # provider's own docs and nanobot appends the path itself, so a trailing
-    # `/v1` becomes `/v1/v1/chat/completions` and 404s every turn.
-    if url.endswith("/v1"):
-        url = url[:-3]
-    return url, secrets.get("FREETOKEN_API_KEY", "")
 
 
 def alias_alfred_mcp_port(cfg: dict) -> None:
@@ -1570,8 +1533,6 @@ def enabled_providers(cfg: dict, secrets: dict, endpoints: dict) -> set[str]:
             on.add(provider)
     if openai_compatible_endpoint(cfg, secrets)[0]:
         on.add("openai_compatible")
-    if freetoken_endpoint(cfg, secrets)[0]:
-        on.add("freetoken")
     return on
 
 
@@ -1800,7 +1761,6 @@ def derive(cfg: dict, secrets: dict) -> dict:
     emb_on = bool(emb_base and docs_base)
     cloud_url, cloud_key = endpoints.get("ollama_cloud", ("", ""))
     compat_url, compat_key = openai_compatible_endpoint(cfg, secrets)
-    ft_url, ft_key = freetoken_endpoint(cfg, secrets)
     # Called for its validation as much as its value: a `cloud.opencode` that
     # is switched on with nobody to serve is a Programmer space that fails at
     # the first question somebody asks it, and this turns that into a refused
@@ -1963,7 +1923,6 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # unset ${VAR}, so a switched-off provider gets a placeholder that
         # cannot authenticate rather than nothing.
         "openai_compatible_api_key": compat_key or "disabled",
-        "freetoken_url": ft_url,
         # The second ollama, for everything that looks at an image: the
         # assistant's vision role, the camera clip reviewer and Paperless's
         # built-in AI. It exists because OLLAMA_NUM_PARALLEL and
@@ -1988,11 +1947,6 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # block call it here. A setup (`ollama-media:`) is its own server,
         # and a reviewer sent to the main one would load the model there too.
         "ollama_vision_url": _vision_url(cfg, endpoints, local_url),
-        # A placeholder rather than an empty string, for the reason stated at
-        # the top of derive(): nanobot reads its whole config for `${...}` and
-        # refuses to start on an unset reference, and a local engine that takes
-        # no key still has to have the variable exist.
-        "freetoken_api_key": ft_key or "disabled",
         # Where `opencode serve` listens, for HomeCore -- which is the
         # only consumer, because the Programmer space is the only thing
         # that talks to it. Empty when the household has not switched it
@@ -4374,7 +4328,6 @@ HARNESS_ENGINES = {
     "ollama": ("${OLLAMA_URL}/v1", "${OLLAMA_API_KEY}", True),
     "llamacpp": ("${OPENAI_COMPATIBLE_URL}/v1", "${OPENAI_COMPATIBLE_API_KEY}", False),
     "openai-compatible": ("${OPENAI_COMPATIBLE_URL}/v1", "${OPENAI_COMPATIBLE_API_KEY}", False),
-    "freetoken": ("${FREETOKEN_URL}/v1", "${FREETOKEN_API_KEY}", False),
 }
 
 

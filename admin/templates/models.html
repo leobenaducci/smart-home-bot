@@ -1282,39 +1282,13 @@
     </div>
 
     {% endmacro %}
-    {% macro freetoken_field() %}
-    {# Its own row, not a second use of the one above. There is exactly one
-       generic slot and it is meant to stay free for whatever is being tried
-       this week; a household running FreeToken should not have to give that
-       up. Same shape, because it is the same question asked twice. #}
-    <div class="field">
-      <label class="row-tight">
-        <input type="checkbox" name="freetoken" {% if sources.freetoken.enabled %}checked{% endif %}>
-        {{ t('admin.models.source_freetoken') }}
-      </label>
-      <p class="help">{{ t('admin.models.freetoken_help') }}</p>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
-        <input type="text" name="freetoken_url" class="mono" style="max-width:340px"
-               placeholder="http://desktop.home:8000"
-               value="{{ sources.freetoken.url }}">
-        <input type="text" name="freetoken_label" style="max-width:200px"
-               placeholder="{{ t('admin.models.compat_label_placeholder') }}"
-               value="{{ sources.freetoken.label }}">
-      </div>
-      <p class="help">{{ t('admin.models.freetoken_key_note') }}</p>
-    </div>
-
-    {% endmacro %}
     {% if sources.compat.enabled %}{{ compat_field() }}{% endif %}
-    {% if sources.freetoken.enabled %}{{ freetoken_field() }}{% endif %}
     {% set off = [] %}
     {% if not sources.compat.enabled %}{% set _ = off.append(t('admin.models.source_openai_compatible')) %}{% endif %}
-    {% if not sources.freetoken.enabled %}{% set _ = off.append(t('admin.models.source_freetoken')) %}{% endif %}
     {% if off %}
     <details class="more-sources">
       <summary>{{ t('admin.models.sources_off', names=off|join(', ')) }}</summary>
       {% if not sources.compat.enabled %}{{ compat_field() }}{% endif %}
-      {% if not sources.freetoken.enabled %}{{ freetoken_field() }}{% endif %}
     </details>
     {% endif %}
 
@@ -1397,8 +1371,8 @@
           <span class="unit">{{ t('admin.models.tokens') }}</span></th>
         {# What one reply may be. The roles on a reasoning model are capped by
            this and not by the context window, and a cap below the thinking
-           budget returns an EMPTY answer rather than a short one -- see
-           FREETOKEN.md in home-stack. Worth reading next to the flag. #}
+           budget returns an EMPTY answer rather than a short one (measured on a
+           local MoE engine in 2026-09). Worth reading next to the flag. #}
         <th data-sort="num" class="num">{{ t('admin.models.max_output') }}
           <span class="unit">{{ t('admin.models.tokens') }}</span></th>
         <th data-sort="flag">{{ t('admin.models.reasoning') }}</th>

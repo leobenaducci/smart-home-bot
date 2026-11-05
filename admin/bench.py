@@ -21,7 +21,7 @@ from pathlib import Path
 
 # assistant.models' prefixes (MODEL_PROVIDERS in deploy/deploy.py).
 PREFIXES = ("ollama", "ollama-cloud", "ollama-vision", "openrouter", "together", "nanogpt",
-            "openai", "openai-compatible", "freetoken", "llamacpp")
+            "openai", "openai-compatible", "llamacpp")
 MODEL_RE = re.compile(r"^[\w.:/@+\-]{1,200}$")
 ROLES = ("everyday", "tools", "notifications", "events", "heartbeat", "longtask", "steps",
          "planner")
@@ -355,10 +355,9 @@ def display_name(model: str) -> tuple[str, str]:
     if is_local_prefix(prefix) or prefix in ("freetoken", "llamacpp"):
         # llamacpp: a llama-server on this machine's GPU -- the fork Ternary
         # Bonsai needs, which Ollama cannot load. Local like the other two.
-        # FreeToken is an engine on this household's own GPU, like Ollama. It
-        # read as "hosted" purely because the prefix was not in this list, which
-        # put a HOSTED badge on a model running in the next room -- and skipped
-        # the parameter chip, which only local rows carry.
+        # `freetoken:` stays for results recorded before it was retired
+        # (2026-11-05): an engine on this household's own GPU, like Ollama,
+        # which must not read as HOSTED in an old row.
         return name, "local"
     return (name if prefix else model), "hosted"
 

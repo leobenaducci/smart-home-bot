@@ -224,7 +224,6 @@
   "admin.models.roster": "Ciò che questa casa può raggiungere",
   "admin.models.roster_intro": "Per milione di token. Ciò che gira sul tuo hardware non costa nulla per token: costa elettricità.",
   "admin.models.saved": "Salvato. L'assistente lo applica al prossimo deploy.",
-  "admin.models.source_freetoken": "FreeToken (il tuo hardware)",
   "admin.models.source_ollama_cloud": "Ollama cloud (ollama.com)",
   "admin.models.source_ollama_local": "Ollama, sul tuo hardware",
   "admin.models.source_ollama_vision": "Un secondo ollama, per la visione",

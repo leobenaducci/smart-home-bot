@@ -1027,7 +1027,7 @@ else:
 # providers a fallback may name: a cross-provider entry is routed to that
 # provider's own client, and a config that does not declare it has no client to
 # build -- which the deployer now refuses rather than writing in silently.
-_PROVIDERS_DOC = {"providers": {"custom": {}, "together_ai": {}, "freetoken": {},
+_PROVIDERS_DOC = {"providers": {"custom": {}, "together_ai": {}, "openai_compatible": {},
                                 "ollama": {}}}
 
 
@@ -1163,11 +1163,11 @@ finally:
 # same-provider rescue to name at all.
 print("\na fallback may name another provider")
 for _models, _why in (
-    ({"everyday": "freetoken:local-moe",
+    ({"everyday": "openai-compatible:local-moe",
       "fallback": "together:meta-models/Muse-Glimmer-30B"},
      "a local engine rescued by a hosted one"),
     ({"everyday": "together:deepseek-ai/DeepSeek-V4-Flash-0731",
-      "fallback": "freetoken:local-moe"},
+      "fallback": "openai-compatible:local-moe"},
      "a hosted provider rescued by the house's own hardware"),
     ({"everyday": "gpt-5.6-luna", "fallback": "ollama:qwen3.5:9b"},
      "and a local model is a legitimate rescue, not a mistake"),
@@ -1198,7 +1198,7 @@ check("  no zone set leaves the file as it is",
       D.apply_site_timezone(_tz_doc, {"site": {}}) == _tz_doc)
 
 _x = json.loads(D.apply_model_choices(_json.dumps(_PROVIDERS_DOC), {"assistant": {"models": {
-    "everyday": "freetoken:local-moe",
+    "everyday": "openai-compatible:local-moe",
     "fallback": "together:meta-models/Muse-Glimmer-30B"}}}))
 check("  and it is written with the provider attached",
       _x["agents"]["defaults"]["modelFallback"]
@@ -1240,7 +1240,7 @@ except D.DeployError:
     check("  a fallback that is a role's own model is still refused", True)
 try:
     D.check_fallback_model({"assistant": {"models": {
-        "everyday": "together:a", "fallback": "freetoken:a"}}})
+        "everyday": "together:a", "fallback": "openai-compatible:a"}}})
     check("  but the same name on another host is a different model", True)
 except D.DeployError as _exc:
     check("  but the same name on another host is a different model", False, _exc)
@@ -1518,65 +1518,21 @@ for _which, _path in (("base", "services/nanobot/config/config.json"),
           _out["agents"]["defaults"]["modelFallback"]["provider"] == "together_ai")
 
 
-# --- FreeToken is a provider of its own, not the generic slot -----------------
+# --- FreeToken is gone (2026-11-05) ------------------------------------------
 #
-# It speaks the OpenAI API, so it *could* have used `cloud.openai_compatible`.
-# There is exactly one of those and it exists to be pointed at whatever is
-# being tried this week -- a vLLM box, an LM Studio, a provider this package
-# has never heard of. Spending it on a serving engine a household runs
-# permanently would make those two mutually exclusive for no reason beyond a
-# shared wire format. Both are live at once here, and this is what says so.
-print("\nfreetoken is its own provider and leaves the generic slot free")
-check("  a role can name it", D.split_model("freetoken:zai-org/GLM-5.2")
-      == ("zai-org/GLM-5.2", "freetoken"))
-check("  and the generic slot still resolves separately",
-      D.split_model("openai-compatible:x") == ("x", "openai_compatible"))
-
-_ft_cfg = {"cloud": {"freetoken": {"enabled": True,
-                                   "url": "http://desktop.home:8000/v1"},
-                     "openai_compatible": {"enabled": True,
-                                           "url": "http://vllm.home:8000"}}}
-_url, _key = D.freetoken_endpoint(_ft_cfg, {})
-# People paste both forms out of a server's own docs and nanobot appends the
-# path itself; the doubled /v1/v1/chat/completions 404s every turn.
-check("  a trailing /v1 is trimmed", _url == "http://desktop.home:8000", _url)
-check("  a keyless local server is allowed", _key == "", _key)
-check("  both self-hosted slots can be on at once",
-      {"freetoken", "openai_compatible"} <= D.enabled_providers(_ft_cfg, {}, {}),
-      sorted(D.enabled_providers(_ft_cfg, {}, {})))
-
-# A config written before this setting existed must still deploy. `dns.whisper`
-# and `site.resolver` each caused that break once; freetoken_endpoint walks the
-# config with .get chains and derive() always writes the derived pair, so there
-# is nothing for an old config to be missing.
-_old_cfg = {"cloud": {"openai_compatible": {"enabled": False}}}
-check("  a config predating it needs no migration",
-      D.freetoken_endpoint(_old_cfg, {}) == ("", "")
-      and "freetoken" not in D.enabled_providers(_old_cfg, {}, {}))
-
-try:
-    D.freetoken_endpoint({"cloud": {"freetoken": {"enabled": True}}}, {})
-    check("  on with no url is refused", False, "no error raised")
-except D.DeployError as _exc:
-    check("  on with no url is refused", "url is empty" in str(_exc), _exc)
-
-# Nanobot refuses to build a keyless provider unless its spec says local, and
-# a serving engine on your own desk is exactly that.
-_spec_src = (D.ROOT / "services/nanobot/nanobot/providers/registry.py").read_text(
-    encoding="utf-8")
-check("  the provider spec marks it local",
-      'name="freetoken"' in _spec_src
-      and "is_local=True" in _spec_src.split('name="freetoken"')[1][:400],
-      "without is_local, a keyless FreeToken raises 'No API key configured'")
-
-# Both nanobot configs have to carry the block: listing a provider is how the
-# credential gets demanded, and an unset ${...} stops the container starting --
-# which is why the compose files supply a placeholder key.
+# A local MoE engine this stack pointed at, retired by the household; the
+# Programmer's local model runs on llama.cpp or Strata instead. An old config
+# that still carries `cloud.freetoken` must deploy and get nothing from it.
+print("\nfreetoken is no longer a provider")
+check("  no model prefix reaches it", "freetoken" not in D.MODEL_PROVIDERS.values())
+_old_ft = {"cloud": {"freetoken": {"enabled": True, "url": "http://desktop.home:8000"}}}
+check("  a config that still switches it on enables nothing",
+      "freetoken" not in D.enabled_providers(_old_ft, {}, {}))
 for _cfgfile in ("services/nanobot/config/config.json",
                  "services/nanobot/config/instances/house/config.json"):
     _doc = _json.loads((D.ROOT / _cfgfile).read_text(encoding="utf-8"))
-    check(f"  {_cfgfile.split('/')[-2]}/{_cfgfile.split('/')[-1]} declares it",
-          "freetoken" in (_doc.get("providers") or {}), sorted(_doc.get("providers") or {}))
+    check(f"  {_cfgfile.split('/')[-2]}/{_cfgfile.split('/')[-1]} no longer lists it",
+          "freetoken" not in (_doc.get("providers") or {}))
 
 print("\nopencode is one server per member, and not an OpenAI endpoint")
 # The whole reason it has a block of its own: `opencode serve` has no
@@ -1614,7 +1570,7 @@ check("  and nor does a member who is no longer active",
 check("  switched off, nobody has one and the space falls back",
       D.opencode_servers({"cloud": {"opencode": {"enabled": False}},
                           "members": [{"id": "user1", "programmer": True}]}) == {})
-# Same shape as the freetoken case above and the same reason: a config written
+# The same reason as every new setting: a config written
 # before this setting existed must still deploy.
 check("  a config predating it needs no migration",
       D.opencode_servers({"cloud": {}}) == {} and D.opencode_servers({}) == {})
@@ -1744,8 +1700,8 @@ for _var in ("CODE_WORKSPACE_DIR", "HOMECORE_CONTAINER_URL", "CODE_BROKER_URL"):
 # rescue path. Counting them made the stranded-role warning fire for every
 # household that generates images, which is a warning nobody reads twice.
 D.check_fallback_model({"assistant": {"models": {
-    "everyday": "freetoken:a", "image_high": "together:google/imagen-4.0-fast",
-    "vision": "ollama:qwen3-vl:8b", "fallback": "freetoken:b"}}})
+    "everyday": "openai-compatible:a", "image_high": "together:google/imagen-4.0-fast",
+    "vision": "ollama:qwen3-vl:8b", "fallback": "openai-compatible:b"}}})
 check("  an image slot is not a role the fallback owes a rescue", True)
 
 
