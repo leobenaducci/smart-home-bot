@@ -216,6 +216,7 @@
   var S = {
     idle: {{ t('admin.codebench.state_idle') | tojson }},
     interrupted: {{ t('admin.codebench.state_interrupted') | tojson }},
+    harness: {{ t('admin.codebench.harness') | tojson }},
     wait_studio: {{ t('admin.codebench.state_wait_studio') | tojson }},
     wait_reserved: {{ t('admin.codebench.state_wait_reserved') | tojson }},
     wait_card: {{ t('admin.codebench.state_wait_card') | tojson }},
@@ -397,6 +398,8 @@
     $('#cb-runs').innerHTML = runs.map(function (run) {
       var srv = run.server || {};
       var meta = [LABELS[run.engine] || run.engine, Math.round(run.context / 1024) + 'k'];
+      if (run.harness) meta.unshift(fill(S.harness, { name: run.harness }));
+      if (run.note) meta.push(run.note);
       if (run.load_seconds != null) meta.push(S.load + ' ' + dur(run.load_seconds));
       if (srv.gen_tok_s) meta.push(srv.gen_tok_s + ' tok/s');
       if (srv.layers && !srv.all_on_gpu) meta.push(S.layers + ' ' + srv.layers);
@@ -408,7 +411,7 @@
         '<div class="tiny muted">' + esc(new Date((run.started || 0) * 1000).toLocaleString()) + '</div></td>' +
         '<td class="num"><span class="cb-score">' + run.passed + '/' + Object.keys(run.problems || {}).length + '</span></td>' +
         PROBLEMS.map(function (p) { return cell(run, p.id); }).join('') +
-        '<td class="acts"><div class="row-tight">' + (run.engine === 'llamacpp' && run.state !== 'running'
+        '<td class="acts"><div class="row-tight">' + (run.engine === 'llamacpp' && run.state !== 'running' && !run.harness
           ? '<button type="button" class="ghost" data-use="' + esc(run.id) + '" title="' + esc(S.use_for_programmer) + '">★</button>' : '') +
         (run.state === 'running' ? '' : '<button type="button" class="ghost danger" data-del="' + esc(run.id) + '" title="' + esc(S.delete_run) + '">✕</button>') + '</div></td></tr>';
     }).join('');
@@ -449,7 +452,7 @@
     function fact(label, value) { return '<div><span>' + esc(label) + '</span>' + esc(value) + '</div>'; }
     var dlg = $('#cb-detail');
     dlg.innerHTML = '<header><h2>' + esc(p.title || pid) + '</h2><span' + cls('pill', res.pass ? 'on' : 'warn') + '>' + esc(verdict) + '</span>' +
-      '<button type="button" data-again>▶ ' + esc(S.again) + '</button><button type="button" class="ghost" data-close>' + esc(S.close) + '</button></header>' +
+      (run.harness ? '' : '<button type="button" data-again>▶ ' + esc(S.again) + '</button>') + '<button type="button" class="ghost" data-close>' + esc(S.close) + '</button></header>' +
       '<section><p class="tiny muted">' + esc(run.model + ' · ' + (LABELS[run.engine] || run.engine) + ' · ' + Math.round(run.context / 1024) + 'k') + '</p>' +
       '<p>' + esc(flags.join(' · ')) + '</p>' + (res.error ? '<p class="warn">' + esc(res.error) + '</p>' : '') +
       '<div class="cb-facts">' + fact(S.time, dur(res.seconds)) + fact(S.turns, res.turns == null ? '–' : res.turns) +
@@ -467,7 +470,8 @@
       }).join('') +
       (res.log_tail ? '<section><h3>' + esc(S.log) + '</h3><pre class="cb-pre">' + esc(res.log_tail) + '</pre></section>' : '');
     dlg.querySelector('[data-close]').onclick = function () { dlg.close(); };
-    dlg.querySelector('[data-again]').onclick = function () {
+    var again = dlg.querySelector('[data-again]');
+    if (again) again.onclick = function () {
       dlg.close();
       start({ model: run.model, engine: run.engine, context: run.context, problem: [pid], interrupt: '' });
     };

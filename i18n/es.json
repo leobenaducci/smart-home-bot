@@ -2172,5 +2172,6 @@
   "admin.models.code_local_engine": "Motor",
   "admin.models.code_local_engine_help": "llama.cpp para la mayoría de los modelos. Strata para los archivos de Qwen3.8-Flash-Next que corre (elegí la primera parte de un .gguf dividido).",
   "admin.models.code_local_lan": "Servirlo en la red local mientras la placa está reservada (pide una clave, que se muestra en la página de programación)",
-  "admin.models.code_local_reserve": "Reservar la placa / usarlo desde pi"
+  "admin.models.code_local_reserve": "Reservar la placa / usarlo desde pi",
+  "admin.codebench.harness": "en {name} (importado)"
 }

@@ -2170,5 +2170,6 @@
   "admin.models.code_local_lan": "Serve it on the LAN while the card is reserved (it asks for a key, shown on the coding page)",
   "admin.codebench.pi_step_key_windows": "Windows, in PowerShell or cmd (saved for good; open a new terminal afterwards):",
   "admin.models.code_local_reserve": "Reserve the card / use it from pi",
-  "admin.codebench.pi_show_key": "Show the key"
+  "admin.codebench.pi_show_key": "Show the key",
+  "admin.codebench.harness": "in {name} (imported)"
 }

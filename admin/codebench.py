@@ -45,7 +45,10 @@ from typing import Callable
 
 # llama.cpp first: it is what the Programmer runs its local model on.
 ENGINES = ("llamacpp", "ollama", "prism")
-ENGINE_LABELS = {"ollama": "Ollama", "llamacpp": "llama.cpp", "prism": "llama.cpp (PrismML)"}
+ENGINE_LABELS = {"ollama": "Ollama", "llamacpp": "llama.cpp", "prism": "llama.cpp (PrismML)",
+                 # Not one the page runs: imported results name it (the
+                 # Programmer's local model can be served by it).
+                 "strata": "Strata"}
 CONTEXTS = (16384, 32768, 65536, 131072, 262144)
 DEFAULT_CONTEXT = 32768
 NETWORK = "codebench"
@@ -194,6 +197,10 @@ def summary(run: dict) -> dict:
             "started": run.get("started"), "finished": run.get("finished"),
             "load_seconds": run.get("load_seconds"), "server": run.get("server") or {},
             "vram_mb": run.get("vram_mb"),
+            # Set on runs made elsewhere and imported (e.g. "pi": the same
+            # problems through the pi coding agent): the page shows them, and
+            # cannot run them again or ★ them.
+            "harness": run.get("harness", ""), "note": run.get("note", ""),
             "passed": sum(1 for r in done if r.get("pass")), "graded": len(done),
             "problems": {pid: {k: r.get(k) for k in ("pass", "seconds", "turns", "tool_calls", "tool_errors",
                                                       "timed_out", "stopped", "tests_untouched", "error",
