@@ -2160,12 +2160,13 @@
   "admin.codebench.strata_needs_file": "Strata serves a .gguf from the models folder, not an Ollama name: kept on llama.cpp.",
   "admin.codebench.pi_heading": "Use it from pi on another computer",
   "admin.codebench.pi_step_reserve": "Reserve the card above and wait for \"Loaded and answering\". The LAN address only answers while the card is reserved.",
-  "admin.codebench.pi_step_key": "On the other computer, put the key in your shell (add it to ~/.bashrc to keep it):",
-  "admin.codebench.pi_step_models": "Save this as ~/.pi/agent/models.json (or add the provider to the one you have). apiKey is the name of the variable above, not the key itself:",
+  "admin.codebench.pi_step_key": "On the other computer, put the key in your shell. Linux or macOS (add it to ~/.bashrc to keep it):",
+  "admin.codebench.pi_step_models": "Save this as ~/.pi/agent/models.json -- on Windows %USERPROFILE%\\.pi\\agent\\models.json -- or add the provider to the one you have. apiKey is the name of the variable above, not the key itself:",
   "admin.codebench.pi_step_run": "Start pi in your project:",
-  "admin.codebench.pi_note": "Only one request runs at a time, and a Programmer turn shares the same model. If nothing answers, check that the reservation is still on and that this computer's firewall allows the port.",
+  "admin.codebench.pi_note": "Only one request runs at a time, and a Programmer turn shares the same model. If nothing answers, check that the reservation is still on, that this computer's firewall allows the port, and -- from Windows especially -- that the name in the address resolves; if not, use this computer's LAN IP address instead.",
   "admin.codebench.pi_lan_off": "To use it from another computer, switch on \"Serve it on the LAN while the card is reserved\" on the Models page and deploy.",
   "admin.models.code_local_engine": "Engine",
   "admin.models.code_local_engine_help": "llama.cpp for most models. Strata for the Qwen3.8-Flash-Next files it runs (choose the first part of a split .gguf).",
-  "admin.models.code_local_lan": "Serve it on the LAN while the card is reserved (it asks for a key, shown on the coding page)"
+  "admin.models.code_local_lan": "Serve it on the LAN while the card is reserved (it asks for a key, shown on the coding page)",
+  "admin.codebench.pi_step_key_windows": "Windows, in PowerShell or cmd (saved for good; open a new terminal afterwards):"
 }

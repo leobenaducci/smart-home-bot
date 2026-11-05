@@ -110,7 +110,9 @@
       <li>{{ t('admin.codebench.pi_step_reserve') }}</li>
       <li>{{ t('admin.codebench.pi_step_key') }}
         <button type="button" class="ghost tiny" id="cb-pi-show-key">{{ t('admin.codebench.pi_show_key') }}</button>
-        <pre id="cb-pi-key-cmd">export HOUSE_CODER_KEY=…</pre></li>
+        <pre id="cb-pi-key-cmd">export HOUSE_CODER_KEY=…</pre>
+        {{ t('admin.codebench.pi_step_key_windows') }}
+        <pre id="cb-pi-key-cmd-win">setx HOUSE_CODER_KEY "…"</pre></li>
       <li>{{ t('admin.codebench.pi_step_models') }}
         <pre id="cb-pi-models"></pre></li>
       <li>{{ t('admin.codebench.pi_step_run') }}
@@ -537,6 +539,7 @@
       try {
         var r = await fetch('/models/coding/reserve/key'); var k = await r.json();
         document.getElementById('cb-pi-key-cmd').textContent = 'export HOUSE_CODER_KEY=' + k.key;
+        document.getElementById('cb-pi-key-cmd-win').textContent = 'setx HOUSE_CODER_KEY "' + k.key + '"';
       } catch (e) {}
     });
     holdPoll();
