@@ -79,8 +79,15 @@
     </div>
     <label class="check-row"><input type="checkbox" name="code_local_first" value="1" {% if code_local.first %}checked{% endif %}>
       {{ t('admin.codebench.programmer_first_label') }}</label>
-    <label class="check-row"><input type="checkbox" name="code_local_lan" value="1" {% if code_local.lan %}checked{% endif %}>
-      {{ t('admin.models.code_local_lan') }}</label>
+    <div class="fields">
+      <div class="field">
+        <label for="code-local-lan">{{ t('admin.models.code_local_lan') }}</label>
+        <select id="code-local-lan" name="code_local_lan">
+          {% for m in ('off', 'reserved', 'demand') %}<option value="{{ m }}" {% if code_local.lan_mode == m %}selected{% endif %}>{{ t('admin.models.code_local_lan_' ~ m) }}</option>{% endfor %}
+        </select>
+        <p class="help">{{ t('admin.models.code_local_lan_help') }}</p>
+      </div>
+    </div>
     <p class="stack row"><button type="submit">{{ t('common.save') }}</button></p>
   </form>
   {% else %}

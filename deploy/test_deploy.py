@@ -3839,7 +3839,7 @@ print("\nthe Programmer's local fallback, for when OpenCode Go is out")
 _fb = D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b"}}}})
 check("  a model name is enough: the Studio's card, a 64k window, llama.cpp, loopback only",
       _fb == {"model": "ornith:9b", "gpu": 1, "context": 65536, "first": False,
-              "engine": "llamacpp", "lan": False,
+              "engine": "llamacpp", "lan": "off",
               "provider": "home", "port": 11460, "backend": 11461, "lan_port": 11462}, _fb)
 _gguf = "/var/lib/home-stack/models/hf/a/b/IQ1_M/m-00001-of-00002.gguf"
 check("  Strata serves a .gguf",
@@ -3847,16 +3847,20 @@ check("  Strata serves a .gguf",
           "model": _gguf, "engine": "strata", "lan": True}}}})["engine"] == "strata")
 for _bad_fb, _why in (({"model": "ornith:9b", "engine": "strata"}, "an Ollama name on Strata"),
                       ({"model": "ornith:9b", "engine": "vllm"}, "an engine it has no way to run"),
-                      ({"model": "ornith:9b", "lan": "yes"}, "a `lan` that is not true or false")):
+                      ({"model": "ornith:9b", "lan": "yes"}, "a `lan` that is not a mode")):
     try:
         D.opencode_fallback({"cloud": {"opencode": {"fallback": _bad_fb}}})
         check(f"  refuses {_why}", False)
     except SystemExit:
         check(f"  refuses {_why}", True)
-_units = D.render_programmer_local_units(dict(_fb, lan=True), "/s/admin/programmer-local/hold.json")
-check("  with `lan` the reservation socket listens on every address, at its own port",
+check("  `lan` true/false read as the modes they meant",
+      [D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "o:9b", "lan": v}}}})["lan"]
+       for v in (True, False, "demand")] == ["reserved", "off", "demand"])
+_units = D.render_programmer_local_units(dict(_fb, lan="reserved"), "/s/admin/programmer-local/hold.json")
+check("  `reserved`: the LAN socket listens on every address, at its own port, with the hold",
       "ListenStream=0.0.0.0:11462" in _units["programmer-local-lan.socket"]
-      and "PartOf=programmer-local-hold.service" in _units["programmer-local-lan.socket"])
+      and "PartOf=programmer-local-hold.service" in _units["programmer-local-lan.socket"]
+      and "[Install]" not in _units["programmer-local-lan.socket"])
 check("  and without it on loopback only",
       "ListenStream=127.0.0.1:11462" in D.render_programmer_local_units(_fb, "/h")["programmer-local-lan.socket"])
 check("  the .path watches the admin page's hold file",
@@ -3864,9 +3868,18 @@ check("  the .path watches the admin page's hold file",
 check("  which lives in the page's own state directory",
       D.programmer_local_hold_file({"paths": {"state": "/st"}}) == "/st/admin/programmer-local/hold.json"
       and D.programmer_local_hold_file({}) == "")
-_lan_proxy = (D.ROOT / "deploy/host/programmer-local-lan-proxy.service").read_text()
-check("  the LAN proxy has no idle exit (the reservation decides) and goes with it",
+_lan_proxy = _units["programmer-local-lan-proxy.service"]
+check("  and its proxy has no idle exit (the reservation decides) and goes with it",
       "--exit-idle-time" not in _lan_proxy and "PartOf=programmer-local-hold.service" in _lan_proxy)
+_dem = D.render_programmer_local_units(dict(_fb, lan="demand"), "/h")
+check("  `demand`: always listening on every address, not tied to a reservation",
+      "ListenStream=0.0.0.0:11462" in _dem["programmer-local-lan.socket"]
+      and "WantedBy=sockets.target" in _dem["programmer-local-lan.socket"]
+      and "PartOf" not in _dem["programmer-local-lan.socket"])
+check("  and its proxy loads the model and lets it go after fifteen idle minutes",
+      "--exit-idle-time=15min 127.0.0.1:11461" in _dem["programmer-local-lan-proxy.service"]
+      and "Requires=programmer-local.service" in _dem["programmer-local-lan-proxy.service"]
+      and "PartOf" not in _dem["programmer-local-lan-proxy.service"])
 check("  the reservation needs the model, so starting it loads the model",
       "Requires=programmer-local.service" in (D.ROOT / "deploy/host/programmer-local-hold.service").read_text())
 _sh = (D.ROOT / "deploy/host/programmer-local.sh").read_text()

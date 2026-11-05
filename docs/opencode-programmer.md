@@ -247,13 +247,24 @@ until the time, whatever the traffic. A release writes `until: 0` rather than
 deleting the file, so the `.path` sees it; the model then goes as soon as the
 idle proxy is not holding it.
 
-While reserved, `programmer-local-lan.socket` listens on port 11462 -- on every
-address when `cloud.opencode.fallback.lan` is true, loopback otherwise -- and
-forwards to the model with no idle exit. Its own port on purpose: the on-demand
-socket on 11460 starts the model, and a LAN that could do that would let
-anything on the network take the Studio's card. The model asks every caller
-for the key, which the page shows on request, along with the steps to point
-pi at it.
+`programmer-local-lan.socket` serves the model on port 11462, and
+`cloud.opencode.fallback.lan` says when (true and false, its first shape, read
+as `reserved` and `off`):
+
+- **`off`** -- loopback only, while reserved.
+- **`reserved`** -- every address, while reserved: the socket and its proxy go
+  with the hold, and the proxy has no idle exit.
+- **`demand`** -- every address, always. The first request does what a
+  Programmer turn does on 11460: reserves the Studio's card (after its running
+  job), loads the model (~80-90 s for Strata) and holds the request until it
+  answers; the proxy exits after fifteen idle minutes and the card goes back.
+  A client needs a request timeout longer than that first load. A reservation
+  still pins the model loaded meanwhile.
+
+`demand` is a choice the household makes on purpose: anything on the LAN that
+holds the key can then take the Studio's card. The model asks every caller for
+the key, which the page shows on request, along with the steps to point pi at
+it.
 
 ### The other way round: the local model first
 
