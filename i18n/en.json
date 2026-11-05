@@ -2172,5 +2172,5 @@
   "admin.models.code_local_reserve": "Reserve the card / use it from pi",
   "admin.codebench.pi_show_key": "Show the key",
   "admin.codebench.harness": "in {name} (imported)",
-  "admin.models.tab_coding": "Coding"
+  "admin.models.tab_coding": "Code"
 }

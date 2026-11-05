@@ -3639,6 +3639,9 @@ def models_page():
         save_config(cfg)
         note_pending(services_affected(before, cfg))
         flash(translator("admin.models.saved", locale=current_locale(cfg)), "ok")
+        # The Code card lives on the Code tab (codebench.html) and posts here.
+        if request.form.get("next") == "coding":
+            return redirect(url_for("codebench_page") + "#code")
         return redirect(url_for("models_page"))
 
     catalogue = model_catalogue.load_cache(MODELS_CACHE)
@@ -7527,12 +7530,22 @@ def _codebench_models() -> list[dict]:
 @app.get("/models/coding")
 def codebench_page():
     runner = codebench()
-    return render_template("codebench.html", problems=code_bench.problems(CODEBENCH_ROOT),
+    cfg = load_config()
+    # The Code card (_code_card.html), moved here from the Models page: the
+    # same roster and settings it read there.
+    _oc = (cfg.get("cloud") or {}).get("opencode") or {}
+    return render_template("codebench.html",
+                           code_choices=model_catalogue.code_model_choices(
+                               model_catalogue.load_cache(MODELS_CACHE)),
+                           code_model=str(_oc.get("model") or ""),
+                           code_local=_programmer_local(cfg),
+                           code_local_models=[m for m in _codebench_models() if "llamacpp" in m["engines"]],
+                           code_enabled=bool(_oc.get("enabled")), problems=code_bench.problems(CODEBENCH_ROOT),
                            models=_codebench_models(), engines=code_bench.ENGINES,
                            engine_labels=code_bench.ENGINE_LABELS, contexts=code_bench.CONTEXTS,
                            default_context=code_bench.DEFAULT_CONTEXT, gpu=_codebench_gpu(),
                            studio_on=bool(_codebench_studio()[0]), runs=runner.runs(),
-                           programmer=_programmer_local(load_config()),
+                           programmer=_programmer_local(cfg),
                            hold_hours=PROGRAMMER_HOLD_HOURS)
 
 

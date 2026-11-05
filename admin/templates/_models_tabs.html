@@ -1,5 +1,6 @@
-{# The Models page's tabs: its settings, the catalog (the benchmark and every
-   model with its price), and the coding benchmark. Three routes, one row, so
+{# The Models page's tabs: its settings, the Code space (its model, the local
+   one, and the coding benchmark), and the catalog (the benchmark and every
+   model with its price). Three routes, one row, so
    the coding page reads as part of Models rather than a page behind a button.
    `view` is "settings", "catalog" or "coding". #}
 <style>
@@ -11,6 +12,6 @@
 </style>
 <nav class="subtabs" aria-label="{{ t('admin.nav.models') }}">
   <a href="{{ url_for('models_page') }}"{% if view not in ('catalog', 'coding') %} aria-current="page"{% endif %}>{{ t('admin.models.tab_settings') }}</a>
-  <a href="{{ url_for('models_catalog') }}"{% if view == 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_catalog') }}</a>
   <a href="{{ url_for('codebench_page') }}"{% if view == 'coding' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_coding') }}</a>
+  <a href="{{ url_for('models_catalog') }}"{% if view == 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_catalog') }}</a>
 </nav>

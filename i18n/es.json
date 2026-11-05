@@ -2174,5 +2174,5 @@
   "admin.models.code_local_lan": "Servirlo en la red local mientras la placa está reservada (pide una clave, que se muestra en la página de programación)",
   "admin.models.code_local_reserve": "Reservar la placa / usarlo desde pi",
   "admin.codebench.harness": "en {name} (importado)",
-  "admin.models.tab_coding": "Programación"
+  "admin.models.tab_coding": "Código"
 }

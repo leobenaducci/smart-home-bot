@@ -77,6 +77,8 @@
 
 {% set view = 'coding' %}
 {% include "_models_tabs.html" %}
+{% include "_code_card.html" %}
+
 <h2>{{ t('admin.codebench.heading') }}</h2>
 <p class="intro">{{ t('admin.codebench.intro') }}</p>
 
@@ -91,8 +93,7 @@
     <p>{% if programmer.model %}{{ t('admin.codebench.programmer_now', model=programmer.model, k=(programmer.context // 1024)) }}
        · {{ t('admin.codebench.programmer_first') if programmer.first else t('admin.codebench.programmer_fallback') }}
        {% else %}{{ t('admin.codebench.programmer_none') }}{% endif %}</p>
-    <p class="row"><a class="button ghost" href="{{ url_for('models_page') }}#code">{{ t('admin.codebench.programmer_change') }}</a>
-      <span class="tiny" id="cb-prog-msg"></span></p>
+    <p class="row"><span class="tiny" id="cb-prog-msg"></span></p>
   </div>
   {% if programmer.model %}
   {# Reserve the card for coding: the model loads now and stays loaded until
