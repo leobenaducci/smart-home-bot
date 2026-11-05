@@ -49,11 +49,6 @@
   .role-controls .pick { min-width: 0; }
   .role-controls .pick select { width: 100%; max-width: none; }
   .role-controls .probe { margin: 0; }
-  /* The Models page's two tabs: settings, and the catalog. */
-  .subtabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--edge); }
-  .subtabs a { padding: 7px 12px; text-decoration: none; color: var(--ink-soft);
-               border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .subtabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--live); font-weight: 600; }
   /* Provider, then model: two pickers drawn over the one the form submits
      (hidden, kept), so saving, "show all" and the filter box are unchanged. */
   .pick-pair { display: grid; grid-template-columns: minmax(0, 15em) minmax(0, 1fr); gap: 6px; }
@@ -122,10 +117,7 @@
    the catalog is what somebody reads before changing a setting, not what they
    change, so it has its own page and a tab back. Same context for both, so
    the two can never disagree about a model. #}
-<nav class="subtabs" aria-label="{{ t('admin.nav.models') }}">
-  <a href="{{ url_for('models_page') }}"{% if view != 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_settings') }}</a>
-  <a href="{{ url_for('models_catalog') }}"{% if view == 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_catalog') }}</a>
-</nav>
+{% include "_models_tabs.html" %}
 
 {# Both tabs: the Ollama card's cards and rows live here too (moved out of the
    catalog-only part, where the split into tabs had left them). #}
@@ -344,8 +336,6 @@
    while it runs, which the intro says. #}
 <div class="card wide" id="bench">
   <h2>{{ t('admin.models.bench_heading') }}</h2>
-  <div class="row stack-s"><a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a>
-    <span class="help">{{ t('admin.codebench.open_about') }}</span></div>
   <p class="intro">{{ t('admin.models.bench_intro') }}</p>
 
   <form id="bench-form" method="post" action="{{ url_for('bench_start') }}"
@@ -466,6 +456,8 @@
   }
   function poll() {
     fetch(LOG_URL + '?offset=' + offset).then(function (r) { return r.json(); }).then(function (d) {
+      // The run going, which a queued one with other tests is not until its turn.
+      if (d.roles && d.roles.length) { perModel = d.roles.reduce(function (n, r) { return n + (counts[r] || 0); }, 0) * (d.repeat || 1); }
       offset = d.offset; eat(d.lines); showQueue(d.queue);
       if (d.model !== currentModel) { currentModel = d.model; doneCases = 0; }
       modelEl.textContent = d.model || '';
@@ -478,11 +470,16 @@
       statusEl.textContent = d.stopped ? T.stopped : (d.failed ? T.failed : T.done);
     }).catch(function () { setTimeout(poll, 3000); });
   }
+  // A result row names only the model: the tests and options are the card's, as set now.
+  function withModel(body, f) {
+    if (f !== form) body.set('model', f.elements.model.value);
+    return body;
+  }
   function start(f) {
     var wasBusy = goBtn.disabled;
-    if (!wasBusy) { busy(true); logEl.textContent = ''; casesEl.textContent = ''; offset = 0; doneCases = 0; fill.style.width = '0'; }
-    perModel = planned(); statusEl.textContent = T.running;
-    fetch(f.action, {method: 'POST', body: new FormData(f), headers: {'X-Requested-With': 'fetch'}})
+    if (!wasBusy) { busy(true); logEl.textContent = ''; casesEl.textContent = ''; offset = 0; doneCases = 0; fill.style.width = '0'; perModel = planned(); }
+    statusEl.textContent = T.running;
+    fetch(f.action, {method: 'POST', body: withModel(new FormData(form), f), headers: {'X-Requested-With': 'fetch'}})
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { if (!wasBusy) { busy(false); stopBtn.hidden = true; } statusEl.textContent = d.reason; return; }
         if (d.queued) { statusEl.textContent = T.queued; if (!wasBusy) poll(); return; }
@@ -493,7 +490,7 @@
   form.addEventListener('submit', function (ev) { ev.preventDefault(); start(form); });
   // The result rows' own controls, bound again every time the card is swapped in.
   function bindResults() {
-    // "Again" on a result row: the same run, queued if one is going.
+    // "Again" on a result row: this model on the card's current settings, queued if one is going.
     resultsEl.querySelectorAll('form.bench-rerun').forEach(function (f) {
       f.addEventListener('submit', function (ev) { ev.preventDefault(); start(f); });
     });
@@ -1235,77 +1232,6 @@
 </div>
 
 
-{# The Code space's model, and the only picker on this page that may offer a
-   flat-plan model. Go is not in models.SOURCES, so no role picker can reach
-   one; this card reads its own roster. The reason for the split is in
-   CLAUDE.md: the flat plan expects a person at a keyboard, and every other
-   role here is unattended traffic on the same key. #}
-<div class="card" id="code">
-  <h2>{{ t('admin.models.code_heading') }}</h2>
-  <p class="intro">{{ t('admin.models.code_intro') }}</p>
-  {% if not code_enabled %}
-  <p class="help note">{{ t('admin.models.code_off') }}</p>
-  {% endif %}
-  {% if code_choices %}
-  <form method="post">
-    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-    <input type="hidden" name="scope:code" value="1">
-    <div class="field wide">
-      <label for="code-model">{{ t('admin.models.code_label') }}</label>
-      <select id="code-model" name="code_model">
-        <option value="">{{ t('admin.models.code_unset') }}</option>
-        {% if code_model and code_model not in code_choices
-              |map(attribute='models')|sum(start=[])|map(attribute='id')|list %}
-        <optgroup label="{{ t('admin.models.not_on_offer') }}">
-          <option value="{{ code_model }}" selected>{{ code_model }}</option>
-        </optgroup>
-        {% endif %}
-        {% for group in code_choices %}
-        <optgroup label="{{ t('admin.models.code_group_' ~ group.key) }}">
-          {% for m in group.models %}
-          <option value="{{ m.id }}" {% if m.id == code_model %}selected{% endif %}>{{ m.label }}{% if m.context %} · {{ '{:,}'.format(m.context) }}{% endif %}</option>
-          {% endfor %}
-        </optgroup>
-        {% endfor %}
-      </select>
-      <p class="help">{{ t('admin.models.code_help') }}</p>
-    </div>
-    {# The local model the Programmer runs on the Studio's card
-       (cloud.opencode.fallback), served by llama.cpp. The coding benchmark
-       measures the candidates; its ★ sets the same thing. #}
-    <div class="fields">
-      <div class="field wide">
-        <label for="code-local">{{ t('admin.models.code_local_label') }}</label>
-        <select id="code-local" name="code_local_model">
-          <option value="">{{ t('admin.models.code_local_none') }}</option>
-          {% set ns = namespace(found=false) %}
-          {% for m in code_local_models %}
-            {% set picked = m.id == code_local.model or (m.id.startswith('hf:') and code_local.model.endswith('/' ~ m.id[3:])) %}
-            {% if picked %}{% set ns.found = true %}{% endif %}
-            <option value="{{ m.id }}" {% if picked %}selected{% endif %}>{{ m.id }}{% if m.gib %} · {{ m.gib }} GB{% endif %}{% if m.verdicts.llamacpp == 'fail' %} — {{ t('admin.codebench.verdict_fail_short') }}{% endif %}</option>
-          {% endfor %}
-          {% if code_local.model and not ns.found %}<option value="{{ code_local.model }}" selected>{{ code_local.model }}</option>{% endif %}
-        </select>
-        <p class="help">{{ t('admin.models.code_local_help') }}</p>
-      </div>
-      <div class="field">
-        <label for="code-local-context">{{ t('admin.codebench.context') }}</label>
-        <select id="code-local-context" name="code_local_context">
-          {% for c in [32768, 65536, 131072, 262144] %}<option value="{{ c }}" {% if c == code_local.context %}selected{% endif %}>{{ c // 1024 }}k</option>{% endfor %}
-        </select>
-      </div>
-    </div>
-    <label class="check-row"><input type="checkbox" name="code_local_first" value="1" {% if code_local.first %}checked{% endif %}>
-      {{ t('admin.codebench.programmer_first_label') }}</label>
-    <p class="stack row"><button type="submit">{{ t('common.save') }}</button>
-      <a class="button ghost" href="{{ url_for('codebench_page') }}">{{ t('admin.codebench.open') }}</a></p>
-  </form>
-  {% else %}
-  <p class="help">{{ t('admin.models.code_no_roster') }}</p>
-  {% endif %}
-</div>
-
-
 <div class="card">
   <h2>{{ t('admin.models.sources_heading') }}</h2>
   <p class="intro">{{ t('admin.models.sources_intro') }}</p>
@@ -1356,39 +1282,13 @@
     </div>
 
     {% endmacro %}
-    {% macro freetoken_field() %}
-    {# Its own row, not a second use of the one above. There is exactly one
-       generic slot and it is meant to stay free for whatever is being tried
-       this week; a household running FreeToken should not have to give that
-       up. Same shape, because it is the same question asked twice. #}
-    <div class="field">
-      <label class="row-tight">
-        <input type="checkbox" name="freetoken" {% if sources.freetoken.enabled %}checked{% endif %}>
-        {{ t('admin.models.source_freetoken') }}
-      </label>
-      <p class="help">{{ t('admin.models.freetoken_help') }}</p>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
-        <input type="text" name="freetoken_url" class="mono" style="max-width:340px"
-               placeholder="http://desktop.home:8000"
-               value="{{ sources.freetoken.url }}">
-        <input type="text" name="freetoken_label" style="max-width:200px"
-               placeholder="{{ t('admin.models.compat_label_placeholder') }}"
-               value="{{ sources.freetoken.label }}">
-      </div>
-      <p class="help">{{ t('admin.models.freetoken_key_note') }}</p>
-    </div>
-
-    {% endmacro %}
     {% if sources.compat.enabled %}{{ compat_field() }}{% endif %}
-    {% if sources.freetoken.enabled %}{{ freetoken_field() }}{% endif %}
     {% set off = [] %}
     {% if not sources.compat.enabled %}{% set _ = off.append(t('admin.models.source_openai_compatible')) %}{% endif %}
-    {% if not sources.freetoken.enabled %}{% set _ = off.append(t('admin.models.source_freetoken')) %}{% endif %}
     {% if off %}
     <details class="more-sources">
       <summary>{{ t('admin.models.sources_off', names=off|join(', ')) }}</summary>
       {% if not sources.compat.enabled %}{{ compat_field() }}{% endif %}
-      {% if not sources.freetoken.enabled %}{{ freetoken_field() }}{% endif %}
     </details>
     {% endif %}
 
@@ -1471,8 +1371,8 @@
           <span class="unit">{{ t('admin.models.tokens') }}</span></th>
         {# What one reply may be. The roles on a reasoning model are capped by
            this and not by the context window, and a cap below the thinking
-           budget returns an EMPTY answer rather than a short one -- see
-           FREETOKEN.md in home-stack. Worth reading next to the flag. #}
+           budget returns an EMPTY answer rather than a short one (measured on a
+           local MoE engine in 2026-09). Worth reading next to the flag. #}
         <th data-sort="num" class="num">{{ t('admin.models.max_output') }}
           <span class="unit">{{ t('admin.models.tokens') }}</span></th>
         <th data-sort="flag">{{ t('admin.models.reasoning') }}</th>

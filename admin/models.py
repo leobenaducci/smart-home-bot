@@ -1472,11 +1472,9 @@ def fetch_openai(api_key: str) -> tuple[list[dict], str]:
     return sorted(out, key=lambda m: m["name"]), ""
 
 
-# The two self-hosted slots, and how a role writes each one. They share this
-# fetch because they speak the same API; they are separate sources so a
-# household can run both and tell them apart in the picker.
-_SELF_HOSTED_PREFIX = {"openai_compatible": "openai-compatible",
-                       "freetoken": "freetoken"}
+# The self-hosted slot, and how a role writes it. (FreeToken had a second
+# slot of this shape until 2026-11-05.)
+_SELF_HOSTED_PREFIX = {"openai_compatible": "openai-compatible"}
 
 
 def fetch_openai_compatible(base_url: str, api_key: str = "", label: str = "",
@@ -1615,8 +1613,7 @@ def save_cache(path: Path, catalogue: dict) -> None:
 # is -- which is how the admin page came to look for `cloud.ollama.mode` long
 # after the config stopped having one.
 SOURCES = ("opencode_zen", "openrouter", "together", "nanogpt", "openai",
-           "ollama", "ollama_cloud", "ollama_vision", "openai_compatible",
-           "freetoken")
+           "ollama", "ollama_cloud", "ollama_vision", "openai_compatible")
 
 # What this source was called while the stack was on the flat Go plan. Read
 # from an old cache, never written. See load_cache().
@@ -1628,10 +1625,10 @@ RETIRED_SOURCE = "opencode_go"
 # a free 4B model on the box in the cupboard is not a cheaper alternative to a
 # hosted one -- it is a different answer to the question.
 #
-# `openai_compatible` and `freetoken` sit with Ollama because both are pointed
-# at rather than deployed and both are somebody's own hardware. Neither
-# publishes a price, so they sort to the end of their own list rather than to
-# the top of everybody's -- which is what a zero would have done.
+# `openai_compatible` sits with Ollama because it is pointed at rather than
+# deployed and is somebody's own hardware. It publishes no price, so it sorts
+# to the end of its own list rather than to the top of everybody's -- which is
+# what a zero would have done.
 #
 # Derived from SOURCES rather than listed twice, so a source added above cannot
 # be quietly missing from the recommendation. That is the bug this pair exists
@@ -1641,7 +1638,7 @@ RETIRED_SOURCE = "opencode_go"
 # than one that was never asked.
 # `ollama_vision` is the second ollama on the same hardware (see
 # cloud.ollama.vision): local for every purpose this split cares about.
-LOCAL_SOURCES = ("ollama", "ollama_vision", "openai_compatible", "freetoken")
+LOCAL_SOURCES = ("ollama", "ollama_vision", "openai_compatible")
 
 
 def is_local_ollama(source: str) -> bool:
@@ -1809,10 +1806,8 @@ def refresh(path: Path, endpoints: dict | None = None,
             rows = _ollama_cloud_drop_paywalled(
                 rows, ep["url"], ep.get("key", ""), cloud_usable)
         fetched[source] = (rows, err)
-    # Two self-hosted slots, same fetch. FreeToken speaks the same API and is
-    # listed separately only so a household can run both at once and tell them
-    # apart in the picker.
-    for source in ("openai_compatible", "freetoken"):
+    # The self-hosted slot.
+    for source in ("openai_compatible",):
         ep = endpoints.get(source)
         fetched[source] = (
             fetch_openai_compatible(ep["url"], ep.get("key", ""),

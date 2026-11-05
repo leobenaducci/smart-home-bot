@@ -29,6 +29,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+import time
 
 SRC = os.path.dirname(os.path.abspath(__file__))
 
@@ -455,77 +456,199 @@ check("and nothing is posted for a chat with no session", not rec5.posts,
 
 # --- v2 ----------------------------------------------------------------------
 
-print("\nv2 is a different surface, not a different spelling")
-_saved_api = A.OPENCODE_API
-A.OPENCODE_API = "v2"
+print("\nv2 is OpenCode 2: a different program, not a different spelling")
+_saved_api, _saved_pw = A.OPENCODE_API, A.OPENCODE_PASSWORD
+A.OPENCODE_API, A.OPENCODE_PASSWORD = "v2", "pw"
 
 # The same chat_id as above, which already has a session -- made on v1, so it
 # carries no agent, because v1 names the agent on every prompt instead. Reusing
 # it here would answer as opencode's own `build` persona and say so nowhere,
 # which is the failure `_opencode_ready` exists to prevent.
-V2SID = SID
+V2SID = "ses_v2"
+OTHER = "ses_somebody_else"
+
+
+def ev(kind, **data):
+    return {"type": kind, "data": data}
+
+
+# The shapes measured against OpenCode 2.1.3 (2026-10-28), in that order.
 v2_events = [
-    {"type": "session.next.prompt.admitted", "data": {"sessionID": V2SID}},
-    {"type": "session.next.step.started", "data": {"sessionID": V2SID}},
-    {"type": "session.next.reasoning.ended",
-     "data": {"sessionID": V2SID, "text": "thinking out loud"}},
-    {"type": "session.next.text.ended",
-     "data": {"sessionID": V2SID, "text": "The worker died."}},
-    {"type": "session.next.step.ended", "data": {"sessionID": V2SID}},
-    # Never read: the loop stops at step.ended.
-    {"type": "session.next.text.ended",
-     "data": {"sessionID": V2SID, "text": " AFTER THE END"}},
+    ev("server.connected"),
+    ev("session.execution.started", sessionID=V2SID),
+    # Somebody else's turn on the same server: /api/event is global.
+    ev("session.text.delta", sessionID=OTHER, assistantMessageID="m0", ordinal=0,
+       delta="NOT YOURS"),
+    ev("session.reasoning.delta", sessionID=V2SID, assistantMessageID="m1",
+       ordinal=0, delta="thinking out loud"),
+    ev("session.text.delta", sessionID=V2SID, assistantMessageID="m1", ordinal=1,
+       delta="I'll look."),
+    ev("session.tool.input.started", sessionID=V2SID, id="t1", name="execute"),
+    ev("session.tool.called", sessionID=V2SID, id="t1",
+       input={"code": "return await tools.alfred.list_projects()"}),
+    ev("session.tool.progress", sessionID=V2SID, id="t1",
+       metadata={"toolCalls": [{"tool": "alfred.list_projects", "status": "running"}]}),
+    ev("session.tool.progress", sessionID=V2SID, id="t1",
+       metadata={"toolCalls": [{"tool": "alfred.list_projects", "status": "completed"}]}),
+    ev("session.tool.success", sessionID=V2SID, id="t1",
+       content=[{"type": "text", "text": "{}"}]),
+    ev("session.text.delta", sessionID=V2SID, assistantMessageID="m2", ordinal=0,
+       delta="The worker"),
+    ev("session.text.delta", sessionID=V2SID, assistantMessageID="m2", ordinal=0,
+       delta=" died."),
+    ev("session.execution.succeeded", sessionID=V2SID),
+    # Never read: the loop stops when the run does.
+    ev("session.text.delta", sessionID=V2SID, assistantMessageID="m3", ordinal=0,
+       delta="AFTER THE END"),
 ]
 
-# Order is the whole point of this one. v2's per-session stream sends nothing
-# -- not even response headers -- until that session has an event, so a stream
-# opened before the prompt blocks the request that would produce one and the
-# turn deadlocks until the read timeout. That shipped, and from the outside it
-# looked exactly like a server that was down.
+# Order matters the other way round from 1.18's /api: OpenCode 2's /api/event
+# is global and answers at once, so it is opened first and the prompt posted
+# into it -- posting first could lose the opening of the answer.
 order = []
-rec_v2 = Recorder(
-    get=lambda u, kw: (order.append("get:" + ("event" if "/event" in u
-                                              else "session")),
-                       FakeResp(ok=True, payload={"data": {"id": V2SID}})
-                       if "/event" not in u
-                       else FakeResp(lines=sse(v2_events)))[1],
-    post=lambda u, kw: (order.append("post:" + ("prompt"
-                                                if u.endswith("/prompt")
-                                                else "session")),
-                        FakeResp(payload={"data": {"id": V2SID,
-                                                   "admittedSeq": 7}}))[1])
+
+
+def v2_get(u, kw):
+    order.append("get:" + ("event" if u.endswith("/api/event") else "other"))
+    if u.endswith("/api/event"):
+        return FakeResp(lines=sse(v2_events))
+    return FakeResp(ok=True, payload={"data": {"id": V2SID}})
+
+
+def v2_post(u, kw):
+    order.append("post:" + ("prompt" if u.endswith("/prompt") else "session"))
+    return FakeResp(payload={"data": {"id": V2SID}})
+
+
+rec_v2 = Recorder(get=v2_get, post=v2_post)
 A.requests = rec_v2
 turn = a_turn()
 err, retry = A._turn_attempt_opencode(turn, "what is broken?")
 check("it runs without error", err is None, err)
-check("the prompt is posted before the event stream is opened",
-      order.index("post:prompt") < order.index("get:event"),
-      "a stream opened first blocks on headers until the read timeout: " + str(order))
-check("the answer is the text of session.next.text.ended",
-      turn["text"] == "The worker died.", repr(turn["text"]))
+check("the event stream is opened before the prompt is posted",
+      order.index("get:event") < order.index("post:prompt"), order)
+check("the answer is streamed from the deltas, a new message a new paragraph",
+      turn["text"] == "I'll look.\n\nThe worker died.", repr(turn["text"]))
 check("reasoning is not delivered as the answer",
       "thinking out loud" not in turn["text"], repr(turn["text"]))
-check("nothing after step.ended is read",
+check("another session's text is not delivered",
+      "NOT YOURS" not in turn["text"], repr(turn["text"]))
+check("nothing after the run ends is read",
       "AFTER THE END" not in turn["text"], repr(turn["text"]))
-
-# Listening late loses nothing only because the stream is asked to replay.
-_after = [kw.get("params", {}).get("after")
-          for u, kw in rec_v2.gets if "/event" in u]
-check("the stream replays from just before the admitted sequence",
-      _after == [6], _after)
+_steps = [e["step"]["name"] for e in turn["events"] if "step" in e]
+check("a household tool shows by its own name, and `execute` not at all",
+      _steps == ["list_projects"], _steps)
 
 _prompts = [(u, kw) for u, kw in rec_v2.posts if u.endswith("/prompt")]
-check("v2 prompts on /api and carries no agent -- the session holds it",
+check("v2 prompts with {text} and no agent -- the session holds it",
       _prompts and all(u.endswith("/api/session/" + V2SID + "/prompt")
-                       and "agent" not in (kw.get("json") or {})
+                       and kw.get("json") == {"text": "what is broken?"}
                        for u, kw in _prompts), rec_v2.posts)
-
-# Which is only true because the session it prompts is one *this* surface made.
 _made = [(u, kw) for u, kw in rec_v2.posts if u.endswith("/api/session")]
 check("a session made on v1 is not reused on v2", len(_made) == 1, rec_v2.posts)
 check("and the new one carries the agent, since v2's prompt cannot",
       _made and _made[0][1].get("json", {}).get("agent") == A.OPENCODE_AGENT,
       _made)
+check("every request carries the password",
+      all(kw.get("auth") == ("opencode", "pw")
+          for _, kw in rec_v2.gets + rec_v2.posts),
+      [(u, kw.get("auth")) for u, kw in rec_v2.gets + rec_v2.posts])
+
+
+def run_v2(events, chat="homeweb:999000111:2026-09-02:dev"):
+    A.requests = Recorder(
+        get=lambda u, kw: (FakeResp(lines=sse(events)) if u.endswith("/api/event")
+                           else FakeResp(ok=True, payload={"data": {"id": V2SID}})),
+        post=lambda u, kw: FakeResp(payload={"data": {"id": V2SID}}))
+    t = A._turn_new(LOGIN, chat, "2026-09-02", None, "programmer")
+    return t, A._turn_attempt_opencode(t, "go")
+
+
+_, (err, retry) = run_v2([ev("session.execution.started", sessionID=V2SID),
+                          ev("session.step.failed", sessionID=V2SID,
+                             error={"message": "context too long"}),
+                          ev("session.execution.failed", sessionID=V2SID, error={})])
+check("a failed run is an error, in the step's words",
+      err and "context too long" in err, err)
+_, (err, retry) = run_v2([ev("session.text.delta", sessionID=V2SID,
+                             assistantMessageID="m", ordinal=0, delta="half")])
+check("a stream that stops before the run ends is retryable, not an answer",
+      err and "part way" in err and retry, (err, retry))
+_, (err, retry) = run_v2([ev("permission.asked", sessionID=V2SID,
+                             permission="external_directory",
+                             patterns=["/etc/*"])])
+check("a permission prompt ends the turn saying what was asked",
+      err and "external_directory" in err and "/etc/*" in err, err)
+
+print("\nGo running out is read from v2's retry notice")
+A._go_out.update(until=0, reset="")
+_saved_fb = A.OPENCODE_FALLBACK
+A.OPENCODE_FALLBACK = ""
+_, (err, retry) = run_v2([ev("session.retry.scheduled", sessionID=V2SID, attempt=1,
+                             error={"message": "weekly usage limit reached. It will "
+                                               "reset in 2 days 3 hours."})])
+check("Go's limit stops the turn and says when it is back",
+      err and A._go_is_out() and "2 days 3 hours" in (A._go_out["reset"] or ""),
+      (err, A._go_out))
+A._go_out.update(until=0, reset="")
+A.OPENCODE_FALLBACK = _saved_fb
+
+print("\nthe local engine names its model on its own session")
+A.OPENCODE_FALLBACK = "home/gemma4:12b-it-qat"
+check("v2 spells the local model as {providerID, id}",
+      A._opencode_local_model() == {"providerID": "home", "id": "gemma4:12b-it-qat"},
+      A._opencode_local_model())
+A._go_out.update(until=time.time() + 3600, reset="1 hour")
+made_bodies = []
+A.requests = Recorder(
+    get=lambda u, kw: (FakeResp(lines=sse([ev("session.execution.succeeded",
+                                              sessionID=V2SID)]))
+                       if u.endswith("/api/event")
+                       else FakeResp(ok=False, status=404)),
+    post=lambda u, kw: (made_bodies.append(kw.get("json"))
+                        if u.endswith("/api/session") else None,
+                        FakeResp(payload={"data": {"id": V2SID}}))[1])
+t = A._turn_new(LOGIN, "homeweb:999000111:2026-09-03:dev", "2026-09-03", None,
+                "programmer")
+err, _ = A._turn_attempt_opencode(t, "hola")
+check("with Go out, the local session is made with the local model",
+      err is None and made_bodies and made_bodies[0].get("model")
+      == {"providerID": "home", "id": "gemma4:12b-it-qat"}, (err, made_bodies))
+A._go_out.update(until=0, reset="")
+A.OPENCODE_FALLBACK = _saved_fb
+
+print("\nthe watch counts `execute` failing, which v2 reports as a success")
+w = A._LocalWatch()
+for i in range(A.LOCAL_ERROR_LIMIT):
+    w.tool({"id": f"x{i}", "tool": "execute",
+            "state": {"status": "running", "input": {"code": f"{{\"code\": {i}}}"}}})
+    w.tool({"id": f"x{i}", "tool": "execute",
+            "state": {"status": "error", "input": {"code": f"{{\"code\": {i}}}"},
+                      "output": "Unexpected token (2:8)"}})
+check("four failures in a row, each spelled differently, is a failed turn",
+      "fail in a row" in w.why and w.reason[0] == "programmer.local_why_errors", w.why)
+w = A._LocalWatch()
+for i, st in enumerate(["error", "error", "completed", "error", "error"]):
+    w.tool({"id": f"y{i}", "tool": "execute",
+            "state": {"status": "running", "input": {"code": str(i)}}})
+    w.tool({"id": f"y{i}", "tool": "execute",
+            "state": {"status": st, "input": {"code": str(i)}, "output": ""}})
+check("  but a success in between starts the count again", not w.why, w.why)
+
+print("\nrecovery reads v2's history, which is newest first")
+_hist = {"data": [
+    {"type": "idle", "outcome": "succeeded", "time": {"created": 30}},
+    {"type": "assistant", "time": {"created": 20, "completed": 25000},
+     "content": [{"type": "reasoning", "text": "hmm"},
+                 {"type": "text", "text": "Done: the fix is in."}]},
+    {"type": "user", "text": "fix it", "time": {"created": 10}},
+]}
+_msgs = A._oc2_as_v1_messages(_hist)
+check("it becomes v1's shape, oldest first",
+      [m["info"]["role"] for m in _msgs] == ["user", "assistant"], _msgs)
+check("and the finished answer is found",
+      A._opencode_unfiled(_msgs, 0) == ("Done: the fix is in.", 25000),
+      A._opencode_unfiled(_msgs, 0))
 
 print("\nreadiness reads the agent list on either surface")
 for field, surface in (("name", "v1"), ("id", "v2")):
@@ -535,17 +658,67 @@ for field, surface in (("name", "v1"), ("id", "v2")):
     # shapes are here because the unwrap is as easy to get wrong as the field.
     rows = [{field: A.OPENCODE_AGENT}, {field: "build"}]
     A.requests = Recorder(get=lambda u, kw, r=rows, s=surface: FakeResp(
-        ok=True, payload=({"data": r} if s == "v2" else r)))
+        ok=True, payload=({"data": [] if u.endswith("/api/mcp") else r}
+                          if s == "v2" else r)))
     check("  %s names the agent by `%s`" % (surface, field),
           A._opencode_ready(BASE),
           "a field name guessed wrong reads exactly like the agent missing")
 A.OPENCODE_API = "v2"
+_saved_wait = A.OPENCODE_READY_WAIT_S
+A.OPENCODE_READY_WAIT_S = 0
 A._OPENCODE_READY.clear()
 A.requests = Recorder(get=lambda u, kw: FakeResp(
     ok=True, payload={"data": [{"id": "build"}, {"id": "plan"}]}))
 check("  and an opencode without it is not ready", not A._opencode_ready(BASE))
+A.OPENCODE_READY_WAIT_S = _saved_wait
 
-A.OPENCODE_API = _saved_api
+# v2 evicts a directory nobody has used for a while and rebuilds it on the next
+# request, answering that request with nothing, then part of the list. Read
+# once, that was "no agent" -- and a Go retry went to the assistant.
+_loading = iter([[], [{"id": "build"}], [{"id": "build"}, {"id": A.OPENCODE_AGENT}]])
+A._OPENCODE_READY.clear()
+rec_load = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": (
+    [] if u.endswith("/api/mcp") else next(_loading))}))
+A.requests = rec_load
+check("  a directory still loading is waited for, not taken for a missing agent",
+      A._opencode_ready(BASE, "/ws/user1"), f"{len(rec_load.gets)} calls")
+check("  and it is asked about the member's own directory",
+      all((kw.get("params") or {}).get("location[directory]") == "/ws/user1"
+          for _, kw in rec_load.gets)
+      and [u for u, _ in rec_load.gets].count(BASE + "/api/agent") == 3,
+      rec_load.gets)
+
+# Then its MCP servers come up `pending`, and `connected` a moment later. A turn
+# that started in between was given no household tools and made an answer up.
+_mcp = iter([[{"name": "alfred", "status": {"status": "pending"}}],
+             [{"name": "alfred", "status": {"status": "connected"}}]])
+A._OPENCODE_READY.clear()
+rec_mcp = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": (
+    next(_mcp) if u.endswith("/api/mcp") else [{"id": A.OPENCODE_AGENT}])}))
+A.requests = rec_mcp
+check("  and its household tools are waited for until they connect",
+      A._opencode_ready(BASE, "/ws/user1")
+      and [u for u, _ in rec_mcp.gets].count(BASE + "/api/mcp") == 2,
+      rec_mcp.gets)
+A._OPENCODE_READY.clear()
+A.requests = Recorder(get=lambda u, kw: FakeResp(ok=True, payload={"data": (
+    [{"name": "alfred", "status": {"status": "failed", "error": "refused"}}]
+    if u.endswith("/api/mcp") else [{"id": A.OPENCODE_AGENT}])}))
+check("  but tools that failed do not keep the Programmer from coding",
+      A._opencode_ready(BASE, "/ws/user1"))
+A._OPENCODE_READY.clear()
+A.requests = Recorder(get=lambda u, kw: FakeResp(ok=False, status=401))
+check("  nor one that refuses the password", not A._opencode_ready(BASE))
+A.OPENCODE_API = "v1"
+A._OPENCODE_READY.clear()
+_page = FakeResp(ok=True)
+_page.headers = {"content-type": "text/html; charset=utf-8"}
+A.requests = Recorder(get=lambda u, kw: _page)
+check("  nor OpenCode 2 asked as v1, which answers with its web page",
+      not A._opencode_ready(BASE))
+
+A.OPENCODE_API, A.OPENCODE_PASSWORD = _saved_api, _saved_pw
+A._OPENCODE_READY.clear()
 
 
 print("\nthe model's thinking is not the answer")

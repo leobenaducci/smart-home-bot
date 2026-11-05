@@ -224,7 +224,6 @@
   "admin.models.roster": "この家が使えるモデル",
   "admin.models.roster_intro": "100万トークンあたり。自前のハードウェアで動くものはトークン単価ゼロ — かかるのは電気代です。",
   "admin.models.saved": "保存しました。次のデプロイで助手に反映されます。",
-  "admin.models.source_freetoken": "FreeToken（自前のハードウェア）",
   "admin.models.source_ollama_cloud": "Ollama クラウド（ollama.com）",
   "admin.models.source_ollama_local": "Ollama（自分のハードウェア）",
   "admin.models.source_ollama_vision": "ビジョン用の2つ目のollama",

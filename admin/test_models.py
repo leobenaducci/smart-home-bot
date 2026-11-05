@@ -1151,14 +1151,14 @@ check("the rate is kept, so the page can show it before anybody presses Test",
 # one rather than accumulating -- that is the whole shape of the file.
 _scores_dir = tempfile.mkdtemp()
 _scores = pathlib.Path(_scores_dir) / "model-scores.json"
-M.record_score(_scores, "events", "freetoken:x",
+M.record_score(_scores, "events", "openai-compatible:x",
                {"score": 3, "max": 4, "ok": False, "ms": 900, "steps": []})
 check("a score survives a write and a read",
-      M.load_scores(_scores)["events"]["freetoken:x"]["score"] == 3)
-M.record_score(_scores, "events", "freetoken:x",
+      M.load_scores(_scores)["events"]["openai-compatible:x"]["score"] == 3)
+M.record_score(_scores, "events", "openai-compatible:x",
                {"score": 4, "max": 4, "ok": True, "ms": 800, "steps": []})
 check("and the newer run replaces it rather than piling up",
-      M.load_scores(_scores)["events"]["freetoken:x"]["score"] == 4
+      M.load_scores(_scores)["events"]["openai-compatible:x"]["score"] == 4
       and len(M.load_scores(_scores)["events"]) == 1)
 M.record_score(_scores, "events", "ollama:qwen3.5:4b",
                {"score": 1, "max": 4, "ok": False, "ms": 700, "steps": []})

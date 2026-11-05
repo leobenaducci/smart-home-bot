@@ -224,7 +224,6 @@
   "admin.models.roster": "Ce que cette maison peut atteindre",
   "admin.models.roster_intro": "Par million de jetons. Ce qui tourne sur votre matériel ne coûte rien par jeton : cela coûte de l'électricité.",
   "admin.models.saved": "Enregistré. L'assistant le prendra au prochain déploiement.",
-  "admin.models.source_freetoken": "FreeToken (votre propre matériel)",
   "admin.models.source_ollama_cloud": "Ollama cloud (ollama.com)",
   "admin.models.source_ollama_local": "Ollama, sur votre propre matériel",
   "admin.models.source_ollama_vision": "Un second ollama, pour la vision",

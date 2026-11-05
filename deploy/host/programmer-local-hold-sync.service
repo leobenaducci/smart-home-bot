@@ -1,0 +1,9 @@
+# Run by programmer-local-hold.path whenever the admin page writes the hold
+# file: starts the hold when it names a time still ahead, stops it otherwise.
+[Unit]
+Description=The Programmer's local model (apply the admin page's reservation)
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/home-stack/programmer-local.env
+ExecStart=%h/.config/home-stack/programmer-local.sh sync

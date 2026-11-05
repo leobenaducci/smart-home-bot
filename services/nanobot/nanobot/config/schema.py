@@ -375,7 +375,7 @@ class ProvidersConfig(Base):
     qianfan: ProviderConfig = Field(default_factory=ProviderConfig)  # Qianfan (百度千帆)
     together_ai: ProviderConfig = Field(default_factory=ProviderConfig)  # Together AI
     nanogpt: ProviderConfig = Field(default_factory=ProviderConfig)  # NanoGPT (nano-gpt.com)
-    # Three this stack writes into config.json that upstream does not declare.
+    # Two this stack writes into config.json that upstream does not declare.
     # `extra` is Pydantic's default `ignore`, so the blocks were parsed away in
     # silence and `_resolve_alt_provider`'s `getattr(config.providers, name)`
     # returned None -- leaving api_key and api_base both unset, which
@@ -383,10 +383,9 @@ class ProvidersConfig(Base):
     # "no-key". Every turn on one of these answered "Incorrect API key
     # provided: no-key", naming a provider the household never configured.
     #
-    # It is why FreeToken had never served a single turn here: not the engine,
-    # not the URL, not the wake path -- the block was being dropped before
-    # anything tried to use it.
-    freetoken: ProviderConfig = Field(default_factory=ProviderConfig)  # local MoE engine
+    # It is why FreeToken (a local engine, retired 2026-11-05) had never
+    # served a single turn here: not the engine, not the URL, not the wake
+    # path -- the block was being dropped before anything tried to use it.
     ollama_cloud: ProviderConfig = Field(default_factory=ProviderConfig)  # ollama.com
     openai_compatible: ProviderConfig = Field(default_factory=ProviderConfig)  # any OpenAI-compatible URL
 

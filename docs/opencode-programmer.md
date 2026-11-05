@@ -83,10 +83,12 @@ Three reasons, in order of how much they cost to get wrong:
 
 It binds `127.0.0.1` and that is not a tidy default — it is the whole
 protection. **This is an agent with a shell.** Anything that can reach the port
-can run `bash` as whoever started the unit, with no authentication in front of
-it. opencode has an `OPENCODE_SERVER_PASSWORD`, which is HTTP basic auth over
-plain HTTP; it is not a substitute for not listening. Containers that need it
-reach it through `host.docker.internal`, which is this same loopback.
+can run `bash` as whoever started the unit. It does have a password since
+2026-10-28 -- `OPENCODE_SERVER_PASSWORD`, derived by the deployer, because
+OpenCode 2 refuses everything without one (see "Two opencodes") -- but that is
+HTTP basic auth over plain HTTP, and it is not a substitute for not listening.
+Containers that need it reach it through `host.docker.internal`, which is this
+same loopback.
 
 ## The broker is not optional
 
@@ -149,13 +151,18 @@ request #10 did on 2026-09-30.
 The model runs on the host, on demand, on the Studio's card:
 
 - opencode knows it as the `home` provider at `127.0.0.1:11460`
-  (`build_opencode_config`), an address on this machine and no key.
+  (`build_opencode_config`), an address on this machine. The model asks for a
+  key (`derive_programmer_local_key`, from `PROXY_SHARED_SECRET`); opencode's
+  config names it as `{env:PROGRAMMER_LOCAL_API_KEY}` and the value sits in
+  `opencode-providers.env` with the other credentials, so the config still
+  holds none.
 - `programmer-local.socket` holds that port. The first request starts
   `programmer-local.service`, which pauses the Studio (reason `programmer`, so
   its page says the card is lent, not that a parent stopped it), **waits for the
   running job to finish** -- a video shot can take ~25 minutes, and waiting is
   what the household chose over refusing -- then serves the model with the
-  house's llama.cpp build and waits until it answers.
+  house's llama.cpp build, or with Strata (`engine: strata`, below), and waits
+  until it answers.
 - `programmer-local-proxy.service` forwards to it and exits after fifteen idle
   minutes; the model's unit is `StopWhenUnneeded`, so it stops too, and its
   stop resumes the Studio.
@@ -208,6 +215,45 @@ The model is picked on the admin page, in the Programmer card of **Models**
 `alfred-mcp` and `home-core` for deploy. Candidates are compared on the
 **coding benchmark** (`docs/coding-benchmark.md`), whose ★ on a llama.cpp run
 sets the same thing.
+
+### Two engines: llama.cpp and Strata
+
+`cloud.opencode.fallback.engine` is `llamacpp` (the default) or `strata`.
+Strata is a container (`STRATA_IMAGE` in `deploy.py`, pinned) with its own
+llama.cpp, the only engine for Qwen3.8-Flash-Next's files. `model` then names
+the first part of a split `.gguf` under the models directory; the folder
+holding it is mounted read-only and Strata reads the model from the files.
+Its engine, settings and speculative-decoding draft layer live in the
+`programmer-local-strata` volume, so the **first start downloads ~5 GB and
+prepares the model once** (several minutes); later starts load in ~80 s. The
+script's readiness wait allows ten minutes for that.
+
+Measured on one 3060 with 64 GB of RAM: Qwen3.8-Flash-Next-Coder IQ1_M (58 GB
+of files) takes 11.3 GB of the card and ~26 GB of RAM at a 32k-128k window, at
+24-32 tokens/s. It passed all five coding problems in pi where the best model that fits
+the card whole passed three -- the only model here allowed to spill onto the
+CPU, because it is the one that earned it.
+
+### Reserving the card for coding, and the LAN
+
+The coding benchmark page's Programmer card has **Reserve the card for coding**
+(1-12 hours) and *Give the card back*. The page writes the time to
+`<paths.state>/admin/programmer-local/hold.json`; the page cannot reach
+systemd, so a user `.path` unit on the host watches that file
+(`programmer-local-hold.path` -> `programmer-local.sh sync`) and starts or
+stops `programmer-local-hold.service`. That unit *requires* the model, so it
+loads it -- after the Studio's running job, as for a turn -- and keeps it up
+until the time, whatever the traffic. A release writes `until: 0` rather than
+deleting the file, so the `.path` sees it; the model then goes as soon as the
+idle proxy is not holding it.
+
+While reserved, `programmer-local-lan.socket` listens on port 11462 -- on every
+address when `cloud.opencode.fallback.lan` is true, loopback otherwise -- and
+forwards to the model with no idle exit. Its own port on purpose: the on-demand
+socket on 11460 starts the model, and a LAN that could do that would let
+anything on the network take the Studio's card. The model asks every caller
+for the key, which the page shows on request, along with the steps to point
+pi at it.
 
 ### The other way round: the local model first
 
@@ -428,57 +474,85 @@ re-decided when somebody presses Stop. The readiness check is cached for a
 minute, so it can flip mid-turn — and a cancel that asked again could abort an
 opencode session for a turn nanobot is running.
 
-## Two surfaces, and why this one
+## Two opencodes
 
-`cloud.opencode.api` picks the surface HomeCore talks to. It is `v1`.
+`cloud.opencode.api` names which opencode is installed: `v1` is OpenCode 1
+(1.18.x), `v2` is OpenCode 2 (2.x). They are two programs behind one binary
+name and they share no routes.
 
-**Read the name carefully: `v2` here is the `/api/*` routes on the OpenCode
-*1* binary, and it is not OpenCode 2.** The two are different programs.
-OpenCode 1 is `opencode-ai` on npm — `latest` is 1.18.27, which is what
-`~/.opencode/bin/opencode` and the systemd units run. OpenCode 2 is
-`@opencode-ai/cli`, whose binary is literally named `opencode2`, which
-installs alongside rather than over the top, and which is in beta and moved
-from Bun to Node. It is **not installed here**, and nothing in this stack has
-ever pointed at it.
+**How that bit.** On 2026-10-22 OpenCode 2 was installed over
+`~/.opencode/bin/opencode` (its installer replaces `opencode` and adds an
+`opencode2` wrapper next to it). The running servers kept the old process until
+the reboot on 10-24, then crash-looped -- `--log-level INFO` is a startup error
+on 2, which wants `info` -- 2,650 times, and the Programmer answered as the
+assistant for four days, because the portal's readiness check falls back
+quietly. Two things now say so out loud: the deploy asks the binary the unit
+actually starts (`_opencode_version_mismatch`, drop-ins included) and refuses to
+restart a server whose version disagrees with this setting; and the portal logs
+a 401, or v2's web page answering a v1 path, as what it is rather than as
+"unreachable".
 
-That distinction is the whole context for what follows. The 1.18.27 binary
-serves `/api/*` — it answers, which is exactly why the routes were taken at
-face value — but on that binary they are a preview, and everything below is a
-measurement of *that*, not of OpenCode 2. Whether OpenCode 2 has the same
-shape, the same behaviour or the same bugs is simply unknown; no claim here
-should be read as one about it.
+Until 2026-10-28 `v2` meant something else: the `/api/*` routes on the 1.18
+binary, a preview that never mounted MCP tools and sometimes admitted prompts it
+never ran. That client is gone; nothing here drives that surface any more.
 
-With that said, the two surfaces on 1.18.27 behave differently in ways that
-only show up against a running server.
-
-| | v1 (`/…`) | the `v2` key (`/api/…`, still the 1.18.27 binary) |
+| | v1 (OpenCode 1.18) | v2 (OpenCode 2.1.3) |
 |---|---|---|
-| session | `POST /session` | `POST /api/session` (`agent` and `location` on the *session*) |
-| prompt | `POST /session/:id/prompt_async` | `POST /api/session/:id/prompt` |
-| events | `GET /event`, global | `GET /api/session/:id/event`, per session |
-| answer | `message.part.delta`, token by token | `session.next.text.ended`, whole |
+| auth | none required | **required**: basic auth, user `opencode`; given no password the server invents one per start |
+| session | `POST /session?directory=` | `POST /api/session {agent, title, location: {directory}, model?}` |
+| prompt | `POST /session/:id/prompt_async {agent, parts, model?}` | `POST /api/session/:id/prompt {text}` |
+| events | `GET /event?directory=` | `GET /api/event`, global -- filtered by `data.sessionID` |
+| answer | `message.part.delta` (type from `message.part.updated`) | `session.text.delta`; thinking is `session.reasoning.*` |
+| turn over | `session.idle` | `session.execution.succeeded` / `.failed` / `.interrupted` |
+| Go out | `session.status` of type `retry` | `session.retry.scheduled`, Go's words in `error.message` |
 | stop | `/abort` | `/interrupt` |
-| **MCP tools** | **mounted** | **absent** |
+| history | `/session/:id/message`, oldest first, `{info, parts}` | `/api/session/:id/message`, newest first, `{type, content}` |
+| ready | `/global/health` | `/api/info`, which names its version |
+| MCP tools | each its own tool | **one `execute` tool** running JavaScript: `return await tools.alfred.list_projects()` |
 
-The last row is why. On 1.18.27 an `/api` session resolves opencode's own
-thirteen tools and none of the MCP ones, while `GET /mcp` cheerfully reports
-`{"alfred": {"status": "connected"}}` — the server *has* the connection, the
-session just never gets the tools. The same agent, the same config file and the
-same model on v1 calls `alfred_list_projects` on the first turn. So v2 costs
-the Programmer the broker, the share and the delegation — and leaves `bash`,
-which means git without the broker: precisely the bypass the whole design is
-built to prevent.
+Measured against 2.1.3 on 2026-10-28, on a copy of opencode's data and a
+spare port:
 
-Two things were learned getting there, both of which look like an outage rather
-than a mistake:
+- **It reads the v1 config as it is.** `opencode.json`'s `permission` becomes
+  `permissions` (`bash` rules become `shell` ones, order kept) and `provider`
+  becomes `providers`; the agent file and its front-matter model load
+  unchanged. The git refusals hold: a bare probe agent was refused
+  `git commit` and `git -C` ("Permission denied: shell") and allowed
+  `git branch --show-current` -- and `execute`'s JavaScript cannot reach the
+  shell at all.
+- **Household tools come only through `execute`.** Denying `execute` to an
+  agent does not hand the tools over one by one; it removes them, and the model
+  went hunting for "alfred" with the shell, grep, skills and finally a
+  subagent. With it, gemma4:12b wrapped its JavaScript in JSON about twenty
+  times, each spelled a little differently, before opencode injected a hint --
+  which the same-call rule could not catch. Hence the agent prompt's
+  "Calling your household tools" paragraph, and `_LocalWatch` counting tool
+  errors in a row (`execute` reports failed JavaScript as a *success* with
+  `metadata.error`). Kimi on Go has not been measured on it yet.
+- **The stream goes first.** `/api/event` answers at once (`server.connected`),
+  so it is opened before the prompt is posted -- the opposite of 1.18's
+  per-session stream, which sent no headers until its session had an event.
+- **The local engine works.** A session's model is set when it is made, and
+  the local engine has its own session (`local:<chat_id>`), so it is made with
+  `{providerID, id}` and Go's is left to the agent's front matter.
+- **Rolling back is a binary swap.** The first v2 start migrates
+  `~/.local/share/opencode/opencode.db`; 1.18.27 still opened a migrated copy
+  (healthy, the agent listed, the MCP bridge connected, all sessions read).
 
-- **v2's per-session stream sends nothing until its session has an event** —
-  response headers included. Open it before posting the prompt, the way v1
-  requires, and the request blocks on the very event it is waiting to cause.
-  The turn dies at the read timeout, 310s later, against a server that is
-  perfectly healthy. So on v2 the prompt goes first, and the stream is opened
-  with `after=admittedSeq-1`, which replays it. `admittedSeq` comes back from
-  the prompt, and every event carries a durable sequence.
+The password is derived (`derive_opencode_password`, the crawl4ai shape): the
+deployer writes it into each member's `opencode-serve-<member>.env`, the portal
+gets it as `OPENCODE_PASSWORD`, and Caddy sends it on to opencode's own
+interface on `dns.code` as `OPENCODE_BASIC_AUTH`, after the portal's ticket
+check. It is basic auth over loopback HTTP: a second lock, not the boundary.
+
+**Switching** is `cloud.opencode.api: v2`, then `./home-stack install --opencode`
+once (the unit and the readiness script changed), then deploying `alfred-mcp`
+(the env files, a restart) and `home-core` (the portal and Caddy). Every
+Programmer conversation then starts a new opencode session -- a stored one
+records which opencode made it -- and the handover text carries what was said.
+
+v1's own two traps are still worth knowing:
+
 - **v1's `/event` is global but not unscoped.** Without `?directory=`, it
   accepts the connection, holds it open and delivers nothing: 0 events against
   41 with. From the portal this is indistinguishable from a model thinking for
@@ -492,7 +566,9 @@ system?, tools?, parts}`), `POST /session/:id/abort` and `GET /event`, and this
 client matches all of it. What the page does **not** mention is the `directory`
 and `workspace` query parameters — and 1.18.27's own OpenAPI (`GET /doc`)
 carries them on `/session`, `/session/:id/prompt_async`, `/session/:id/abort`
-and `/event` alike. Believe the running binary's spec over the page.
+and `/event` alike. Believe the running binary's spec over the page. (OpenCode
+2's is `GET /openapi.json`, behind the password; its event types are not in it
+at all, and were read off the binary.)
 
 That difference is not academic for `/event`, which is why the scoping above is
 there. It is **not** needed for `abort`: tested both ways against a live turn,
@@ -501,49 +577,6 @@ immediately and takes the session to `session.idle`. So `_opencode_abort` sends
 none, and that is a checked fact rather than an inference from the spec —
 having the parameter listed says nothing about whether omitting it is silently
 wrong, which is exactly the trap `/event` set.
-
-One thing the page has that this stack does not use: `OPENCODE_SERVER_PASSWORD`
-(with `OPENCODE_SERVER_USERNAME`, default `opencode`) puts HTTP auth in front
-of the server. Today the only thing between a caller and an agent with a shell
-is the loopback bind — see "The port is the security boundary" above. Worth
-considering as a second lock; it would mean the secret joining the env file and
-the header joining every call HomeCore makes.
-
-There is a third reason, found while trying to settle what ends an `/api` turn:
-**those prompts are sometimes admitted and never run.** `POST /api/session/:id/prompt`
-answers 200 with an `admittedSeq`, and then nothing happens — no `loop`, no
-`stream`, no event, no error, on a server whose v1 sessions answer in under two
-seconds on the same agent and the same model. It is intermittent: the same call
-worked repeatedly an hour earlier. Intermittent is worse than broken, because
-the fallback never fires — readiness passes, the turn is routed to opencode,
-and the person waits out the read timeout.
-
-Which is why `session.next.step.ended` as the terminator is still unverified.
-It looks per-*step* rather than per-turn, and a turn that called one of
-opencode's native tools first would end the read after the tool step and return
-an empty answer. The turn needed to prove it is exactly the turn that would not
-run. Confirm it against a build where v2 turns start reliably before flipping
-the key; guessing a terminator is how a turn ends early and looks like a model
-with nothing to say.
-
-The client for that surface is kept, tested and one config key away
-(`cloud.opencode.api: v2`), because none of the above is wrong about the
-routes themselves. What it is waiting on is no longer "1.18.27 mounting MCP
-tools on `/api`" but **OpenCode 2**, where those routes are the real product
-rather than a preview — an install (`@opencode-ai/cli`, beta), a unit pointed
-at `opencode2`, and every measurement in this section taken again from
-scratch. Its agent format, its config file and its MCP block may all differ;
-upstream says v1 integrations may need rewriting. `test_opencode_programmer.py`
-pins both surfaces, including the ordering, since a stream opened in the wrong
-order is a deadlock rather than a failure.
-
-Flipping the key starts every conversation a new session, because the stored
-one records which surface made it. That is not tidiness: v2 carries the agent
-on the *session* — its prompt body has no `agent` field — so a session made on
-v1 has none, and answering out of it would be opencode's own `build` persona in
-its own voice, reported nowhere. The stored working directory is checked the
-same way and for the same kind of reason: v1's stream is scoped to it, so a
-session living in a directory nobody is listening on is 310s of silence.
 
 Agents are also listed under different names: v1's `/agent` returns a bare list
 whose entries carry `name`, v2's `/api/agent` returns `{location, data}` whose

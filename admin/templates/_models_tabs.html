@@ -1,0 +1,17 @@
+{# The Models page's tabs: its settings, the Code space (its model, the local
+   one, and the coding benchmark), and the catalog (the benchmark and every
+   model with its price). Three routes, one row, so
+   the coding page reads as part of Models rather than a page behind a button.
+   `view` is "settings", "catalog" or "coding". #}
+<style>
+  .subtabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--edge);
+             overflow-x: auto; }
+  .subtabs a { padding: 7px 12px; text-decoration: none; color: var(--ink-soft); white-space: nowrap;
+               border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .subtabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--live); font-weight: 600; }
+</style>
+<nav class="subtabs" aria-label="{{ t('admin.nav.models') }}">
+  <a href="{{ url_for('models_page') }}"{% if view not in ('catalog', 'coding') %} aria-current="page"{% endif %}>{{ t('admin.models.tab_settings') }}</a>
+  <a href="{{ url_for('codebench_page') }}"{% if view == 'coding' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_coding') }}</a>
+  <a href="{{ url_for('models_catalog') }}"{% if view == 'catalog' %} aria-current="page"{% endif %}>{{ t('admin.models.tab_catalog') }}</a>
+</nav>

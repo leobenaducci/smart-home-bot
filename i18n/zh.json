@@ -224,7 +224,6 @@
   "admin.models.roster": "这个家可以使用的模型",
   "admin.models.roster_intro": "每百万 token 计。在自有硬件上运行的按 token 不计费——计的是电费。",
   "admin.models.saved": "已保存。助手将在下次部署时采用。",
-  "admin.models.source_freetoken": "FreeToken（自有硬件）",
   "admin.models.source_ollama_cloud": "Ollama 云（ollama.com）",
   "admin.models.source_ollama_local": "Ollama（你自己的硬件）",
   "admin.models.source_ollama_vision": "第二个 ollama，用于视觉",

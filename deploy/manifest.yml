@@ -123,7 +123,7 @@ services:
           # unset, and empty is the switch: the Programmer says it is not
           # configured rather than linking to a name nothing resolves.
           CODE_NAME: "{dns.code}"
-          # Which of opencode's two HTTP surfaces to drive.
+          # Which opencode is installed: OpenCode 1 or OpenCode 2.
           OPENCODE_API: "{derived.opencode_api}"
           # The Programmer's local model when OpenCode Go is out, as opencode
           # names it (`home/<model>`), or empty (cloud.opencode.fallback).
@@ -405,7 +405,10 @@ services:
                  NANOBOT_DEBUG_SECRET, MENU_DEVICE_TOKEN,
                  # Derived (derive_studio_secret); the Studio page only uses it
                  # when STUDIO_URL says the studio is on.
-                 STUDIO_SECRET]
+                 STUDIO_SECRET,
+                 # Derived (derive_opencode_password): the portal and Caddy
+                 # present it to every member's opencode serve.
+                 OPENCODE_PASSWORD, OPENCODE_BASIC_AUTH]
       # Per-member, expanded from services.nanobot.members
       per_member: ["NANOBOT_API_SECRET_{M}"]
 
@@ -740,8 +743,6 @@ services:
           # than deployed -- the same relationship the stack has with Ollama.
           # Its own slot, so `openai-compatible:` stays free for whatever else
           # speaks that API.
-          FREETOKEN_URL: "{derived.freetoken_url}"
-          FREETOKEN_API_KEY: "{derived.freetoken_api_key}"
           # The second ollama, for vision/OCR. Empty when it is switched off:
           # nanobot reads every string for ${...} and refuses to start on an
           # unset reference, so the variable has to exist either way.
@@ -1015,8 +1016,6 @@ services:
           # than deployed -- the same relationship the stack has with Ollama.
           # Its own slot, so `openai-compatible:` stays free for whatever else
           # speaks that API.
-          FREETOKEN_URL: "{derived.freetoken_url}"
-          FREETOKEN_API_KEY: "{derived.freetoken_api_key}"
           # The second ollama, for vision/OCR. Empty when it is switched off:
           # nanobot reads every string for ${...} and refuses to start on an
           # unset reference, so the variable has to exist either way.

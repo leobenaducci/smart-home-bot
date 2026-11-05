@@ -350,6 +350,29 @@ check("nor a hosted model, a typed URL or the flat plan",
 check("and the rule is Private's alone: other roles may still go hosted",
       not A._not_local_for("everyday", "gpt-6-luna") and not A._not_local_for("private", ""))
 
+print("\nA hosted benchmark row names its cloud")
+check("a bare model is OpenCode Zen", A._bench_host({}, "deepseek-v4-flash") == "OpenCode Zen")
+check("a prefix names its provider, in any case",
+      A._bench_host({}, "nanogpt:deepseek/x") == "NanoGPT"
+      and A._bench_host({}, "Together:a/b") == "Together AI"
+      and A._bench_host({}, "ollama-cloud:gemma4:31b") == "Ollama cloud")
+check("an OpenAI-compatible server is called what the household called it",
+      A._bench_host({"cloud": {"openai_compatible": {"label": "the GPU box"}}},
+                    "openai-compatible:m") == "the GPU box")
+
+print("\nA local benchmark row names its quantization")
+_q = {"quant:gemma4:e4b": "Q4_K_M", "quant:gemma4:e4b-it-q8_0": "Q8_0"}
+B = A.model_bench
+check("a bare tag gets the server's quantization",
+      B.quant_chip("ollama:gemma4:e4b", "gemma4:e4b", _q) == "Q4_K_M")
+check("the server wins over the tag, and the tag is the fallback",
+      B.quant_chip("ollama:gemma4:e4b-it-q8_0", "gemma4:e4b-it-q8_0", _q) == "Q8_0"
+      and B.quant_chip("ollama:hf.co/a/b:Q4_K_M", "a/b:Q4_K_M", {}) == "Q4_K_M"
+      and B.quant_chip("ollama:x:1b", "x:1b", None) == "")
+check("the tag loses its quantization and -it",
+      [B.split_tag(t) for t in ("e2b-it-q8_0", "e4b-it-bf16", "Q4_K_M", "8b-a1b-q8_0", "1.7b-bf16", "12b", "e4b")]
+      == [("e2b", "Q8_0"), ("e4b", "BF16"), ("", "Q4_K_M"), ("8b-a1b", "Q8_0"), ("1.7b", "BF16"), ("12b", ""), ("e4b", "")])
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))

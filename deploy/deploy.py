@@ -20,6 +20,7 @@ never shipped, until this has run.
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import hashlib
 import json
@@ -438,12 +439,6 @@ MODEL_PROVIDERS = {
     # never heard of. One entry rather than one per vendor, because the only
     # thing that varies is the address -- see cloud.openai_compatible.
     "openai-compatible": "openai_compatible",
-    # A local MoE serving engine, and a slot of its own rather than a second
-    # use of `openai-compatible:`. There is exactly one of those, and spending
-    # it on FreeToken would mean a household running FreeToken can no longer
-    # point at a vLLM box, an LM Studio, or the provider this package has never
-    # heard of -- which is the whole job that entry exists for.
-    "freetoken": "freetoken",
     # A second ollama, for vision/OCR. Its own prefix rather than a flag on
     # `ollama:`, because it is a different server: OLLAMA_NUM_PARALLEL and
     # OLLAMA_CONTEXT_LENGTH are server-global, so the only way to give the text
@@ -616,8 +611,6 @@ def model_endpoint(cfg: dict, secrets: dict, value: str,
                 url = urlunsplit(parsed._replace(netloc=netloc))
     elif provider == "openai_compatible":
         url, key = openai_compatible_endpoint(cfg, secrets)
-    elif provider == "freetoken":
-        url, key = freetoken_endpoint(cfg, secrets)
     elif provider in HOSTED_API_BASE:
         base, secret = HOSTED_API_BASE[provider]
         key = secrets.get(secret, "")
@@ -1105,38 +1098,9 @@ PROVIDER_REQUIREMENT = {
     "nanogpt": "the NANOGPT_API_KEY credential",
     "openai": "the OPENAI_API_KEY credential",
     "openai_compatible": "cloud.openai_compatible",
-    "freetoken": "cloud.freetoken",
     "ollama_vision": "cloud.ollama.vision",
 }
 
-
-def freetoken_endpoint(cfg: dict, secrets: dict) -> tuple[str, str]:
-    """(base url, api key) for `cloud.freetoken`, or ("", "").
-
-    Same shape as `openai_compatible_endpoint` and deliberately not the same
-    entry. FreeToken runs on the household's own hardware and is the sort of
-    thing that stays configured for months; the generic slot is where you put
-    whatever you are trying this week. Sharing one entry would make those two
-    mutually exclusive for no reason other than that both speak the same API.
-
-    The key is optional and genuinely so -- a serving engine on your own desk
-    usually has none -- which is why the provider spec carries `is_local`:
-    without it nanobot refuses to build a keyless provider.
-    """
-    conf = (cfg.get("cloud") or {}).get("freetoken") or {}
-    if not conf.get("enabled"):
-        return "", ""
-    url = str(conf.get("url") or "").strip().rstrip("/")
-    if not url:
-        raise DeployError(
-            "cloud.freetoken.enabled is true but its url is empty.\n"
-            "    Give it the server's base address, or switch it off.")
-    # Same normalisation, same reason: people paste both forms out of a
-    # provider's own docs and nanobot appends the path itself, so a trailing
-    # `/v1` becomes `/v1/v1/chat/completions` and 404s every turn.
-    if url.endswith("/v1"):
-        url = url[:-3]
-    return url, secrets.get("FREETOKEN_API_KEY", "")
 
 
 def alias_alfred_mcp_port(cfg: dict) -> None:
@@ -1227,28 +1191,23 @@ OPENCODE_PROVIDER_KEYS = (
 
 
 def opencode_api(cfg: dict) -> str:
-    """Which of opencode's two HTTP surfaces to drive: `v1` or `v2`.
+    """Which opencode is installed: `v1` (OpenCode 1, 1.18.x) or `v2`
+    (OpenCode 2, 2.x).
 
-    They are served by one process and are not a rename of each other. v2 puts
-    the agent and the working directory on the session, streams per session
-    rather than globally, and -- on 1.18.27 -- carries no text deltas, so an
-    answer arrives whole instead of word by word.
+    Two programs behind one binary name, and they share no routes: v1 serves
+    `/session` and a directory-scoped `/event`; v2 serves `/api/*`, requires a
+    password, and hands MCP tools to the model through one `execute` tool.
+    Installing OpenCode 2 over 1 changes which this must say, and nothing else
+    tells -- `_opencode_version_mismatch` asks the binary the unit starts, and
+    the deploy says so when the two disagree.
 
-    `v2` names the `/api/*` routes on the OpenCode **1** binary. It is not
-    OpenCode 2, which is a separate program (`@opencode-ai/cli`, binary
-    `opencode2`) this stack has never run.
-
-    **v1 is not the timid choice here.** On 1.18.27 an `/api` session resolves
-    opencode's own thirteen tools and none of the MCP ones, while `GET /mcp`
-    still reports the bridge connected -- so the Programmer loses the broker,
-    the share and delegation, and keeps `bash`, which is git without the
-    broker. Its prompts are also sometimes admitted and then never run. The
-    same agent and model on v1 calls `alfred_list_projects` on the first turn.
-    `docs/opencode-programmer.md` has the measurements.
+    (Before 2026-10-28 `v2` named the `/api/*` routes on the OpenCode 1
+    binary, an experimental surface that never mounted MCP tools. Nothing
+    here drives that any more.)
 
     Refused rather than defaulted when it is neither: a typo would quietly mean
     v1, and the household would be told nothing while wondering why the
-    Programmer still streams.
+    Programmer answers as the assistant.
     """
     given = ((cfg.get("cloud") or {}).get("opencode") or {}).get("api")
     # Absent means v1; anything *written* is read as written. `or "v1"` would
@@ -1258,9 +1217,43 @@ def opencode_api(cfg: dict) -> str:
     if raw not in ("v1", "v2"):
         raise DeployError(
             f"cloud.opencode.api is {raw!r}; it must be v1 or v2.\n"
-            f"    v1 streams word by word. v2 puts the agent on the session "
-            f"and answers in one piece.")
+            f"    v1 is OpenCode 1 (1.18.x), v2 is OpenCode 2 (2.x) -- "
+            f"whichever `opencode --version` says is installed.")
     return raw
+
+
+def _opencode_version_mismatch(target, member: str, cfg: dict) -> str:
+    """Why the installed opencode is not the one `cloud.opencode.api` names,
+    or "" when it is -- or when there is no way to tell.
+
+    OpenCode 2 installs over OpenCode 1 under the same name, and nothing else
+    notices: the unit crash-loops or serves routes the portal does not call,
+    and the Programmer quietly answers on the assistant. It did for four days
+    (2026-10-24 to 10-28). The binary asked is the one the unit actually
+    starts -- `OPENCODE_BIN` as systemd resolves it, drop-ins included -- not
+    whatever `opencode` the shell finds.
+    """
+    shown = target.run(
+        f"systemctl --user show -p Environment opencode-serve@{shlex.quote(member)}",
+        capture=True, check=False)
+    env_line = getattr(shown, "stdout", "") or ""
+    m = re.search(r"(?:^|\s)OPENCODE_BIN=(\S+)", env_line)
+    if not m:
+        return ""
+    ver = target.run(f"{shlex.quote(m.group(1))} --version 2>/dev/null",
+                     capture=True, check=False)
+    found = re.search(r"(\d+)\.\d+\.\d+", getattr(ver, "stdout", "") or "")
+    if not found:
+        return ""
+    major = int(found.group(1))
+    want = opencode_api(cfg)
+    if (want == "v1") == (major == 1):
+        return ""
+    return (f"{m.group(1)} is OpenCode {found.group(0)}, but cloud.opencode.api "
+            f"is {want}. Set cloud.opencode.api to "
+            f"{'v2' if major >= 2 else 'v1'} and deploy again, or point the "
+            f"unit's OPENCODE_BIN at an OpenCode {'1' if want == 'v1' else '2'} "
+            f"build.")
 
 
 def _opencode_restart_remedy(target) -> str:
@@ -1320,6 +1313,19 @@ def opencode_model(cfg: dict) -> str:
 OPENCODE_FALLBACK_PROVIDER = "home"
 OPENCODE_FALLBACK_PORT = 11460
 OPENCODE_FALLBACK_BACKEND = 11461
+# Where the model answers the LAN, while somebody has reserved the card for
+# coding from the admin page and the household switched `lan` on. A port of
+# its own: the loopback socket above starts the model on demand, and a LAN
+# that could do the same would let anything on the network take the card.
+OPENCODE_FALLBACK_LAN_PORT = 11462
+# The two engines that can serve it. Strata is a container with its own
+# llama.cpp, for the GGUFs only it runs (Qwen3.8-Flash-Next); pinned, because
+# the tag is what was measured here (5/5 on the coding problems, 2026-11-05).
+OPENCODE_FALLBACK_ENGINES = ("llamacpp", "strata")
+STRATA_IMAGE = "ghcr.io/niko1221/strata:0.2.11-cuda13"
+# The env var opencode reads the local model's key from ({env:...} in its
+# config), so the config itself stays free of credentials.
+OPENCODE_FALLBACK_KEY_ENV = "PROGRAMMER_LOCAL_API_KEY"
 _FALLBACK_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(:[A-Za-z0-9._-]{1,63})?"
                                 r"|/var/lib/home-stack/models/[\w./-]{1,300}\.gguf")
 
@@ -1350,13 +1356,82 @@ def opencode_fallback(cfg: dict) -> dict:
     first = conf.get("first", False)
     if not isinstance(first, bool):
         raise SystemExit("cloud.opencode.fallback.first is true or false")
+    lan = conf.get("lan", False)
+    if not isinstance(lan, bool):
+        raise SystemExit("cloud.opencode.fallback.lan is true or false")
+    engine = str(conf.get("engine") or "llamacpp").strip()
+    if engine not in OPENCODE_FALLBACK_ENGINES:
+        raise SystemExit(f"cloud.opencode.fallback.engine is {engine!r}: "
+                         + " or ".join(OPENCODE_FALLBACK_ENGINES))
+    if engine == "strata" and not model.endswith(".gguf"):
+        # Strata reads files, not Ollama's store: a split model is named by
+        # its first part, and the folder holding it is what it is given.
+        raise SystemExit("cloud.opencode.fallback: Strata serves a .gguf under "
+                         "/var/lib/home-stack/models, not an Ollama name")
     return {"model": model, "gpu": gpu, "context": context, "first": first,
+            "engine": engine, "lan": lan,
             "provider": OPENCODE_FALLBACK_PROVIDER, "port": OPENCODE_FALLBACK_PORT,
-            "backend": OPENCODE_FALLBACK_BACKEND}
+            "backend": OPENCODE_FALLBACK_BACKEND, "lan_port": OPENCODE_FALLBACK_LAN_PORT}
+
+
+def derive_programmer_local_key(shared_secret: str) -> str:
+    """The key the Programmer's local model asks of every caller: opencode on
+    this machine, and a coding client of the household's own on the LAN, which
+    the admin page shows it to. Derived like the Studio's, so a rotated
+    PROXY_SHARED_SECRET rotates it on the next deploy. Strata will not serve
+    without one, and the LAN listener must not serve without one either."""
+    return hashlib.sha256(f"{shared_secret}:programmer-local".encode()).hexdigest()
+
+
+def programmer_local_hold_file(cfg: dict) -> str:
+    """Where the admin page writes "keep the model up until": in its own state
+    directory, which it mounts at the same path, and which a user .path unit on
+    the host watches (programmer-local-hold.path). "" without a state path."""
+    state = str((base_paths(cfg) or {}).get("state") or "").rstrip("/")
+    return f"{state}/admin/programmer-local/hold.json" if state else ""
 
 
 PROGRAMMER_LOCAL_UNITS = ("programmer-local.socket", "programmer-local-proxy.service",
-                          "programmer-local.service")
+                          "programmer-local.service", "programmer-local-hold.service",
+                          "programmer-local-hold-sync.service",
+                          "programmer-local-lan-proxy.service")
+# Rendered rather than copied: each names a value only the config knows.
+PROGRAMMER_LOCAL_RENDERED = ("programmer-local-hold.path", "programmer-local-lan.socket")
+
+
+def render_programmer_local_units(fallback: dict, hold_file: str) -> dict[str, str]:
+    """The two units that carry a configured value: the .path watching the
+    admin page's hold file, and the LAN socket -- on every address when the
+    household switched `lan` on, else on loopback only (still useful: a client
+    on this machine, and the same unit either way)."""
+    listen = f"{'0.0.0.0' if fallback.get('lan') else '127.0.0.1'}:{fallback['lan_port']}"
+    return {
+        "programmer-local-hold.path": "\n".join([
+            "# Written by ./home-stack deploy. Watches the admin page's \"reserve the",
+            "# card for coding\" file; a change starts or stops the hold.",
+            "[Unit]",
+            "Description=The Programmer's local model (reservations from the admin page)",
+            "",
+            "[Path]",
+            f"PathModified={hold_file}",
+            "Unit=programmer-local-hold-sync.service",
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            ""]),
+        "programmer-local-lan.socket": "\n".join([
+            "# Written by ./home-stack deploy. The model for a coding client on the",
+            "# LAN, only while the card is reserved for coding (started and stopped",
+            "# with programmer-local-hold.service). The model asks for its key.",
+            "[Unit]",
+            "Description=The Programmer's local model (LAN, while reserved)",
+            "PartOf=programmer-local-hold.service",
+            "",
+            "[Socket]",
+            f"ListenStream={listen}",
+            "Service=programmer-local-lan-proxy.service",
+            ""]),
+    }
 
 
 def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
@@ -1368,27 +1443,38 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     user_units = f"{cfgroot}/systemd/user"
     if not fallback:
         target.run("systemctl --user disable --now programmer-local.socket "
+                   "programmer-local-hold.path programmer-local-hold.service "
+                   "programmer-local-lan.socket programmer-local-lan-proxy.service "
                    "programmer-local-proxy.service programmer-local.service "
                    ">/dev/null 2>&1 || true", check=False)
         return
     import llamacpp  # noqa: PLC0415 -- only the Programmer's fallback needs it
     build = llamacpp.build_dir("vanilla")
-    if not (build / "bin" / "llama-server").is_file():
+    if fallback["engine"] == "llamacpp" and not (build / "bin" / "llama-server").is_file():
         out.warn("cloud.opencode.fallback is set but llama.cpp is not built; run "
                  "./home-stack llamacpp build -- the Programmer has no local model until then")
         return
     studio = studio_url(cfg)
     shared = (secrets.get("PROXY_SHARED_SECRET") or "").strip()
+    if not shared:
+        out.warn("cloud.opencode.fallback is set but PROXY_SHARED_SECRET is not; "
+                 "the local model has no key to ask for, so it is not set up")
+        return
+    hold_file = programmer_local_hold_file(cfg)
     env_text = "\n".join([
         "# Written by ./home-stack deploy from cloud.opencode.fallback.",
+        f"ENGINE={fallback['engine']}",
         f"MODEL={fallback['model']}",
         f"GPU={fallback['gpu']}",
         f"CONTEXT={fallback['context']}",
         f"BACKEND_PORT={fallback['backend']}",
         f"LLAMA_BIN={build / 'bin'}",
+        f"STRATA_IMAGE={STRATA_IMAGE}",
+        f"API_KEY={derive_programmer_local_key(shared)}",
+        f"HOLD_FILE={hold_file}",
         # The Studio owns the card this borrows; empty when there is no Studio.
         f"STUDIO_URL={studio}",
-        f"STUDIO_SECRET={derive_studio_secret(shared) if studio and shared else ''}",
+        f"STUDIO_SECRET={derive_studio_secret(shared) if studio else ''}",
     ]) + "\n"
     target.run(f"mkdir -p {shlex.quote(user_units)} {shlex.quote(cfgroot)}/home-stack")
     tmp = Path(tempfile.mkstemp(suffix=".env")[1])
@@ -1404,7 +1490,23 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     target.run(f"chmod 700 {shlex.quote(cfgroot)}/home-stack/programmer-local.sh")
     for unit_file in PROGRAMMER_LOCAL_UNITS:
         target.push_file(ROOT / "deploy/host" / unit_file, f"{user_units}/{unit_file}")
+    for unit_file, text in render_programmer_local_units(fallback, hold_file).items():
+        tmp = Path(tempfile.mkstemp(suffix=".unit")[1])
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            target.push_file(tmp, f"{user_units}/{unit_file}")
+        finally:
+            tmp.unlink(missing_ok=True)
+    if hold_file:
+        # The page writes the file; the directory must exist for the .path to
+        # watch it, and an absent file reads as "not reserved".
+        target.run(f"mkdir -p {shlex.quote(str(Path(hold_file).parent))}")
     target.run("systemctl --user daemon-reload", check=False)
+    if hold_file:
+        target.run("systemctl --user enable --now programmer-local-hold.path", check=False)
+    # A LAN socket already up (a reservation in progress) is listening on the
+    # old address: restart it so a change of `lan` takes effect now.
+    target.run("systemctl --user try-restart programmer-local-lan.socket", check=False)
     enabled = target.run("systemctl --user enable --now programmer-local.socket", check=False)
     if getattr(enabled, "returncode", 1) == 0:
         out.ok(f"the Programmer falls back to {fallback['model']} on card {fallback['gpu']} "
@@ -1431,8 +1533,6 @@ def enabled_providers(cfg: dict, secrets: dict, endpoints: dict) -> set[str]:
             on.add(provider)
     if openai_compatible_endpoint(cfg, secrets)[0]:
         on.add("openai_compatible")
-    if freetoken_endpoint(cfg, secrets)[0]:
-        on.add("freetoken")
     return on
 
 
@@ -1661,7 +1761,6 @@ def derive(cfg: dict, secrets: dict) -> dict:
     emb_on = bool(emb_base and docs_base)
     cloud_url, cloud_key = endpoints.get("ollama_cloud", ("", ""))
     compat_url, compat_key = openai_compatible_endpoint(cfg, secrets)
-    ft_url, ft_key = freetoken_endpoint(cfg, secrets)
     # Called for its validation as much as its value: a `cloud.opencode` that
     # is switched on with nobody to serve is a Programmer space that fails at
     # the first question somebody asks it, and this turns that into a refused
@@ -1824,7 +1923,6 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # unset ${VAR}, so a switched-off provider gets a placeholder that
         # cannot authenticate rather than nothing.
         "openai_compatible_api_key": compat_key or "disabled",
-        "freetoken_url": ft_url,
         # The second ollama, for everything that looks at an image: the
         # assistant's vision role, the camera clip reviewer and Paperless's
         # built-in AI. It exists because OLLAMA_NUM_PARALLEL and
@@ -1849,11 +1947,6 @@ def derive(cfg: dict, secrets: dict) -> dict:
         # block call it here. A setup (`ollama-media:`) is its own server,
         # and a reviewer sent to the main one would load the model there too.
         "ollama_vision_url": _vision_url(cfg, endpoints, local_url),
-        # A placeholder rather than an empty string, for the reason stated at
-        # the top of derive(): nanobot reads its whole config for `${...}` and
-        # refuses to start on an unset reference, and a local engine that takes
-        # no key still has to have the variable exist.
-        "freetoken_api_key": ft_key or "disabled",
         # Where `opencode serve` listens, for HomeCore -- which is the
         # only consumer, because the Programmer space is the only thing
         # that talks to it. Empty when the household has not switched it
@@ -2491,6 +2584,25 @@ def derive_studio_gpu_token(shared_secret: str) -> str:
     return hashlib.sha256(f"{shared_secret}:home-studio:gpu".encode()).hexdigest()
 
 
+def derive_opencode_password(shared_secret: str) -> str:
+    """The password every `opencode serve` here is started with, and that the
+    portal and Caddy present to it.
+
+    OpenCode 2 refuses every request without HTTP basic auth, and a server
+    given no password makes up its own at each start and prints it in the log.
+    So it is derived, the crawl4ai shape: three ends must hold the same string,
+    there is nobody to obtain it from, and nothing has to be typed or stored.
+    OpenCode 1 honours the same variable.
+    """
+    return hashlib.sha256(f"{shared_secret}:opencode-server".encode()).hexdigest()
+
+
+def opencode_basic_auth(password: str) -> str:
+    """The `Authorization: Basic` value for *password* as user `opencode`,
+    which is what Caddy sends on for opencode's own interface."""
+    return base64.b64encode(f"opencode:{password}".encode()).decode()
+
+
 def derive_service_token(shared_secret: str, service: str) -> str:
     """A token that says "I am this container", not "I am this person".
 
@@ -2558,6 +2670,9 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
             "CRAWL4AI_SECRET_KEY": derive_crawl4ai_secret(shared, "jwt"),
             "STUDIO_SECRET": derive_studio_secret(shared),
             "STUDIO_GPU_TOKEN": derive_studio_gpu_token(shared),
+            "OPENCODE_PASSWORD": derive_opencode_password(shared),
+            "OPENCODE_BASIC_AUTH": opencode_basic_auth(
+                derive_opencode_password(shared)),
             # The file still wins if somebody set one by hand: this is a
             # convenience, not a policy, and an operator who wants a specific
             # token should be able to have one.
@@ -3740,7 +3855,10 @@ def build_opencode_config(member: str, token: str, port: int,
         conf["provider"] = {fallback["provider"]: {
             "npm": "@ai-sdk/openai-compatible",
             "name": "This house (local)",
-            "options": {"baseURL": f"http://127.0.0.1:{fallback['port']}/v1"},
+            # The key by reference: opencode fills {env:...} from the
+            # provider credentials file, so this file still holds none.
+            "options": {"baseURL": f"http://127.0.0.1:{fallback['port']}/v1",
+                        "apiKey": f"{{env:{OPENCODE_FALLBACK_KEY_ENV}}}"},
             "models": {fallback["model"]: {
                 "name": f"{fallback['model']} (local)",
                 "tool_call": True,
@@ -4210,7 +4328,6 @@ HARNESS_ENGINES = {
     "ollama": ("${OLLAMA_URL}/v1", "${OLLAMA_API_KEY}", True),
     "llamacpp": ("${OPENAI_COMPATIBLE_URL}/v1", "${OPENAI_COMPATIBLE_API_KEY}", False),
     "openai-compatible": ("${OPENAI_COMPATIBLE_URL}/v1", "${OPENAI_COMPATIBLE_API_KEY}", False),
-    "freetoken": ("${FREETOKEN_URL}/v1", "${FREETOKEN_API_KEY}", False),
 }
 
 
@@ -6564,6 +6681,11 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 value = (secrets.get(key) or "").strip()
                 if value:
                     lines.append(f"{key}={value}")
+            # The Programmer's local model asks for a key too; the `home`
+            # provider block names this variable rather than the value.
+            if opencode_fallback(cfg) and (secrets.get("PROXY_SHARED_SECRET") or "").strip():
+                lines.append(f"{OPENCODE_FALLBACK_KEY_ENV}="
+                             f"{derive_programmer_local_key(secrets['PROXY_SHARED_SECRET'].strip())}")
             tmp = Path(tempfile.mkstemp(suffix=".env")[1])
             tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
             try:
@@ -6598,7 +6720,12 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
             write_programmer_local(target, cfg, cfgroot, fallback, secrets, out)
 
             started, failed, unchanged = [], [], []
-            for index, member in enumerate(gen.members(cfg)):
+            server_password = (derive_opencode_password(secrets["PROXY_SHARED_SECRET"])
+                               if secrets.get("PROXY_SHARED_SECRET") else "")
+            members_here = list(gen.members(cfg))
+            mismatch = (_opencode_version_mismatch(target, members_here[0], cfg)
+                        if members_here else "")
+            for index, member in enumerate(members_here):
                 mroot = f"{root}/{member}"
                 target.run(f"mkdir -p {shlex.quote(mroot)}/agents")
                 # Everything this member's server reads at startup, hashed, so a
@@ -6667,14 +6794,19 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                     f"# Written by ./home-stack deploy for {member}.\n"
                     f"OPENCODE_SERVE_PORT={base + index}\n"
                     f"OPENCODE_CONFIG={mroot}/opencode.json\n"
-                    f"OPENCODE_CONFIG_DIR={mroot}\n")
+                    f"OPENCODE_CONFIG_DIR={mroot}\n"
+                    # What the portal and Caddy present (derive_opencode_password).
+                    # OpenCode 2 makes up its own at every start without it.
+                    + (f"OPENCODE_SERVER_PASSWORD={server_password}\n"
+                       if server_password else ""))
                 digest.update(instance_env.encode("utf-8"))
                 inst = Path(tempfile.mkstemp(suffix=".env")[1])
                 inst.write_text(instance_env, encoding="utf-8")
+                dest_inst = f"{cfgroot}/home-stack/opencode-serve-{member}.env"
                 try:
-                    target.push_file(
-                        inst,
-                        f"{cfgroot}/home-stack/opencode-serve-{member}.env")
+                    target.push_file(inst, dest_inst)
+                    # It carries the server's password now.
+                    target.run(f"chmod 600 {shlex.quote(dest_inst)}")
                 finally:
                     inst.unlink(missing_ok=True)
 
@@ -6706,6 +6838,11 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 if same:
                     unchanged.append(member)
                     continue
+                if mismatch:
+                    # Restarting would only start the crash loop, or a server
+                    # the portal cannot speak to. Said once, below.
+                    failed.append(member)
+                    continue
 
                 restarted = target.run(
                     f"systemctl --user restart opencode-serve@{member}",
@@ -6727,7 +6864,10 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
             if unchanged:
                 out.ok(f"opencode unchanged for {', '.join(unchanged)}; left "
                        f"running")
-            if failed:
+            if failed and mismatch:
+                out.warn(f"opencode-serve was not restarted for "
+                         f"{', '.join(failed)}: {mismatch}")
+            elif failed:
                 out.warn(
                     f"opencode-serve did not restart for {', '.join(failed)} -- "
                     f"it reads its config only at startup, so the Programmer "

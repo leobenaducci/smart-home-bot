@@ -96,6 +96,14 @@ symptom instead of resolving it, say that too.
   say whether the approach works.
 - **Do not rewrite the whole file** unless asked.
 
+## Calling your household tools
+
+When your household tools come through one `execute` tool rather than one by
+one, its `code` is plain JavaScript that awaits them and returns the result —
+`return await tools.alfred.list_projects()` — never JSON, and never wrapped in
+another `{"code": …}`. An error back from it means that line was wrong: fix the
+line rather than sending it again.
+
 ## Working in the household's repositories
 
 The projects are real repositories on this machine, and you change them the way

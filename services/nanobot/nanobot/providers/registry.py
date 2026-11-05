@@ -466,39 +466,22 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     # here would hijack auto-matching for a model that belongs to a real
     # provider. It resolves through the explicit prefix, which sets
     # `agents.defaults.provider` and takes the `forced` path -- no keyword
-    # needed. Same reason there is no detect_by_base_keyword: FreeToken can
-    # look for "freetoken" in the URL, this one has no such tell.
+    # needed. Same reason there is no detect_by_base_keyword: the URL has no
+    # tell either.
     ProviderSpec(
         name="openai_compatible",
         keywords=(),
         env_key="OPENAI_COMPATIBLE_API_KEY",
         display_name="OpenAI-compatible",
         backend="openai_compat",
-        # The load-bearing field, for the reason spelled out under FreeToken
-        # below: a server on your own desk usually has no key, and without this
-        # the provider refuses to construct.
+        # The load-bearing field and not a label. Without a spec at all the
+        # resolver falls back to the openai_compat backend, which is right --
+        # and then refuses to construct the provider because no API key is
+        # configured. A server on your own desk usually has none, which is
+        # exactly what `is_local` exempts. Ollama carries it for the same
+        # reason. (FreeToken, a local MoE engine, had a spec of this shape
+        # until 2026-11-05; the household retired it.)
         is_local=True,
-    ),
-    # FreeToken: a local MoE serving engine, OpenAI-compatible.
-    #
-    # `is_local` is the load-bearing field and not a label. Without a spec at
-    # all the resolver falls back to the openai_compat backend, which is right
-    # -- and then refuses to construct the provider because no API key is
-    # configured. A server on your own desk usually has none, which is exactly
-    # what `is_local` exempts. Ollama carries it for the same reason.
-    ProviderSpec(
-        name="freetoken",
-        keywords=("freetoken",),
-        env_key="FREETOKEN_API_KEY",
-        display_name="FreeToken",
-        backend="openai_compat",
-        is_local=True,
-        # It serves whatever the household loaded, under those models' own
-        # names, so there is no name pattern to detect it by -- only the
-        # address. No default_api_base: there is no conventional port to guess,
-        # and a guessed one is a connection refused that reads as the engine
-        # being down.
-        detect_by_base_keyword="freetoken",
     ),
     # NanoGPT (nano-gpt.com): OpenAI-compatible gateway, hundreds of models
     # under `vendor/model` ids behind one key.

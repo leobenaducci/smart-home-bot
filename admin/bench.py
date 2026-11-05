@@ -21,7 +21,7 @@ from pathlib import Path
 
 # assistant.models' prefixes (MODEL_PROVIDERS in deploy/deploy.py).
 PREFIXES = ("ollama", "ollama-cloud", "ollama-vision", "openrouter", "together", "nanogpt",
-            "openai", "openai-compatible", "freetoken", "llamacpp")
+            "openai", "openai-compatible", "llamacpp")
 MODEL_RE = re.compile(r"^[\w.:/@+\-]{1,200}$")
 ROLES = ("everyday", "tools", "notifications", "events", "heartbeat", "longtask", "steps",
          "planner")
@@ -314,6 +314,24 @@ def _named_models(cfg: dict) -> set[str]:
     return names
 
 
+def rehome_model(model: str, instance_ids) -> tuple[str, str]:
+    """(model to run, note): an `ollama-<id>:` name whose instance is gone runs
+    as `ollama:`.
+
+    "Run again" replays the name a result was recorded under, and that can name
+    an instance removed since -- `ollama-chat:` from September. The assistant
+    has no provider for it and the run died on "No API key". A local model runs
+    on the benchmark's own Ollama either way, so only the label was wrong.
+    `ollama-cloud:` is ollama.com, not an instance, and is left alone.
+    """
+    prefix, _, rest = model.partition(":")
+    m = re.fullmatch(r"ollama-([a-z][a-z0-9]{0,15})", prefix.lower())
+    if not (rest and m) or m.group(1) == "cloud" or m.group(1) in set(instance_ids):
+        return model, ""
+    return (f"ollama:{rest}", f"{prefix}: is no longer one of the house's Ollama "
+                              f"servers, so it runs as ollama:{rest}")
+
+
 def removable(cfg: dict, model: str) -> bool:
     """A local model nothing in the house is configured to use."""
     name, prefix = split_model(model)
@@ -337,10 +355,9 @@ def display_name(model: str) -> tuple[str, str]:
     if is_local_prefix(prefix) or prefix in ("freetoken", "llamacpp"):
         # llamacpp: a llama-server on this machine's GPU -- the fork Ternary
         # Bonsai needs, which Ollama cannot load. Local like the other two.
-        # FreeToken is an engine on this household's own GPU, like Ollama. It
-        # read as "hosted" purely because the prefix was not in this list, which
-        # put a HOSTED badge on a model running in the next room -- and skipped
-        # the parameter chip, which only local rows carry.
+        # `freetoken:` stays for results recorded before it was retired
+        # (2026-11-05): an engine on this household's own GPU, like Ollama,
+        # which must not read as HOSTED in an old row.
         return name, "local"
     return (name if prefix else model), "hosted"
 
@@ -396,7 +413,7 @@ def size_chip(model: str, shown: str, lookup: dict | None = None) -> str:
     # pulled to ask, the size is parsed from that same tag -- so the card read
     # "gemma4 e2b E2B". Whatever is already on the card wins; the size chip only
     # earns its place by saying something new.
-    if variant_of(shown).upper() == flat:
+    if split_tag(variant_of(shown))[0].upper() == flat:
         return ""
     base = shown.rpartition(":")[0] if ":" in shown else shown
     m = _SIZE_IN_NAME.search(base or "")
@@ -429,6 +446,43 @@ def variant_of(shown: str) -> str:
     """
     _base, _, tag = shown.rpartition(":") if ":" in shown else (shown, "", "")
     return tag
+
+
+# A quantization at the end of a tag: `-q8_0`, `-bf16`, an hf `Q4_K_M`.
+_QUANT_IN_TAG = re.compile(
+    r"(?i)(?:^|[-_.])((?:i?q\d(?:_[0-9a-z]+)*)|bf16|fp16|f16|f32|mxfp4|int4|int8)$")
+
+
+def split_tag(tag: str) -> tuple[str, str]:
+    """`e2b-it-q8_0` -> ("e2b", "Q8_0"); `Q4_K_M` -> ("", "Q4_K_M"); `12b` -> ("12b", "").
+
+    The quantization goes in its own chip and the instruction-tuned `-it` goes,
+    so rows of one family read `[e2b] Q8_0` beside `[e4b] Q4_K_M` -- with the
+    quant inside the tag, `e2b-it-q8_0` and `e4b-it-q8_0` were read as the
+    same model twice.
+    """
+    m = _QUANT_IN_TAG.search(tag)
+    if not m:
+        return tag, ""
+    rest = tag[:m.start()]
+    rest = re.sub(r"(?i)[-_](?:it|instruct)$", "", rest)
+    return rest, m.group(1).upper()
+
+
+def quant_chip(model: str, shown: str, lookup: dict | None = None) -> str:
+    """The quantization to put on the card: Q4_K_M, Q8_0, BF16. What the server
+    reports for the build pulled under that name now, as the size chip is; else
+    what the tag says; else "".
+
+    A bare `gemma4:e4b` is Q4_K_M, and comparing it with a Q8 build means
+    nothing unless the card says so.
+    """
+    name, _prefix = split_model(model)
+    for key in (name, name + ":latest", name.lower(), model):
+        quant = (lookup or {}).get("quant:" + key) or ""
+        if quant:
+            return quant
+    return split_tag(variant_of(shown))[1]
 
 
 def run_view(run: dict, roles=ROLES, params_lookup: dict | None = None) -> dict:
@@ -464,11 +518,13 @@ def run_view(run: dict, roles=ROLES, params_lookup: dict | None = None) -> dict:
         "file": run.get("file", ""), "model": run.get("model", ""), "shown": shown,
         "parts": name_parts(shown),
         # The tag, minus the ones that only restate the size.
-        "variant": variant_of(shown),
+        "variant": split_tag(variant_of(shown))[0],
         # Empty for a hosted model, where the vendor name is the whole
         # identity and a size would be a guess.
         "params": size_chip(str(run.get("model") or ""), shown, params_lookup)
                   if source in ("local", "hf") else "",
+        "quant": quant_chip(str(run.get("model") or ""), shown, params_lookup)
+                 if source in ("local", "hf") else "",
         "source": source, "started": str(run.get("started") or "")[:16].replace("T", " "),
         "minutes": round((run.get("seconds") or 0) / 60, 1),
         "roles": role_rows, "passed": total.get("passed", 0), "total": total.get("total", 0),

@@ -1,0 +1,10 @@
+# Forwards the LAN socket to the model while the card is reserved for coding.
+# No idle exit: the hold decides how long the model stays, not the traffic.
+[Unit]
+Description=The Programmer's local model (LAN proxy)
+Requires=programmer-local.service
+After=programmer-local.service
+PartOf=programmer-local-hold.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:11461

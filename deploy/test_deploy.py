@@ -1027,7 +1027,7 @@ else:
 # providers a fallback may name: a cross-provider entry is routed to that
 # provider's own client, and a config that does not declare it has no client to
 # build -- which the deployer now refuses rather than writing in silently.
-_PROVIDERS_DOC = {"providers": {"custom": {}, "together_ai": {}, "freetoken": {},
+_PROVIDERS_DOC = {"providers": {"custom": {}, "together_ai": {}, "openai_compatible": {},
                                 "ollama": {}}}
 
 
@@ -1163,11 +1163,11 @@ finally:
 # same-provider rescue to name at all.
 print("\na fallback may name another provider")
 for _models, _why in (
-    ({"everyday": "freetoken:local-moe",
+    ({"everyday": "openai-compatible:local-moe",
       "fallback": "together:meta-models/Muse-Glimmer-30B"},
      "a local engine rescued by a hosted one"),
     ({"everyday": "together:deepseek-ai/DeepSeek-V4-Flash-0731",
-      "fallback": "freetoken:local-moe"},
+      "fallback": "openai-compatible:local-moe"},
      "a hosted provider rescued by the house's own hardware"),
     ({"everyday": "gpt-5.6-luna", "fallback": "ollama:qwen3.5:9b"},
      "and a local model is a legitimate rescue, not a mistake"),
@@ -1198,7 +1198,7 @@ check("  no zone set leaves the file as it is",
       D.apply_site_timezone(_tz_doc, {"site": {}}) == _tz_doc)
 
 _x = json.loads(D.apply_model_choices(_json.dumps(_PROVIDERS_DOC), {"assistant": {"models": {
-    "everyday": "freetoken:local-moe",
+    "everyday": "openai-compatible:local-moe",
     "fallback": "together:meta-models/Muse-Glimmer-30B"}}}))
 check("  and it is written with the provider attached",
       _x["agents"]["defaults"]["modelFallback"]
@@ -1240,7 +1240,7 @@ except D.DeployError:
     check("  a fallback that is a role's own model is still refused", True)
 try:
     D.check_fallback_model({"assistant": {"models": {
-        "everyday": "together:a", "fallback": "freetoken:a"}}})
+        "everyday": "together:a", "fallback": "openai-compatible:a"}}})
     check("  but the same name on another host is a different model", True)
 except D.DeployError as _exc:
     check("  but the same name on another host is a different model", False, _exc)
@@ -1518,65 +1518,21 @@ for _which, _path in (("base", "services/nanobot/config/config.json"),
           _out["agents"]["defaults"]["modelFallback"]["provider"] == "together_ai")
 
 
-# --- FreeToken is a provider of its own, not the generic slot -----------------
+# --- FreeToken is gone (2026-11-05) ------------------------------------------
 #
-# It speaks the OpenAI API, so it *could* have used `cloud.openai_compatible`.
-# There is exactly one of those and it exists to be pointed at whatever is
-# being tried this week -- a vLLM box, an LM Studio, a provider this package
-# has never heard of. Spending it on a serving engine a household runs
-# permanently would make those two mutually exclusive for no reason beyond a
-# shared wire format. Both are live at once here, and this is what says so.
-print("\nfreetoken is its own provider and leaves the generic slot free")
-check("  a role can name it", D.split_model("freetoken:zai-org/GLM-5.2")
-      == ("zai-org/GLM-5.2", "freetoken"))
-check("  and the generic slot still resolves separately",
-      D.split_model("openai-compatible:x") == ("x", "openai_compatible"))
-
-_ft_cfg = {"cloud": {"freetoken": {"enabled": True,
-                                   "url": "http://desktop.home:8000/v1"},
-                     "openai_compatible": {"enabled": True,
-                                           "url": "http://vllm.home:8000"}}}
-_url, _key = D.freetoken_endpoint(_ft_cfg, {})
-# People paste both forms out of a server's own docs and nanobot appends the
-# path itself; the doubled /v1/v1/chat/completions 404s every turn.
-check("  a trailing /v1 is trimmed", _url == "http://desktop.home:8000", _url)
-check("  a keyless local server is allowed", _key == "", _key)
-check("  both self-hosted slots can be on at once",
-      {"freetoken", "openai_compatible"} <= D.enabled_providers(_ft_cfg, {}, {}),
-      sorted(D.enabled_providers(_ft_cfg, {}, {})))
-
-# A config written before this setting existed must still deploy. `dns.whisper`
-# and `site.resolver` each caused that break once; freetoken_endpoint walks the
-# config with .get chains and derive() always writes the derived pair, so there
-# is nothing for an old config to be missing.
-_old_cfg = {"cloud": {"openai_compatible": {"enabled": False}}}
-check("  a config predating it needs no migration",
-      D.freetoken_endpoint(_old_cfg, {}) == ("", "")
-      and "freetoken" not in D.enabled_providers(_old_cfg, {}, {}))
-
-try:
-    D.freetoken_endpoint({"cloud": {"freetoken": {"enabled": True}}}, {})
-    check("  on with no url is refused", False, "no error raised")
-except D.DeployError as _exc:
-    check("  on with no url is refused", "url is empty" in str(_exc), _exc)
-
-# Nanobot refuses to build a keyless provider unless its spec says local, and
-# a serving engine on your own desk is exactly that.
-_spec_src = (D.ROOT / "services/nanobot/nanobot/providers/registry.py").read_text(
-    encoding="utf-8")
-check("  the provider spec marks it local",
-      'name="freetoken"' in _spec_src
-      and "is_local=True" in _spec_src.split('name="freetoken"')[1][:400],
-      "without is_local, a keyless FreeToken raises 'No API key configured'")
-
-# Both nanobot configs have to carry the block: listing a provider is how the
-# credential gets demanded, and an unset ${...} stops the container starting --
-# which is why the compose files supply a placeholder key.
+# A local MoE engine this stack pointed at, retired by the household; the
+# Programmer's local model runs on llama.cpp or Strata instead. An old config
+# that still carries `cloud.freetoken` must deploy and get nothing from it.
+print("\nfreetoken is no longer a provider")
+check("  no model prefix reaches it", "freetoken" not in D.MODEL_PROVIDERS.values())
+_old_ft = {"cloud": {"freetoken": {"enabled": True, "url": "http://desktop.home:8000"}}}
+check("  a config that still switches it on enables nothing",
+      "freetoken" not in D.enabled_providers(_old_ft, {}, {}))
 for _cfgfile in ("services/nanobot/config/config.json",
                  "services/nanobot/config/instances/house/config.json"):
     _doc = _json.loads((D.ROOT / _cfgfile).read_text(encoding="utf-8"))
-    check(f"  {_cfgfile.split('/')[-2]}/{_cfgfile.split('/')[-1]} declares it",
-          "freetoken" in (_doc.get("providers") or {}), sorted(_doc.get("providers") or {}))
+    check(f"  {_cfgfile.split('/')[-2]}/{_cfgfile.split('/')[-1]} no longer lists it",
+          "freetoken" not in (_doc.get("providers") or {}))
 
 print("\nopencode is one server per member, and not an OpenAI endpoint")
 # The whole reason it has a block of its own: `opencode serve` has no
@@ -1614,7 +1570,7 @@ check("  and nor does a member who is no longer active",
 check("  switched off, nobody has one and the space falls back",
       D.opencode_servers({"cloud": {"opencode": {"enabled": False}},
                           "members": [{"id": "user1", "programmer": True}]}) == {})
-# Same shape as the freetoken case above and the same reason: a config written
+# The same reason as every new setting: a config written
 # before this setting existed must still deploy.
 check("  a config predating it needs no migration",
       D.opencode_servers({"cloud": {}}) == {} and D.opencode_servers({}) == {})
@@ -1648,6 +1604,64 @@ _health_code = "\n".join(l for l in _health.splitlines()
 check("  readiness asserts the payload",
       '"healthy"' in _health_code and "curl -sf" not in _health_code,
       "a 200 is not readiness; /global/health answers before it will serve")
+# OpenCode 2 has no /global/health -- it answers that path with its web page --
+# and refuses everything without the password. Both opencodes, one script.
+check("  readiness knows OpenCode 2's door too, and brings the password",
+      "/api/info" in _health_code and '"version"' in _health_code
+      and "OPENCODE_SERVER_PASSWORD" in _health_code)
+# OpenCode 1 takes only `INFO`, OpenCode 2 only `info`, and the wrong one is a
+# crash at startup: 2,650 restarts before anybody noticed (2026-10-24 to 10-28).
+_unit_code = "\n".join(l for l in _unit.splitlines() if not l.lstrip().startswith("#"))
+check("  the unit names no log level either version would refuse",
+      "--log-level" not in _unit_code)
+
+print("\nopencode's password is derived, and each end gets the same one")
+_pw = D.derive_opencode_password("s" * 32)
+check("  it is stable and depends on the shared secret",
+      _pw == D.derive_opencode_password("s" * 32) and _pw != D.derive_opencode_password("t" * 32))
+import base64 as _b64  # noqa: E402
+check("  Caddy's header is basic auth for the user opencode",
+      _b64.b64decode(D.opencode_basic_auth(_pw)).decode() == "opencode:" + _pw)
+_ce = D.collect_env({"secrets": {"required": ["PROXY_SHARED_SECRET"],
+                                 "optional": ["OPENCODE_PASSWORD", "OPENCODE_BASIC_AUTH"]}},
+                    {"name": "t"}, {"PROXY_SHARED_SECRET": "s" * 32}, copy.deepcopy(CFG))
+check("  a service that declares them receives them without the env file naming them",
+      _ce.get("OPENCODE_PASSWORD") == _pw
+      and _ce.get("OPENCODE_BASIC_AUTH") == D.opencode_basic_auth(_pw), sorted(_ce))
+_hc = (_manifest["services"]["home-core"].get("secrets") or {}).get("optional") or []
+check("  and home-core declares both: the portal and Caddy present it",
+      "OPENCODE_PASSWORD" in _hc and "OPENCODE_BASIC_AUTH" in _hc, _hc)
+
+
+class _VerTarget:
+    """Answers `systemctl show` and `--version` the way a host would."""
+
+    def __init__(self, env_line, version):
+        self.env_line, self.version, self.ran = env_line, version, []
+
+    def run(self, cmd, capture=False, check=True):
+        self.ran.append(cmd)
+        out = self.env_line if "systemctl" in cmd else self.version
+        return type("R", (), {"stdout": out, "returncode": 0})()
+
+
+print("\nthe deploy says when the installed opencode is not the configured one")
+_bin = "Environment=OPENCODE_SERVE_PORT=4096 OPENCODE_BIN=/home/u/.opencode/bin/opencode"
+_v1cfg = {"cloud": {"opencode": {"api": "v1"}}}
+_v2cfg = {"cloud": {"opencode": {"api": "v2"}}}
+check("  OpenCode 1 under api v1 is fine",
+      D._opencode_version_mismatch(_VerTarget(_bin, "1.18.27"), "user1", _v1cfg) == "")
+check("  OpenCode 2 under api v2 is fine",
+      D._opencode_version_mismatch(_VerTarget(_bin, "opencode v2.1.3"), "user1", _v2cfg) == "")
+_mm = D._opencode_version_mismatch(_VerTarget(_bin, "opencode v2.1.3"), "user1", _v1cfg)
+check("  OpenCode 2 under api v1 is named, with the setting that fixes it",
+      "2.1.3" in _mm and "cloud.opencode.api" in _mm and "v2" in _mm, _mm)
+_t = _VerTarget(_bin.replace("/home/u/.opencode/bin/opencode", "/opt/oc1/opencode"), "1.18.27")
+check("  and the binary asked is the one the unit starts, drop-ins included",
+      "OpenCode 1" in D._opencode_version_mismatch(_t, "user1", _v2cfg)
+      and any(c.startswith("/opt/oc1/opencode") for c in _t.ran), _t.ran)
+check("  a host it cannot ask is not a mismatch",
+      D._opencode_version_mismatch(_VerTarget("", ""), "user1", _v2cfg) == "")
 
 print("\nevery bridge is one member's, derived from one member id")
 _gen = D._generator(D.GENERATORS["alfred-mcp"])
@@ -1686,8 +1700,8 @@ for _var in ("CODE_WORKSPACE_DIR", "HOMECORE_CONTAINER_URL", "CODE_BROKER_URL"):
 # rescue path. Counting them made the stranded-role warning fire for every
 # household that generates images, which is a warning nobody reads twice.
 D.check_fallback_model({"assistant": {"models": {
-    "everyday": "freetoken:a", "image_high": "together:google/imagen-4.0-fast",
-    "vision": "ollama:qwen3-vl:8b", "fallback": "freetoken:b"}}})
+    "everyday": "openai-compatible:a", "image_high": "together:google/imagen-4.0-fast",
+    "vision": "ollama:qwen3-vl:8b", "fallback": "openai-compatible:b"}}})
 check("  an image slot is not a role the fallback owes a rescue", True)
 
 
@@ -3823,9 +3837,43 @@ check("  and the config file it writes carries no credentials",
 
 print("\nthe Programmer's local fallback, for when OpenCode Go is out")
 _fb = D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b"}}}})
-check("  a model name is enough: the Studio's card, a 64k window, the home provider",
+check("  a model name is enough: the Studio's card, a 64k window, llama.cpp, loopback only",
       _fb == {"model": "ornith:9b", "gpu": 1, "context": 65536, "first": False,
-              "provider": "home", "port": 11460, "backend": 11461}, _fb)
+              "engine": "llamacpp", "lan": False,
+              "provider": "home", "port": 11460, "backend": 11461, "lan_port": 11462}, _fb)
+_gguf = "/var/lib/home-stack/models/hf/a/b/IQ1_M/m-00001-of-00002.gguf"
+check("  Strata serves a .gguf",
+      D.opencode_fallback({"cloud": {"opencode": {"fallback": {
+          "model": _gguf, "engine": "strata", "lan": True}}}})["engine"] == "strata")
+for _bad_fb, _why in (({"model": "ornith:9b", "engine": "strata"}, "an Ollama name on Strata"),
+                      ({"model": "ornith:9b", "engine": "vllm"}, "an engine it has no way to run"),
+                      ({"model": "ornith:9b", "lan": "yes"}, "a `lan` that is not true or false")):
+    try:
+        D.opencode_fallback({"cloud": {"opencode": {"fallback": _bad_fb}}})
+        check(f"  refuses {_why}", False)
+    except SystemExit:
+        check(f"  refuses {_why}", True)
+_units = D.render_programmer_local_units(dict(_fb, lan=True), "/s/admin/programmer-local/hold.json")
+check("  with `lan` the reservation socket listens on every address, at its own port",
+      "ListenStream=0.0.0.0:11462" in _units["programmer-local-lan.socket"]
+      and "PartOf=programmer-local-hold.service" in _units["programmer-local-lan.socket"])
+check("  and without it on loopback only",
+      "ListenStream=127.0.0.1:11462" in D.render_programmer_local_units(_fb, "/h")["programmer-local-lan.socket"])
+check("  the .path watches the admin page's hold file",
+      "PathModified=/s/admin/programmer-local/hold.json" in _units["programmer-local-hold.path"])
+check("  which lives in the page's own state directory",
+      D.programmer_local_hold_file({"paths": {"state": "/st"}}) == "/st/admin/programmer-local/hold.json"
+      and D.programmer_local_hold_file({}) == "")
+_lan_proxy = (D.ROOT / "deploy/host/programmer-local-lan-proxy.service").read_text()
+check("  the LAN proxy has no idle exit (the reservation decides) and goes with it",
+      "--exit-idle-time" not in _lan_proxy and "PartOf=programmer-local-hold.service" in _lan_proxy)
+check("  the reservation needs the model, so starting it loads the model",
+      "Requires=programmer-local.service" in (D.ROOT / "deploy/host/programmer-local-hold.service").read_text())
+_sh = (D.ROOT / "deploy/host/programmer-local.sh").read_text()
+check("  both engines ask for the key",
+      '--api-key "$API_KEY"' in _sh and '-e API_KEY="$API_KEY"' in _sh)
+check("  and the key is derived, not stored",
+      D.derive_programmer_local_key("s") == D.hashlib.sha256(b"s:programmer-local").hexdigest())
 check("  and none is none", D.opencode_fallback({}) == {})
 check("  `first` puts the local model ahead of Go",
       D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b",
@@ -3844,9 +3892,11 @@ for _bad in ("ornith:9b; rm -rf ~", "/etc/shadow", "/var/lib/home-stack/models/.
     except SystemExit:
         check(f"  refuses {_bad!r}: it ends up on a command line", True)
 _prov = json.loads(D.build_opencode_config("user1", "t", 21999, fallback=_fb)).get("provider") or {}
-check("  opencode gets a `home` provider at the loopback socket, with the model and no key",
-      _prov.get("home", {}).get("options") == {"baseURL": "http://127.0.0.1:11460/v1"}
-      and "ornith:9b" in _prov["home"]["models"] and "apiKey" not in json.dumps(_prov), _prov)
+check("  opencode gets a `home` provider at the loopback socket, with the model, and the key "
+      "only by the name of the variable that holds it",
+      _prov.get("home", {}).get("options") == {"baseURL": "http://127.0.0.1:11460/v1",
+                                               "apiKey": "{env:PROGRAMMER_LOCAL_API_KEY}"}
+      and "ornith:9b" in _prov["home"]["models"], _prov)
 check("  and without a fallback, no provider block at all",
       "provider" not in json.loads(D.build_opencode_config("user1", "t", 21999)))
 _sock = (D.ROOT / "deploy/host/programmer-local.socket").read_text()

@@ -178,14 +178,13 @@ services:
       # whole boundary in front of an agent that has a shell.
       - OPENCODE_SERVERS=${OPENCODE_SERVERS:-}
       - CODE_NAME=${CODE_NAME:-}
-      # `v1` or `v2` -- the two HTTP surfaces the same opencode serves.
-      # `v2` is the `/api/*` routes on the OpenCode 1 binary, not OpenCode 2
-      # (a separate program this stack has never run). v1 is not the timid
-      # pick: on 1.18.27 an `/api` session mounts none of the MCP tools, so
-      # the Programmer loses the broker, the share and delegation and keeps
-      # `bash` -- git without the broker. Empty means v1, which is what
-      # shipped.
+      # `v1` or `v2` -- which opencode is installed: OpenCode 1 (1.18.x) or
+      # OpenCode 2 (2.x), which share a binary name and no routes. Empty
+      # means v1, which is what shipped.
       - OPENCODE_API=${OPENCODE_API:-}
+      # The password every opencode serve here is started with
+      # (derive_opencode_password). OpenCode 2 refuses everything without it.
+      - OPENCODE_PASSWORD=${OPENCODE_PASSWORD:-}
       # The local model a Programmer turn moves to when OpenCode Go refuses on
       # its usage limit (`home/<model>`); empty, the turn says when Go is back.
       - OPENCODE_FALLBACK=${OPENCODE_FALLBACK:-}

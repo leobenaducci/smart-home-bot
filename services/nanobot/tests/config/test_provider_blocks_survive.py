@@ -20,11 +20,11 @@ import pytest
 from nanobot.config.schema import ProvidersConfig
 
 # `ollama:` / `ollama-cloud:` / `together:` / `openai-compatible:` /
-# `freetoken:` / `openrouter:` / `openai:` in assistant.models, plus `custom`,
+# `openrouter:` / `openai:` in assistant.models, plus `custom`,
 # which is what a bare name (OpenCode Zen) resolves to.
 DEPLOYED_BLOCKS = [
     "custom", "ollama", "ollama_cloud", "together_ai",
-    "freetoken", "openrouter", "openai", "openai_compatible", "nanogpt",
+    "openrouter", "openai", "openai_compatible", "nanogpt",
 ]
 
 

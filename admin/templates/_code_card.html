@@ -1,0 +1,89 @@
+{# A model path as a person reads it: the file, without its folder, its
+   extension or a split model's "-00001-of-00002". #}
+{% macro _short(m) -%}
+  {%- set n = (m or '').split('/')[-1] | replace('.gguf', '') -%}
+  {{- n.split('-00001-of-')[0] if '-00001-of-' in n else n -}}
+{%- endmacro %}
+{# The Code space's model, and the only picker on the Models pages that may offer a
+   flat-plan model. Go is not in models.SOURCES, so no role picker can reach
+   one; this card reads its own roster. The reason for the split is in
+   CLAUDE.md: the flat plan expects a person at a keyboard, and every other
+   role here is unattended traffic on the same key. #}
+<div class="card" id="code">
+  <h2>{{ t('admin.models.code_heading') }}</h2>
+  <p class="intro">{{ t('admin.models.code_intro') }}</p>
+  {% if not code_enabled %}
+  <p class="help note">{{ t('admin.models.code_off') }}</p>
+  {% endif %}
+  {% if code_choices %}
+  {# Saved by the Models page's own handler (scope:code), which sends the
+     browser back here because of `next`. #}
+  <form method="post" action="{{ url_for('models_page') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="scope:code" value="1">
+    <input type="hidden" name="next" value="coding">
+    <div class="field wide">
+      <label for="code-model">{{ t('admin.models.code_label') }}</label>
+      <select id="code-model" name="code_model">
+        <option value="">{{ t('admin.models.code_unset') }}</option>
+        {% if code_model and code_model not in code_choices
+              |map(attribute='models')|sum(start=[])|map(attribute='id')|list %}
+        <optgroup label="{{ t('admin.models.not_on_offer') }}">
+          <option value="{{ code_model }}" selected>{{ code_model }}</option>
+        </optgroup>
+        {% endif %}
+        {% for group in code_choices %}
+        <optgroup label="{{ t('admin.models.code_group_' ~ group.key) }}">
+          {% for m in group.models %}
+          <option value="{{ m.id }}" {% if m.id == code_model %}selected{% endif %}>{{ m.label }}{% if m.context %} · {{ '{:,}'.format(m.context) }}{% endif %}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+      <p class="help">{{ t('admin.models.code_help') }}</p>
+    </div>
+    {# The local model the Programmer runs on the Studio's card
+       (cloud.opencode.fallback), served by llama.cpp. The coding benchmark
+       measures the candidates; its ★ sets the same thing. #}
+    <div class="fields">
+      <div class="field wide">
+        <label for="code-local">{{ t('admin.models.code_local_label') }}</label>
+        <select id="code-local" name="code_local_model">
+          <option value="">{{ t('admin.models.code_local_none') }}</option>
+          {% set ns = namespace(found=false) %}
+          {% for m in code_local_models %}
+            {% set picked = m.id == code_local.model or (m.id.startswith('hf:') and code_local.model.endswith('/' ~ m.id[3:])) %}
+            {% if picked %}{% set ns.found = true %}{% endif %}
+            <option value="{{ m.id }}" title="{{ m.id }}" {% if picked %}selected{% endif %}>{{ _short(m.id) }}{% if m.gib %} · {{ m.gib }} GB{% endif %}{% if m.verdicts.llamacpp == 'fail' %} — {{ t('admin.codebench.verdict_fail_short') }}{% endif %}</option>
+          {% endfor %}
+          {% if code_local.model and not ns.found %}<option value="{{ code_local.model }}" title="{{ code_local.model }}" selected>{{ _short(code_local.model) }}</option>{% endif %}
+        </select>
+        <p class="help">{{ t('admin.models.code_local_help') }}</p>
+      </div>
+      <div class="field">
+        <label for="code-local-context">{{ t('admin.codebench.context') }}</label>
+        <select id="code-local-context" name="code_local_context">
+          {% for c in [32768, 65536, 131072, 262144] %}<option value="{{ c }}" {% if c == code_local.context %}selected{% endif %}>{{ c // 1024 }}k</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="fields">
+      <div class="field">
+        <label for="code-local-engine">{{ t('admin.models.code_local_engine') }}</label>
+        <select id="code-local-engine" name="code_local_engine">
+          <option value="llamacpp" {% if code_local.engine != 'strata' %}selected{% endif %}>llama.cpp</option>
+          <option value="strata" {% if code_local.engine == 'strata' %}selected{% endif %}>Strata</option>
+        </select>
+        <p class="help">{{ t('admin.models.code_local_engine_help') }}</p>
+      </div>
+    </div>
+    <label class="check-row"><input type="checkbox" name="code_local_first" value="1" {% if code_local.first %}checked{% endif %}>
+      {{ t('admin.codebench.programmer_first_label') }}</label>
+    <label class="check-row"><input type="checkbox" name="code_local_lan" value="1" {% if code_local.lan %}checked{% endif %}>
+      {{ t('admin.models.code_local_lan') }}</label>
+    <p class="stack row"><button type="submit">{{ t('common.save') }}</button></p>
+  </form>
+  {% else %}
+  <p class="help">{{ t('admin.models.code_no_roster') }}</p>
+  {% endif %}
+</div>

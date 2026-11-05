@@ -1239,7 +1239,6 @@ IMPACT = {
     # or `.documents` names one: the deployer resolves those roles to a URL
     # and key and exports them to home-core and home-paperless.
     "cloud.openai_compatible": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
-    "cloud.freetoken": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     # Where the household's own Ollama is, and the window it runs. Every
     # service with a `{derived.ollama*}`, `.title_*`, `.vision_model` or
     # `.paperless_*` export reads it; it had no entry at all until 2026-09-12,
@@ -1302,7 +1301,6 @@ SECRET_IMPACT = {
     "TOGETHER_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "NANOGPT_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     "OPENAI_COMPATIBLE_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
-    "FREETOKEN_API_KEY": ["nanobot", "nanobot-house", "home-core", "home-paperless"],
     # alfred-mcp is the unit that writes opencode's provider file
     # (OPENCODE_PROVIDER_KEYS in deploy.py).
     "ANTHROPIC_API_KEY": ["alfred-mcp"],
@@ -2734,7 +2732,6 @@ MODEL_GROUPS = (
     {"provider": "ollama_vision", "key": "admin.models.source_ollama_vision"},
     {"provider": "ollama_cloud", "key": "admin.models.source_ollama_cloud"},
     {"provider": "openai_compatible", "key": "admin.models.source_openai_compatible"},
-    {"provider": "freetoken", "key": "admin.models.source_freetoken"},
 )
 
 # The three that have nothing to configure but a key. Filling one in is the
@@ -2768,15 +2765,11 @@ def model_groups(cfg: dict) -> list[dict]:
     cannot know."""
     compat = (cfg.get("cloud") or {}).get("openai_compatible") or {}
     label = str(compat.get("label") or "").strip()
-    ft_label = str(((cfg.get("cloud") or {}).get("freetoken") or {})
-                   .get("label") or "").strip()
     out = []
     for group in MODEL_GROUPS:
         name = t(group["key"])
         if group["provider"] == "openai_compatible" and label:
             name = label
-        if group["provider"] == "freetoken" and ft_label:
-            name = ft_label
         out.append({"provider": group["provider"], "label": name})
     return out
 
@@ -2792,7 +2785,6 @@ def _source_settings(cfg: dict) -> dict:
     local = conf.get("local") or {}
     cloud = conf.get("cloud") or {}
     compat = (cfg.get("cloud") or {}).get("openai_compatible") or {}
-    freetoken = (cfg.get("cloud") or {}).get("freetoken") or {}
     return {
         "ollama_local": {"enabled": bool(local.get("enabled", True)),
                          "host": local.get("host", "compute"),
@@ -2810,11 +2802,6 @@ def _source_settings(cfg: dict) -> dict:
         "compat": {"enabled": bool(compat.get("enabled")),
                    "url": compat.get("url", ""),
                    "label": compat.get("label", "")},
-        # Its own row beside compat, not instead of it: a household may point
-        # at FreeToken and at something else that speaks the same API.
-        "freetoken": {"enabled": bool(freetoken.get("enabled")),
-                      "url": freetoken.get("url", ""),
-                      "label": freetoken.get("label", "")},
     }
 
 
@@ -2936,13 +2923,12 @@ def model_endpoints(cfg: dict) -> dict:
         if key:
             out[source] = {"url": "", "key": key, "role": ""}
 
-    # Both self-hosted slots, and the same rule for each. A LAN address here is
+    # The self-hosted slot. A LAN address here is
     # somebody else's box far more often than it is this one, but when it *is*
     # this one the container translation applies -- that is what made a
     # catalogue refresh offer a household a choice it could not see.
     for source, block, secret in (
-            ("openai_compatible", "openai_compatible", "OPENAI_COMPATIBLE_API_KEY"),
-            ("freetoken", "freetoken", "FREETOKEN_API_KEY")):
+            ("openai_compatible", "openai_compatible", "OPENAI_COMPATIBLE_API_KEY"),):
         conf = (cfg.get("cloud") or {}).get(block) or {}
         if not (conf.get("enabled") and str(conf.get("url") or "").strip()):
             continue
@@ -3011,7 +2997,7 @@ def _not_local_for(role: str, value: str) -> bool:
 _PROBE_PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "openrouter": "openrouter",
     "together": "together", "openai": "openai", "nanogpt": "nanogpt",
-    "openai-compatible": "openai_compatible", "freetoken": "freetoken",
+    "openai-compatible": "openai_compatible",
     # The second ollama. Without it `ollama-vision:x` fell through to
     # OpenCode Zen, and the Test button failed every vision/documents model.
     "ollama-vision": "ollama_vision",
@@ -3033,7 +3019,7 @@ def _probe_target(cfg: dict, value: str) -> tuple[str, str, str, str]:
     endpoint = endpoints.get(source) or {}
     base = _PROBE_BASES.get(source) or ""
     if not base and endpoint.get("url"):
-        # A URL the household gave us: local Ollama, FreeToken, a vLLM box.
+        # A URL the household gave us: local Ollama, a vLLM box.
         base = f"{str(endpoint['url']).rstrip('/')}/v1"
     return model_id, base, str(endpoint.get("key") or ""), source
 
@@ -3532,6 +3518,15 @@ def models_page():
                     fb["context"] = ctx if 4096 <= ctx <= 262144 else 65536
                     fb.setdefault("gpu", _codebench_gpu() if _codebench_gpu() is not None else 1)
                     fb["first"] = request.form.get("code_local_first") == "1"
+                    # Strata serves files only (deploy.py opencode_fallback).
+                    engine = request.form.get("code_local_engine") or "llamacpp"
+                    if engine == "strata" and not local.endswith(".gguf"):
+                        flash(_t_or("admin.codebench.strata_needs_file",
+                                    "Strata serves a .gguf from the models folder, not an "
+                                    "Ollama name: kept on llama.cpp."), "warn")
+                        engine = "llamacpp"
+                    fb["engine"] = engine if engine in ("llamacpp", "strata") else "llamacpp"
+                    fb["lan"] = request.form.get("code_local_lan") == "1"
                 else:
                     flash(_t_or("admin.codebench.programmer_bad",
                                 "That model cannot be the Programmer's: an Ollama name or a "
@@ -3601,23 +3596,10 @@ def models_page():
                                  locale=current_locale(cfg)), "error")
                 return redirect(url_for("models_page"))
 
-            ft_url = (request.form.get("freetoken_url") or "").strip()
-            parsed = urllib.parse.urlsplit(ft_url)
-            if ft_url and (parsed.scheme not in ("http", "https")
-                           or not parsed.hostname):
-                flash(translator("admin.models.invalid_url",
-                                 locale=current_locale(cfg)), "error")
-                return redirect(url_for("models_page"))
-
             compat = cloud.setdefault("openai_compatible", {})
             compat["enabled"] = request.form.get("compat") == "on"
             compat["url"] = compat_url
             compat["label"] = (request.form.get("compat_label") or "").strip()[:60]
-
-            freetoken = cloud.setdefault("freetoken", {})
-            freetoken["enabled"] = request.form.get("freetoken") == "on"
-            freetoken["url"] = ft_url
-            freetoken["label"] = (request.form.get("freetoken_label") or "").strip()[:60]
 
         # A setup a role now uses starts on the next Apply; one on Auto needs
         # a card first, as the Ollama card's own save would give it.
@@ -3630,6 +3612,9 @@ def models_page():
         save_config(cfg)
         note_pending(services_affected(before, cfg))
         flash(translator("admin.models.saved", locale=current_locale(cfg)), "ok")
+        # The Code card lives on the Code tab (codebench.html) and posts here.
+        if request.form.get("next") == "coding":
+            return redirect(url_for("codebench_page") + "#code")
         return redirect(url_for("models_page"))
 
     catalogue = model_catalogue.load_cache(MODELS_CACHE)
@@ -6794,12 +6779,11 @@ def _bench_pull(url: str, name: str, log) -> bool:
 
 # The local engines a benchmark brings up itself: `llamacpp:` is the llama.cpp
 # router (llamacpp-router.service on the host, reached through the stack's one
-# `cloud.openai_compatible` slot), `freetoken:` is FreeToken. Neither runs a
-# model all the time -- the card they use is the benchmark Ollama's -- so a run
+# `cloud.openai_compatible` slot). It does not run a model all the time -- the
+# card it uses is the benchmark Ollama's -- so a run
 # makes sure the engine answers and lists the model, clears the card, lets the
 # router load the model on the first request, and unloads it when done.
-_ENGINES = {"llamacpp": ("openai_compatible", "OPENAI_COMPATIBLE_API_KEY"),
-            "freetoken": ("freetoken", "FREETOKEN_API_KEY")}
+_ENGINES = {"llamacpp": ("openai_compatible", "OPENAI_COMPATIBLE_API_KEY")}
 
 
 def _bench_engine(cfg: dict, prefix: str) -> tuple[str, str]:
@@ -6836,14 +6820,6 @@ def _bench_engine_up(cfg: dict, prefix: str, name: str, bench_url: str, log) -> 
         log.write(f"not benchmarked: cloud.{slot} is switched off, so there is no {prefix} "
                   "engine to run it on.\n")
         return False
-    if prefix == "freetoken":
-        try:
-            _engine_call(url, "/v1/models", key).close()
-        except Exception as exc:                           # noqa: BLE001
-            log.write(f"not benchmarked: FreeToken is not answering at {url} ({exc}). It is "
-                      "not started from here -- start it on the host, then run again.\n")
-            return False
-        return True
     try:
         with _engine_call(url, "/models", key) as r:
             listed = [m.get("id") for m in (json.load(r).get("data") or [])]
@@ -6871,7 +6847,7 @@ def _bench_engine_up(cfg: dict, prefix: str, name: str, bench_url: str, log) -> 
 
 
 def _bench_engine_down(cfg: dict, prefix: str, name: str, log) -> None:
-    """Give the card back: unload *name* from the router. FreeToken is left as found."""
+    """Give the card back: unload *name* from the router."""
     if prefix != "llamacpp":
         return
     url, key = _bench_engine(cfg, prefix)
@@ -7258,7 +7234,7 @@ def _run_bench_job(models: list[str], roles: str, repeat: int, effort: str,
                      "effort": effort, "container": container}
             while batch and not _bench_stopping():
                 ms = batch["models"]
-                _bench_save_state(models=ms, roles=batch["roles"].split(","))
+                _bench_save_state(models=ms, roles=batch["roles"].split(","), repeat=batch["repeat"])
                 for i, model in enumerate(ms, 1):
                     if _bench_stopping():
                         break
@@ -7312,6 +7288,8 @@ def bench_start():
             model, note = model_bench.resolve_model(line)
         except model_bench.ResolveError as exc:
             return _bench_reply(False, 400, reason=f"{line}: {exc}")
+        model, moved = model_bench.rehome_model(model, OI.by_id(cfg))
+        note = "; ".join(n for n in (moved, note) if n)
         models.append(model)
         notes.append(f"{model}  ({note})" if note else model)
     roles = [r for r in request.form.getlist("roles") if r in model_bench.ROLES]
@@ -7361,7 +7339,7 @@ def _bench_launch(models: list[str], roles: list[str], repeat: int, effort: str,
     _bench_save_state(running=True, stopped=False, stop_requested=False, failed=None,
                       models=models, model=models[0],
                       index=1, started=time.time(), finished=None, results=[],
-                      log=log_path.name, container=container, roles=roles)
+                      log=log_path.name, container=container, roles=roles, repeat=repeat)
     threading.Thread(target=_run_bench_job,
                      args=(models, ",".join(roles), repeat, effort, container, cfg,
                            lock_fd, log_path),
@@ -7422,6 +7400,7 @@ def bench_log():
         failed=state.get("failed"), stopped=state.get("stopped"),
         model=state.get("model", ""), index=state.get("index", 0),
         count=len(state.get("models") or []), results=state.get("results") or [],
+        roles=state.get("roles") or [], repeat=state.get("repeat") or 1,
         queue=[m for e in _bench_queue() for m in e.get("models") or []],
         elapsed=round((state.get("finished") or time.time()) - started, 1) if started else 0,
     )
@@ -7515,18 +7494,120 @@ def _codebench_models() -> list[dict]:
 @app.get("/models/coding")
 def codebench_page():
     runner = codebench()
-    return render_template("codebench.html", problems=code_bench.problems(CODEBENCH_ROOT),
+    cfg = load_config()
+    # The Code card (_code_card.html), moved here from the Models page: the
+    # same roster and settings it read there.
+    _oc = (cfg.get("cloud") or {}).get("opencode") or {}
+    return render_template("codebench.html",
+                           code_choices=model_catalogue.code_model_choices(
+                               model_catalogue.load_cache(MODELS_CACHE)),
+                           code_model=str(_oc.get("model") or ""),
+                           code_local=_programmer_local(cfg),
+                           code_local_models=[m for m in _codebench_models() if "llamacpp" in m["engines"]],
+                           code_enabled=bool(_oc.get("enabled")), problems=code_bench.problems(CODEBENCH_ROOT),
                            models=_codebench_models(), engines=code_bench.ENGINES,
                            engine_labels=code_bench.ENGINE_LABELS, contexts=code_bench.CONTEXTS,
                            default_context=code_bench.DEFAULT_CONTEXT, gpu=_codebench_gpu(),
                            studio_on=bool(_codebench_studio()[0]), runs=runner.runs(),
-                           programmer=_programmer_local(load_config()))
+                           programmer=_programmer_local(cfg),
+                           hold_hours=PROGRAMMER_HOLD_HOURS)
 
 
 def _programmer_local(cfg: dict) -> dict:
     fb = ((cfg.get("cloud") or {}).get("opencode") or {}).get("fallback") or {}
     return {"model": str(fb.get("model") or ""), "context": int(fb.get("context") or 65536),
-            "first": bool(fb.get("first")), "gpu": fb.get("gpu", 1)}
+            "first": bool(fb.get("first")), "gpu": fb.get("gpu", 1),
+            "engine": str(fb.get("engine") or "llamacpp"), "lan": bool(fb.get("lan"))}
+
+
+# "Reserve the card for coding": the page writes a time into a file that a
+# user .path unit on the host watches (deploy.py programmer_local_hold_file,
+# programmer-local.sh hold/sync). The page cannot reach systemd; the file is
+# the whole interface, and the host checks what it reads.
+PROGRAMMER_HOLD_HOURS = (1, 2, 4, 8, 12)
+_PROGRAMMER_BACKEND = 11461    # deploy.py OPENCODE_FALLBACK_BACKEND
+_PROGRAMMER_LAN_PORT = 11462   # deploy.py OPENCODE_FALLBACK_LAN_PORT
+
+
+def _programmer_hold_file(cfg: dict) -> Path | None:
+    state = str((cfg.get("paths") or {}).get("state") or "").rstrip("/")
+    return Path(f"{state}/admin/programmer-local/hold.json") if state else None
+
+
+def _programmer_key() -> str:
+    """deploy.py derive_programmer_local_key: what the model asks callers for."""
+    for line in _read_secrets().splitlines():
+        if line.startswith("PROXY_SHARED_SECRET="):
+            shared = line.split("=", 1)[1].strip()
+            if shared:
+                return hashlib.sha256(f"{shared}:programmer-local".encode()).hexdigest()
+    return ""
+
+
+def _programmer_hold_state(cfg: dict) -> dict:
+    """The reservation as the page shows it: until when, and whether the model
+    is answering yet -- asked of its own port on this host (the page runs on
+    the host's network), which never starts it the way the socket would."""
+    path = _programmer_hold_file(cfg)
+    until = since = 0
+    with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+        held = json.loads(path.read_text()) if path else {}
+        until = int(float(held.get("until") or 0))
+        since = int(float(held.get("at") or 0))
+    now = int(time.time())
+    served = ""
+    key = _programmer_key()
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{_PROGRAMMER_BACKEND}/v1/models",
+                                     headers={"Authorization": f"Bearer {key}"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = json.loads(r.read().decode() or "{}").get("data") or []
+            served = str((data[0] or {}).get("id") or "") if data else ""
+    except Exception:  # noqa: BLE001 - not running is the usual answer
+        served = ""
+    local = _programmer_local(cfg)
+    host = (request.host or "").rsplit(":", 1)[0] if has_request_context() else ""
+    return {"held": until > now, "until": until if until > now else 0, "since": since,
+            "loaded": bool(served), "served": served, "lan": local["lan"],
+            "url": f"http://{host}:{_PROGRAMMER_LAN_PORT}/v1" if host else "",
+            "configured": bool(local["model"]), "can_hold": path is not None}
+
+
+def _write_programmer_hold(cfg: dict, until: int) -> None:
+    path = _programmer_hold_file(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"until": until, "by": session.get("user", ""),
+                               "at": int(time.time())}) + "\n")
+    # A rename is one event for the .path unit, and never a half-written file.
+    os.replace(tmp, path)
+
+
+@app.get("/models/coding/reserve")
+def programmer_hold_get():
+    return jsonify(ok=True, **_programmer_hold_state(load_config()))
+
+
+@app.get("/models/coding/reserve/key")
+def programmer_hold_key():
+    """The key, asked for on purpose rather than printed into the page."""
+    return jsonify(ok=True, key=_programmer_key())
+
+
+@app.post("/models/coding/reserve")
+def programmer_hold_set():
+    """Reserve the card for coding for some hours (0 releases it). The model
+    loads now -- after the Studio's running job, as for a Programmer turn --
+    and stays loaded until then, served on the LAN when `lan` is on."""
+    cfg = load_config()
+    if not _programmer_local(cfg)["model"] or _programmer_hold_file(cfg) is None:
+        return jsonify(ok=False, error=_t_or("admin.codebench.hold_unset",
+                                             "There is no local model to reserve the card for.")), 400
+    hours = request.form.get("hours", type=int)
+    if hours is None or (hours and hours not in PROGRAMMER_HOLD_HOURS):
+        return jsonify(ok=False, error="hours: 0 or " + ", ".join(map(str, PROGRAMMER_HOLD_HOURS))), 400
+    _write_programmer_hold(cfg, int(time.time()) + hours * 3600 if hours else 0)
+    return jsonify(ok=True, **_programmer_hold_state(cfg))
 
 
 # deploy.py's _FALLBACK_MODEL_RE: what programmer-local.sh can serve.
@@ -7552,6 +7633,8 @@ def codebench_programmer():
     cfg = load_config()
     fb = cfg.setdefault("cloud", {}).setdefault("opencode", {}).setdefault("fallback", {})
     fb["model"], fb["context"] = model, context
+    # ★ is given to a llama.cpp result: that is the engine it was measured on.
+    fb["engine"] = "llamacpp"
     fb.setdefault("gpu", _codebench_gpu() if _codebench_gpu() is not None else 1)
     if "first" in request.form:
         fb["first"] = request.form.get("first") == "1"
@@ -7651,10 +7734,17 @@ def _ollama_params(cfg: dict) -> dict:
             continue                                       # a server that is down costs nothing
         for m in doc.get("models") or []:
             name = m.get("name") or m.get("model") or ""
-            size = ((m.get("details") or {}).get("parameter_size") or "").strip()
+            details = m.get("details") or {}
+            size = (details.get("parameter_size") or "").strip()
             if name and size:
                 out.setdefault(name, size)
                 out.setdefault(name.lower(), size)
+            # The quantization, under its own key so params_of never reads it as
+            # a size: `gemma4:e4b` is Q4_K_M, and only the server says so.
+            quant = (details.get("quantization_level") or "").strip()
+            if name and quant:
+                out.setdefault("quant:" + name, quant)
+                out.setdefault("quant:" + name.lower(), quant)
     if out:
         _PARAMS_CACHE.update(at=now, map=out)
     return out or _PARAMS_CACHE["map"]
@@ -8973,6 +9063,26 @@ def _bench_kind_args() -> dict:
             "bench_kind_of": model_bench.KIND_OF_ROLE}
 
 
+# Short names for the hosted badge: the picker's "NanoGPT -- pay per token" is a
+# heading, too long for a chip, and the cost split is not what the row is about.
+_BENCH_HOST_NAMES = {
+    "opencode_zen": "OpenCode Zen", "openrouter": "OpenRouter", "together": "Together AI",
+    "nanogpt": "NanoGPT", "openai": "OpenAI", "ollama_cloud": "Ollama cloud",
+}
+
+
+def _bench_host(cfg: dict, model: str) -> str:
+    """Which cloud a hosted row ran on. A bare "hosted" left a household
+    guessing whether that was Zen, NanoGPT or Together -- the same resolution
+    the Test button uses, so the badge names where the requests really went."""
+    prefix, sep, rest = str(model or "").strip().partition(":")
+    source = (_PROBE_PREFIXES.get(prefix.lower()) if sep and rest else None) or "opencode_zen"
+    if source == "openai_compatible":
+        compat = (cfg.get("cloud") or {}).get("openai_compatible") or {}
+        return str(compat.get("label") or "").strip() or t("admin.models.source_openai_compatible")
+    return _BENCH_HOST_NAMES.get(source, "")
+
+
 def _bench_views(cfg: dict) -> list[dict]:
     """The results card's rows: one per model, best first, the best one marked."""
     current = _cases_digest()
@@ -8983,6 +9093,7 @@ def _bench_views(cfg: dict) -> list[dict]:
     for run in runs:
         run["removable"] = model_bench.removable(cfg, str(run.get("model") or ""))
         view = model_bench.run_view(run, params_lookup=params)
+        view["host"] = _bench_host(cfg, view["model"]) if view["source"] == "hosted" else ""
         # A run the current cases would not have produced is not comparable with
         # one they would. Unstamped runs predate the stamp, so they are stale too.
         view["stale_cases"] = bool(current) and view["cases_digest"] != current
