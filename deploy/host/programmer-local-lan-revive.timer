@@ -1,0 +1,11 @@
+# Every five minutes, while the LAN is on demand: the deployer enables this
+# with `lan: demand` and disables it otherwise. See the .service.
+[Unit]
+Description=The Programmer's local model (LAN, on demand: revive a failed socket)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

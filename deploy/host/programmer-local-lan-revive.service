@@ -1,0 +1,10 @@
+# Brings the LAN socket back if it failed (`lan: demand` only). A socket that
+# fails -- its gate crashing at every connection until systemd's trigger
+# limit stops it -- stays failed until something starts it again, and before
+# this that was the next deploy. Starting a healthy socket changes nothing.
+[Unit]
+Description=The Programmer's local model (LAN, on demand: revive a failed socket)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'if systemctl --user is-failed -q programmer-local-lan.socket programmer-local-lan-proxy.service; then systemctl --user reset-failed programmer-local-lan.socket programmer-local-lan-proxy.service; fi; systemctl --user start programmer-local-lan.socket'

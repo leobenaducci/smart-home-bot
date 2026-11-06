@@ -1403,7 +1403,9 @@ def programmer_local_hold_file(cfg: dict) -> str:
 PROGRAMMER_LOCAL_UNITS = ("programmer-local.socket", "programmer-local-proxy.service",
                           "programmer-local.service", "programmer-local-hold.service",
                           "programmer-local-hold-sync.service",
-                          "programmer-local-lan-use.service")
+                          "programmer-local-lan-use.service",
+                          "programmer-local-lan-revive.service",
+                          "programmer-local-lan-revive.timer")
 # What answers the LAN on demand: checks the key before anything is started.
 PROGRAMMER_LOCAL_LAN_GATE = "programmer-local-lan-gate.py"
 # Rendered from `lan` (render_programmer_local_units), with the .path beside them.
@@ -1459,6 +1461,11 @@ def render_programmer_local_units(fallback: dict, hold_file: str) -> dict[str, s
             "# fifteen idle minutes end it -- and, through ExecStopPost, the model's use.",
             "[Unit]",
             "Description=The Programmer's local model (LAN gate, on demand)",
+            # No start limit: a gate that exits is started again by the next
+            # connection. One that crashes at every connection still trips
+            # the socket's own trigger limit, and the revive timer brings the
+            # socket back five minutes later.
+            "StartLimitIntervalSec=0",
             "",
             "[Service]",
             "EnvironmentFile=%h/.config/home-stack/programmer-local.env",
@@ -1493,17 +1500,25 @@ def programmer_local_lan_command(mode: str, changed: bool = True) -> str:
 
     "demand" then opens the socket for good. Otherwise it opens only while a
     reservation wants it -- the hold running, or queued behind the model's
-    load (a start job with the unit still inactive), which pulled the socket
-    in through Wants=."""
+    load (a *start* job with the unit still inactive), which pulled the socket
+    in through Wants=. A stop job is a reservation ending: the socket goes
+    with it. The revive timer runs in "demand" only."""
     stop_proxy = ("systemctl --user stop programmer-local-lan-proxy.service >/dev/null 2>&1; "
                   if changed else "")
     start = "restart" if changed else "start"
     if mode == "demand":
         return (stop_proxy + "systemctl --user enable programmer-local-lan.socket >/dev/null 2>&1; "
+                "systemctl --user enable --now programmer-local-lan-revive.timer >/dev/null 2>&1; "
+                # A failed socket (or gate) refuses a plain start until reset.
+                "if systemctl --user is-failed -q programmer-local-lan.socket "
+                "programmer-local-lan-proxy.service; then systemctl --user reset-failed "
+                "programmer-local-lan.socket programmer-local-lan-proxy.service; fi; "
                 f"systemctl --user {start} programmer-local-lan.socket")
     return (stop_proxy + "systemctl --user disable programmer-local-lan.socket >/dev/null 2>&1; "
+            "systemctl --user disable --now programmer-local-lan-revive.timer >/dev/null 2>&1; "
             "if systemctl --user is-active -q programmer-local-hold.service "
-            "|| [ -n \"$(systemctl --user show -P Job programmer-local-hold.service)\" ]; then "
+            "|| systemctl --user list-jobs --no-legend 2>/dev/null "
+            "| awk '$2 == \"programmer-local-hold.service\" && $3 == \"start\" {f=1} END {exit !f}'; then "
             f"systemctl --user {start} programmer-local-lan.socket; else "
             "systemctl --user stop programmer-local-lan.socket; fi")
 
@@ -1549,7 +1564,7 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
         target.run("for u in programmer-local.socket "
                    "programmer-local-hold.path programmer-local-hold.service "
                    "programmer-local-lan.socket programmer-local-lan-proxy.service "
-                   "programmer-local-lan-use.service "
+                   "programmer-local-lan-use.service programmer-local-lan-revive.timer "
                    "programmer-local-proxy.service programmer-local.service; do "
                    "systemctl --user disable \"$u\" >/dev/null 2>&1; "
                    "systemctl --user stop \"$u\" >/dev/null 2>&1; done; true",

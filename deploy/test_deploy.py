@@ -4019,8 +4019,52 @@ _c = " ".join(_lan_cmds(dict(_strata, lan="off")))
 check("  otherwise it is disabled and opens only for a reservation, running or queued",
       "disable programmer-local-lan.socket" in _c
       and "is-active -q programmer-local-hold.service" in _c
-      and "show -P Job programmer-local-hold.service" in _c
-      and "stop programmer-local-lan.socket" in _c, _c)
+      and "list-jobs" in _c
+      and "stop programmer-local-lan.socket" in _c
+      and "disable --now programmer-local-lan-revive.timer" in _c, _c)
+_c = " ".join(_lan_cmds(dict(_strata, lan="demand")))
+check("  `demand` turns the revive timer on, and clears a failed socket before starting it",
+      "enable --now programmer-local-lan-revive.timer" in _c
+      and _c.index("reset-failed") < _c.index("restart programmer-local-lan.socket"), _c)
+
+
+def _socket_verdict(job_type, hold_active=False):
+    """Run the `reserved` command against a fake systemctl: what does it do
+    to the socket while the hold has a job of `job_type` queued?"""
+    tmp = Path(tempfile.mkdtemp())
+    log = tmp / "log"
+    (tmp / "systemctl").write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> {log}\n'
+        'case "$*" in\n'
+        f'  *"is-active -q programmer-local-hold.service"*) exit {0 if hold_active else 3} ;;\n'
+        f'  *list-jobs*) [ -n "{job_type}" ] && '
+        f'echo "42 programmer-local-hold.service {job_type} waiting" ;;\n'
+        "esac\nexit 0\n")
+    (tmp / "systemctl").chmod(0o755)
+    subprocess.run(["/bin/sh", "-c", D.programmer_local_lan_command("reserved", False)],
+                   env=dict(os.environ, PATH=f"{tmp}:{os.environ.get('PATH', '')}"), check=False)
+    calls = log.read_text()
+    return ("start" if "--user start programmer-local-lan.socket" in calls
+            else "stop" if "--user stop programmer-local-lan.socket" in calls else "?")
+
+
+check("  a reservation queued behind the model's load keeps its socket",
+      _socket_verdict("start") == "start")
+check("  one being stopped does not: a stop job is a reservation ending",
+      _socket_verdict("stop") == "stop")
+check("  a running one keeps it, and none at all closes it",
+      _socket_verdict("", hold_active=True) == "start" and _socket_verdict("") == "stop")
+_dem_units = D.render_programmer_local_units(dict(_strata, lan="demand", lan_port=11462,
+                                                  backend=11461), "/h")
+check("  the gate has no start limit, so exiting is never what closes the door",
+      "StartLimitIntervalSec=0" in _dem_units["programmer-local-lan-proxy.service"])
+_revive = (D.ROOT / "deploy/host/programmer-local-lan-revive.service").read_text()
+check("  and a socket that fails anyway is revived within five minutes, not at the next deploy",
+      "reset-failed programmer-local-lan.socket" in _revive
+      and "start programmer-local-lan.socket" in _revive
+      and "OnUnitActiveSec=5min" in (D.ROOT / "deploy/host/programmer-local-lan-revive.timer").read_text()
+      and "programmer-local-lan-revive.timer" in D.PROGRAMMER_LOCAL_UNITS)
 _t = _RecordingTarget()
 _lan_cmds(dict(_strata, lan="demand"), target=_t)
 _t.cmds = []
