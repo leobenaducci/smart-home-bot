@@ -276,7 +276,12 @@ A deploy restarts the LAN socket (stopping its proxy first, which cuts a LAN
 request in flight) only when it rewrote the socket's units; one that leaves
 them as they were only starts or stops it. A setup the deploy cannot write
 (llama.cpp not built, no `PROXY_SHARED_SECRET`) puts the LAN units back to
-`off` rather than leaving the last ones written for a reservation to reopen.
+`off` rather than leaving the last ones written for a reservation to reopen. In `demand` the gate has no start limit, and
+`programmer-local-lan-revive.timer` starts the socket again every five
+minutes if it failed (a gate crashing at every connection trips the socket's
+own trigger limit), so a failure lasts minutes, not until the next deploy. In
+the reservation modes a deploy keeps the socket open only for a hold that is
+running or has a *start* job queued; a stop job is a reservation ending.
 
 ### The other way round: the local model first
 
