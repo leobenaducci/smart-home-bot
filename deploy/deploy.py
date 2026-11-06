@@ -6536,6 +6536,36 @@ def publish_entry_page(target: Target, unit: dict, cfg: dict, secrets: dict,
     target.run(f"rm -rf {shlex.quote(staging)}", check=False)
 
 
+def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out) -> None:
+    # One image, built by name, before compose runs. Not the same thing as
+    # `build: true`: that maps to `docker compose build`, which builds what
+    # a *service* declares. These compose files deliberately declare no
+    # per-service `build:` — five services sharing one image would have
+    # Compose build the same Dockerfile five times and export five
+    # byte-identical copies — so nothing built it at all and `up` fell
+    # through to `docker pull alfred-nanobot`, which is not a registry
+    # image and never will be. A shell script used to do this; deleting it
+    # took the build with it.
+    # A list, when a unit builds more than one image out of one context --
+    # a runtime image and the test stage beside it. One entry stays one
+    # entry; nothing that declared a single image has to change.
+    builds = unit.get("image_build")
+    for spec_img in (builds if isinstance(builds, list) else
+                     ([builds] if builds else [])):
+        tag = spec_img["tag"] if isinstance(spec_img, dict) else str(spec_img)
+        context = (spec_img.get("context", ".") if isinstance(spec_img, dict) else ".")
+        # A named stage, for a Dockerfile that keeps its test tooling out
+        # of the runtime image. Without it the only way to run a service's
+        # own suite against the thing being deployed is to ship pytest to
+        # the house.
+        stage = (spec_img.get("target") if isinstance(spec_img, dict) else None)
+        staged = f"--target {shlex.quote(stage)} " if stage else ""
+        target.run(
+            f"docker build {staged}-t {shlex.quote(tag)} {shlex.quote(context)}",
+            cwd=remote_dir, env=env)
+        out.ok(f"image {tag} built")
+
+
 def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                    targets: dict[str, Target], only: str | None,
                    remote_root: str, plugins: list | None = None) -> None:
@@ -7279,6 +7309,17 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
         target.run(f"{compose} config -q", cwd=remote_dir, env=env)
         out.ok("compose file valid")
 
+        # Every image first, then the tests. A unit whose suite lives in a test
+        # stage (`image_build: [... {target: test}]`) names that stage's tag as
+        # `test.image`, and the tests used to run *before* this build: they
+        # checked whatever the previous deploy had left under that tag, so a
+        # change was gated on the last version's suite, and once that image had
+        # been pruned every deploy of the unit failed with "tests failed before
+        # deploy" on a missing image. Retagging before the gate leaves the
+        # running containers alone -- they hold the old image by id until `up`
+        # -- which is what `build: true` below has always done.
+        build_unit_images(unit, target, remote_dir, env, out)
+
         # Tests run against the built image before it replaces the running one,
         # so a red run stops the house getting the change rather than reporting
         # on it afterwards.
@@ -7313,34 +7354,6 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
             # makes `up` fail on a name conflict.
             target.run(f"docker rm -f {shlex.quote(container)} 2>/dev/null || true",
                        cwd=remote_dir, check=False)
-
-        # One image, built by name, before compose runs. Not the same thing as
-        # `build: true`: that maps to `docker compose build`, which builds what
-        # a *service* declares. These compose files deliberately declare no
-        # per-service `build:` — five services sharing one image would have
-        # Compose build the same Dockerfile five times and export five
-        # byte-identical copies — so nothing built it at all and `up` fell
-        # through to `docker pull alfred-nanobot`, which is not a registry
-        # image and never will be. A shell script used to do this; deleting it
-        # took the build with it.
-        # A list, when a unit builds more than one image out of one context --
-        # a runtime image and the test stage beside it. One entry stays one
-        # entry; nothing that declared a single image has to change.
-        builds = unit.get("image_build")
-        for spec_img in (builds if isinstance(builds, list) else
-                         ([builds] if builds else [])):
-            tag = spec_img["tag"] if isinstance(spec_img, dict) else str(spec_img)
-            context = (spec_img.get("context", ".") if isinstance(spec_img, dict) else ".")
-            # A named stage, for a Dockerfile that keeps its test tooling out
-            # of the runtime image. Without it the only way to run a service's
-            # own suite against the thing being deployed is to ship pytest to
-            # the house.
-            stage = (spec_img.get("target") if isinstance(spec_img, dict) else None)
-            staged = f"--target {shlex.quote(stage)} " if stage else ""
-            target.run(
-                f"docker build {staged}-t {shlex.quote(tag)} {shlex.quote(context)}",
-                cwd=remote_dir, env=env)
-            out.ok(f"image {tag} built")
 
         if unit.get("pre"):
             target.run(unit["pre"], cwd=remote_dir, env=env)

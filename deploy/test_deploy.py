@@ -4846,6 +4846,39 @@ check("  the manifest publishes the cloud unit and keeps the build files back",
       {"Dockerfile", "docker-compose.yml"} <= set((_cloud.get("publish") or {}).get("exclude", [])),
       _cloud.get("publish"))
 
+print("\na unit's images are built before its tests run")
+
+
+class _BuildTarget:
+    def __init__(self):
+        self.cmds = []
+
+    def run(self, cmd, **_kw):
+        self.cmds.append(cmd)
+
+
+_bt = _BuildTarget()
+D.build_unit_images({"image_build": [{"tag": "svc:latest", "context": "."},
+                                     {"tag": "svc-test:latest", "context": ".",
+                                      "target": "test"}]},
+                    _bt, "/scratch", {}, _Out())
+check("  every listed image is built, the test stage by its target",
+      _bt.cmds == ["docker build -t svc:latest .",
+                   "docker build --target test -t svc-test:latest ."], _bt.cmds)
+_bt = _BuildTarget()
+D.build_unit_images({"image_build": {"tag": "one:latest", "context": "."}}, _bt, "/s", {}, _Out())
+D.build_unit_images({}, _bt, "/s", {}, _Out())
+check("  one entry is still one build, and none is none",
+      _bt.cmds == ["docker build -t one:latest ."], _bt.cmds)
+# A unit whose suite is its own test stage names that stage's tag as
+# `test.image`. Run before the build, the gate checked the previous deploy's
+# image -- and failed every deploy once that image had been pruned.
+import inspect as _inspect  # noqa: E402
+_ds = _inspect.getsource(D.deploy_service)
+check("  deploy_service builds them before it runs the tests",
+      "build_unit_images(unit" in _ds
+      and _ds.index("build_unit_images(unit") < _ds.index('test = unit.get("test")'))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))
