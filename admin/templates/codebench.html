@@ -179,7 +179,7 @@
   <details class="cb-pi" id="cb-pi">
     <summary class="reveal">{{ t('admin.codebench.pi_heading') }}</summary>
     <ol class="cb-pi-steps">
-      <li><p>{{ t('admin.codebench.pi_step_reserve') }}</p></li>
+      <li><p>{% if programmer.lan_mode == 'demand' %}{{ t('admin.codebench.pi_step_demand') }}{% else %}{{ t('admin.codebench.pi_step_reserve') }}{% endif %}</p></li>
       <li><p>{{ t('admin.codebench.pi_step_key') }}
           <button type="button" class="ghost tiny" id="cb-pi-show-key">{{ t('admin.codebench.pi_show_key') }}</button></p>
         <pre class="cb-pre cb-copy" id="cb-pi-key-cmd"><code>export HOUSE_CODER_KEY=…</code></pre>

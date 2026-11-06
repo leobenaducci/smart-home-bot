@@ -3839,7 +3839,7 @@ print("\nthe Programmer's local fallback, for when OpenCode Go is out")
 _fb = D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "ornith:9b"}}}})
 check("  a model name is enough: the Studio's card, a 64k window, llama.cpp, loopback only",
       _fb == {"model": "ornith:9b", "gpu": 1, "context": 65536, "first": False,
-              "engine": "llamacpp", "lan": False,
+              "engine": "llamacpp", "lan": "off",
               "provider": "home", "port": 11460, "backend": 11461, "lan_port": 11462}, _fb)
 _gguf = "/var/lib/home-stack/models/hf/a/b/IQ1_M/m-00001-of-00002.gguf"
 check("  Strata serves a .gguf",
@@ -3847,16 +3847,20 @@ check("  Strata serves a .gguf",
           "model": _gguf, "engine": "strata", "lan": True}}}})["engine"] == "strata")
 for _bad_fb, _why in (({"model": "ornith:9b", "engine": "strata"}, "an Ollama name on Strata"),
                       ({"model": "ornith:9b", "engine": "vllm"}, "an engine it has no way to run"),
-                      ({"model": "ornith:9b", "lan": "yes"}, "a `lan` that is not true or false")):
+                      ({"model": "ornith:9b", "lan": "yes"}, "a `lan` that is not a mode")):
     try:
         D.opencode_fallback({"cloud": {"opencode": {"fallback": _bad_fb}}})
         check(f"  refuses {_why}", False)
     except SystemExit:
         check(f"  refuses {_why}", True)
-_units = D.render_programmer_local_units(dict(_fb, lan=True), "/s/admin/programmer-local/hold.json")
-check("  with `lan` the reservation socket listens on every address, at its own port",
+check("  `lan` true/false read as the modes they meant",
+      [D.opencode_fallback({"cloud": {"opencode": {"fallback": {"model": "o:9b", "lan": v}}}})["lan"]
+       for v in (True, False, "demand")] == ["reserved", "off", "demand"])
+_units = D.render_programmer_local_units(dict(_fb, lan="reserved"), "/s/admin/programmer-local/hold.json")
+check("  `reserved`: the LAN socket listens on every address, at its own port, with the hold",
       "ListenStream=0.0.0.0:11462" in _units["programmer-local-lan.socket"]
-      and "PartOf=programmer-local-hold.service" in _units["programmer-local-lan.socket"])
+      and "PartOf=programmer-local-hold.service" in _units["programmer-local-lan.socket"]
+      and "[Install]" not in _units["programmer-local-lan.socket"])
 check("  and without it on loopback only",
       "ListenStream=127.0.0.1:11462" in D.render_programmer_local_units(_fb, "/h")["programmer-local-lan.socket"])
 check("  the .path watches the admin page's hold file",
@@ -3864,9 +3868,188 @@ check("  the .path watches the admin page's hold file",
 check("  which lives in the page's own state directory",
       D.programmer_local_hold_file({"paths": {"state": "/st"}}) == "/st/admin/programmer-local/hold.json"
       and D.programmer_local_hold_file({}) == "")
-_lan_proxy = (D.ROOT / "deploy/host/programmer-local-lan-proxy.service").read_text()
-check("  the LAN proxy has no idle exit (the reservation decides) and goes with it",
+_lan_proxy = _units["programmer-local-lan-proxy.service"]
+check("  and its proxy has no idle exit (the reservation decides) and goes with it",
       "--exit-idle-time" not in _lan_proxy and "PartOf=programmer-local-hold.service" in _lan_proxy)
+_dem = D.render_programmer_local_units(dict(_fb, lan="demand"), "/h")
+check("  `demand`: always listening on every address, not tied to a reservation",
+      "ListenStream=0.0.0.0:11462" in _dem["programmer-local-lan.socket"]
+      and "WantedBy=sockets.target" in _dem["programmer-local-lan.socket"]
+      and "PartOf" not in _dem["programmer-local-lan.socket"])
+_gate_unit = _dem["programmer-local-lan-proxy.service"]
+check("  and behind it the gate, which does not need the model: the key comes first",
+      "programmer-local-lan-gate.py" in _gate_unit
+      and "Requires=" not in _gate_unit and "PartOf" not in _gate_unit
+      and "ExecStopPost=/usr/bin/systemctl --user stop programmer-local-lan-use.service"
+      in _gate_unit, _gate_unit)
+check("  the gate's start of the model goes through a unit that requires it",
+      "Requires=programmer-local.service" in
+      (D.ROOT / "deploy/host/programmer-local-lan-use.service").read_text()
+      and "programmer-local-lan-use.service" in D.PROGRAMMER_LOCAL_UNITS)
+
+print("\nthe LAN gate, run: no key, no model")
+import http.server as _hs  # noqa: E402
+import subprocess  # noqa: E402
+import socket as _sock  # noqa: E402
+import threading as _th  # noqa: E402
+import urllib.request as _ur  # noqa: E402
+
+
+class _Model(_hs.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"data":[{"id":"m"}]}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+def _gate_run(systemctl_rc=0, idle=2):
+    tmp = Path(tempfile.mkdtemp())
+    log = tmp / "systemctl.log"
+    fake = tmp / "systemctl"
+    fake.write_text(f"#!/bin/sh\necho \"$*\" >> {log}\nexit {systemctl_rc}\n")
+    fake.chmod(0o755)
+    model = _hs.HTTPServer(("127.0.0.1", 0), _Model)
+    _th.Thread(target=model.serve_forever, daemon=True).start()
+    lsock = _sock.socket()
+    lsock.bind(("127.0.0.1", 0))
+    lsock.listen(8)
+    fd = lsock.fileno()
+    env = dict(os.environ, LISTEN_FDS="1", API_KEY="k" * 32, IDLE_SECONDS=str(idle),
+               BACKEND_PORT=str(model.server_address[1]),
+               PATH=f"{tmp}:{os.environ.get('PATH', '')}")
+    # As systemd hands it: the listening socket on fd 3.
+    gate = D.ROOT / "deploy/host/programmer-local-lan-gate.py"
+    proc = subprocess.Popen(["/bin/sh", "-c", f'exec 3<&{fd}; exec /usr/bin/python3 -I "$0"',
+                             str(gate)], env=env, pass_fds=(fd,))
+    return proc, lsock, model, log
+
+
+def _ask(port, key=None):
+    req = _ur.Request(f"http://127.0.0.1:{port}/v1/models",
+                      headers={"Authorization": f"Bearer {key}"} if key else {})
+    try:
+        with _ur.urlopen(req, timeout=10) as r:
+            return r.status, r.read()
+    except _ur.HTTPError as e:
+        return e.code, e.read()
+
+
+_proc, _lsock, _model, _log = _gate_run()
+try:
+    _port = _lsock.getsockname()[1]
+    _no = _ask(_port)
+    _wrong = _ask(_port, "x" * 32)
+    check("  a request without the key is refused, and nothing is started",
+          _no[0] == 401 and _wrong[0] == 401 and not _log.exists(), (_no, _wrong))
+    _yes = _ask(_port, "k" * 32)
+    check("  with the key the model is started and the request reaches it",
+          _yes == (200, b'{"data":[{"id":"m"}]}')
+          and "start programmer-local-lan-use.service" in _log.read_text(), _yes)
+    try:
+        _proc.wait(timeout=10)
+        check("  and the gate exits once idle, so its unit lets the model go", True)
+    except subprocess.TimeoutExpired:
+        check("  and the gate exits once idle, so its unit lets the model go", False)
+finally:
+    _proc.kill()
+    _model.shutdown()
+_proc, _lsock, _model, _log = _gate_run(systemctl_rc=1)
+try:
+    _fail = _ask(_lsock.getsockname()[1], "k" * 32)
+    check("  a model that does not start is a 503 that says where to look",
+          _fail[0] == 503 and b"journalctl" in _fail[1], _fail)
+finally:
+    _proc.kill()
+    _model.shutdown()
+class _RecordingTarget:
+    """Records what write_programmer_local asks systemd to do, keeps what it
+    pushes (and answers `cat` with it), and fails the LAN command on request."""
+
+    def __init__(self, lan_fails=False):
+        self.cmds, self.files, self.lan_fails = [], {}, lan_fails
+
+    def run(self, cmd, check=True, capture=False):
+        self.cmds.append(cmd)
+        stdout = ""
+        if cmd.startswith("cat "):
+            stdout = self.files.get(cmd.split()[1].strip("'"), "")
+        failed = self.lan_fails and "programmer-local-lan.socket" in cmd and "enable" in cmd
+        return type("R", (), {"returncode": 1 if failed else 0, "stdout": stdout})()
+
+    def push_file(self, src, dest):
+        self.cmds.append(f"push {dest}")
+        self.files[dest] = pathlib.Path(src).read_text(encoding="utf-8")
+
+
+class _Out:
+    def __init__(self):
+        self.said = []
+
+    def __getattr__(self, name):
+        return lambda *a, **k: self.said.append((name, " ".join(map(str, a))))
+
+
+def _lan_cmds(fb_conf, secrets=None, target=None, out=None):
+    t = target or _RecordingTarget()
+    cfg = {"paths": {"state": "/scratch/state"},
+           "cloud": {"opencode": {"fallback": fb_conf}}}
+    D.write_programmer_local(t, cfg, "/scratch/cfg", D.opencode_fallback(cfg),
+                             {"PROXY_SHARED_SECRET": "s"} if secrets is None else secrets,
+                             out or _Out())
+    return [c for c in t.cmds if "programmer-local-lan" in c
+            and not c.startswith(("push", "cat"))]
+
+
+_strata = {"model": _gguf, "engine": "strata"}
+for _mode in ("demand", "reserved", "off"):
+    _c = " ".join(_lan_cmds(dict(_strata, lan=_mode)))
+    check(f"  `{_mode}`: a deploy stops the LAN proxy before it touches the socket",
+          "stop programmer-local-lan-proxy.service" in _c
+          and _c.index("stop programmer-local-lan-proxy.service")
+          < _c.index("restart programmer-local-lan.socket"), _c)
+_c = " ".join(_lan_cmds(dict(_strata, lan="demand")))
+check("  `demand` enables the socket, so it outlives a reboot",
+      "enable programmer-local-lan.socket" in _c and "disable" not in _c, _c)
+_c = " ".join(_lan_cmds(dict(_strata, lan="off")))
+check("  otherwise it is disabled and opens only for a reservation, running or queued",
+      "disable programmer-local-lan.socket" in _c
+      and "is-active -q programmer-local-hold.service" in _c
+      and "show -P Job programmer-local-hold.service" in _c
+      and "stop programmer-local-lan.socket" in _c, _c)
+_t = _RecordingTarget()
+_lan_cmds(dict(_strata, lan="demand"), target=_t)
+_t.cmds = []
+_c = " ".join(_lan_cmds(dict(_strata, lan="demand"), target=_t))
+check("  a deploy that leaves the LAN units as they were cuts nothing: no proxy stop, no restart",
+      "stop programmer-local-lan-proxy.service" not in _c and "restart" not in _c
+      and "start programmer-local-lan.socket" in _c, _c)
+_c = " ".join(_lan_cmds(dict(_strata, lan="reserved"), target=_t))
+check("  and one that changes them restarts the socket behind a stopped proxy",
+      "stop programmer-local-lan-proxy.service" in _c and "restart programmer-local-lan.socket" in _c, _c)
+_t = _RecordingTarget()
+_c = " ".join(_lan_cmds(dict(_strata, lan="demand"), secrets={}, target=_t))
+_closed = _t.files.get("/scratch/cfg/systemd/user/programmer-local-lan.socket", "")
+check("  a setup that cannot be written puts the LAN back to `off`, units and all",
+      "disable programmer-local-lan.socket" in _c
+      and "stop programmer-local-lan-proxy.service" in _c
+      and "ListenStream=127.0.0.1:11462" in _closed
+      and "PartOf=programmer-local-hold.service" in _closed and "[Install]" not in _closed,
+      _c + "\n" + _closed)
+_o = _Out()
+_lan_cmds(dict(_strata, lan="demand"), target=_RecordingTarget(lan_fails=True), out=_o)
+check("  a LAN socket that does not start is a warning, and the deploy does not claim it",
+      any(k == "warn" and "programmer-local-lan.socket" in m for k, m in _o.said)
+      and not any(k == "ok" and "on the LAN" in m for k, m in _o.said), _o.said)
+_t = _RecordingTarget()
+D.write_programmer_local(_t, {}, "/scratch/cfg", {}, {}, _Out())
+check("  without a fallback each unit is disabled and stopped on its own",
+      len(_t.cmds) == 1 and 'disable "$u"' in _t.cmds[0] and 'stop "$u"' in _t.cmds[0]
+      and "--now" not in _t.cmds[0], _t.cmds)
 check("  the reservation needs the model, so starting it loads the model",
       "Requires=programmer-local.service" in (D.ROOT / "deploy/host/programmer-local-hold.service").read_text())
 _sh = (D.ROOT / "deploy/host/programmer-local.sh").read_text()

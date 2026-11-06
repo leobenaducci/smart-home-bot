@@ -1,0 +1,14 @@
+# A LAN client with the key is using the model, on demand (`lan: demand`).
+# Started by programmer-local-lan-gate.py once a request's key checks out:
+# requiring the model is what loads it -- reserving the Studio's card first,
+# the same wait as a Programmer turn -- and the start returns once the model
+# answers. Stopped by the gate's unit when the gate idles out, which leaves
+# the model to StopWhenUnneeded and gives the card back.
+[Unit]
+Description=The Programmer's local model (in use by a LAN client, on demand)
+Requires=programmer-local.service
+After=programmer-local.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sleep infinity

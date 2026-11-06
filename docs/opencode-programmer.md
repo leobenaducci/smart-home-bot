@@ -247,13 +247,36 @@ until the time, whatever the traffic. A release writes `until: 0` rather than
 deleting the file, so the `.path` sees it; the model then goes as soon as the
 idle proxy is not holding it.
 
-While reserved, `programmer-local-lan.socket` listens on port 11462 -- on every
-address when `cloud.opencode.fallback.lan` is true, loopback otherwise -- and
-forwards to the model with no idle exit. Its own port on purpose: the on-demand
-socket on 11460 starts the model, and a LAN that could do that would let
-anything on the network take the Studio's card. The model asks every caller
-for the key, which the page shows on request, along with the steps to point
-pi at it.
+`programmer-local-lan.socket` serves the model on port 11462, and
+`cloud.opencode.fallback.lan` says when (true and false, its first shape, read
+as `reserved` and `off`):
+
+- **`off`** -- loopback only, while reserved.
+- **`reserved`** -- every address, while reserved: the socket and its proxy go
+  with the hold, and the proxy has no idle exit.
+- **`demand`** -- every address, always. The first request does what a
+  Programmer turn does on 11460: reserves the Studio's card (after its running
+  job), loads the model (~35-90 s for Strata) and holds the request until it
+  answers; fifteen idle minutes give the card back.
+  A client needs a request timeout longer than that first load. A reservation
+  still pins the model loaded meanwhile.
+
+`demand` is a choice the household makes on purpose: anything holding the key
+can then take the Studio's card whenever it likes. Without the key nothing
+happens: in `demand` the socket hands each connection to
+`programmer-local-lan-gate.py`, which reads the request head and answers 401
+before anything is started, so a port scan or a stray container connection
+leaves the card alone. A request with the key starts
+`programmer-local-lan-use.service`, which requires the model (the same wait as
+a Programmer turn), and is then forwarded to it whole. Fifteen minutes with no
+connection open end the gate, whose `ExecStopPost` stops that unit. The page
+shows the key on request, along with the steps to point pi at it.
+
+A deploy restarts the LAN socket (stopping its proxy first, which cuts a LAN
+request in flight) only when it rewrote the socket's units; one that leaves
+them as they were only starts or stops it. A setup the deploy cannot write
+(llama.cpp not built, no `PROXY_SHARED_SECRET`) puts the LAN units back to
+`off` rather than leaving the last ones written for a reservation to reopen.
 
 ### The other way round: the local model first
 

@@ -1313,11 +1313,17 @@ def opencode_model(cfg: dict) -> str:
 OPENCODE_FALLBACK_PROVIDER = "home"
 OPENCODE_FALLBACK_PORT = 11460
 OPENCODE_FALLBACK_BACKEND = 11461
-# Where the model answers the LAN, while somebody has reserved the card for
-# coding from the admin page and the household switched `lan` on. A port of
-# its own: the loopback socket above starts the model on demand, and a LAN
-# that could do the same would let anything on the network take the card.
+# Where the model answers the LAN. A port of its own, and `lan` decides what
+# it does: "off" (loopback, only while reserved), "reserved" (every address,
+# only while somebody reserved the card for coding from the admin page) or
+# "demand" (every address, always: the first request reserves the Studio's
+# card and loads the model, like the loopback socket above, and fifteen quiet
+# minutes give it back). In "demand" the key is checked *before* the model is
+# started (programmer-local-lan-gate.py): a scan or a request without it gets
+# a 401 and the Studio keeps its card. Anything holding the key can still
+# take the card whenever it likes, which is why the household has to ask.
 OPENCODE_FALLBACK_LAN_PORT = 11462
+OPENCODE_FALLBACK_LAN_MODES = ("off", "reserved", "demand")
 # The two engines that can serve it. Strata is a container with its own
 # llama.cpp, for the GGUFs only it runs (Qwen3.8-Flash-Next); pinned, because
 # the tag is what was measured here (5/5 on the coding problems, 2026-11-05).
@@ -1356,9 +1362,12 @@ def opencode_fallback(cfg: dict) -> dict:
     first = conf.get("first", False)
     if not isinstance(first, bool):
         raise SystemExit("cloud.opencode.fallback.first is true or false")
-    lan = conf.get("lan", False)
-    if not isinstance(lan, bool):
-        raise SystemExit("cloud.opencode.fallback.lan is true or false")
+    lan = conf.get("lan", "off")
+    # true/false are the setting's first shape (true was "while reserved").
+    lan = {True: "reserved", False: "off"}.get(lan, lan) if isinstance(lan, bool) else lan
+    if lan not in OPENCODE_FALLBACK_LAN_MODES:
+        raise SystemExit("cloud.opencode.fallback.lan is "
+                         + ", ".join(OPENCODE_FALLBACK_LAN_MODES))
     engine = str(conf.get("engine") or "llamacpp").strip()
     if engine not in OPENCODE_FALLBACK_ENGINES:
         raise SystemExit(f"cloud.opencode.fallback.engine is {engine!r}: "
@@ -1394,17 +1403,27 @@ def programmer_local_hold_file(cfg: dict) -> str:
 PROGRAMMER_LOCAL_UNITS = ("programmer-local.socket", "programmer-local-proxy.service",
                           "programmer-local.service", "programmer-local-hold.service",
                           "programmer-local-hold-sync.service",
-                          "programmer-local-lan-proxy.service")
-# Rendered rather than copied: each names a value only the config knows.
-PROGRAMMER_LOCAL_RENDERED = ("programmer-local-hold.path", "programmer-local-lan.socket")
+                          "programmer-local-lan-use.service")
+# What answers the LAN on demand: checks the key before anything is started.
+PROGRAMMER_LOCAL_LAN_GATE = "programmer-local-lan-gate.py"
+# Rendered from `lan` (render_programmer_local_units), with the .path beside them.
+PROGRAMMER_LOCAL_LAN_UNITS = ("programmer-local-lan.socket", "programmer-local-lan-proxy.service")
 
 
 def render_programmer_local_units(fallback: dict, hold_file: str) -> dict[str, str]:
-    """The two units that carry a configured value: the .path watching the
-    admin page's hold file, and the LAN socket -- on every address when the
-    household switched `lan` on, else on loopback only (still useful: a client
-    on this machine, and the same unit either way)."""
-    listen = f"{'0.0.0.0' if fallback.get('lan') else '127.0.0.1'}:{fallback['lan_port']}"
+    """The units that carry a configured value, rendered rather than copied:
+    the .path watching the admin page's hold file, and the LAN socket and its
+    proxy. `lan` "off" listens on loopback only (still useful: a client on
+    this machine), "reserved" on every address; both open and close with the
+    reservation, and the proxy has no idle exit. "demand" listens always and
+    hands each connection to programmer-local-lan-gate.py, which answers 401
+    to anything without the key and starts the model only for a request that
+    has it; fifteen idle minutes end the gate, and its stop lets the model go."""
+    mode = fallback.get("lan") or "off"
+    demand = mode == "demand"
+    listen = f"{'127.0.0.1' if mode == 'off' else '0.0.0.0'}:{fallback['lan_port']}"
+    when = "on demand" if demand else "while reserved"
+    with_hold = [] if demand else ["PartOf=programmer-local-hold.service"]
     return {
         "programmer-local-hold.path": "\n".join([
             "# Written by ./home-stack deploy. Watches the admin page's \"reserve the",
@@ -1421,17 +1440,98 @@ def render_programmer_local_units(fallback: dict, hold_file: str) -> dict[str, s
             ""]),
         "programmer-local-lan.socket": "\n".join([
             "# Written by ./home-stack deploy. The model for a coding client on the",
-            "# LAN, only while the card is reserved for coding (started and stopped",
-            "# with programmer-local-hold.service). The model asks for its key.",
+            ("# LAN, always: the first request reserves the Studio's card and loads it."
+             if demand else
+             "# LAN, only while the card is reserved for coding (with the hold)."),
+            "# The model asks for its key.",
             "[Unit]",
-            "Description=The Programmer's local model (LAN, while reserved)",
-            "PartOf=programmer-local-hold.service",
+            f"Description=The Programmer's local model (LAN, {when})",
+            *with_hold,
             "",
             "[Socket]",
             f"ListenStream={listen}",
             "Service=programmer-local-lan-proxy.service",
+            "",
+            *(["[Install]", "WantedBy=sockets.target", ""] if demand else [])]),
+        "programmer-local-lan-proxy.service": "\n".join([
+            "# Written by ./home-stack deploy. Answers the LAN on demand: the key is",
+            "# checked before the model is started (programmer-local-lan-gate.py), and",
+            "# fifteen idle minutes end it -- and, through ExecStopPost, the model's use.",
+            "[Unit]",
+            "Description=The Programmer's local model (LAN gate, on demand)",
+            "",
+            "[Service]",
+            "EnvironmentFile=%h/.config/home-stack/programmer-local.env",
+            f"ExecStart=/usr/bin/python3 -I %h/.config/home-stack/{PROGRAMMER_LOCAL_LAN_GATE}",
+            "ExecStopPost=/usr/bin/systemctl --user stop programmer-local-lan-use.service",
+            ""] if demand else [
+            "# Written by ./home-stack deploy. Forwards the LAN socket to the model.",
+            "# No idle exit: the reservation decides how long the model stays.",
+            "[Unit]",
+            "Description=The Programmer's local model (LAN proxy, while reserved)",
+            "Requires=programmer-local.service",
+            "After=programmer-local.service",
+            "PartOf=programmer-local-hold.service",
+            "",
+            "[Service]",
+            f"ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:{fallback['backend']}",
             ""]),
     }
+
+
+def programmer_local_lan_command(mode: str, changed: bool = True) -> str:
+    """What a deploy runs to put the LAN socket in `mode`, whatever it was in.
+
+    When the deploy rewrote the LAN units (`changed`), the proxy stops first,
+    because a running systemd-socket-proxyd keeps its own copy of the
+    listening socket and systemd refuses to start a socket whose service is
+    still running; then the socket restarts. That cuts a LAN request in
+    flight, and in "demand" can unload the model -- the price of new units
+    taking effect, so it is paid only when they are new. Units left as they
+    were are only started or stopped: a deploy that changes nothing here cuts
+    nothing (and still revives a socket that failed).
+
+    "demand" then opens the socket for good. Otherwise it opens only while a
+    reservation wants it -- the hold running, or queued behind the model's
+    load (a start job with the unit still inactive), which pulled the socket
+    in through Wants=."""
+    stop_proxy = ("systemctl --user stop programmer-local-lan-proxy.service >/dev/null 2>&1; "
+                  if changed else "")
+    start = "restart" if changed else "start"
+    if mode == "demand":
+        return (stop_proxy + "systemctl --user enable programmer-local-lan.socket >/dev/null 2>&1; "
+                f"systemctl --user {start} programmer-local-lan.socket")
+    return (stop_proxy + "systemctl --user disable programmer-local-lan.socket >/dev/null 2>&1; "
+            "if systemctl --user is-active -q programmer-local-hold.service "
+            "|| [ -n \"$(systemctl --user show -P Job programmer-local-hold.service)\" ]; then "
+            f"systemctl --user {start} programmer-local-lan.socket; else "
+            "systemctl --user stop programmer-local-lan.socket; fi")
+
+
+def _push_text(target, text: str, dest: str) -> None:
+    """Write `text` to `dest` on the target, through a temporary file."""
+    tmp = Path(tempfile.mkstemp(suffix=".unit")[1])
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        target.push_file(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _close_programmer_local_lan(target, cfg: dict, fallback: dict, user_units: str) -> None:
+    """A setup the deploy cannot write leaves the LAN as `off`: loopback only,
+    while reserved. The units are rewritten, not just the socket stopped: a
+    reservation pulls the socket in (Wants= on the hold), and would otherwise
+    open the last one written -- after `demand`, a socket on every address
+    that no reservation closes and whose proxy loads the model on the first
+    connection. The next deploy that can write the setup writes `lan` again."""
+    units = render_programmer_local_units(dict(fallback, lan="off"),
+                                          programmer_local_hold_file(cfg))
+    target.run(f"mkdir -p {shlex.quote(user_units)}", check=False)
+    for name in PROGRAMMER_LOCAL_LAN_UNITS:
+        _push_text(target, units[name], f"{user_units}/{name}")
+    target.run("systemctl --user daemon-reload", check=False)
+    target.run(programmer_local_lan_command("off"), check=False)
 
 
 def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
@@ -1442,23 +1542,32 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     so a household that removes the setting gets its card back at once."""
     user_units = f"{cfgroot}/systemd/user"
     if not fallback:
-        target.run("systemctl --user disable --now programmer-local.socket "
+        # One unit at a time, and the stop apart from the disable:
+        # `systemctl disable` fails the whole call on a unit file that does
+        # not exist (one a deploy never wrote), and `--now` then stops none
+        # of them -- the socket would stay up.
+        target.run("for u in programmer-local.socket "
                    "programmer-local-hold.path programmer-local-hold.service "
                    "programmer-local-lan.socket programmer-local-lan-proxy.service "
-                   "programmer-local-proxy.service programmer-local.service "
-                   ">/dev/null 2>&1 || true", check=False)
+                   "programmer-local-lan-use.service "
+                   "programmer-local-proxy.service programmer-local.service; do "
+                   "systemctl --user disable \"$u\" >/dev/null 2>&1; "
+                   "systemctl --user stop \"$u\" >/dev/null 2>&1; done; true",
+                   check=False)
         return
     import llamacpp  # noqa: PLC0415 -- only the Programmer's fallback needs it
     build = llamacpp.build_dir("vanilla")
     if fallback["engine"] == "llamacpp" and not (build / "bin" / "llama-server").is_file():
         out.warn("cloud.opencode.fallback is set but llama.cpp is not built; run "
                  "./home-stack llamacpp build -- the Programmer has no local model until then")
+        _close_programmer_local_lan(target, cfg, fallback, user_units)
         return
     studio = studio_url(cfg)
     shared = (secrets.get("PROXY_SHARED_SECRET") or "").strip()
     if not shared:
         out.warn("cloud.opencode.fallback is set but PROXY_SHARED_SECRET is not; "
                  "the local model has no key to ask for, so it is not set up")
+        _close_programmer_local_lan(target, cfg, fallback, user_units)
         return
     hold_file = programmer_local_hold_file(cfg)
     env_text = "\n".join([
@@ -1488,15 +1597,22 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     target.push_file(ROOT / "deploy/host/programmer-local.sh",
                      f"{cfgroot}/home-stack/programmer-local.sh")
     target.run(f"chmod 700 {shlex.quote(cfgroot)}/home-stack/programmer-local.sh")
+    gate_dest = f"{cfgroot}/home-stack/{PROGRAMMER_LOCAL_LAN_GATE}"
+    gate_text = (ROOT / "deploy/host" / PROGRAMMER_LOCAL_LAN_GATE).read_text(encoding="utf-8")
+    gate_changed = getattr(target.run(f"cat {shlex.quote(gate_dest)} 2>/dev/null", check=False,
+                                      capture=True), "stdout", None) != gate_text
+    target.push_file(ROOT / "deploy/host" / PROGRAMMER_LOCAL_LAN_GATE, gate_dest)
     for unit_file in PROGRAMMER_LOCAL_UNITS:
         target.push_file(ROOT / "deploy/host" / unit_file, f"{user_units}/{unit_file}")
-    for unit_file, text in render_programmer_local_units(fallback, hold_file).items():
-        tmp = Path(tempfile.mkstemp(suffix=".unit")[1])
-        tmp.write_text(text, encoding="utf-8")
-        try:
-            target.push_file(tmp, f"{user_units}/{unit_file}")
-        finally:
-            tmp.unlink(missing_ok=True)
+    rendered = render_programmer_local_units(fallback, hold_file)
+    # Read before they are overwritten: LAN units this deploy leaves as they
+    # were must not cost a LAN client its request or its loaded model.
+    lan_changed = any(
+        getattr(target.run(f"cat {shlex.quote(f'{user_units}/{name}')} 2>/dev/null",
+                           check=False, capture=True), "stdout", None) != rendered[name]
+        for name in PROGRAMMER_LOCAL_LAN_UNITS)
+    for unit_file, text in rendered.items():
+        _push_text(target, text, f"{user_units}/{unit_file}")
     if hold_file:
         # The page writes the file; the directory must exist for the .path to
         # watch it, and an absent file reads as "not reserved".
@@ -1504,13 +1620,19 @@ def write_programmer_local(target, cfg: dict, cfgroot: str, fallback: dict,
     target.run("systemctl --user daemon-reload", check=False)
     if hold_file:
         target.run("systemctl --user enable --now programmer-local-hold.path", check=False)
-    # A LAN socket already up (a reservation in progress) is listening on the
-    # old address: restart it so a change of `lan` takes effect now.
-    target.run("systemctl --user try-restart programmer-local-lan.socket", check=False)
+    # A new gate is new code in a process that may be running the old one.
+    lan_changed = lan_changed or (gate_changed and fallback["lan"] == "demand")
+    lan = target.run(programmer_local_lan_command(fallback["lan"], lan_changed), check=False)
+    lan_ok = getattr(lan, "returncode", 1) == 0
+    if not lan_ok:
+        out.warn(f"programmer-local-lan.socket did not start; nothing answers on "
+                 f":{fallback['lan_port']} until it does")
     enabled = target.run("systemctl --user enable --now programmer-local.socket", check=False)
     if getattr(enabled, "returncode", 1) == 0:
         out.ok(f"the Programmer falls back to {fallback['model']} on card {fallback['gpu']} "
-               f"when OpenCode Go is out (started on demand, pausing the Studio)")
+               f"when OpenCode Go is out (started on demand, pausing the Studio)"
+               + (f"; on demand on the LAN at :{fallback['lan_port']}"
+                  if fallback["lan"] == "demand" and lan_ok else ""))
     else:
         out.warn("programmer-local.socket did not start; the Programmer has no local fallback")
 
