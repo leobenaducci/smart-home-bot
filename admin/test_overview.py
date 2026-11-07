@@ -201,6 +201,13 @@ check("  a unit's compose_project is what is matched",
           for u in (s_.get("units") or [])),
       "home-paperless no longer overrides it; this check has lost its subject")
 
+print("\na plugin's row says where its image comes from")
+_detail = lambda unit: A._plugin_service_detail("svc", {"units": [dict(name="api", dir=".", **unit)]}, None)
+check("  a unit built by name (`image_build`) is built here",
+      "built here" in _detail({"image_build": [{"tag": "svc:latest"}]}))
+check("  so is one compose builds, and one with neither is pulled",
+      "built here" in _detail({"build": True}) and "pulled image" in _detail({}))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))
