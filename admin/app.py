@@ -696,7 +696,10 @@ def _plugin_service_detail(name: str, spec: dict, configured: dict | None) -> st
     if configured and configured.get("port"):
         lines.append(f"configured port: {configured['port']}")
     for unit in (spec.get("units") or []):
-        built = "built here" if unit.get("build") else "pulled image"
+        # `image_build` builds by name before compose runs; a unit that
+        # declares only that is built here just the same.
+        built = ("built here" if unit.get("build") or unit.get("image_build")
+                 else "pulled image")
         lines.append(f"unit {unit.get('name', '?')} ({built}, {unit.get('dir', '?')}/)")
         # Ends with, not contains: `BACKUP_REPORT_BIND` has "PORT" inside
         # "REPORT" and is an address, not a port.
