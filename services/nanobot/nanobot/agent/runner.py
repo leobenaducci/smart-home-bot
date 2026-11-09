@@ -38,6 +38,8 @@ from nanobot.utils.runtime import (
     build_length_recovery_message,
     ensure_nonempty_tool_result,
     is_blank_text,
+    record_exec_outcome,
+    repeated_exec_error,
     repeated_external_lookup_error,
     unrequested_list_item_error,
 )
@@ -1950,6 +1952,7 @@ class AgentRunner:
         stop_reason = "completed"
         tool_events: list[dict[str, str]] = []
         external_lookup_counts: dict[str, int] = {}
+        exec_error_counts: dict[str, int] = {}
         empty_content_retries = 0
         length_recovery_count = 0
         had_injections = False
@@ -2130,6 +2133,7 @@ class AgentRunner:
                     spec,
                     response.tool_calls,
                     external_lookup_counts,
+                    exec_error_counts,
                 )
                 tool_events.extend(new_events)
                 context.tool_results = list(results)
@@ -2990,18 +2994,21 @@ class AgentRunner:
         spec: AgentRunSpec,
         tool_calls: list[ToolCallRequest],
         external_lookup_counts: dict[str, int],
+        exec_error_counts: dict[str, int] | None = None,
     ) -> tuple[list[Any], list[dict[str, str]], BaseException | None]:
+        if exec_error_counts is None:
+            exec_error_counts = {}
         batches = self._partition_tool_batches(spec, tool_calls)
         tool_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
         for batch in batches:
             if spec.concurrent_tools and len(batch) > 1:
                 tool_results.extend(await asyncio.gather(*(
-                    self._run_tool(spec, tool_call, external_lookup_counts)
+                    self._run_tool(spec, tool_call, external_lookup_counts, exec_error_counts)
                     for tool_call in batch
                 )))
             else:
                 for tool_call in batch:
-                    tool_results.append(await self._run_tool(spec, tool_call, external_lookup_counts))
+                    tool_results.append(await self._run_tool(spec, tool_call, external_lookup_counts, exec_error_counts))
 
         results: list[Any] = []
         events: list[dict[str, str]] = []
@@ -3018,7 +3025,10 @@ class AgentRunner:
         spec: AgentRunSpec,
         tool_call: ToolCallRequest,
         external_lookup_counts: dict[str, int],
+        exec_error_counts: dict[str, int] | None = None,
     ) -> tuple[Any, dict[str, str], BaseException | None]:
+        if exec_error_counts is None:
+            exec_error_counts = {}
         _HINT = "\n\n[Analyze the error above and try a different approach.]"
         lookup_error = repeated_external_lookup_error(
             tool_call.name,
@@ -3046,6 +3056,16 @@ class AgentRunner:
             if spec.fail_on_tool_error:
                 return list_error, event, RuntimeError(list_error)
             return list_error, event, None
+        exec_error = repeated_exec_error(tool_call.name, exec_error_counts)
+        if exec_error:
+            event = {
+                "name": tool_call.name,
+                "status": "error",
+                "detail": "consecutive exec failures",
+            }
+            if spec.fail_on_tool_error:
+                return exec_error, event, RuntimeError(exec_error)
+            return exec_error, event, None
         prepare_call = getattr(spec.tools, "prepare_call", None)
         tool, params, prep_error = None, tool_call.arguments, None
         if callable(prepare_call):
@@ -3104,6 +3124,7 @@ class AgentRunner:
                 "detail": str(exc),
             }
             _log_error("runner.tool_error", exc, session_key=spec.session_key, extra={"tool": tool_call.name})
+            record_exec_outcome(tool_call.name, True, exec_error_counts)
             if spec.fail_on_tool_error:
                 return f"Error: {type(exc).__name__}: {exc}", event, exc
             return f"Error: {type(exc).__name__}: {exc}", event, None
@@ -3125,10 +3146,12 @@ class AgentRunner:
             # 120-char form above is for the narration panel, which is a
             # different consumer with a different rule.
             _profile("error", result.replace("\n", " ").strip(), result)
+            record_exec_outcome(tool_call.name, True, exec_error_counts)
             if spec.fail_on_tool_error:
                 return result + _HINT, event, RuntimeError(result)
             return result + _HINT, event, None
 
+        record_exec_outcome(tool_call.name, False, exec_error_counts)
         _profile("ok", result=result)
         detail = "" if result is None else str(result)
         detail = detail.replace("\n", " ").strip()

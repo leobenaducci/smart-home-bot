@@ -11,6 +11,7 @@ from loguru import logger
 from nanobot.utils.helpers import stringify_text_blocks
 
 _MAX_REPEAT_EXTERNAL_LOOKUPS = 2
+_MAX_CONSECUTIVE_EXEC_ERRORS = 3
 
 EMPTY_FINAL_RESPONSE_MESSAGE = (
     "I completed the tool steps but couldn't produce a final answer. "
@@ -97,6 +98,44 @@ def repeated_external_lookup_error(
         "Error: repeated external lookup blocked. "
         "Use the results you already have to answer, or try a meaningfully different source."
     )
+
+
+def repeated_exec_error(tool_name: str, counts: dict[str, int]) -> str | None:
+    """Refuse further exec calls after consecutive exec failures in one turn.
+
+    The streak is recorded by :func:`record_exec_outcome`. Once it reaches the
+    threshold, every later exec call is refused so the model can answer with
+    what it already knows; other tools keep working.
+    """
+    if tool_name != "exec":
+        return None
+    streak = counts.get("exec", 0)
+    if streak < _MAX_CONSECUTIVE_EXEC_ERRORS:
+        return None
+    logger.warning(
+        "Blocking exec after {} consecutive failures in this turn",
+        streak,
+    )
+    return (
+        "Error: exec failed several times in a row in this turn. "
+        "Report the last error and answer with what you already know; "
+        "do not keep trying shell workarounds."
+    )
+
+
+def record_exec_outcome(tool_name: str, failed: bool, counts: dict[str, int]) -> None:
+    """Update the consecutive-exec-failure streak for this turn.
+
+    A failure is what the runner treats as one (an exception, or a result
+    starting with ``"Error"``). A command that exits non-zero comes back as
+    output plus ``Exit code: N`` and is not a failure.
+    """
+    if tool_name != "exec":
+        return
+    if failed:
+        counts["exec"] = counts.get("exec", 0) + 1
+    else:
+        counts["exec"] = 0
 
 
 # --- items nobody asked for ---------------------------------------------------
