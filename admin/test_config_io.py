@@ -156,8 +156,14 @@ check("  and the prefixes cover the vision ollama",
 _grouped = {g["provider"] for g in A.MODEL_GROUPS}
 check("every source is in MODEL_GROUPS", set(_M.SOURCES) <= _grouped,
       f"fetched but never shown: {sorted(set(_M.SOURCES) - _grouped)}")
-check("and every group is a real source", _grouped <= set(_M.SOURCES),
-      f"a group nothing can ever fill: {sorted(_grouped - set(_M.SOURCES))}")
+# A group is a source, or a heading `_picker_group` files a source's models
+# under (NanoGPT's subscription models are still `nanogpt:`). Asked of the
+# function rather than listed here, so a heading nothing produces still fails.
+_headings = {A._picker_group({"provider": s, "subscription": True})
+             for s in _M.SOURCES} - set(_M.SOURCES)
+check("and every group is a source or a heading one fills",
+      _grouped <= set(_M.SOURCES) | _headings,
+      f"a group nothing can ever fill: {sorted(_grouped - set(_M.SOURCES) - _headings)}")
 check("the keyed sources are sources too",
       {s for s, _ in A.KEYED_SOURCES} <= set(_M.SOURCES),
       sorted({s for s, _ in A.KEYED_SOURCES} - set(_M.SOURCES)))
