@@ -588,6 +588,28 @@ try:
     check("and never from a stack checkout with uncommitted work", False)
 except W.WorkError as exc:
     check("and never from a stack checkout with uncommitted work", "uncommitted" in str(exc))
+(stack / "services" / "otro.txt").unlink()
+# Published the CLAUDE.md way: a pull request, then `git pull --rebase` -- the
+# checkout holds a copy of the fix's commit, not the commit itself.
+_fix = W._git(stack, "rev-parse", "HEAD")
+subprocess.run(["git", "-C", str(stack), "reset", "-q", "--hard", "HEAD~1"], check=True)
+try:
+    S.deploy(imp, [srepo], "12", "pila", tmp, run=lambda *a, **k: _R(), busy=lambda: False)
+    check("a fix the checkout does not have is still not deployed", False)
+except W.WorkError as exc:
+    check("a fix the checkout does not have is still not deployed", "not published" in str(exc))
+(stack / "services" / "otro").mkdir(exist_ok=True)
+(stack / "services" / "otro" / "y.py").write_text("y = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(stack), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(stack), "commit", "-qm", "merged meanwhile"], check=True)
+subprocess.run(["git", "-C", str(stack), "-c", "user.name=Dueño", "cherry-pick", _fix],
+               check=True, capture_output=True)
+ran.clear()
+S.deploy(imp, [srepo], "12", "pila", tmp, run=lambda argv, **k: ran.append(argv) or _R(),
+         busy=lambda: False)
+check("but one it holds as a copy, after a rebase onto the merged PR, is",
+      W._git(stack, "rev-parse", "HEAD") != _fix and [a[2] for a in ran] == ["portal", "admin"],
+      [a[2] for a in ran])
 
 print("\nthe fix requests, as the portal filed them")
 import sqlite3 as _sq  # noqa: E402

@@ -38,6 +38,19 @@ def _is_ancestor(path: str, older: str, newer: str) -> bool:
                           capture_output=True).returncode == 0
 
 
+def _published(path: str, fix: str) -> bool:
+    """Whether every change on *fix* is in *path*'s HEAD: by ancestry, or by
+    content. Publishing the stack is a pull request from the publishing clone,
+    and the checkout then catches up with `git pull --rebase` -- which drops
+    the fix's own commits for the merged copies, so ancestry alone called a
+    merged, published fix "not published" (#12, 2026-11-09). `git cherry`
+    marks a commit whose change HEAD already has with `-`."""
+    if _is_ancestor(path, fix, "HEAD"):
+        return True
+    out = W._git(path, "cherry", "HEAD", fix, check=False)
+    return bool(out.strip()) and not any(ln.startswith("+") for ln in out.splitlines())
+
+
 def _new_commits(path: str, branch: str) -> list[str]:
     out = W._git(path, "rev-list", f"HEAD..{branch}", check=False)
     return [c for c in out.split() if c]
@@ -152,7 +165,7 @@ def deploy(d: Path, repos: list[dict], rid: str, name: str, state: Path, run=sub
     repo = W._repo(repos, name)
     live = repo["path"]
     fix = W.branch(repo, rid)
-    if not _is_ancestor(live, fix, "HEAD"):
+    if not _published(live, fix):
         raise W.WorkError(f"{fix} is not published in {name} yet: "
                           f"improve publish {rid} {name}")
     wt = W.worktree(d, rid, name)
