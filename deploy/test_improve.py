@@ -382,6 +382,23 @@ try:
 except W.WorkError as exc:
     check("a sanitizer that cannot run refuses the commit, and says so",
           "could not run" in str(exc) and "household data" not in str(exc), str(exc))
+# The interpreter the suites name as ./.venv/bin/python is gitignored, so a
+# worktree has none unless it is linked in -- and test_backup.py then failed on
+# a missing file in every fix, which read as the fix's fault.
+(stack / ".gitignore").write_text(".venv\n", encoding="utf-8")
+(stack / ".venv" / "bin").mkdir(parents=True)
+subprocess.run(["git", "-C", str(stack), "add", ".gitignore"], check=True)
+subprocess.run(["git", "-C", str(stack), "commit", "-qm", "ignore the venv"], check=True)
+vwt = W.start(imp, [srepo], "18", "pila")
+check("a stack worktree gets the checkout's .venv, linked",
+      (vwt / ".venv").is_symlink() and (vwt / ".venv").resolve() == (stack / ".venv").resolve())
+check("  and the link is not a change", W._changed(vwt) == [], W._changed(vwt))
+(vwt / ".venv").unlink()
+check("a worktree made without it gets it at its next start",
+      W.start(imp, [srepo], "18", "pila") == vwt and (vwt / ".venv").is_symlink())
+(vwt / ".venv").unlink()
+K.run_tests(imp, [srepo], "18", "pila", run=lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+check("  or its next test run", (vwt / ".venv").is_symlink())
 print("\npublishing and deploying a fix, with the checks in code")
 import ship as S  # noqa: E402
 remote = tmp / "luces-remote.git"

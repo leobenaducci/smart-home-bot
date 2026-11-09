@@ -111,6 +111,7 @@ def run_tests(d: Path, repos: list[dict], rid: str, name: str, run=subprocess.ru
     path = W.worktree(d, rid, name)
     if not path.exists():
         raise W.WorkError(f"no worktree for #{rid} in {name}")
+    W.link_local(repo, path)
     files = changed_files(path, repo.get("branch") or "")
     suites = _suites(repo["kind"], path, files,
                      path / repo["subdir"] if repo.get("subdir") else path)
