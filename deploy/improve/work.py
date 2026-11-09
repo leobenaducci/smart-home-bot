@@ -96,6 +96,7 @@ def start(d: Path, repos: list[dict], rid: str, name: str) -> Path:
     if path.exists():
         if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != branch_:
             raise WorkError(f"{path} exists and is not on {branch_}")
+        link_local(repo, path)
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     # From the branch the repository is on: for the stack that is the trunk
@@ -111,12 +112,28 @@ def start(d: Path, repos: list[dict], rid: str, name: str) -> Path:
             if (path / rel).exists():
                 _git(path, "update-index", "--skip-worktree", rel)
                 (path / rel).unlink()
-        # The sanitizer's household rules are gitignored, so a fresh worktree
-        # would check shapes only; linked, never copied, never committed.
-        local = Path(repo["path"]) / "deploy" / "sanitize-rules.local.py"
-        if local.exists() and not (path / "deploy" / "sanitize-rules.local.py").exists():
-            (path / "deploy" / "sanitize-rules.local.py").symlink_to(local)
+    link_local(repo, path)
     return path
+
+
+# What a stack worktree needs from the working checkout that git does not
+# carry, because each is gitignored: the sanitizer's household rules (without
+# them a check sees shapes only) and the interpreter the suites name as
+# `./.venv/bin/python` (without it `test_backup.py` fails on a missing file,
+# which reads as the fix's fault). Linked, never copied, never committed.
+LOCAL_LINKS = ("deploy/sanitize-rules.local.py", ".venv")
+
+
+def link_local(repo: dict, path: Path) -> None:
+    """Link LOCAL_LINKS into a stack worktree, where the checkout has them and
+    the worktree does not. Idempotent, so a worktree made before an entry was
+    added gets it at its next start or test run."""
+    if repo["kind"] != "stack":
+        return
+    for rel in LOCAL_LINKS:
+        src, dst = Path(repo["path"]) / rel, path / rel
+        if src.exists() and not dst.exists() and not dst.is_symlink():
+            dst.symlink_to(src)
 
 
 def _changed(path: Path) -> list[tuple[str, str]]:
