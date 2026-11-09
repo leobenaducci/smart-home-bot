@@ -23,7 +23,7 @@ services:
     build:
       context: .
       args:
-        CRAWL4AI_BASE: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.3}
+        CRAWL4AI_BASE: ${CRAWL4AI_IMAGE:-unclecode/crawl4ai:0.9.5}
     image: crawl4ai-house:local
     container_name: crawl4ai
     restart: unless-stopped
