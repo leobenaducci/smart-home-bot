@@ -38,14 +38,15 @@ def _is_ancestor(path: str, older: str, newer: str) -> bool:
                           capture_output=True).returncode == 0
 
 
-def _new_commits(path: str, rid: str) -> list[str]:
-    out = W._git(path, "rev-list", f"HEAD..improve/{rid}", check=False)
+def _new_commits(path: str, branch: str) -> list[str]:
+    out = W._git(path, "rev-list", f"HEAD..{branch}", check=False)
     return [c for c in out.split() if c]
 
 
 def publish(d: Path, repos: list[dict], rid: str, name: str, state: Path | None = None) -> str:
     """Fast-forward *name*'s own checkout to the fix, and push a plugin's."""
     repo = W._repo(repos, name)
+    fix = W.branch(repo, rid)
     wt = W.worktree(d, rid, name)
     if not wt.exists():
         raise W.WorkError(f"no worktree for #{rid} in {name}")
@@ -63,9 +64,9 @@ def publish(d: Path, repos: list[dict], rid: str, name: str, state: Path | None 
     if dirty:
         raise W.WorkError(f"{live} has uncommitted work ({len(dirty)} file(s)); it is "
                           "somebody's, and a fix is not published over it")
-    if not _new_commits(live, rid):
-        raise W.WorkError(f"improve/{rid} has nothing {name} does not already have")
-    if not _is_ancestor(live, "HEAD", f"improve/{rid}"):
+    if not _new_commits(live, fix):
+        raise W.WorkError(f"{fix} has nothing {name} does not already have")
+    if not _is_ancestor(live, "HEAD", fix):
         # The checkout moved on while the fix was being made. Put the fix on top
         # of where it is now -- in the worktree, never the checkout -- and stop:
         # what would be published is code nobody has tested together. A
@@ -90,7 +91,7 @@ def publish(d: Path, repos: list[dict], rid: str, name: str, state: Path | None 
                           f"improve test {rid} {name}, then publish")
     if tested.get("head") == W._git(wt, "rev-parse", "HEAD") and not tested.get("ok"):
         raise W.WorkError(f"the tests of what would be published fail: improve test {rid} {name}")
-    W._git(live, "merge", "--ff-only", "-q", f"improve/{rid}")
+    W._git(live, "merge", "--ff-only", "-q", fix)
     out = [f"{name}: {head} is now at {W._git(live, 'log', '-1', '--format=%h %s')}"]
     if repo["kind"] == "stack":
         out.append("not pushed: this checkout never pushes -- publishing it is a pull request "
@@ -113,7 +114,7 @@ def services_for(repo: dict, rid: str) -> list[str]:
     import yaml  # noqa: PLC0415
     # The fix's own commits, by the line `improve commit` writes into each.
     commits = W._git(repo["path"], "log", "--format=%H", "--fixed-strings",
-                     f"--grep=Fix request #{rid}, made in the Programmer.", f"improve/{rid}",
+                     f"--grep=Fix request #{rid}, made in the Programmer.", W.branch(repo, rid),
                      check=False).split()
     changed = sorted({f for c in commits for f in W._git(
         repo["path"], "diff-tree", "--no-commit-id", "--name-only", "-r", c,
@@ -150,8 +151,9 @@ def deploy(d: Path, repos: list[dict], rid: str, name: str, state: Path, run=sub
     """Deploy what *name*'s published fix changed."""
     repo = W._repo(repos, name)
     live = repo["path"]
-    if not _is_ancestor(live, f"improve/{rid}", "HEAD"):
-        raise W.WorkError(f"improve/{rid} is not published in {name} yet: "
+    fix = W.branch(repo, rid)
+    if not _is_ancestor(live, fix, "HEAD"):
+        raise W.WorkError(f"{fix} is not published in {name} yet: "
                           f"improve publish {rid} {name}")
     wt = W.worktree(d, rid, name)
     if wt.exists():

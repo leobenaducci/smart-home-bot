@@ -276,10 +276,11 @@ def cmd_list(args) -> int:
         for wt in sorted(p for p in (d / "work").glob(f"{q['id']}-*") if p.is_dir()):
             name = wt.name.split("-", 1)[1]
             live = (repos.get(name) or {}).get("path")
-            n = len([c for c in W._git(live or wt, "rev-list", f"HEAD..improve/{q['id']}",
+            fix = W.branch(repos[name], q["id"]) if name in repos else f"improve/{q['id']}"
+            n = len([c for c in W._git(live or wt, "rev-list", f"HEAD..{fix}",
                                        check=False).split() if c]) if live else 0
             published = bool(live) and subprocess.run(
-                ["git", "-C", live, "merge-base", "--is-ancestor", f"improve/{q['id']}", "HEAD"],
+                ["git", "-C", live, "merge-base", "--is-ancestor", fix, "HEAD"],
                 capture_output=True).returncode == 0 and bool(W._git(
                     live, "log", "--format=%h", "--fixed-strings",
                     f"--grep=Fix request #{q['id']},", "HEAD", "-n", "1", check=False))

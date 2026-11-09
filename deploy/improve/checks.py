@@ -67,8 +67,12 @@ def diff_digest(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def _suites(kind: str, path: Path, files: list[str]) -> list[tuple[str, list[str], Path]]:
-    """(label, argv, cwd) for the test suites *files* call for."""
+def _suites(kind: str, path: Path, files: list[str],
+            root: Path | None = None) -> list[tuple[str, list[str], Path]]:
+    """(label, argv, cwd) for the test suites *files* call for. *root* is a
+    plugin's own folder, when it shares its repository (the worktree holds the
+    whole repository, and plugin.yml is in the plugin's folder)."""
+    root = root or path
     out: list[tuple[str, list[str], Path]] = []
     if kind == "stack":
         if any(f.startswith("services/nanobot/") for f in files):
@@ -90,11 +94,11 @@ def _suites(kind: str, path: Path, files: list[str]) -> list[tuple[str, list[str
     # its root); otherwise the test scripts beside what changed.
     try:
         import yaml  # noqa: PLC0415
-        doc = yaml.safe_load((path / "plugin.yml").read_text(encoding="utf-8")) or {}
+        doc = yaml.safe_load((root / "plugin.yml").read_text(encoding="utf-8")) or {}
     except (OSError, ValueError):
         doc = {}
     if isinstance(doc.get("tests"), str) and doc["tests"].strip():
-        return [("plugin tests", ["sh", "-c", doc["tests"]], path)]
+        return [("plugin tests", ["sh", "-c", doc["tests"]], root)]
     dirs = sorted({(path / f).parent for f in files})
     for d in dirs:
         for t in sorted(d.glob("test_*.py")):
@@ -108,7 +112,8 @@ def run_tests(d: Path, repos: list[dict], rid: str, name: str, run=subprocess.ru
     if not path.exists():
         raise W.WorkError(f"no worktree for #{rid} in {name}")
     files = changed_files(path, repo.get("branch") or "")
-    suites = _suites(repo["kind"], path, files)
+    suites = _suites(repo["kind"], path, files,
+                     path / repo["subdir"] if repo.get("subdir") else path)
     results = []
     for label, argv, cwd in suites:
         # A scratch state (suites default to the live one, and one has deleted

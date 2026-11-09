@@ -69,24 +69,43 @@ def worktree(d: Path, rid: str, name: str) -> Path:
     return d / "work" / f"{rid}-{name}"
 
 
+def branch(repo: dict, rid: str) -> str:
+    """The fix's branch: `improve/<id>`, or `improve/<id>-<name>` for a plugin
+    that shares its git repository with others (`subdir` set). A branch is
+    checked out in one worktree at a time, so two plugins of one repository
+    fixed for the same request cannot both be on `improve/<id>`."""
+    return f"improve/{rid}-{repo['name']}" if repo.get("subdir") else f"improve/{rid}"
+
+
+def outside_plugin(repo: dict, changed: list[tuple[str, str]]) -> list[str]:
+    """Why a commit reaching past a shared repository's plugin folder is
+    refused, or []. Its worktree holds the whole repository -- every other
+    plugin in it too -- and a fix to one is not a change to its neighbours."""
+    sub = (repo.get("subdir") or "").rstrip("/")
+    if not sub:
+        return []
+    return [f"{name}: outside {repo['name']}'s folder ({sub}/) in the repository it shares"
+            for _, name in changed if not name.startswith(sub + "/")]
+
+
 def start(d: Path, repos: list[dict], rid: str, name: str) -> Path:
     """The worktree for request *rid* in repository *name*, made if needed."""
     repo = _repo(repos, name)
     path = worktree(d, rid, name)
-    branch = f"improve/{rid}"
+    branch_ = branch(repo, rid)
     if path.exists():
-        if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != branch:
-            raise WorkError(f"{path} exists and is not on {branch}")
+        if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != branch_:
+            raise WorkError(f"{path} exists and is not on {branch_}")
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     # From the branch the repository is on: for the stack that is the trunk
     # the working checkout deploys from, for a plugin whatever it tracks.
     base = repo.get("branch") or "HEAD"
-    exists = _git(repo["path"], "branch", "--list", branch)
+    exists = _git(repo["path"], "branch", "--list", branch_)
     if exists:
-        _git(repo["path"], "worktree", "add", str(path), branch)
+        _git(repo["path"], "worktree", "add", str(path), branch_)
     else:
-        _git(repo["path"], "worktree", "add", "-b", branch, str(path), base)
+        _git(repo["path"], "worktree", "add", "-b", branch_, str(path), base)
     if repo["kind"] == "stack":
         for rel in STACK_HIDDEN:
             if (path / rel).exists():
@@ -169,13 +188,13 @@ def commit(d: Path, repos: list[dict], rid: str, name: str, message: str,
     path = worktree(d, rid, name)
     if not path.exists():
         raise WorkError(f"no worktree for #{rid} in {name}: run `improve start {rid} {name}`")
-    if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != f"improve/{rid}":
-        raise WorkError(f"{path} is not on improve/{rid}")
+    if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != branch(repo, rid):
+        raise WorkError(f"{path} is not on {branch(repo, rid)}")
     message = commit_message(message)
     changed = _changed(path)
     if not changed:
         raise WorkError("nothing changed in the worktree")
-    why = refusals(repo["kind"], changed)
+    why = refusals(repo["kind"], changed) + outside_plugin(repo, changed)
     # The rules code can check (guard.py, docs/RULES.md): nothing real leaks,
     # and a code change brings its test.
     import guard  # noqa: PLC0415
