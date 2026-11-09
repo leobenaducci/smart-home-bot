@@ -772,6 +772,11 @@ shim = W.write_shim(imp)
 check("the Programmer's shim lives in the pipeline's folder and runs this cli",
       shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()
       and os.access(shim, os.X_OK))
+_good = shim.read_text()
+_copy = tmp / "copia-desplegada"
+(_copy / "deploy" / "improve").mkdir(parents=True)
+check("a copy with no .venv leaves the shim alone",
+      W.write_shim(imp, root=_copy) is None and shim.read_text() == _good, shim.read_text())
 
 print("\nplugins that share one git repository")
 # Two invented plugins, each in its own folder of one repository with a remote.

@@ -57,15 +57,18 @@ def improve_dir(cfg: dict) -> Path:
     for sub in ("", "inbox", "private", "work"):
         (d / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(d / sub, 0o700)
-    W.write_shim(d)
     # What the Programmer reads first, where it can: the map and the rules,
     # refreshed from this checkout, and the lessons, seeded once and then the
-    # household's (state -- they may name this house's things).
+    # household's (state -- they may name this house's things). The shim and
+    # the docs come from the same copy, and only from one the shim can run
+    # (see write_shim): a deployed copy may hold older docs as well.
     (d / "docs").mkdir(exist_ok=True)
-    for src, name in ((HERE / "MAP.md", "MAP.md"), (HERE / "RULES.md", "RULES.md"),
-                      (HERE.parent.parent / "CLAUDE.md", "CLAUDE.md")):
-        if src.exists():
-            (d / "docs" / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    if W.write_shim(d):
+        for src, name in ((HERE / "MAP.md", "MAP.md"), (HERE / "RULES.md", "RULES.md"),
+                          (HERE.parent.parent / "CLAUDE.md", "CLAUDE.md")):
+            if src.exists():
+                (d / "docs" / name).write_text(src.read_text(encoding="utf-8"),
+                                               encoding="utf-8")
     lessons = d / "lessons.md"
     if not lessons.exists() and (HERE / "lessons.seed.md").exists():
         lessons.write_text((HERE / "lessons.seed.md").read_text(encoding="utf-8"), encoding="utf-8")

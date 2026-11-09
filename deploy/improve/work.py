@@ -264,13 +264,22 @@ def status(d: Path, rid: str) -> str:
     return "\n".join(out) or f"no worktree for #{rid}"
 
 
-def write_shim(d: Path) -> Path:
+def write_shim(d: Path, root: Path = ROOT) -> Path | None:
     """`{improve}/bin/improve`: how the Programmer calls this. Inside the one
-    folder its config lets it reach, so running it asks nobody for anything."""
+    folder its config lets it reach, so running it asks nobody for anything.
+
+    Only from a copy that has the interpreter the shim names. Any copy of
+    this cli rewrites the shim to point at itself, and the admin page's
+    deployed copy has no `.venv`: one run of it (the Programmer reached it by
+    path, 2026-11-09) left a shim that failed every command until the
+    checkout ran again. None, and the shim untouched, from such a copy."""
+    py = root / ".venv" / "bin" / "python"
+    if not py.exists():
+        return None
     b = d / "bin"
     b.mkdir(exist_ok=True)
     shim = b / "improve"
-    shim.write_text(f"#!/bin/sh\nexec {ROOT}/.venv/bin/python {HERE}/cli.py \"$@\"\n",
+    shim.write_text(f"#!/bin/sh\nexec {py} {root}/deploy/improve/cli.py \"$@\"\n",
                     encoding="utf-8")
     os.chmod(shim, 0o700)
     return shim
