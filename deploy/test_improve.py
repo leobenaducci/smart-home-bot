@@ -756,6 +756,72 @@ check("the Programmer's shim lives in the pipeline's folder and runs this cli",
       shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()
       and os.access(shim, os.X_OK))
 
+print("\nplugins that share one git repository")
+# Two invented plugins, each in its own folder of one repository with a remote.
+# Listed by the repository alone, only the first survived and the Programmer was
+# told the second was not a place a fix could go.
+ext_remote = tmp / "extensiones-remote.git"
+subprocess.run(["git", "init", "-q", "--bare", str(ext_remote)], check=True)
+ext = tmp / "extensiones"
+subprocess.run(["git", "clone", "-q", str(ext_remote), str(ext)], check=True)
+for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(ext), *cmd], check=True)
+for pname, svc in (("riego", "riego-api"), ("piscina", "piscina-api")):
+    (ext / pname).mkdir()
+    (ext / pname / "plugin.yml").write_text(
+        f"name: {pname}\ncontract: 1\nservices:\n  {svc}:\n    description: x\n    units: []\n"
+        f"tests: python3 -c 'import os; open(\"ran-here\", \"w\").write(os.getcwd())'\n",
+        encoding="utf-8")
+    (ext / pname / "app.py").write_text("x = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(ext), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(ext), "commit", "-q", "-m", "base"], check=True)
+ebr = W._git(ext, "rev-parse", "--abbrev-ref", "HEAD")
+subprocess.run(["git", "-C", str(ext), "push", "-q", "origin", ebr], check=True)
+shared = {r["name"]: r for r in RP.discover({"plugins": [str(ext / "riego"), str(ext / "piscina")]})}
+check("each plugin of a shared repository is its own place a fix can go",
+      {"riego", "piscina"} <= set(shared), list(shared))
+check("both name the one repository, and their own folder in it",
+      shared.get("riego", {}).get("path") == shared.get("piscina", {}).get("path")
+      and shared["riego"]["subdir"] == "riego" and shared["piscina"]["subdir"] == "piscina",
+      {k: (v.get("path"), v.get("subdir")) for k, v in shared.items()})
+check("a plugin that is its whole repository has no folder",
+      RP.discover({"plugins": [str(plug)]})[-1].get("subdir") == "")
+check("and still one entry when the same plugin is listed twice",
+      len([r for r in RP.discover({"plugins": [str(ext / "riego"), str(ext / "riego")]})
+           if r["name"] == "riego"]) == 1)
+srepos = [shared["riego"], shared["piscina"]]
+rwt = W.start(imp, srepos, "21", "riego")
+pwt = W.start(imp, srepos, "21", "piscina")
+check("the same request can fix both, each on its own branch",
+      W._git(rwt, "rev-parse", "--abbrev-ref", "HEAD") == "improve/21-riego"
+      and W._git(pwt, "rev-parse", "--abbrev-ref", "HEAD") == "improve/21-piscina")
+check("while a plugin that is its whole repository keeps improve/<id>",
+      W.branch({"name": "luces", "subdir": ""}, "21") == "improve/21")
+(rwt / "piscina" / "app.py").write_text("x = 'not mine'\n", encoding="utf-8")
+(rwt / "riego" / "app.py").write_text("x = 2\n", encoding="utf-8")
+try:
+    tested_commit(imp, srepos, "21", "riego", "Riego: change x for the test")
+    check("a fix may not reach into its neighbour's folder", False)
+except W.WorkError as exc:
+    check("a fix may not reach into its neighbour's folder",
+          "piscina/app.py" in str(exc) and "outside riego" in str(exc), str(exc))
+subprocess.run(["git", "-C", str(rwt), "checkout", "-q", "--", "piscina/app.py"], check=True)
+(rwt / f"test_fix_21.py").unlink(missing_ok=True)
+(rwt / "riego" / "test_fix_21.py").write_text("def test_fix(): assert True\n", encoding="utf-8")
+rec = K.run_tests(imp, srepos, "21", "riego")
+check("its tests run from its own folder, as its plugin.yml says",
+      rec["ok"] and (rwt / "riego" / "ran-here").exists(), rec)
+(rwt / "riego" / "ran-here").unlink()
+rec = K.run_tests(imp, srepos, "21", "riego")
+out = W.commit(imp, srepos, "21", "riego", "Riego: change x for the test")
+check("and inside it, the commit is made", "Riego: change x" in out, out)
+out = S.publish(imp, srepos, "21", "riego")
+check("publishing fast-forwards the shared checkout and pushes it",
+      W._git(ext, "log", "-1", "--format=%s") == "Riego: change x for the test"
+      and W._git(ext_remote, "log", "-1", "--format=%s", ebr) == "Riego: change x for the test", out)
+check("deploying it means its own services, not the neighbour's",
+      S.services_for(shared["riego"], "21") == ["riego-api"])
+
 import shutil  # noqa: E402
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")

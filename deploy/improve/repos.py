@@ -13,6 +13,13 @@ Filled on its own, from what the house already declares:
 and `assistant.improve.repos` in the live config for anything else, with
 `assistant.improve.exclude` to leave one of the automatic ones out.
 
+Several plugins may share one git repository, each in its own folder of it.
+Each is still its own entry: `path` is the repository, `subdir` the plugin's
+folder inside it ("" when the plugin is the whole repository). Telling them
+apart by `path` alone kept only the first and dropped the rest, so the
+Programmer was told a plugin it had been asked to fix was not a place a fix
+could go.
+
 Each entry says what the repository *provides* -- services, the assistant
 env it contributes (which is how a plugin's skill is found: `HOME_LIGHTS_API_URL`
 is the lights skill's), and for the stack the skills it ships -- so an issue can
@@ -58,7 +65,9 @@ def _repo(name: str, kind: str, path: Path, source: str, provides: dict) -> dict
     if not top:
         return None  # not a git repository: nowhere a fix could be a commit
     remote = _git(path, "remote", "get-url", "origin")
-    return {"name": name, "kind": kind, "path": top, "source": source,
+    subdir = os.path.relpath(path.resolve(), Path(top).resolve())
+    return {"name": name, "kind": kind, "path": top,
+            "subdir": "" if subdir == "." else subdir, "source": source,
             "remote": remote, "web": web_url(remote),
             "branch": _git(path, "rev-parse", "--abbrev-ref", "HEAD"),
             "clean": _git(path, "status", "--porcelain") == "",
@@ -132,12 +141,13 @@ def discover(cfg: dict) -> list[dict]:
                   {"about": str(extra.get("about") or "")})
         if r:
             out.append(r)
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     result = []
     for r in out:
-        if r["name"] in exclude or r["path"] in seen:
+        where = (r["path"], r.get("subdir") or "")
+        if r["name"] in exclude or where in seen:
             continue
-        seen.add(r["path"])
+        seen.add(where)
         result.append(r)
     return result
 
