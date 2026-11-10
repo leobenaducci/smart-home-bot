@@ -70,7 +70,7 @@ from nanobot.utils.progress_events import (
     invoke_on_progress,
     on_progress_accepts_tool_events,
 )
-from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
+from nanobot.utils.runtime import ANNOUNCED_STEP_PROMPT, EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
     from nanobot.config.schema import (ChannelsConfig, ExecToolConfig, HarnessConfig, ToolsConfig,
@@ -2572,6 +2572,10 @@ class AgentLoop:
                         continue
                     entry["content"] = filtered
             elif role == "user":
+                if content == ANNOUNCED_STEP_PROMPT:
+                    # The runtime's nudge, not something the person said: kept
+                    # out of history, the webui replay and memory consolidation.
+                    continue
                 if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
                     # Strip the entire runtime-context block (including any session summary).
                     # The block is bounded by _RUNTIME_CONTEXT_TAG and _RUNTIME_CONTEXT_END.

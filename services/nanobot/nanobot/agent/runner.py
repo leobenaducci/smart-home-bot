@@ -34,6 +34,8 @@ from nanobot.utils.helpers import (
 )
 from nanobot.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
+    announces_next_step,
+    build_announced_step_message,
     build_finalization_retry_message,
     build_length_recovery_message,
     ensure_nonempty_tool_result,
@@ -1955,6 +1957,7 @@ class AgentRunner:
         exec_error_counts: dict[str, int] = {}
         empty_content_retries = 0
         length_recovery_count = 0
+        announced_step_nudged = False
         had_injections = False
         injection_cycles = 0
         served_by_model: str | None = None
@@ -2263,6 +2266,41 @@ class AgentRunner:
                     messages.append(build_length_recovery_message())
                     await hook.after_iteration(context)
                     continue
+
+            # A reply that only announces a step ("Let me get the weather.")
+            # with no tool call would end the turn on that sentence. Ask once
+            # to act or answer; a second announcement ends the turn as before.
+            if (
+                not announced_step_nudged
+                # a read-only plan step ends by naming the change it needs a
+                # yes for; asking it to act only earns a refusal
+                and not spec.read_only
+                # the nudge needs a pass after it, or the turn ends on the
+                # max-iterations dead end instead of the announcement
+                and iteration + 1 < spec.max_iterations
+                and response.finish_reason not in ("error", "length")
+                and not response.has_tool_calls
+                and announces_next_step(clean)
+            ):
+                announced_step_nudged = True
+                note_event("retry:announced_step")
+                logger.warning(
+                    "Reply on turn {} for {} only announced a step, with no tool call; "
+                    "asking once to act or answer: {!r}",
+                    iteration,
+                    spec.session_key or "default",
+                    clean[:120],
+                )
+                if hook.wants_streaming():
+                    await hook.on_stream_end(context, resuming=True)
+                messages.append(build_assistant_message(
+                    clean,
+                    reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
+                ))
+                messages.append(build_announced_step_message())
+                await hook.after_iteration(context)
+                continue
 
             assistant_message: dict[str, Any] | None = None
             if response.finish_reason != "error" and not is_blank_text(clean):
