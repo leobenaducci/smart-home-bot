@@ -655,6 +655,11 @@ services:
     port: 21062
     zigbee: false
     serial: /dev/serial/by-id/usb-0000_0000-if00-port0
+    # Any service with a wall tile can also sit in the Alfred app's Apps
+    # menu: `menu: casa` (or panels, professions, settings). Off by default.
+    # A link by address and port is house-only, so off the house network the
+    # menu leaves it out rather than offering a timeout.
+    # menu: casa
 
   # Workflow automation. Off unless you already have workflows: the whole
   # value is in the ones somebody built.

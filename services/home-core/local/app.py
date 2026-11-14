@@ -3965,7 +3965,15 @@ def _extension_menu_links():
     home = _at_home()
     adult = session.get('user') in ADVANCED_USERS
     out = {g: [] for g in CHAT_MENU_GROUPS}
-    for tile in _deployed_tiles().get('extensions') or []:
+    tiles = _deployed_tiles()
+    # The stack's own services can ask too (`services.<name>.menu`), so all
+    # three wall groups are read. A system tile's `name` is the manifest key
+    # (`homeassistant`), so the menu shows the manifest's `title:` instead --
+    # `nav.app_<slug>` can still translate it (_link_in_language).
+    for tile in ((tiles.get('basic') or []) + (tiles.get('advanced') or [])
+                 + (tiles.get('extensions') or [])):
+        if tile.get('source') == 'system':
+            tile = {**tile, 'name': tile.get('title') or tile.get('name')}
         group = str(tile.get('menu') or '').strip().lower()
         if group not in out:
             continue

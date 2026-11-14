@@ -1881,6 +1881,7 @@ services:
             timeout: 90
 
   homeassistant:
+    title: Home Assistant
     description: The house's devices — lights, sensors, switches, and what they do.
     role: hub
     tier: basic
