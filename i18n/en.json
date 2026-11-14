@@ -2126,6 +2126,8 @@
   "nav.app_studio_help": "Video, pictures and songs, made on the house's own card",
   "nav.app_lights": "Lights",
   "nav.app_lights_help": "Every light and wall button in the house",
+  "nav.app_home_assistant": "Home Assistant",
+  "nav.app_home_assistant_help": "Every light, sensor and switch, and their automations",
   "nav.lan_only_note": "only on the house network",
   "admin.models.source_studio": "the house's Studio (GPU)",
   "studio.default_project": "Requests to Alfred",

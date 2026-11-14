@@ -2128,6 +2128,8 @@
   "nav.app_studio_help": "Videos, imágenes y canciones, hechos en la placa de la casa",
   "nav.app_lights": "Luces",
   "nav.app_lights_help": "Cada luz y cada botón de la casa",
+  "nav.app_home_assistant": "Home Assistant",
+  "nav.app_home_assistant_help": "Cada luz, sensor e interruptor, y sus automatizaciones",
   "nav.lan_only_note": "solo en la red de la casa",
   "admin.models.source_studio": "el Estudio de la casa (GPU)",
   "studio.default_project": "Pedidos a Alfred",

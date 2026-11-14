@@ -4118,6 +4118,10 @@ def build_portal_dashboard(cfg: dict, plugins: list | None = None) -> str:
             # Not whether a child *may* open it -- the admin page has its own
             # password for that -- but whether it belongs on their wall.
             "adults": bool(spec.get("adults")),
+            # The household's answer, from `services.<name>.menu` -- which of
+            # its services sit in the Alfred app's Apps menu is theirs to say,
+            # the same as `house_only:`. Nothing is in a menu by default.
+            "menu": tile_menu(conf, f"services.{name}"),
             "source": "system",
         })
 

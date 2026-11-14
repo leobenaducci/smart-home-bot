@@ -390,7 +390,7 @@ check("`tier: none` means no tile: the assistants answer through the portal",
 # a blank wall, and the tile keys are a contract with app.py's render().
 check("every tile carries the whole set of keys the portal reads",
       all(set(t) == {"name", "title", "description", "icon", "url",
-                     "lan_only", "adults", "source"} for t in _tiles.values()),
+                     "lan_only", "adults", "menu", "source"} for t in _tiles.values()),
       [sorted(t) for t in list(_tiles.values())[:1]])
 check("the admin page is not on a child's wall", _tiles["admin"]["adults"] is True)
 check("and the everyday services are",
@@ -488,6 +488,27 @@ check("keeping the title the household typed",
       _ext_wall["extensions"][0]["title"] == "Plex")
 check("an entry with no url is not a tile",
       all(t["name"] != "nothing" for t in _ext_wall["extensions"]))
+
+# One of the stack's own services can sit in the app's Apps menu too, when the
+# household says so; none does by default.
+print("\nand a system service joins the Apps menu only when asked")
+_sys_menu = next(t for g in _wall["groups"].values() for t in g
+                 if t["source"] == "system")
+check("nothing is in a menu by default",
+      all(not t.get("menu") for g in _wall["groups"].values() for t in g
+          if t["source"] == "system"))
+_mc = copy.deepcopy(CFG)
+_mc["services"][_sys_menu["name"]]["menu"] = "casa"
+check("services.<name>.menu puts it in that group",
+      any(t["name"] == _sys_menu["name"] and t["menu"] == "casa"
+          for g in json.loads(D.build_portal_dashboard(_mc))["groups"].values()
+          for t in g))
+_mc["services"][_sys_menu["name"]]["menu"] = "cassa"
+try:
+    D.build_portal_dashboard(_mc)
+    check("a group that does not exist stops the deploy", False)
+except D.DeployError as _exc:
+    check("a group that does not exist stops the deploy", "cassa" in str(_exc))
 
 # --- the small pure helpers ---------------------------------------------------
 print("\nthe naming rules the admin page has to agree with")
