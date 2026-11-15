@@ -9,6 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+from nanobot.providers.registry import find_by_name
+
+
+def _stepfun() -> OpenAICompatProvider:
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        return OpenAICompatProvider(spec=find_by_name("stepfun"))
 
 
 # ── _parse: dict branch ─────────────────────────────────────────────────────
@@ -16,8 +22,7 @@ from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 
 def test_parse_dict_stepfun_reasoning_fallback() -> None:
     """When content is None and reasoning exists, content falls back to reasoning."""
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = OpenAICompatProvider()
+    provider = _stepfun()
 
     response = {
         "choices": [{
@@ -38,8 +43,7 @@ def test_parse_dict_stepfun_reasoning_fallback() -> None:
 
 def test_parse_dict_stepfun_reasoning_priority() -> None:
     """reasoning_content field takes priority over reasoning when both present."""
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = OpenAICompatProvider()
+    provider = _stepfun()
 
     response = {
         "choices": [{
@@ -74,8 +78,7 @@ def _make_sdk_message(content, reasoning=None, reasoning_content=None):
 
 def test_parse_sdk_stepfun_reasoning_fallback() -> None:
     """SDK branch: content falls back to msg.reasoning when content is None."""
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = OpenAICompatProvider()
+    provider = _stepfun()
 
     msg = _make_sdk_message(content=None, reasoning="After analysis: result is 4.")
     choice = SimpleNamespace(finish_reason="stop", message=msg)
@@ -89,8 +92,7 @@ def test_parse_sdk_stepfun_reasoning_fallback() -> None:
 
 def test_parse_sdk_stepfun_reasoning_priority() -> None:
     """reasoning_content field takes priority over reasoning in SDK branch."""
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = OpenAICompatProvider()
+    provider = _stepfun()
 
     msg = _make_sdk_message(
         content=None,
@@ -244,3 +246,52 @@ def test_parse_chunks_sdk_reasoning_precedence() -> None:
     result = OpenAICompatProvider._parse_chunks(chunks)
 
     assert result.reasoning_content == "formal: "
+
+
+# ── Every other gateway: `reasoning` is thinking, never the reply ───────────
+#
+# NanoGPT and OpenRouter return the model's reasoning in `reasoning` and leave
+# `content` empty beside a tool call. Promoting it sent the assistant's private
+# planning ("He says he already fed her... let me do both calls") to the
+# household as its reply, while the calls it described were never made.
+
+
+def _gateway() -> OpenAICompatProvider:
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        return OpenAICompatProvider()
+
+
+def test_parse_dict_gateway_reasoning_is_not_the_reply() -> None:
+    response = {"choices": [{"message": {
+        "content": None, "reasoning": "He says he fed her. Let me complete 1106.",
+        "tool_calls": [{"id": "c1", "type": "function", "function": {
+            "name": "complete_chore", "arguments": "{\"task_id\": 1106}"}}],
+    }, "finish_reason": "tool_calls"}]}
+
+    result = _gateway()._parse(response)
+
+    assert not result.content
+    assert result.reasoning_content == "He says he fed her. Let me complete 1106."
+    assert [t.name for t in result.tool_calls] == ["complete_chore"]
+
+
+def test_parse_dict_gateway_reasoning_without_content_stays_empty() -> None:
+    response = {"choices": [{"message": {
+        "content": "", "reasoning": "I said I would but I haven't made the calls yet.",
+    }, "finish_reason": "stop"}]}
+
+    result = _gateway()._parse(response)
+
+    assert not result.content
+    assert result.reasoning_content
+
+
+def test_parse_sdk_gateway_reasoning_is_not_the_reply() -> None:
+    msg = _make_sdk_message(content=None, reasoning="Let me get the forecast.")
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop", message=msg)],
+                               usage=None)
+
+    result = _gateway()._parse(response)
+
+    assert not result.content
+    assert result.reasoning_content == "Let me get the forecast."

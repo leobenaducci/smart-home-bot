@@ -938,6 +938,13 @@ class OpenAICompatProvider(LLMProvider):
                 current = getattr(current, segment, None)
         return int(current or 0) if current is not None else 0
 
+    def _reasoning_is_answer(self) -> bool:
+        """Whether this provider's `reasoning` field carries the reply itself.
+
+        True only for StepFun's Plan API. Elsewhere it is the model's thinking,
+        which is never shown to the person it is talking to."""
+        return bool(self._spec and self._spec.name == "stepfun")
+
     def _parse(self, response: Any) -> LLMResponse:
         if isinstance(response, str):
             return LLMResponse(content=response, finish_reason="stop")
@@ -967,8 +974,12 @@ class OpenAICompatProvider(LLMProvider):
             finish_reason = str(choice0.get("finish_reason") or "stop")
 
             raw_tool_calls: list[Any] = []
-            # StepFun Plan: fallback to reasoning field when content is empty
-            if not content and msg0.get("reasoning"):
+            # StepFun Plan puts its answer in `reasoning` when `content` is empty.
+            # Only StepFun: every other gateway (NanoGPT, OpenRouter) uses that
+            # field for the model's actual reasoning, and promoting it published
+            # the assistant's private planning as its reply -- and, beside a tool
+            # call, as a progress message nobody should see.
+            if not content and msg0.get("reasoning") and self._reasoning_is_answer():
                 content = self._extract_text_content(msg0.get("reasoning"))
             reasoning_content = msg0.get("reasoning_content")
             if not reasoning_content and msg0.get("reasoning"):
@@ -1028,7 +1039,7 @@ class OpenAICompatProvider(LLMProvider):
                     finish_reason = ch.finish_reason
             if not content and m.content:
                 content = m.content
-            if not content and getattr(m, "reasoning", None):
+            if not content and getattr(m, "reasoning", None) and self._reasoning_is_answer():
                 content = m.reasoning
 
         tool_calls = []
