@@ -11432,6 +11432,7 @@ def init_tasks_db():
             assignees TEXT NOT NULL,          -- JSON array of login IDs (rotation order)
             weekdays TEXT NOT NULL,           -- JSON array of ints 0-6, Mon=0
             rotate INTEGER NOT NULL DEFAULT 0,
+            shared INTEGER NOT NULL DEFAULT 0, -- done together: see _PARTNER_PENDING
             anchor_date TEXT NOT NULL,        -- YYYY-MM-DD rotation reference
             active INTEGER NOT NULL DEFAULT 1,
             created_by TEXT NOT NULL,
@@ -11462,6 +11463,7 @@ def init_tasks_db():
             last_reminder_at INTEGER,
             created_by TEXT NOT NULL,
             created_at INTEGER NOT NULL,
+            shared INTEGER NOT NULL DEFAULT 0, -- one of a shared template's rows
             UNIQUE(template_id, due_date, assignee)
         );
         CREATE TABLE IF NOT EXISTS prizes (
@@ -11507,6 +11509,8 @@ def init_tasks_db():
         ('tasks', 'snoozed_until', 'INTEGER'),
         ('task_templates', 'remind_before', 'INTEGER'),
         ('tasks', 'remind_before', 'INTEGER'),
+        ('task_templates', 'shared', 'INTEGER NOT NULL DEFAULT 0'),
+        ('tasks', 'shared', 'INTEGER NOT NULL DEFAULT 0'),
     ):
         cols = {r[1] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
         if col not in cols:
@@ -11795,7 +11799,7 @@ def _parse_template_row(row):
     """Row from _TEMPLATE_COLS -> dict with parsed lists, or None if the
     stored JSON is corrupt."""
     (tid, title, description, icon, points, time_start, time_end, remind_every,
-     remind_before, assignees_j, weekdays_j, rotate, anchor) = row
+     remind_before, assignees_j, weekdays_j, rotate, anchor, shared) = row
     try:
         assignees = [a for a in json.loads(assignees_j) if a in FILES_FOLDERS]
         weekdays = sorted({int(w) for w in json.loads(weekdays_j) if 0 <= int(w) <= 6})
@@ -11805,11 +11809,14 @@ def _parse_template_row(row):
             'points': points, 'time_start': time_start, 'time_end': time_end,
             'remind_every': remind_every, 'remind_before': remind_before,
             'assignees': assignees, 'weekdays': weekdays,
-            'rotate': bool(rotate), 'anchor_date': anchor}
+            'rotate': bool(rotate), 'anchor_date': anchor,
+            # Rotation hands the day to one person, so there is nobody to share
+            # it with; a stored row saying both is read as rotating.
+            'shared': bool(shared) and not rotate}
 
 
 _TEMPLATE_COLS = ('id, title, description, icon, points, time_start, time_end, remind_every, '
-                  'remind_before, assignees, weekdays, rotate, anchor_date')
+                  'remind_before, assignees, weekdays, rotate, anchor_date, shared')
 
 
 def _instantiate_template(conn, tpl, day):
@@ -11817,18 +11824,104 @@ def _instantiate_template(conn, tpl, day):
     list of assignees that actually got a new row (idempotent via the
     UNIQUE(template_id, due_date, assignee) constraint)."""
     created = []
-    for user in _template_targets(tpl['assignees'], tpl['weekdays'], tpl['rotate'],
-                                  tpl['anchor_date'], day):
+    targets = _template_targets(tpl['assignees'], tpl['weekdays'], tpl['rotate'],
+                                tpl['anchor_date'], day)
+    # Shared only when there is somebody to share with: a "together" chore left
+    # with one assignee is that person's own chore.
+    shared = 1 if tpl.get('shared') and len(targets) > 1 else 0
+    for user in targets:
         cur = conn.execute(
             '''INSERT OR IGNORE INTO tasks
-               (template_id, title, description, icon, points, time_start, time_end, remind_every, remind_before, assignee, due_date, created_by, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+               (template_id, title, description, icon, points, time_start, time_end, remind_every, remind_before, assignee, due_date, created_by, created_at, shared)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (tpl['id'], tpl['title'], tpl['description'], tpl['icon'], tpl['points'],
              tpl['time_start'], tpl['time_end'], tpl['remind_every'], tpl['remind_before'],
-             user, day.isoformat(), 'template', int(time.time())))
+             user, day.isoformat(), 'template', int(time.time()), shared))
         if cur.rowcount:
             created.append(user)
     return created
+
+
+# Shared chores ("together"): several people do one chore, each confirms their
+# own part, and each is paid in full. Each person keeps their own row -- so
+# points, penalties, reminders and excuses stay per person and need nothing new
+# -- and the rows are linked by (template_id, due_date) with `shared = 1`.
+#
+# What the link changes: a part marked done does not reach the parents while a
+# partner has not done theirs yet. That partner is a row still `pending` that
+# nobody has decided on (`reviewed_at IS NULL`) -- a row a parent sent back is
+# pending too, but that is a decision about that person, and holding the other
+# one's points hostage to it would punish the one who did the work. If the
+# partner never does it, the auto-excuse sweep closes their row (and charges
+# them), which releases the part that was done.
+#
+# Written against an unaliased outer `tasks`, so it drops into the queries that
+# already read that table.
+_PARTNER_PENDING = """EXISTS (SELECT 1 FROM tasks p
+                          WHERE p.shared = 1 AND p.template_id = tasks.template_id
+                            AND p.due_date = tasks.due_date AND p.id <> tasks.id
+                            AND p.status = 'pending' AND p.reviewed_at IS NULL)"""
+_TASK_HELD = f"(tasks.shared = 1 AND {_PARTNER_PENDING})"
+
+
+def _task_partners(conn, template_id, due_date, task_id):
+    """The other rows of a shared chore: [(id, assignee, status, reviewed_at)]."""
+    return conn.execute(
+        """SELECT id, assignee, status, reviewed_at FROM tasks
+           WHERE shared = 1 AND template_id = ? AND due_date = ? AND id <> ?
+           ORDER BY id""", (template_id, due_date, task_id)).fetchall()
+
+
+def _attach_partners(conn, tasks):
+    """Add `partners` ([{name, status}]) to each shared task dict, in place.
+
+    Names and statuses only: who you share the dishes with and whether they
+    have done their part is the schedule, which the whole house can read --
+    the same reason `assignee_name` is never redacted."""
+    for t in tasks:
+        if not t.get('shared'):
+            continue
+        t['partners'] = [
+            {'name': _tasks_display_name(a), 'status': st,
+             # Still owes their part: what holds this one out of review.
+             'waiting': st == 'pending' and rv is None}
+            for _, a, st, rv in _task_partners(conn, t['template_id'], t['due_date'], t['id'])]
+    return tasks
+
+
+def _notify_shared_completion(task_id):
+    """After a part of a shared chore is marked done, tell whoever is next.
+
+    Returns False for a chore that is not shared, so the caller sends its usual
+    "to review" message. For a shared one: while a partner still owes their
+    part, that partner is nudged and the parents hear nothing yet; once the
+    last part is in, the parents get one message naming everybody."""
+    conn = _tasks_conn()
+    try:
+        row = conn.execute('SELECT assignee, title, points, template_id, due_date, shared '
+                           'FROM tasks WHERE id = ?', (task_id,)).fetchone()
+        if not row or not row[5]:
+            return False
+        assignee, title, points, template_id, due_date, _ = row
+        partners = _task_partners(conn, template_id, due_date, task_id)
+    finally:
+        conn.close()
+    if not partners:
+        return False
+    owing = [(pid, a) for pid, a, st, rv in partners if st == 'pending' and rv is None]
+    me = _tasks_display_name(assignee)
+    if owing:
+        for pid, user in owing:
+            _notify_user(user, f'{me} did their part of: {title}. Your turn!',
+                         title='Tarea compartida', tags='handshake',
+                         click=tasks_link(pid))
+        return True
+    done = [me] + [_tasks_display_name(a) for _, a, st, _ in partners
+                   if st in ('review', 'approved')]
+    _notify_tasks_admins(f'{", ".join(done)} finished: {title} (+{points} pts each) — to review',
+                         title='Tarea por revisar', tags='hourglass_flowing_sand',
+                         click=tasks_link(task_id, review=True))
+    return True
 
 
 def _materialize_tasks(day):
@@ -11864,7 +11957,8 @@ def _tasks_auto_resolve(conn, now, today):
     approved = []
     rows = conn.execute(
         "SELECT id, assignee, title, points FROM tasks "
-        "WHERE status = 'review' AND completed_at IS NOT NULL AND completed_at <= ?",
+        "WHERE status = 'review' AND completed_at IS NOT NULL AND completed_at <= ? "
+        f"AND NOT {_TASK_HELD}",
         (cutoff,)).fetchall()
     for task_id, assignee, title, points in rows:
         try:
@@ -12429,7 +12523,7 @@ def _task_json(row, viewer=None):
     """
     (tid, template_id, title, description, icon, points, time_start, time_end,
      remind_every, remind_before, snoozed_until, assignee, due_date, status,
-     completed_at, review_note, excuse_note) = row
+     completed_at, review_note, excuse_note, shared) = row
     mine = viewer is None or assignee == viewer
     return {
         'id': tid, 'template_id': template_id, 'title': title,
@@ -12448,12 +12542,14 @@ def _task_json(row, viewer=None):
         'penalty': _task_penalty(points),
         'review_note': review_note if mine else None,
         'excuse_note': excuse_note if mine else None,
+        # Done together with others; `_attach_partners` says with whom.
+        'shared': bool(shared),
     }
 
 
 _TASK_COLS = ('id, template_id, title, description, icon, points, time_start, time_end, '
               'remind_every, remind_before, snoozed_until, '
-              'assignee, due_date, status, completed_at, review_note, excuse_note')
+              'assignee, due_date, status, completed_at, review_note, excuse_note, shared')
 
 
 def _valid_task_fields(data, require_all):
@@ -12625,7 +12721,7 @@ def tasks_api_list():
         # children reading each other, which is exactly who it was widened for.
         viewer = None if _tasks_is_admin(username) else username
         payload = dict(
-            tasks=[_task_json(r, viewer=viewer) for r in rows],
+            tasks=_attach_partners(conn, [_task_json(r, viewer=viewer) for r in rows]),
             today=iso, user='all' if everyone else target,
         )
         # Points are always the caller's, never the target's. While the key was
@@ -12667,6 +12763,8 @@ def tasks_api_complete():
                      (int(time.time()), data.get('task_id')))
     finally:
         conn.close()
+    if _notify_shared_completion(data.get('task_id')):
+        return jsonify(ok=True, status='review')
     _notify_tasks_admins(f'{_tasks_display_name(assignee)} finished: {title} (+{points} pts) — to review',
                          title='Tarea por revisar', tags='hourglass_flowing_sand',
                          click=tasks_link(data.get('task_id'), review=True))
@@ -12744,7 +12842,9 @@ def tasks_api_notify_action():
                          (note or 'No pude hacerla', int(time.time()), task_id))
     finally:
         conn.close()
-    if do == 'complete':
+    if do == 'complete' and _notify_shared_completion(task_id):
+        pass
+    elif do == 'complete':
         _notify_tasks_admins(
             f'{_tasks_display_name(assignee)} termino: {title} (+{points} pts) — por revisar',
             title='Tarea por revisar', tags='hourglass_flowing_sand',
@@ -12921,10 +13021,10 @@ def tasks_api_review_queue():
     try:
         rows = conn.execute(
             f"""SELECT {_TASK_COLS} FROM tasks
-                WHERE status = 'review'
+                WHERE (status = 'review' AND NOT {_TASK_HELD})
                    OR (status = 'excused' AND reviewed_at IS NULL)
                 ORDER BY status, completed_at, excused_at, id""").fetchall()
-        return jsonify(tasks=[_task_json(r) for r in rows])
+        return jsonify(tasks=_attach_partners(conn, [_task_json(r) for r in rows]))
     finally:
         conn.close()
 
@@ -13179,6 +13279,14 @@ def _valid_template_fields(data, require_all):
         out['weekdays'] = json.dumps(weekdays)
     if 'rotate' in data or require_all:
         out['rotate'] = 1 if data.get('rotate') else 0
+    if 'shared' in data or require_all:
+        out['shared'] = 1 if data.get('shared') else 0
+    # Rotating gives the day to one person; together needs two. Refused rather
+    # than one quietly winning, so the form and Alfred both learn which it is.
+    if out.get('shared') and out.get('rotate'):
+        return None, 'A chore either rotates or is done together, not both'
+    if out.get('shared') and 'assignees' in out and len(json.loads(out['assignees'])) < 2:
+        return None, 'A chore done together needs at least two people'
     return out, None
 
 
@@ -13213,12 +13321,12 @@ def tasks_api_template_create():
     conn = _tasks_conn()
     try:
         cur = conn.execute(
-            '''INSERT INTO task_templates (title, description, icon, points, time_start, time_end, remind_every, remind_before, assignees, weekdays, rotate, anchor_date, created_by, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            '''INSERT INTO task_templates (title, description, icon, points, time_start, time_end, remind_every, remind_before, assignees, weekdays, rotate, shared, anchor_date, created_by, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (fields['title'], fields.get('description', ''), fields.get('icon', ''),
              fields['points'], fields.get('time_start'), fields.get('time_end'),
              fields.get('remind_every'), fields.get('remind_before'),
-             fields['assignees'], fields['weekdays'], fields['rotate'],
+             fields['assignees'], fields['weekdays'], fields['rotate'], fields['shared'],
              today.isoformat(), session['user'], int(time.time())))
         tpl_id = cur.lastrowid
         # Materialize today's instance(s) right away (the daily fast-path
@@ -13240,14 +13348,22 @@ def tasks_api_template_create():
 def tasks_api_template_edit(tpl_id):
     conn = _tasks_conn()
     try:
-        row = conn.execute('SELECT id FROM task_templates WHERE id = ?', (tpl_id,)).fetchone()
+        row = conn.execute('SELECT id, rotate, shared, assignees FROM task_templates WHERE id = ?',
+                           (tpl_id,)).fetchone()
         if not row:
             return jsonify(error='Plantilla no encontrada'), 404
         if request.method == 'DELETE':
             conn.execute('UPDATE task_templates SET active = 0 WHERE id = ?', (tpl_id,))
             return jsonify(ok=True)
         data = request.get_json(silent=True) or {}
+        # Checked against what is stored for whatever the edit leaves out, so
+        # "shared: true" alone on a rotating chore is refused like the pair.
+        merged = {'rotate': row[1], 'shared': row[2], 'assignees': json.loads(row[3] or '[]'),
+                  **data}
         fields, err = _valid_template_fields(data, require_all=False)
+        if not err:
+            _, err = _valid_template_fields(
+                {k: merged[k] for k in ('rotate', 'shared', 'assignees')}, require_all=False)
         if err:
             return jsonify(error=err), 400
         if 'active' in data:

@@ -100,9 +100,12 @@ def delete_chore(task_id, confirm=False):
     if confirm: path += "?confirm=1"
     return _curl("DELETE", path)
 
-def add_recurring_chore(title, points, assignees, weekdays, rotate=False, time_start=None, time_end=None, remind_before=None, remind_every=None, icon=None):
+def add_recurring_chore(title, points, assignees, weekdays, rotate=False, shared=False, time_start=None, time_end=None, remind_before=None, remind_every=None, icon=None):
+    # rotate: one assignee a day, taking turns. shared: everyone does it
+    # together, each confirms their own part and each earns the full points.
+    # Neither: each assignee gets their own separate copy. Not both.
     body = {"title": title, "points": int(points), "assignees": [_uid(a) for a in assignees],
-            "weekdays": [int(w) for w in weekdays], "rotate": bool(rotate)}
+            "weekdays": [int(w) for w in weekdays], "rotate": bool(rotate), "shared": bool(shared)}
     if time_start: body["time_start"] = time_start
     if time_end: body["time_end"] = time_end
     if remind_before is not None: body["remind_before"] = int(remind_before)

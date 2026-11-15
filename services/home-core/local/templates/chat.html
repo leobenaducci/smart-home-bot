@@ -5962,6 +5962,12 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     var bits = ['+' + t.points + ' ⭐'];
     if (opts.showWho && t.assignee_name) bits.unshift('👤 ' + t.assignee_name);
     if (t.time_start) bits.push(t.time_start + (t.time_end ? '–' + t.time_end : ''));
+    // A shared chore: who with, and -- while a partner still owes their part --
+    // that a part already done is waiting for them, not for a parent.
+    var partners = t.partners || [];
+    var owing = partners.filter(function (p) { return p.waiting; }).map(function (p) { return p.name; }).join(', ');
+    if (partners.length) bits.push({{ t('tasks.shared_with', names='@@') | tojson }}.replace('@@',
+      partners.map(function (p) { return p.name; }).join(', ')));
     meta.textContent = bits.join(' · '); info.appendChild(meta);
     if (t.excuse_note) { var ex = document.createElement('div'); ex.className = 't-meta'; ex.textContent = '“' + t.excuse_note + '”'; info.appendChild(ex); }
     // An accepted excuse costs nothing, granting pays the points, and silence
@@ -5974,7 +5980,10 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     row.appendChild(info);
     var chip = document.createElement('span');
     chip.className = 't-chip' + (t.status === 'review' ? ' review' : (t.status === 'approved' ? ' approved' : ''));
-    chip.textContent = STATUS_LABEL[t.status] || t.status; row.appendChild(chip);
+    chip.textContent = (t.status === 'review' && owing)
+      ? {{ t('tasks.waiting_for', names='@@') | tojson }}.replace('@@', owing)
+      : (STATUS_LABEL[t.status] || t.status);
+    row.appendChild(chip);
     var actions = document.createElement('div'); actions.className = 't-actions'; row.appendChild(actions);
     function btn(label, cls, fn) {
       var b = document.createElement('button'); b.className = 't-btn' + (cls ? ' ' + cls : ''); b.textContent = label;
