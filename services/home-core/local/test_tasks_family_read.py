@@ -52,7 +52,7 @@ def _seed(db_path):
         'assignee TEXT, due_date TEXT, time_start TEXT, time_end TEXT, '
         'remind_before INTEGER, remind_every INTEGER, status TEXT, '
         'completed_at INTEGER, review_note TEXT DEFAULT "", excuse_note TEXT DEFAULT "", '
-        'snoozed_until INTEGER, template_id INTEGER)')
+        'snoozed_until INTEGER, template_id INTEGER, shared INTEGER DEFAULT 0)')
     conn.execute('CREATE TABLE points_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, '
                  'user TEXT, delta INTEGER, reason TEXT, ts INTEGER)')
     conn.execute('INSERT INTO points_ledger (user, delta) VALUES (?, 6000)', (USER1,))

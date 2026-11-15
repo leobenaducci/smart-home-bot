@@ -91,6 +91,11 @@ them here. Send only the fields you are changing.
   returns the title so you can ask "are you sure?". Only send `confirm: true`
   after they clearly say yes, never in the same turn. Prefer excusing over
   deleting: it keeps the record.
+- **Several people on one recurring chore.** Taking turns is `rotate`; doing
+  it together is `shared` (each confirms their own part, each earns the full
+  points; a part done waits for the others before a parent reviews it);
+  neither gives each person their own copy. A shared chore in `list_chores`
+  carries `partners`.
 - **A 403** means only the parents can do that. Say so kindly; never work
   around it.
 

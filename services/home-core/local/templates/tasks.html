@@ -540,6 +540,9 @@
             <div class="full">
               <label class="check-inline"><input type="checkbox" id="f-rotate"> {{ t('tasks.rotate') }}</label>
             </div>
+            <div class="full">
+              <label class="check-inline"><input type="checkbox" id="f-shared"> {{ t('tasks.shared') }}</label>
+            </div>
           </div>
 
           <!-- Recordatorios -->
@@ -820,7 +823,17 @@
       // justified the number is history and would read as a threat.
       if (t.penalty && (t.status === 'pending' || t.status === 'review'))
         meta.appendChild(el('span', 'chip late', `{{ t('tasks.penalty', n='${t.penalty}') }}`));
-      if (t.status === 'review') meta.appendChild(el('span', 'chip review', {{ t('tasks.in_review') | tojson }}));
+      // A shared chore names who it is shared with, and while a partner still
+      // owes their part, a part already done waits for them rather than for a
+      // parent -- so it says that instead of "in review".
+      const partners = t.partners || [];
+      const owing = partners.filter(p => p.waiting).map(p => p.name).join(', ');
+      const pnames = partners.map(p => p.name).join(', ');
+      if (partners.length) meta.appendChild(el('span', 'chip',
+        `{{ t('tasks.shared_with', names='${pnames}') }}`));
+      if (t.status === 'review' && owing) meta.appendChild(el('span', 'chip review',
+        `{{ t('tasks.waiting_for', names='${owing}') }}`));
+      else if (t.status === 'review') meta.appendChild(el('span', 'chip review', {{ t('tasks.in_review') | tojson }}));
       if (t.status === 'approved') meta.appendChild(el('span', 'chip ok', {{ t('tasks.approved') | tojson }}));
       if (t.status === 'excused') meta.appendChild(el('span', 'chip excused', {{ t('tasks.excused') | tojson }}));
       if (t.status === 'pending' && t.review_note) meta.appendChild(el('span', 'chip late', '↩ ' + t.review_note));
@@ -1160,6 +1173,9 @@
             body.appendChild(el('div', 'task-title', t.title));
             const meta = el('div', 'task-meta');
             meta.appendChild(el('span', 'chip', '👤 ' + t.assignee_name));
+            const rpnames = (t.partners || []).map(p => p.name).join(', ');
+            if (rpnames) meta.appendChild(el('span', 'chip',
+              `{{ t('tasks.shared_with', names='${rpnames}') }}`));
             meta.appendChild(el('span', 'chip points', `+${t.points} ⭐`));
             meta.appendChild(el('span', 'chip', '📅 ' + fmtDate(t.due_date)));
             if (t.status === 'excused') {
@@ -1292,6 +1308,7 @@
         iconGen: document.getElementById('f-icon-gen'), points: document.getElementById('f-points'),
         recurrent: document.getElementById('f-recurrent'),
         due: document.getElementById('f-due'), rotate: document.getElementById('f-rotate'),
+        shared: document.getElementById('f-shared'),
         whoHint: document.getElementById('f-who-hint'),
         start: document.getElementById('f-start'), end: document.getElementById('f-end'),
         remind: document.getElementById('f-remind'), desc: document.getElementById('f-desc'),
@@ -1332,6 +1349,10 @@
           : (rec ? {{ t('tasks.who_hint_several') | tojson }} : {{ t('tasks.who_hint_many') | tojson }});
       }
       ff.recurrent.addEventListener('change', syncRecurrentUI);
+      // Rotating hands the day to one person; together needs everyone. The
+      // server refuses both at once, so the form never offers it.
+      ff.rotate.addEventListener('change', () => { if (ff.rotate.checked) ff.shared.checked = false; });
+      ff.shared.addEventListener('change', () => { if (ff.shared.checked) ff.rotate.checked = false; });
 
       function syncRemindUI() {
         const on = ff.remindOn.checked;
@@ -1351,7 +1372,7 @@
         ff.title.value = ''; ff.icon.value = ''; ff.points.value = '10';
         ff.recurrent.checked = true;
         ff.due.value = TODAY || '';
-        ff.rotate.checked = false;
+        ff.rotate.checked = false; ff.shared.checked = false;
         ff.start.value = '17:00'; ff.end.value = ''; ff.remind.value = ''; ff.desc.value = '';
         ff.remindBefore.value = '0';
         ff.remindOn.checked = true;
@@ -1378,7 +1399,7 @@
         if (!who.length) { toast({{ t('tasks.who_required') | tojson }}); return; }
         try {
           if (ff.recurrent.checked) {
-            const body = { ...shared, weekdays: ffWeekdays(), assignees: who, rotate: ff.rotate.checked };
+            const body = { ...shared, weekdays: ffWeekdays(), assignees: who, rotate: ff.rotate.checked, shared: ff.shared.checked };
             if (!body.weekdays.length) { toast({{ t('tasks.days_required') | tojson }}); return; }
             if (ff.id.value && ff.kind.value === 'template') {
               await api('/tasks/api/templates/' + ff.id.value, 'PUT', body); toast({{ t('tasks.template_updated') | tojson }});
@@ -1420,7 +1441,7 @@
         ff.points.value = t.points;
         ff.remindOn.checked = !!t.time_start;
         ff.start.value = t.time_start || ''; ff.end.value = t.time_end || '';
-        ff.remind.value = t.remind_every || ''; ff.rotate.checked = t.rotate;
+        ff.remind.value = t.remind_every || ''; ff.rotate.checked = t.rotate; ff.shared.checked = !!t.shared;
         ff.remindBefore.value = String(t.remind_before || 0);
         document.querySelectorAll('#f-weekdays input').forEach(i => { i.checked = t.weekdays.includes(parseInt(i.value, 10)); });
         document.querySelectorAll('#f-assignees input').forEach(i => { i.checked = t.assignees.includes(i.value); });
@@ -1495,7 +1516,8 @@
             row.appendChild(el('span', null, t.icon || '🔁'));
             const g = el('span', 'grow');
             const days = t.weekdays.map(w => WD[w]).join(' ');
-            const who = t.assignee_names.join(', ') + (t.rotate ? {{ t('tasks.rotating') | tojson }} : '');
+            const who = t.assignee_names.join(', ') + (t.rotate ? {{ t('tasks.rotating') | tojson }}
+                        : t.shared ? {{ t('tasks.together') | tojson }} : '');
             g.textContent = `${t.title} · ${days} · ${who} · +${t.points} ⭐` + (t.time_start ? ` · ${t.time_start}${t.time_end ? '–' + t.time_end : ''}` : '');
             row.appendChild(g);
             if (!t.active) row.appendChild(el('span', 'chip excused', {{ t('tasks.inactive') | tojson }}));
