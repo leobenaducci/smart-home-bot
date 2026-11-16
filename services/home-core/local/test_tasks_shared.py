@@ -257,9 +257,9 @@ to_admins.clear()
 code, _ = call('POST', '/tasks/api/notify-action', MORA,
                {'task_id': r10[MORA][0], 'do': 'excuse', 'note': 'sin tiempo'})
 check("the excuse is accepted", code == 200, code)
-check("the parents are told Tomi's part is there to review",
-      any('Tender' in m and 'Tomi' in m and 'Mora' in m and 'Motivo' not in m
-          for m in to_admins), to_admins)
+check("the parents are told Tomi's part is there to review, in one push with her reason",
+      len(to_admins) == 1 and 'Tender' in to_admins[0] and 'Tomi' in to_admins[0]
+      and 'Mora' in to_admins[0] and 'sin tiempo' in to_admins[0], to_admins)
 
 print("\na partner whose whole day is excused")
 call('POST', '/tasks/api/templates', PARENT, {
@@ -405,6 +405,62 @@ to_admins.clear()
 call('POST', '/tasks/api/complete', MORA, {'task_id': r12[MORA][0]})
 check("Mora's part is her own chore again: straight to review, one message",
       ('Puertas', MORA) in queue() and len(to_admins) == 1, (queue(), to_admins))
+
+print("\na partner's row deleted")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ventanas', 'points': 40, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r13 = rows('Ventanas')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r13[TOMI][0]})
+check("Tomi's part is held", ('Ventanas', TOMI) not in queue(), queue())
+to_admins.clear()
+code, body = call('DELETE', f"/tasks/api/tasks/{r13[MORA][0]}?confirm=1", PARENT)
+check("the delete goes through", code == 200 and body.get('deleted'), (code, body))
+check("Tomi's part reaches the queue", ('Ventanas', TOMI) in queue(), queue())
+check("and the parents are told, once", len(to_admins) == 1 and 'Tomi' in to_admins[0], to_admins)
+_c = A._tasks_conn()
+check("and its review clock starts now",
+      _c.execute('SELECT released_at FROM tasks WHERE id = ?', (r13[TOMI][0],)).fetchone()[0])
+_c.close()
+
+print("\nan excuse on a shared chore is one message, with its reason")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Basura', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r14 = rows('Basura')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r14[TOMI][0]})
+to_admins.clear()
+call('POST', '/tasks/api/excuse', MORA, {'task_id': r14[MORA][0], 'note': 'estaba enferma'})
+check("the parents get one push", len(to_admins) == 1, to_admins)
+check("  naming both and carrying the reason",
+      to_admins and 'Tomi' in to_admins[0] and 'Mora' in to_admins[0]
+      and 'estaba enferma' in to_admins[0], to_admins)
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Platos', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS})
+r15 = rows('Platos')
+to_admins.clear()
+call('POST', '/tasks/api/excuse', MORA, {'task_id': r15[MORA][0], 'note': 'no alcancé'})
+check("an excuse on an ordinary chore still sends its own message",
+      len(to_admins) == 1 and 'no alcancé' in to_admins[0], to_admins)
+
+print("\nsomebody taken off a chore by the edit that shares it")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Patio', 'points': 20, 'assignees': [TOMI, MORA, PARENT], 'weekdays': ALL_DAYS})
+tpl16 = body.get('id')
+code, body = call('PUT', f'/tasks/api/templates/{tpl16}', PARENT,
+                  {'assignees': [TOMI, MORA], 'shared': True})
+check("the edit saves", code == 200, (code, body))
+_c = A._tasks_conn()
+_sh = dict(_c.execute("SELECT assignee, shared FROM tasks WHERE title = 'Patio' AND due_date = ?",
+                      (TODAY.isoformat(),)).fetchall())
+_c.close()
+check("the two still on it are linked, the one taken off is not",
+      _sh.get(TOMI) == 1 and _sh.get(MORA) == 1 and _sh.get(PARENT) == 0, _sh)
+r16 = rows('Patio')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r16[TOMI][0]})
+call('POST', '/tasks/api/complete', MORA, {'task_id': r16[MORA][0]})
+check("so their parts are not held behind the person taken off",
+      {('Patio', TOMI), ('Patio', MORA)} <= queue(), queue())
 
 print()
 if failures:
