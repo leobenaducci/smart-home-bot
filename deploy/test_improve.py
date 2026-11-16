@@ -15,6 +15,7 @@ failed turn each become a signal, and a turn billed in two rows is one
 episode.
 """
 import json
+import shutil
 import os
 import sqlite3
 import sys
@@ -282,6 +283,11 @@ check("and an extra one from the config", names.get("otro", {}).get("source") ==
 check("each says what deploying it means: a plugin, by its services",
       "luces-api" in names["luces"]["deploys"] and "./home-stack deploy" in names["luces"]["deploys"],
       names["luces"].get("deploys"))
+inside = RP.discover({"assistant": {"improve": {"repos": [
+    {"path": str(RP.ROOT / "deploy"), "name": "por-dentro"}]}}})
+check("an extra inside this checkout is the stack, not a place of its own",
+      "por-dentro" not in {r["name"] for r in inside}
+      and [r["kind"] for r in inside] == ["stack"], [(r["name"], r["kind"]) for r in inside])
 stack_name = next(r["name"] for r in found if r["kind"] == "stack")
 found = RP.discover({"plugins": [str(plug)], "assistant": {"improve": {"exclude": ["luces", stack_name]}}})
 check("exclude leaves an automatic one out", found == [], [r["name"] for r in found])
@@ -389,16 +395,29 @@ except W.WorkError as exc:
 (stack / ".venv" / "bin").mkdir(parents=True)
 subprocess.run(["git", "-C", str(stack), "add", ".gitignore"], check=True)
 subprocess.run(["git", "-C", str(stack), "commit", "-qm", "ignore the venv"], check=True)
+(stack / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages").mkdir(parents=True)
 vwt = W.start(imp, [srepo], "18", "pila")
-check("a stack worktree gets the checkout's .venv, linked",
-      (vwt / ".venv").is_symlink() and (vwt / ".venv").resolve() == (stack / ".venv").resolve())
-check("  and the link is not a change", W._changed(vwt) == [], W._changed(vwt))
-(vwt / ".venv").unlink()
-check("a worktree made without it gets it at its next start",
-      W.start(imp, [srepo], "18", "pila") == vwt and (vwt / ".venv").is_symlink())
-(vwt / ".venv").unlink()
+check("a stack worktree gets a .venv of its own, not a link to the checkout's",
+      (vwt / ".venv" / "bin" / "python").exists() and not (vwt / ".venv").is_symlink())
+_pth = next((vwt / ".venv").glob(f"lib/python*/site-packages/{W.WORKTREE_VENV_PTH}"), None)
+check("  which reads the checkout's packages by absolute path",
+      _pth is not None and str(stack / ".venv") in _pth.read_text(encoding="utf-8"))
+check("  and has no pip to install into anything",
+      not list((vwt / ".venv" / "bin").glob("pip*")))
+_probe = subprocess.run([str(vwt / ".venv" / "bin" / "python"), "-c", "import sys; print(sys.prefix)"],
+                        capture_output=True, text=True)
+check("  and runs, as itself", _probe.returncode == 0
+      and Path(_probe.stdout.strip()).resolve() == (vwt / ".venv").resolve(), _probe)
+check("  and is not a change", W._changed(vwt) == [], W._changed(vwt))
+shutil.rmtree(vwt / ".venv")
+(vwt / ".venv").symlink_to(stack / ".venv")
+check("a link left by an older version is replaced at the next start",
+      W.start(imp, [srepo], "18", "pila") == vwt and not (vwt / ".venv").is_symlink()
+      and (vwt / ".venv" / "bin" / "python").exists())
+shutil.rmtree(vwt / ".venv")
+(vwt / ".venv").symlink_to(stack / ".venv")
 K.run_tests(imp, [srepo], "18", "pila", run=lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
-check("  or its next test run", (vwt / ".venv").is_symlink())
+check("  or at its next test run", not (vwt / ".venv").is_symlink())
 print("\npublishing and deploying a fix, with the checks in code")
 import ship as S  # noqa: E402
 remote = tmp / "luces-remote.git"
@@ -779,6 +798,14 @@ check("and the runner's codes", "parse:dsml" in M.events(state, days=10000))
 check("which tools", "skill:lights" in M.tools(state, days=10000))
 
 print("\nwhat the Programmer reads first")
+# A checkout of its own, so this reads the same from the working checkout and
+# from a fix's worktree (where the real ROOT is a linked worktree, and is
+# refused on purpose -- see write_shim).
+_checkout = tmp / "checkout"
+(_checkout / ".git").mkdir(parents=True)
+(_checkout / ".venv" / "bin").mkdir(parents=True)
+(_checkout / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+_real_root, W.ROOT = W.ROOT, _checkout
 dd = cli.improve_dir({"paths": {"state": str(state)}})
 check("the map and the rules, beside the inbox",
       (dd / "docs" / "MAP.md").exists() and (dd / "docs" / "CLAUDE.md").exists()
@@ -793,12 +820,39 @@ check("and never reseeded over the household's own",
 shim = W.write_shim(imp)
 check("the Programmer's shim lives in the pipeline's folder and runs this cli",
       shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()
-      and os.access(shim, os.X_OK))
+      and str(_checkout) in shim.read_text() and os.access(shim, os.X_OK))
+W.ROOT = _real_root
 _good = shim.read_text()
 _copy = tmp / "copia-desplegada"
 (_copy / "deploy" / "improve").mkdir(parents=True)
 check("a copy with no .venv leaves the shim alone",
       W.write_shim(imp, root=_copy) is None and shim.read_text() == _good, shim.read_text())
+# A fix's worktree -- a real `git worktree`, with a .venv that has an
+# interpreter, as every stack worktree has. Its cli is code the Programmer is
+# writing.
+_main = tmp / "repo-principal"
+_main.mkdir()
+for cmd in (["init", "-q"], ["config", "user.email", "dueno@example.org"],
+            ["config", "user.name", "Dueño"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+    subprocess.run(["git", "-C", str(_main), *cmd], check=True)
+_wt = tmp / "work" / "30-stack"
+_wt.parent.mkdir(parents=True, exist_ok=True)
+subprocess.run(["git", "-C", str(_main), "worktree", "add", "-q", "-b", "improve/30", str(_wt)],
+               check=True)
+(_wt / ".venv" / "bin").mkdir(parents=True)
+(_wt / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+check("a worktree, .venv and all, leaves the shim alone",
+      W.write_shim(imp, root=_wt) is None and shim.read_text() == _good, shim.read_text())
+# A checkout whose .git is a file for another reason is still the checkout.
+_sep = tmp / "separado"
+_sep.mkdir()
+subprocess.run(["git", "init", "-q", f"--separate-git-dir={tmp / 'separado.git'}", str(_sep)],
+               check=True)
+(_sep / ".venv" / "bin").mkdir(parents=True)
+(_sep / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+check("a checkout with a separate git dir still writes the shim",
+      W.write_shim(imp, root=_sep) is not None and str(_sep) in shim.read_text())
+W.write_shim(imp, root=_checkout)
 
 print("\nplugins that share one git repository")
 # Two invented plugins, each in its own folder of one repository with a remote.
@@ -865,6 +919,84 @@ check("publishing fast-forwards the shared checkout and pushes it",
       and W._git(ext_remote, "log", "-1", "--format=%s", ebr) == "Riego: change x for the test", out)
 check("deploying it means its own services, not the neighbour's",
       S.services_for(shared["riego"], "21") == ["riego-api"])
+
+print("\na staged rename is checked where it came from, too")
+# `git mv` is refused to the agent, but `mv` and `git add -A` are not, and
+# git reports the staged result as one rename: destination first, source after.
+_rn = tmp / "renombres"
+_rn.mkdir()
+subprocess.run(["git", "-C", str(_rn), "init", "-q"], check=True)
+for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(_rn), *cmd], check=True)
+for rel in ("deploy/guardia.py", "piscina/bomba.py", "riego/app.py"):
+    (_rn / rel).parent.mkdir(parents=True, exist_ok=True)
+    (_rn / rel).write_text(f"# {rel}\nx = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_rn), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_rn), "commit", "-q", "-m", "base"], check=True)
+(_rn / "docs").mkdir()
+subprocess.run(["git", "-C", str(_rn), "mv", "deploy/guardia.py", "docs/guardia.py"], check=True)
+subprocess.run(["git", "-C", str(_rn), "mv", "piscina/bomba.py", "riego/bomba.py"], check=True)
+_ch = W._changed(_rn)
+check("both ends of a rename are listed",
+      {n for _, n in _ch} >= {"docs/guardia.py", "deploy/guardia.py",
+                              "riego/bomba.py", "piscina/bomba.py"}, _ch)
+check("moving a protected file out of deploy/ is refused",
+      any("deploy/guardia.py" in w for w in W.refusals("stack", _ch)), W.refusals("stack", _ch))
+check("and moving a neighbour's file into this plugin's folder is too",
+      any("piscina/bomba.py" in w for w in W.outside_plugin({"name": "riego", "subdir": "riego"},
+                                                             _ch)),
+      W.outside_plugin({"name": "riego", "subdir": "riego"}, _ch))
+# The worktree column carries the rename too: `mv` plus `git add -N`.
+_rn2 = tmp / "renombres2"
+_rn2.mkdir()
+for cmd in (["init", "-q"], ["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(_rn2), *cmd], check=True)
+(_rn2 / "deploy").mkdir()
+(_rn2 / "deploy" / "deploy.py").write_text("# the deployer\nx = 1\n" * 20, encoding="utf-8")
+subprocess.run(["git", "-C", str(_rn2), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_rn2), "commit", "-q", "-m", "base"], check=True)
+(_rn2 / "docs").mkdir()
+(_rn2 / "deploy" / "deploy.py").rename(_rn2 / "docs" / "x.py")
+subprocess.run(["git", "-C", str(_rn2), "add", "-N", "docs/x.py"], check=True)
+_ch2 = W._changed(_rn2)
+check("a rename in the worktree column lists its source whole, not garbled",
+      "deploy/deploy.py" in {n for _, n in _ch2}
+      and not any(n.startswith("loy/") for _, n in _ch2), _ch2)
+check("  and moving the deployer out that way is refused",
+      any("deploy/deploy.py" in w for w in W.refusals("stack", _ch2)), W.refusals("stack", _ch2))
+check("a rename's source is not taken for a deleted test",
+      not any("a test is deleted" in w for w in W.refusals("plugin", _ch)), W.refusals("plugin", _ch))
+
+print("\nimprove list and improve deploy agree on what is published")
+# Merged through a pull request and caught up with `pull --rebase`: the fix's
+# commits are in HEAD as copies, so the branch is no longer an ancestor.
+_pr = tmp / "publicado"
+_pr.mkdir()
+subprocess.run(["git", "-C", str(_pr), "init", "-q"], check=True)
+for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(_pr), *cmd], check=True)
+(_pr / "a.py").write_text("x = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_pr), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_pr), "commit", "-q", "-m", "base"], check=True)
+_trunk = W._git(_pr, "rev-parse", "--abbrev-ref", "HEAD")
+subprocess.run(["git", "-C", str(_pr), "checkout", "-q", "-b", "improve/40"], check=True)
+(_pr / "a.py").write_text("x = 2\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_pr), "commit", "-q", "-am",
+                "Fix x\n\nFix request #40, made in the Programmer."], check=True)
+subprocess.run(["git", "-C", str(_pr), "checkout", "-q", _trunk], check=True)
+check("a fix not yet in the checkout has commits to publish",
+      cli.fix_state(str(_pr), "improve/40", "40") == "1 commit(s) to publish",
+      cli.fix_state(str(_pr), "improve/40", "40"))
+(_pr / "b.py").write_text("y = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_pr), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_pr), "commit", "-q", "-m", "somebody else's work"], check=True)
+subprocess.run(["git", "-C", str(_pr), "cherry-pick", "improve/40"], check=True,
+               capture_output=True)
+check("the branch itself is no longer an ancestor",
+      not S._is_ancestor(str(_pr), "improve/40", "HEAD"))
+check("deploy calls the rebased copy published", S._published(str(_pr), "improve/40"))
+check("and so does list", cli.fix_state(str(_pr), "improve/40", "40") == "published",
+      cli.fix_state(str(_pr), "improve/40", "40"))
 
 import shutil  # noqa: E402
 shutil.rmtree(tmp, ignore_errors=True)

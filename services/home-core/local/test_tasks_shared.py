@@ -16,7 +16,8 @@ What must hold:
 - the last part in releases them all, and the parents get one message;
 - each person is approved separately and paid in full;
 - a partner who never does it is auto-excused (and charged), which releases
-  the part that was done;
+  the part that was done -- and any excuse that releases a part tells the
+  parents then, and starts that part's auto-approve clock then;
 - a partner a parent sent back does not hold the other one hostage;
 - rotate and together together is refused.
 
@@ -41,6 +42,12 @@ dst = os.path.join(tmp, "local")
 shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns(
     "__pycache__", "backup_data", "history", "certs"))
 os.makedirs(os.path.join(dst, "backup_data"), exist_ok=True)
+# The deployer stages the catalogues beside app.py; from a checkout, copy the
+# repository's own so the pushes below are real strings and not key names.
+_I18N = os.path.join(SRC, "..", "..", "..", "i18n")
+if not os.path.isdir(os.path.join(dst, "i18n")) and os.path.isdir(_I18N):
+    shutil.copytree(_I18N, os.path.join(dst, "i18n"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
 os.chdir(dst)
 os.environ.update(SECRET_KEY="t" * 32, PROXY_SHARED_SECRET="p" * 32,
                   DEBUG_API_KEY="d" * 32,
@@ -60,8 +67,18 @@ import app as A  # noqa: E402
 A.init_tasks_db()
 
 pushed, to_admins = [], []
-A._notify_user = lambda u, msg, **kw: pushed.append((u, msg))
-A._notify_tasks_admins = lambda msg, **kw: to_admins.append(msg)
+pushed_titles = []
+
+
+def _push(u, msg, **kw):
+    pushed.append((u, msg))
+    pushed_titles.append((u, kw.get('title')))
+
+
+A._notify_user = _push
+# A parent's push may be a function of that parent (it reads in their language).
+A._notify_tasks_admins = lambda msg, **kw: to_admins.append(
+    msg(PARENT) if callable(msg) else msg)
 
 failures = []
 
@@ -193,13 +210,68 @@ check("Mora's part is held", ('Recoger', MORA) not in queue(), queue())
 # and charged, and Mora's part is free to be approved.
 far = NOW + timedelta(days=max(A.TASKS_AUTO_EXCUSE_DAYS, A.TASKS_AUTO_APPROVE_DAYS) + 1)
 m_before, t_before = balance(MORA), balance(TOMI)
+to_admins.clear()
 sweep(far)          # excuses Tomi
-approved, _ = sweep(far)
 st = rows('Recoger')
 check("Tomi is excused", st[TOMI][1] == 'excused', st)
 check("and charged", balance(TOMI) < t_before, (t_before, balance(TOMI)))
-check("Mora's part goes through", st[MORA][1] == 'approved', st)
+check("the parents are told Mora's part is there to review",
+      any('Mora' in m and 'Tomi' in m and 'Recoger' in m for m in to_admins), to_admins)
+check("it is in the review queue", ('Recoger', MORA) in queue(), queue())
+# Done days ago, but released only now: the parents get their full window.
+approved, _ = sweep(far)
+check("auto-approve does not take it the moment it is released",
+      rows('Recoger')[MORA][1] == 'review', rows('Recoger'))
+approved, _ = sweep(far + timedelta(days=A.TASKS_AUTO_APPROVE_DAYS, minutes=5))
+st = rows('Recoger')
+check("it goes through once the window has passed", st[MORA][1] == 'approved', st)
 check("and she is paid", balance(MORA) - m_before == 100, balance(MORA) - m_before)
+
+print("\na partner who says they could not")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Pasear', 'points': 60, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r8 = rows('Pasear')
+call('POST', '/tasks/api/complete', MORA, {'task_id': r8[MORA][0]})
+_c = A._tasks_conn()
+_c.execute('UPDATE tasks SET completed_at = ? WHERE id = ?',
+           (int(NOW.timestamp()) - (A.TASKS_AUTO_APPROVE_DAYS + 1) * 86400, r8[MORA][0]))
+_c.close()
+to_admins.clear()
+code, _ = call('POST', '/tasks/api/excuse', TOMI, {'task_id': r8[TOMI][0], 'note': 'enfermo'})
+check("the excuse is accepted", code == 200, code)
+check("the parents are told Mora's part is there to review",
+      any('Mora' in m and 'Pasear' in m and 'Tomi' in m for m in to_admins), to_admins)
+check("it is in the review queue", ('Pasear', MORA) in queue(), queue())
+approved, _ = sweep(NOW)
+check("an old completion is not auto-approved on release",
+      r8[MORA][0] not in [a[0] for a in approved], approved)
+
+print("\na partner who taps No pude on the push")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Tender', 'points': 15, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r10 = rows('Tender')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r10[TOMI][0]})
+to_admins.clear()
+code, _ = call('POST', '/tasks/api/notify-action', MORA,
+               {'task_id': r10[MORA][0], 'do': 'excuse', 'note': 'sin tiempo'})
+check("the excuse is accepted", code == 200, code)
+check("the parents are told Tomi's part is there to review, in one push with her reason",
+      len(to_admins) == 1 and 'Tender' in to_admins[0] and 'Tomi' in to_admins[0]
+      and 'Mora' in to_admins[0] and 'sin tiempo' in to_admins[0], to_admins)
+
+print("\na partner whose whole day is excused")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Cocinar', 'points': 70, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r9 = rows('Cocinar')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r9[TOMI][0]})
+to_admins.clear()
+code, _ = call('POST', '/tasks/api/excuse-day', PARENT, {'user': MORA, 'note': 'viaje'})
+check("the day is excused", code == 200, code)
+check("the parents are told Tomi's part is there to review",
+      sum('Cocinar' in m for m in to_admins) == 1, to_admins)
 
 # --- a partner sent back -----------------------------------------------------------
 print("\na partner a parent sent back")
@@ -221,6 +293,174 @@ to_admins.clear()
 call('POST', '/tasks/api/complete', TOMI, {'task_id': r4[TOMI][0]})
 check("goes straight to review", ('Cama', TOMI) in queue(), queue())
 check("and tells the parents", len(to_admins) == 1, to_admins)
+
+# --- editing a template whose stored assignees include somebody who left ----------
+print("\nediting a template that names somebody who left")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Regar', 'points': 20, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+gone_tpl = body.get('id')
+_c = A._tasks_conn()
+_c.execute('UPDATE task_templates SET assignees = ? WHERE id = ?',
+           ('["%s", "%s", "999000111"]' % (TOMI, MORA), gone_tpl))
+_c.close()
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'title': 'Regar plantas'})
+check("a title change still saves", code == 200 and body.get('ok'), (code, body))
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'active': False})
+check("and so does switching it off", code == 200 and body.get('ok'), (code, body))
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'rotate': True})
+check("rotate on a shared chore is still refused", code == 400, (code, body))
+_c = A._tasks_conn()
+_c.execute('UPDATE task_templates SET assignees = ? WHERE id = ?',
+           ('["%s", "999000111"]' % TOMI, gone_tpl))
+_c.close()
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'shared': True})
+check("together with one person left who resolves is refused", code == 400, (code, body))
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT,
+                  {'assignees': [TOMI, MORA], 'shared': True})
+check("naming two people who resolve is accepted", code == 200 and body.get('ok'), (code, body))
+
+# --- the shared pushes are localised ----------------------------------------------
+print("\nthe shared pushes read in the recipient's language")
+check("the catalogue was loaded", A._translator is not None)
+A._MEMBER_LOCALES[MORA] = 'en'
+A._MEMBER_LOCALES[TOMI] = 'es'
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ordenar', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r5 = rows('Ordenar')
+pushed.clear(); pushed_titles.clear(); to_admins.clear()
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r5[TOMI][0]})
+check("Mora's nudge is in English",
+      (MORA, 'Tomi did their part of: Ordenar. Your turn!') in pushed, pushed)
+check("under an English title", (MORA, 'Shared chore') in pushed_titles, pushed_titles)
+pushed.clear(); pushed_titles.clear()
+call('POST', '/tasks/api/complete', MORA, {'task_id': r5[MORA][0]})
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ordenar2', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r6 = rows('Ordenar2')
+pushed.clear()
+call('POST', '/tasks/api/complete', MORA, {'task_id': r6[MORA][0]})
+check("Tomi's nudge is in Spanish",
+      (TOMI, 'Mora hizo su parte de: Ordenar2. ¡Te toca!') in pushed, pushed)
+check("no push carries a key name",
+      not any('tasks.' in (m or '') for _, m in pushed) and
+      not any('tasks.' in (m or '') for m in to_admins), (pushed, to_admins))
+_es = A._translator('tasks.push_shared_finished', locale='es', names='Mora, Tomi',
+                    title='Ordenar', points=30)
+check("the parents' message is in the house language",
+      any(m == _es for m in to_admins), (to_admins, _es))
+
+# --- both partners finish at the same moment --------------------------------------
+print("\nboth partners finish at the same moment")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Secar', 'points': 40, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r7 = rows('Secar')
+# Both requests have marked their own row done before either asks "am I the
+# last?" -- the interleaving that told the parents twice.
+_c = A._tasks_conn()
+_c.execute("UPDATE tasks SET status = 'review', completed_at = ? WHERE id IN (?, ?)",
+           (int(NOW.timestamp()), r7[TOMI][0], r7[MORA][0]))
+_c.close()
+to_admins.clear()
+A._notify_shared_completion(r7[TOMI][0])
+A._notify_shared_completion(r7[MORA][0])
+check("the parents are told once", len(to_admins) == 1, to_admins)
+check("and it names both", to_admins and 'Tomi' in to_admins[0] and 'Mora' in to_admins[0],
+      to_admins)
+print("\none part sent back and done again")
+call('POST', '/tasks/api/reject', PARENT, {'task_id': r7[TOMI][0], 'note': 'otra vez'})
+to_admins.clear()
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r7[TOMI][0]})
+check("the parents hear about the redone part", len(to_admins) == 1, to_admins)
+
+# --- switching "together" on and off moves today's rows with it ------------------
+print("\nswitching together on carries today's rows")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ventanas', 'points': 25, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS})
+win_tpl = body.get('id')
+code, body = call('PUT', f'/tasks/api/templates/{win_tpl}', PARENT, {'shared': True})
+check("the edit saves", code == 200, (code, body))
+r11 = rows('Ventanas')
+pushed.clear(); to_admins.clear()
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r11[TOMI][0]})
+check("today's first part now waits for the partner",
+      ('Ventanas', TOMI) not in queue() and not to_admins, (queue(), to_admins))
+check("and the partner is nudged", any(u == MORA for u, _ in pushed), pushed)
+
+print("\nswitching it off releases a held part")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Puertas', 'points': 25, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+door_tpl = body.get('id')
+r12 = rows('Puertas')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r12[TOMI][0]})
+check("Tomi's part is held first", ('Puertas', TOMI) not in queue(), queue())
+code, body = call('PUT', f'/tasks/api/templates/{door_tpl}', PARENT, {'shared': False})
+check("the edit saves", code == 200, (code, body))
+check("Tomi's part reaches the queue", ('Puertas', TOMI) in queue(), queue())
+to_admins.clear()
+call('POST', '/tasks/api/complete', MORA, {'task_id': r12[MORA][0]})
+check("Mora's part is her own chore again: straight to review, one message",
+      ('Puertas', MORA) in queue() and len(to_admins) == 1, (queue(), to_admins))
+
+print("\na partner's row deleted")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ventanas', 'points': 40, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r13 = rows('Ventanas')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r13[TOMI][0]})
+check("Tomi's part is held", ('Ventanas', TOMI) not in queue(), queue())
+to_admins.clear()
+code, body = call('DELETE', f"/tasks/api/tasks/{r13[MORA][0]}?confirm=1", PARENT)
+check("the delete goes through", code == 200 and body.get('deleted'), (code, body))
+check("Tomi's part reaches the queue", ('Ventanas', TOMI) in queue(), queue())
+check("and the parents are told, once", len(to_admins) == 1 and 'Tomi' in to_admins[0], to_admins)
+_c = A._tasks_conn()
+check("and its review clock starts now",
+      _c.execute('SELECT released_at FROM tasks WHERE id = ?', (r13[TOMI][0],)).fetchone()[0])
+_c.close()
+
+print("\nan excuse on a shared chore is one message, with its reason")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Basura', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r14 = rows('Basura')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r14[TOMI][0]})
+to_admins.clear()
+call('POST', '/tasks/api/excuse', MORA, {'task_id': r14[MORA][0], 'note': 'estaba enferma'})
+check("the parents get one push", len(to_admins) == 1, to_admins)
+check("  naming both and carrying the reason",
+      to_admins and 'Tomi' in to_admins[0] and 'Mora' in to_admins[0]
+      and 'estaba enferma' in to_admins[0], to_admins)
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Platos', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS})
+r15 = rows('Platos')
+to_admins.clear()
+call('POST', '/tasks/api/excuse', MORA, {'task_id': r15[MORA][0], 'note': 'no alcancé'})
+check("an excuse on an ordinary chore still sends its own message",
+      len(to_admins) == 1 and 'no alcancé' in to_admins[0], to_admins)
+
+print("\nsomebody taken off a chore by the edit that shares it")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Patio', 'points': 20, 'assignees': [TOMI, MORA, PARENT], 'weekdays': ALL_DAYS})
+tpl16 = body.get('id')
+code, body = call('PUT', f'/tasks/api/templates/{tpl16}', PARENT,
+                  {'assignees': [TOMI, MORA], 'shared': True})
+check("the edit saves", code == 200, (code, body))
+_c = A._tasks_conn()
+_sh = dict(_c.execute("SELECT assignee, shared FROM tasks WHERE title = 'Patio' AND due_date = ?",
+                      (TODAY.isoformat(),)).fetchall())
+_c.close()
+check("the two still on it are linked, the one taken off is not",
+      _sh.get(TOMI) == 1 and _sh.get(MORA) == 1 and _sh.get(PARENT) == 0, _sh)
+r16 = rows('Patio')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r16[TOMI][0]})
+call('POST', '/tasks/api/complete', MORA, {'task_id': r16[MORA][0]})
+check("so their parts are not held behind the person taken off",
+      {('Patio', TOMI), ('Patio', MORA)} <= queue(), queue())
 
 print()
 if failures:

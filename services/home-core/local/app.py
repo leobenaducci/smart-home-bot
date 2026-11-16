@@ -11464,6 +11464,7 @@ def init_tasks_db():
             created_by TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             shared INTEGER NOT NULL DEFAULT 0, -- one of a shared template's rows
+            released_at INTEGER,              -- shared: when the parents were told; see _release_shared
             UNIQUE(template_id, due_date, assignee)
         );
         CREATE TABLE IF NOT EXISTS prizes (
@@ -11511,6 +11512,7 @@ def init_tasks_db():
         ('tasks', 'remind_before', 'INTEGER'),
         ('task_templates', 'shared', 'INTEGER NOT NULL DEFAULT 0'),
         ('tasks', 'shared', 'INTEGER NOT NULL DEFAULT 0'),
+        ('tasks', 'released_at', 'INTEGER'),
     ):
         cols = {r[1] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
         if col not in cols:
@@ -11760,8 +11762,13 @@ def _reminder_actions(reminder):
 
 
 def _notify_tasks_admins(message, title=None, tags=None, click=None):
+    """Push to every parent. *message* and *title* may each be a function of
+    the parent's login, so a localised push reads in each parent's own
+    language (`t_for`) rather than in the language of whoever triggered it."""
     for admin in ADVANCED_USERS:
-        _notify_user(admin, message, title=title, tags=tags, click=click)
+        _notify_user(admin, message(admin) if callable(message) else message,
+                     title=title(admin) if callable(title) else title,
+                     tags=tags, click=click)
 
 
 def _count_weekday_hits(start, end, weekdays):
@@ -11889,13 +11896,49 @@ def _attach_partners(conn, tasks):
     return tasks
 
 
+def _release_shared(conn, template_id, due_date, now_ts):
+    """Claim the parents' "to review" message for one day of a shared chore.
+
+    Returns the rows it released ([(id, assignee)]) -- the parts done and not
+    yet announced -- or [] when a partner still owes theirs or somebody else
+    already announced them. Whoever gets a non-empty list sends the message;
+    nobody else does.
+
+    Decided inside one write transaction because two partners can finish in the
+    same second: each request marks its own row done and then asks "am I the
+    last?", and asked outside a transaction both see the other's row done and
+    both tell the parents. `released_at` is the claim -- stamped here, cleared
+    when a row is marked done again (after a parent sent it back) -- and the
+    moment the parents could first see the part, which is when its
+    auto-approve clock starts."""
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        owing = conn.execute(
+            """SELECT 1 FROM tasks WHERE shared = 1 AND template_id = ? AND due_date = ?
+                 AND status = 'pending' AND reviewed_at IS NULL LIMIT 1""",
+            (template_id, due_date)).fetchone()
+        rows = [] if owing else conn.execute(
+            """SELECT id, assignee FROM tasks WHERE shared = 1 AND template_id = ?
+                 AND due_date = ? AND status = 'review' AND released_at IS NULL
+               ORDER BY id""", (template_id, due_date)).fetchall()
+        if rows:
+            conn.executemany('UPDATE tasks SET released_at = ? WHERE id = ?',
+                             [(now_ts, rid) for rid, _ in rows])
+        conn.execute('COMMIT')
+    except BaseException:
+        conn.execute('ROLLBACK')
+        raise
+    return rows
+
+
 def _notify_shared_completion(task_id):
     """After a part of a shared chore is marked done, tell whoever is next.
 
     Returns False for a chore that is not shared, so the caller sends its usual
     "to review" message. For a shared one: while a partner still owes their
     part, that partner is nudged and the parents hear nothing yet; once the
-    last part is in, the parents get one message naming everybody."""
+    last part is in, the parents get one message naming everybody -- once,
+    however many parts land at the same moment (`_release_shared`)."""
     conn = _tasks_conn()
     try:
         row = conn.execute('SELECT assignee, title, points, template_id, due_date, shared '
@@ -11904,24 +11947,93 @@ def _notify_shared_completion(task_id):
             return False
         assignee, title, points, template_id, due_date, _ = row
         partners = _task_partners(conn, template_id, due_date, task_id)
+        owing = [(pid, a) for pid, a, st, rv in partners if st == 'pending' and rv is None]
+        released = (_release_shared(conn, template_id, due_date, int(time.time()))
+                    if partners and not owing else [])
     finally:
         conn.close()
     if not partners:
         return False
-    owing = [(pid, a) for pid, a, st, rv in partners if st == 'pending' and rv is None]
     me = _tasks_display_name(assignee)
     if owing:
         for pid, user in owing:
-            _notify_user(user, f'{me} did their part of: {title}. Your turn!',
-                         title='Tarea compartida', tags='handshake',
+            _notify_user(user, t_for(user, 'tasks.push_shared_turn', name=me, title=title),
+                         title=t_for(user, 'tasks.push_shared_title'), tags='handshake',
                          click=tasks_link(pid))
         return True
+    if not released:
+        return True     # a partner finishing at the same moment told them
     done = [me] + [_tasks_display_name(a) for _, a, st, _ in partners
                    if st in ('review', 'approved')]
-    _notify_tasks_admins(f'{", ".join(done)} finished: {title} (+{points} pts each) — to review',
-                         title='Tarea por revisar', tags='hourglass_flowing_sand',
-                         click=tasks_link(task_id, review=True))
+    _notify_tasks_admins(
+        lambda admin: t_for(admin, 'tasks.push_shared_finished',
+                            names=', '.join(done), title=title, points=points),
+        title=lambda admin: t_for(admin, 'tasks.push_review_title'),
+        tags='hourglass_flowing_sand', click=tasks_link(task_id, review=True))
     return True
+
+
+def _release_after_excuse(conn, task_ids, now_ts, note=None):
+    """A partner was excused (or their row removed): release the parts that
+    were waiting on them.
+
+    Without this the held part slipped into the review queue silently, and --
+    since the auto-approve clock ran from when it was *done* -- the next sweep
+    could approve it before a parent had ever been told it was there. The
+    release stamps `released_at`, which is where the auto-approve clock starts
+    for a shared part, so the parents get the same window as for any other
+    chore.
+
+    Returns the parents' "to review" pushes as callables, unsent: the caller
+    sends them with `_send_pushes` after closing its connection, so no request
+    holds the database open over a network call. *note* is the excuse's
+    reason, carried in the push so the parents get one message for the event,
+    not this one and a "could not do it" beside it.
+
+    Every path that ends a partner's row calls this: "no pude" (page, push
+    button, Alfred), the excused day, the auto-excuse sweep, and a deleted
+    row."""
+    pushes, seen = [], set()
+    for task_id in task_ids:
+        row = conn.execute('SELECT shared, template_id, due_date, title, points FROM tasks '
+                           'WHERE id = ?', (task_id,)).fetchone()
+        if not row or not row[0] or (row[1], row[2]) in seen:
+            continue
+        _, template_id, due_date, title, points = row
+        seen.add((template_id, due_date))
+        pushes += _release_pushes(conn, template_id, due_date, title, points, now_ts, note)
+    return pushes
+
+
+def _release_pushes(conn, template_id, due_date, title, points, now_ts, note=None):
+    """Release one day of a shared chore and return the parents' push for it
+    (as a callable), or [] when nothing was released."""
+    released = _release_shared(conn, template_id, due_date, now_ts)
+    if not released:
+        return []
+    names = ', '.join(_tasks_display_name(a) for _, a in released)
+    others = ', '.join(_tasks_display_name(a) for (a,) in conn.execute(
+        """SELECT assignee FROM tasks WHERE template_id = ? AND due_date = ?
+             AND status = 'excused' ORDER BY id""",
+        (template_id, due_date)).fetchall())
+
+    def body(admin):
+        text = t_for(admin, 'tasks.push_shared_released', names=names,
+                     others=others or '—', title=title, points=points)
+        return text + ('\n' + t_for(admin, 'tasks.push_reason', note=note) if note else '')
+
+    click = tasks_link(released[0][0], review=True)
+    return [lambda: _notify_tasks_admins(
+        body, title=lambda admin: t_for(admin, 'tasks.push_review_title'),
+        tags='hourglass_flowing_sand', click=click)]
+
+
+def _send_pushes(pushes):
+    for push in pushes or ():
+        try:
+            push()
+        except Exception:
+            app.logger.exception('tasks: a push failed')
 
 
 def _materialize_tasks(day):
@@ -11957,7 +12069,12 @@ def _tasks_auto_resolve(conn, now, today):
     approved = []
     rows = conn.execute(
         "SELECT id, assignee, title, points FROM tasks "
-        "WHERE status = 'review' AND completed_at IS NOT NULL AND completed_at <= ? "
+        # A shared part's clock starts when the parents were told it was there
+        # (`released_at`, see _release_shared), not when it was done: a part
+        # held for days behind a partner would otherwise go through the moment
+        # it was released, before anybody had a chance to look.
+        "WHERE status = 'review' AND completed_at IS NOT NULL "
+        "AND MAX(completed_at, COALESCE(released_at, 0)) <= ? "
         f"AND NOT {_TASK_HELD}",
         (cutoff,)).fetchall()
     for task_id, assignee, title, points in rows:
@@ -12016,6 +12133,7 @@ def _tasks_auto_resolve(conn, now, today):
             # stamps reviewed_at here), so an admin who disagrees can accept it
             # or grant the points, and either gives the penalty back.
             _penalize_and_tell(conn, task_id, assignee, title, points, now)
+        _send_pushes(_release_after_excuse(conn, [r[0] for r in excused], int(now.timestamp())))
     # An excuse a person wrote and nobody approved. Charged after the same
     # window, and stamped as decided so it stops sitting in the review panel —
     # see TASKS_PENALTY_UNREVIEWED_DAYS for why silence costs points here while
@@ -12759,7 +12877,8 @@ def tasks_api_complete():
             return jsonify(error='Acceso denegado'), 403
         if status != 'pending':
             return jsonify(error='That chore is not pending'), 409
-        conn.execute("UPDATE tasks SET status = 'review', completed_at = ? WHERE id = ? AND status = 'pending'",
+        conn.execute("UPDATE tasks SET status = 'review', completed_at = ?, released_at = NULL "
+                     "WHERE id = ? AND status = 'pending'",
                      (int(time.time()), data.get('task_id')))
     finally:
         conn.close()
@@ -12819,6 +12938,7 @@ def tasks_api_notify_action():
     note = str(data.get('note') or '').strip()[:500]
     if do not in ('complete', 'postpone', 'excuse'):
         return jsonify(error='Accion desconocida'), 400
+    released = []
     conn = _tasks_conn()
     try:
         row = conn.execute('SELECT assignee, status, title, points FROM tasks WHERE id=?',
@@ -12831,7 +12951,8 @@ def tasks_api_notify_action():
         if status != 'pending':
             return jsonify(ok=True, status=status, noop=True)
         if do == 'complete':
-            conn.execute("UPDATE tasks SET status='review', completed_at=? WHERE id=? AND status='pending'",
+            conn.execute("UPDATE tasks SET status='review', completed_at=?, released_at=NULL "
+                         "WHERE id=? AND status='pending'",
                          (int(time.time()), task_id))
         elif do == 'postpone':
             conn.execute("UPDATE tasks SET snoozed_until=? WHERE id=? AND status='pending'",
@@ -12840,6 +12961,7 @@ def tasks_api_notify_action():
             conn.execute("UPDATE tasks SET status='excused', excuse_note=?, excused_at=?, "
                          "reviewed_at=NULL, reviewed_by=NULL WHERE id=? AND status='pending'",
                          (note or 'No pude hacerla', int(time.time()), task_id))
+            released = _release_after_excuse(conn, [task_id], int(time.time()), note=note)
     finally:
         conn.close()
     if do == 'complete' and _notify_shared_completion(task_id):
@@ -12849,6 +12971,8 @@ def tasks_api_notify_action():
             f'{_tasks_display_name(assignee)} termino: {title} (+{points} pts) — por revisar',
             title='Tarea por revisar', tags='hourglass_flowing_sand',
             click=tasks_link(task_id, review=True))
+    elif do == 'excuse' and released:
+        _send_pushes(released)      # one message: the release carries the reason
     elif do == 'excuse':
         _notify_tasks_admins(
             f'{_tasks_display_name(assignee)} no pudo hacer: {title}' + (f'\nMotivo: {note}' if note else ''),
@@ -12866,6 +12990,7 @@ def tasks_api_excuse():
     note = str(data.get('note', '')).strip()[:500]
     if not note:
         return jsonify(error='Tell us why you could not do it'), 400
+    released = []
     conn = _tasks_conn()
     try:
         row = conn.execute('SELECT assignee, status, title FROM tasks WHERE id = ?',
@@ -12881,11 +13006,15 @@ def tasks_api_excuse():
                         reviewed_at = NULL, reviewed_by = NULL
                         WHERE id = ? AND status = 'pending'""",
                      (note, int(time.time()), data.get('task_id')))
+        released = _release_after_excuse(conn, [data.get('task_id')], int(time.time()), note=note)
     finally:
         conn.close()
-    _notify_tasks_admins(f'{_tasks_display_name(assignee)} no pudo hacer: {title}\nMotivo: {note}',
-                         title='Tarea justificada', tags='speech_balloon',
-                         click=tasks_link(data.get('task_id'), review=True))
+    if released:
+        _send_pushes(released)      # one message: the release carries the reason
+    else:
+        _notify_tasks_admins(f'{_tasks_display_name(assignee)} no pudo hacer: {title}\nMotivo: {note}',
+                             title='Tarea justificada', tags='speech_balloon',
+                             click=tasks_link(data.get('task_id'), review=True))
     return jsonify(ok=True, status='excused')
 
 
@@ -12916,19 +13045,24 @@ def tasks_api_excuse_day():
     iso = day.isoformat()
     if day == _tasks_today():
         _materialize_tasks(day)  # ensure today's recurring occurrences exist
+    released = []
     conn = _tasks_conn()
     try:
-        titles = [t for (t,) in conn.execute(
-            "SELECT title FROM tasks WHERE assignee = ? AND due_date = ? AND status = 'pending'",
-            (target, iso)).fetchall()]
+        day_rows = conn.execute(
+            "SELECT id, title FROM tasks WHERE assignee = ? AND due_date = ? AND status = 'pending'",
+            (target, iso)).fetchall()
+        titles = [t for _, t in day_rows]
         if titles:
             conn.execute(
                 "UPDATE tasks SET status = 'excused', excuse_note = ?, excused_at = ?, "
                 "reviewed_at = NULL, reviewed_by = NULL "
                 "WHERE assignee = ? AND due_date = ? AND status = 'pending'",
                 (note, int(time.time()), target, iso))
+            released = _release_after_excuse(conn, [i for i, _ in day_rows], int(time.time()),
+                                             note=note)
     finally:
         conn.close()
+    _send_pushes(released)
     # Let the person know their day was cleared (only when someone else did it).
     if titles and username != target:
         _notify_user(target,
@@ -13232,7 +13366,15 @@ def tasks_api_edit(task_id):
                                title=title, assignee_name=who,
                                message=(f'Confirmation required: to delete "{title}" from {who} '
                                         f'vuelve a llamar con confirm=true. No se puede deshacer.'))
+            shared_day = conn.execute('SELECT shared, template_id, due_date, title, points '
+                                      'FROM tasks WHERE id = ?', (task_id,)).fetchone()
             conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
+            # A deleted partner owes nothing any more: release what waited on
+            # them, with the push and the clock an excuse gets.
+            if shared_day and shared_day[0]:
+                pushes = _release_pushes(conn, *shared_day[1:], int(time.time()))
+                conn.close()
+                _send_pushes(pushes)
             return jsonify(ok=True, deleted=True, title=title)
         data = request.get_json(silent=True) or {}
         fields, err = _valid_task_fields(data, require_all=False)
@@ -13343,6 +13485,70 @@ def tasks_api_template_create():
     return jsonify(ok=True, id=tpl_id)
 
 
+def _template_combination_error(row, fields):
+    """Whether an edit leaves a template both rotating and shared, or shared
+    with fewer than two people. None when it does not.
+
+    Checked against what is stored for whatever the edit leaves out, so
+    "shared: true" alone on a rotating chore is refused like the pair. The
+    stored assignees are read the way `_parse_template_row` reads them -- a
+    login that no longer resolves (somebody who left) is dropped, not refused.
+    Refusing it made every edit of that template fail with "Invalid
+    assignees", including switching it off, and the person editing could not
+    see why: the page lists only the assignees that still resolve."""
+    _, rotate, shared, assignees_j = row
+    if 'assignees' in fields:
+        people = json.loads(fields['assignees'])
+    else:
+        try:
+            people = [a for a in json.loads(assignees_j or '[]') if a in FILES_FOLDERS]
+        except ValueError:
+            people = []
+    rotate = fields.get('rotate', rotate)
+    shared = fields.get('shared', shared)
+    if shared and rotate:
+        return 'A chore either rotates or is done together, not both'
+    if shared and len(people) < 2:
+        return 'A chore done together needs at least two people'
+    return None
+
+
+def _reshare_today(conn, tpl_id):
+    """Carry a template's `shared` and assignees onto today's rows that are not
+    done yet.
+
+    Today's rows were made from the template as it was, so without this a
+    chore switched to "together" stayed separate until tomorrow, and one
+    switched off kept holding a done part behind a partner who no longer had
+    anything to do with it. Only `pending` rows change: a part already marked
+    done was announced (or is being held) under the rules it was done under.
+
+    A row is linked only if its person is still on the chore and at least two
+    such rows are pending -- the same "somebody to share with" rule as
+    _instantiate_template. A person the edit took off the chore is unlinked,
+    so nobody's part waits on them. Whatever that frees is released, its
+    auto-approve clock starting now (`_release_shared`). No push for that: the
+    person releasing it is a parent, editing the chore."""
+    today = _tasks_today().isoformat()
+    tpl = conn.execute('SELECT shared, rotate, assignees FROM task_templates WHERE id = ?',
+                       (tpl_id,)).fetchone()
+    if not tpl:
+        return
+    try:
+        on_chore = set(json.loads(tpl[2] or '[]'))
+    except ValueError:
+        on_chore = set()
+    pending = [(rid, a) for rid, a in conn.execute(
+        "SELECT id, assignee FROM tasks WHERE template_id = ? AND due_date = ? "
+        "AND status = 'pending'", (tpl_id, today)).fetchall()]
+    keep = [rid for rid, a in pending if a in on_chore]
+    link = bool(tpl[0]) and not tpl[1] and len(keep) >= 2
+    for rid, a in pending:
+        conn.execute('UPDATE tasks SET shared = ? WHERE id = ?',
+                     (1 if (link and rid in keep) else 0, rid))
+    _release_shared(conn, tpl_id, today, int(time.time()))
+
+
 @app.route('/tasks/api/templates/<int:tpl_id>', methods=['PUT', 'DELETE'])
 @tasks_admin_required
 def tasks_api_template_edit(tpl_id):
@@ -13356,14 +13562,9 @@ def tasks_api_template_edit(tpl_id):
             conn.execute('UPDATE task_templates SET active = 0 WHERE id = ?', (tpl_id,))
             return jsonify(ok=True)
         data = request.get_json(silent=True) or {}
-        # Checked against what is stored for whatever the edit leaves out, so
-        # "shared: true" alone on a rotating chore is refused like the pair.
-        merged = {'rotate': row[1], 'shared': row[2], 'assignees': json.loads(row[3] or '[]'),
-                  **data}
         fields, err = _valid_template_fields(data, require_all=False)
-        if not err:
-            _, err = _valid_template_fields(
-                {k: merged[k] for k in ('rotate', 'shared', 'assignees')}, require_all=False)
+        if not err and any(k in data for k in ('rotate', 'shared', 'assignees')):
+            err = _template_combination_error(row, fields)
         if err:
             return jsonify(error=err), 400
         if 'active' in data:
@@ -13374,6 +13575,8 @@ def tasks_api_template_edit(tpl_id):
         fields['anchor_date'] = _tasks_today().isoformat()
         sets = ', '.join(f'{k} = ?' for k in fields)
         conn.execute(f'UPDATE task_templates SET {sets} WHERE id = ?', [*fields.values(), tpl_id])
+        if {'shared', 'assignees', 'rotate'} & set(fields):
+            _reshare_today(conn, tpl_id)
         return jsonify(ok=True)
     finally:
         conn.close()
