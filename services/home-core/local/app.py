@@ -13343,6 +13343,34 @@ def tasks_api_template_create():
     return jsonify(ok=True, id=tpl_id)
 
 
+def _template_combination_error(row, fields):
+    """Whether an edit leaves a template both rotating and shared, or shared
+    with fewer than two people. None when it does not.
+
+    Checked against what is stored for whatever the edit leaves out, so
+    "shared: true" alone on a rotating chore is refused like the pair. The
+    stored assignees are read the way `_parse_template_row` reads them -- a
+    login that no longer resolves (somebody who left) is dropped, not refused.
+    Refusing it made every edit of that template fail with "Invalid
+    assignees", including switching it off, and the person editing could not
+    see why: the page lists only the assignees that still resolve."""
+    _, rotate, shared, assignees_j = row
+    if 'assignees' in fields:
+        people = json.loads(fields['assignees'])
+    else:
+        try:
+            people = [a for a in json.loads(assignees_j or '[]') if a in FILES_FOLDERS]
+        except ValueError:
+            people = []
+    rotate = fields.get('rotate', rotate)
+    shared = fields.get('shared', shared)
+    if shared and rotate:
+        return 'A chore either rotates or is done together, not both'
+    if shared and len(people) < 2:
+        return 'A chore done together needs at least two people'
+    return None
+
+
 @app.route('/tasks/api/templates/<int:tpl_id>', methods=['PUT', 'DELETE'])
 @tasks_admin_required
 def tasks_api_template_edit(tpl_id):
@@ -13356,14 +13384,9 @@ def tasks_api_template_edit(tpl_id):
             conn.execute('UPDATE task_templates SET active = 0 WHERE id = ?', (tpl_id,))
             return jsonify(ok=True)
         data = request.get_json(silent=True) or {}
-        # Checked against what is stored for whatever the edit leaves out, so
-        # "shared: true" alone on a rotating chore is refused like the pair.
-        merged = {'rotate': row[1], 'shared': row[2], 'assignees': json.loads(row[3] or '[]'),
-                  **data}
         fields, err = _valid_template_fields(data, require_all=False)
-        if not err:
-            _, err = _valid_template_fields(
-                {k: merged[k] for k in ('rotate', 'shared', 'assignees')}, require_all=False)
+        if not err and any(k in data for k in ('rotate', 'shared', 'assignees')):
+            err = _template_combination_error(row, fields)
         if err:
             return jsonify(error=err), 400
         if 'active' in data:

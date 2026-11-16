@@ -222,6 +222,32 @@ call('POST', '/tasks/api/complete', TOMI, {'task_id': r4[TOMI][0]})
 check("goes straight to review", ('Cama', TOMI) in queue(), queue())
 check("and tells the parents", len(to_admins) == 1, to_admins)
 
+# --- editing a template whose stored assignees include somebody who left ----------
+print("\nediting a template that names somebody who left")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Regar', 'points': 20, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+gone_tpl = body.get('id')
+_c = A._tasks_conn()
+_c.execute('UPDATE task_templates SET assignees = ? WHERE id = ?',
+           ('["%s", "%s", "999000111"]' % (TOMI, MORA), gone_tpl))
+_c.close()
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'title': 'Regar plantas'})
+check("a title change still saves", code == 200 and body.get('ok'), (code, body))
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'active': False})
+check("and so does switching it off", code == 200 and body.get('ok'), (code, body))
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'rotate': True})
+check("rotate on a shared chore is still refused", code == 400, (code, body))
+_c = A._tasks_conn()
+_c.execute('UPDATE task_templates SET assignees = ? WHERE id = ?',
+           ('["%s", "999000111"]' % TOMI, gone_tpl))
+_c.close()
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT, {'shared': True})
+check("together with one person left who resolves is refused", code == 400, (code, body))
+code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT,
+                  {'assignees': [TOMI, MORA], 'shared': True})
+check("naming two people who resolve is accepted", code == 200 and body.get('ok'), (code, body))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))
