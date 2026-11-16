@@ -5,6 +5,7 @@ import com.chat.app.BuildConfig
 import android.Manifest
 import android.app.Activity
 import android.app.KeyguardManager
+import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -53,6 +54,16 @@ import kotlin.math.pow
  *    before capturing anything, or when forced via the stt_mode debug setting.
  *
  * Either way the mic is always released: guarded start, watchdogs, and onStop.
+ *
+ * **When Alfred is the phone's default assistant, only the second path can
+ * hear.** Android's audio policy (AudioPolicyService::updateUidStates_l) lets
+ * the assistant capture while its UI is on top only with the VOICE_RECOGNITION
+ * or HOTWORD source, and silences every *other* app's capture for as long as
+ * the assistant is on top. A MIC-source recorder here, or Google's recognizer
+ * running in its own process, got a few hundred ms of sound and then zeros:
+ * the recognizers said "no match" a second in, and Whisper got clips with
+ * nothing in them. Every assist press on the phone that reported it, for two
+ * months; the same recorder inside the app was fine.
  */
 class AssistActivity : Activity() {
 
@@ -65,6 +76,16 @@ class AssistActivity : Activity() {
         private const val POLL_MS = 80L
         private const val ONSET_MIN = 2600f      // floor for "started speaking"
         private const val END_MIN = 1500f        // floor for "still speaking"
+        // VOICE_RECOGNITION skips the gain stage MIC applies, so speech peaks lower.
+        // Unmeasured guesses; stopRecording reports the real peak so they can be set.
+        private const val ONSET_MIN_RAW = 1500f
+        private const val END_MIN_RAW = 900f
+        // "Still speaking" is also a share of how loud this person's speech got.
+        // The floor alone froze at onset, so a room whose noise sat above 1.5x
+        // that floor kept the recording open to MAX_MS (first VOICE_RECOGNITION
+        // press: floor 2228, speech peak 25896, end level was 3342).
+        private const val END_OF_PEAK = 0.25f
+        private const val ONSET_POLLS = 2        // a click or a bang is one poll; speech is several
         private const val REQ_MIC = 41
         private const val REARM_MS = 250L        // let the recognizer's mic go before ours opens
         private const val MIN_SENDING_MS = 700L  // hold the transcript on screen this long
@@ -117,6 +138,9 @@ class AssistActivity : Activity() {
     private var startAt = 0L
     private var lastVoiceAt = 0L
     private var floor = 0f
+    private var peak = 0
+    private var onsetHits = 0
+    private var rawSource = false // VOICE_RECOGNITION rather than MIC; see the class doc
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -170,10 +194,25 @@ class AssistActivity : Activity() {
     private fun isLocked(): Boolean =
         getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
 
+    /** Holding the assistant role changes what the audio policy lets us hear. */
+    private fun isDefaultAssistant(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && try {
+            getSystemService(RoleManager::class.java)?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true
+        } catch (e: Exception) {
+            false
+        }
+
     // ---------------------------------------------------------------------
     // Capture selection
     // ---------------------------------------------------------------------
     private fun beginCapture() {
+        rawSource = isDefaultAssistant()
+        if (rawSource) {
+            // Another app's recognizer is silenced while we are on top (class doc).
+            AppLog.report(this, TAG, "default assistant: recording with VOICE_RECOGNITION, no recognizer")
+            startRecording()
+            return
+        }
         SttSupport.logDefaultRecognizer(this)
         SttSupport.choose(this) { choice ->
             if (st != St.PROBE || isFinishing) return@choose
@@ -439,7 +478,10 @@ class AssistActivity : Activity() {
             val dir = File(cacheDir, "assist-audio").apply { mkdirs() }
             val f = File(dir, "voice_${System.currentTimeMillis()}.m4a")
             audioFile = f
-            rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+            rec.setAudioSource(
+                if (rawSource) MediaRecorder.AudioSource.VOICE_RECOGNITION
+                else MediaRecorder.AudioSource.MIC,
+            )
             rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             rec.setAudioSamplingRate(16000)
@@ -452,6 +494,8 @@ class AssistActivity : Activity() {
             startAt = SystemClock.elapsedRealtime()
             lastVoiceAt = startAt
             floor = 0f
+            peak = 0
+            onsetHits = 0
             spoke = false
             waveView?.setPartial(null)
             waveView?.setState(MicWaveView.State.LISTENING)
@@ -472,14 +516,18 @@ class AssistActivity : Activity() {
             val r = recorder ?: return
             val amp = (try { r.maxAmplitude } catch (e: Exception) { 0 }).toFloat()
             val now = SystemClock.elapsedRealtime()
-            if (!spoke) floor = if (floor == 0f) amp else floor * 0.9f + amp * 0.1f
-            val onset = max(ONSET_MIN, floor * 2.2f)
-            val endLevel = max(END_MIN, floor * 1.5f)
-            if (amp > onset) {
-                spoke = true; lastVoiceAt = now
-            } else if (spoke && amp > endLevel) {
-                lastVoiceAt = now
+            if (floor == 0f) floor = amp // the first poll is the room, whatever it holds
+            val onset = max(if (rawSource) ONSET_MIN_RAW else ONSET_MIN, floor * 2.2f)
+            if (!spoke) {
+                onsetHits = if (amp > onset) onsetHits + 1 else 0
+                if (onsetHits >= ONSET_POLLS) { spoke = true; lastVoiceAt = now }
+                // Only quiet polls teach the floor: a first syllable folded into it
+                // would raise the bar the second one has to clear.
+                else if (onsetHits == 0) floor = floor * 0.9f + amp * 0.1f
             }
+            if (spoke && amp > peak) peak = amp.toInt()
+            val endLevel = maxOf(if (rawSource) END_MIN_RAW else END_MIN, floor * 1.5f, peak * END_OF_PEAK)
+            if (spoke && amp > endLevel) lastVoiceAt = now
             waveView?.setLevel(amp.toInt())
             val tooLong = now - startAt > MAX_MS
             val silenceDone = spoke && (now - lastVoiceAt > SILENCE_MS)
@@ -496,6 +544,8 @@ class AssistActivity : Activity() {
         if (st != St.REC) return
         handler.removeCallbacks(poll)
         Log.i(TAG, "stopRecording send=$send spoke=$spoke")
+        AppLog.report(this, TAG, "recording stopped send=$send peak=$peak floor=${floor.toInt()} " +
+            "source=${if (rawSource) "voice_recognition" else "mic"} locked=${isLocked()}")
         val rec = recorder
         val f = audioFile
         recorder = null
@@ -637,6 +687,9 @@ class AssistActivity : Activity() {
     /** Give up on this utterance: release everything, send nothing. */
     private fun cancelAll() {
         if (st == St.SENDING) return
+        if (st == St.REC) {
+            AppLog.report(this, TAG, "recording cancelled spoke=$spoke peak=$peak floor=${floor.toInt()}")
+        }
         st = St.DONE
         handler.removeCallbacksAndMessages(null)
         releaseMic()
