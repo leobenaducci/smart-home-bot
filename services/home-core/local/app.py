@@ -13467,6 +13467,34 @@ def _template_combination_error(row, fields):
     return None
 
 
+def _reshare_today(conn, tpl_id, shared):
+    """Carry a template's new `shared` onto today's rows that are not done yet.
+
+    Today's rows were made from the template as it was, so without this a
+    chore switched to "together" stayed separate until tomorrow, and one
+    switched off kept holding a done part behind a partner who no longer had
+    anything to do with it. Only `pending` rows change: a part already marked
+    done was announced (or is being held) under the rules it was done under.
+
+    Switched on, the rows are linked only when at least two of them are still
+    pending -- the same "somebody to share with" rule as _instantiate_template.
+    Switched off, a part that was held is released, and its auto-approve clock
+    starts now (`_release_shared`). No push for that: the person releasing it
+    is a parent, editing the chore."""
+    today = _tasks_today().isoformat()
+    if shared:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE template_id = ? AND due_date = ? "
+            "AND status = 'pending'", (tpl_id, today)).fetchone()[0]
+        if pending >= 2:
+            conn.execute("UPDATE tasks SET shared = 1 WHERE template_id = ? AND due_date = ? "
+                         "AND status = 'pending'", (tpl_id, today))
+        return
+    conn.execute("UPDATE tasks SET shared = 0 WHERE template_id = ? AND due_date = ? "
+                 "AND status = 'pending'", (tpl_id, today))
+    _release_shared(conn, tpl_id, today, int(time.time()))
+
+
 @app.route('/tasks/api/templates/<int:tpl_id>', methods=['PUT', 'DELETE'])
 @tasks_admin_required
 def tasks_api_template_edit(tpl_id):
@@ -13493,6 +13521,8 @@ def tasks_api_template_edit(tpl_id):
         fields['anchor_date'] = _tasks_today().isoformat()
         sets = ', '.join(f'{k} = ?' for k in fields)
         conn.execute(f'UPDATE task_templates SET {sets} WHERE id = ?', [*fields.values(), tpl_id])
+        if 'shared' in fields:
+            _reshare_today(conn, tpl_id, fields['shared'])
         return jsonify(ok=True)
     finally:
         conn.close()

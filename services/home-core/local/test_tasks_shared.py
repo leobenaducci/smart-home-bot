@@ -376,6 +376,36 @@ to_admins.clear()
 call('POST', '/tasks/api/complete', TOMI, {'task_id': r7[TOMI][0]})
 check("the parents hear about the redone part", len(to_admins) == 1, to_admins)
 
+# --- switching "together" on and off moves today's rows with it ------------------
+print("\nswitching together on carries today's rows")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ventanas', 'points': 25, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS})
+win_tpl = body.get('id')
+code, body = call('PUT', f'/tasks/api/templates/{win_tpl}', PARENT, {'shared': True})
+check("the edit saves", code == 200, (code, body))
+r11 = rows('Ventanas')
+pushed.clear(); to_admins.clear()
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r11[TOMI][0]})
+check("today's first part now waits for the partner",
+      ('Ventanas', TOMI) not in queue() and not to_admins, (queue(), to_admins))
+check("and the partner is nudged", any(u == MORA for u, _ in pushed), pushed)
+
+print("\nswitching it off releases a held part")
+code, body = call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Puertas', 'points': 25, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+door_tpl = body.get('id')
+r12 = rows('Puertas')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r12[TOMI][0]})
+check("Tomi's part is held first", ('Puertas', TOMI) not in queue(), queue())
+code, body = call('PUT', f'/tasks/api/templates/{door_tpl}', PARENT, {'shared': False})
+check("the edit saves", code == 200, (code, body))
+check("Tomi's part reaches the queue", ('Puertas', TOMI) in queue(), queue())
+to_admins.clear()
+call('POST', '/tasks/api/complete', MORA, {'task_id': r12[MORA][0]})
+check("Mora's part is her own chore again: straight to review, one message",
+      ('Puertas', MORA) in queue() and len(to_admins) == 1, (queue(), to_admins))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))
