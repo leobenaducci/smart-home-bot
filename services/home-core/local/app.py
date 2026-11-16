@@ -11504,6 +11504,11 @@ TASKS_AUTO_EXCUSE_NOTE = 'Closed itself: left pending for more than %d days.'
 # Sunday, as a Python weekday. The weekly report goes to the adults only.
 TASKS_WEEKLY_REPORT_WEEKDAY = 6
 TASKS_REMIND_EVERY_MIN = int(os.environ.get('TASKS_REMIND_MINUTES', '30'))
+# Children are not nagged at night: a chore with no end time kept reminding
+# until midnight, and one child got 17 reminders after 22:00 in a week, the
+# last at 23:34 (2026-11-16). Anyone who is not a parent (ADVANCED_USERS) gets
+# none from this time on; parents keep each chore's own window.
+TASKS_KIDS_REMIND_UNTIL = os.environ.get('TASKS_KIDS_REMIND_UNTIL', '22:00')
 TASKS_MAX_POINTS = 10000
 _TASKS_TIME_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
 
@@ -12641,6 +12646,9 @@ def _tasks_send_reminders(conn, now, today):
             continue  # too early — before the "avisar X min antes" window opens
         if te and now_hm > te:
             continue  # window passed; stop nagging for today
+        if (TASKS_KIDS_REMIND_UNTIL and now_hm >= TASKS_KIDS_REMIND_UNTIL
+                and not _tasks_is_admin(assignee)):
+            continue  # a child's night: no more reminders today
         if snoozed and snoozed > now_epoch:
             continue  # postponed ("remind me later")
         interval = (every or TASKS_REMIND_EVERY_MIN) * 60
