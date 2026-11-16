@@ -157,9 +157,17 @@ def _changed(path: Path) -> list[tuple[str, str]]:
         if len(entry) < 4:
             continue
         status, name = entry[:2], entry[3:]
-        if status[0] in "RC":
-            i += 1          # a rename's source follows its destination; the destination counts
         out.append((status, name))
+        if status[0] in "RC":
+            # The source follows its destination. A rename takes a file away
+            # from where it was, so the source counts too: listing only the
+            # destination let a staged `mv` carry a protected file out of
+            # deploy/, or a neighbour plugin's file into this one's folder,
+            # past every check that reads this list. A copy leaves its source
+            # as it was, so only a rename's is listed.
+            if status[0] == "R" and i < len(entries) and entries[i]:
+                out.append((status, entries[i]))
+            i += 1
     return out
 
 

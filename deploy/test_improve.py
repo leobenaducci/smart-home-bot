@@ -883,6 +883,35 @@ check("publishing fast-forwards the shared checkout and pushes it",
 check("deploying it means its own services, not the neighbour's",
       S.services_for(shared["riego"], "21") == ["riego-api"])
 
+print("\na staged rename is checked where it came from, too")
+# `git mv` is refused to the agent, but `mv` and `git add -A` are not, and
+# git reports the staged result as one rename: destination first, source after.
+_rn = tmp / "renombres"
+_rn.mkdir()
+subprocess.run(["git", "-C", str(_rn), "init", "-q"], check=True)
+for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(_rn), *cmd], check=True)
+for rel in ("deploy/guardia.py", "piscina/bomba.py", "riego/app.py"):
+    (_rn / rel).parent.mkdir(parents=True, exist_ok=True)
+    (_rn / rel).write_text(f"# {rel}\nx = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_rn), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_rn), "commit", "-q", "-m", "base"], check=True)
+(_rn / "docs").mkdir()
+subprocess.run(["git", "-C", str(_rn), "mv", "deploy/guardia.py", "docs/guardia.py"], check=True)
+subprocess.run(["git", "-C", str(_rn), "mv", "piscina/bomba.py", "riego/bomba.py"], check=True)
+_ch = W._changed(_rn)
+check("both ends of a rename are listed",
+      {n for _, n in _ch} >= {"docs/guardia.py", "deploy/guardia.py",
+                              "riego/bomba.py", "piscina/bomba.py"}, _ch)
+check("moving a protected file out of deploy/ is refused",
+      any("deploy/guardia.py" in w for w in W.refusals("stack", _ch)), W.refusals("stack", _ch))
+check("and moving a neighbour's file into this plugin's folder is too",
+      any("piscina/bomba.py" in w for w in W.outside_plugin({"name": "riego", "subdir": "riego"},
+                                                             _ch)),
+      W.outside_plugin({"name": "riego", "subdir": "riego"}, _ch))
+check("a rename's source is not taken for a deleted test",
+      not any("a test is deleted" in w for w in W.refusals("plugin", _ch)), W.refusals("plugin", _ch))
+
 import shutil  # noqa: E402
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")
