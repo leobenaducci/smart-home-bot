@@ -6608,6 +6608,10 @@ def restore_image_tags(target, before: dict[str, str | None], remote_dir: str, o
                            cwd=remote_dir, check=False, capture=True)
         if r.returncode == 0:
             out.sub(f"{tag} put back to {'the previous image' if old else 'unset'}")
+        elif not old and "no such image" in ((r.stderr or "") + (r.stdout or "")).lower():
+            # Unset before and still unset: a registry image `compose config
+            # --images` listed that nothing pulled. Nothing to put back.
+            continue
         else:
             out.warn(f"could not put {tag} back: {((r.stderr or r.stdout) or '').strip()[:200]}")
 

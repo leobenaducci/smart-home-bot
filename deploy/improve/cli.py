@@ -279,7 +279,7 @@ def fix_state(live: str | None, fix: str, rid: str) -> str:
         f"--grep=Fix request #{rid},", "HEAD", "-n", "1", check=False))
     if published:
         return "published"
-    n = len([c for c in W._git(live, "rev-list", f"HEAD..{fix}", check=False).split() if c])
+    n = len(S._new_commits(live, fix))
     return f"{n} commit(s) to publish" if n else "nothing committed"
 
 
