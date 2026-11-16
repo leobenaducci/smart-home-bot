@@ -3299,3 +3299,44 @@ async def test_empty_reply_after_thinking_is_nudged_once():
     assert result.final_content == "¡Listo!"
     assert seen[1][-1] == {"role": "user", "content": EMPTY_REPLY_PROMPT}
     assert sum(m.get("content") == EMPTY_REPLY_PROMPT for m in seen[1]) == 1
+
+
+@pytest.mark.asyncio
+async def test_unanswered_turn_leaves_the_stream_to_its_caller():
+    """When even finalization comes back empty, the loop escalates the turn on
+    the same stream; the runner must not end it first."""
+    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from nanobot.agent.hook import AgentHook, AgentHookContext
+
+    provider = MagicMock()
+    stream_end_calls: list[bool] = []
+
+    class TrackingHook(AgentHook):
+        def wants_streaming(self) -> bool:
+            return True
+
+        async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
+            stream_end_calls.append(resuming)
+
+        def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
+            return content
+
+    async def empty(**kwargs):
+        return LLMResponse(content=None, tool_calls=[], usage={})
+
+    provider.chat_stream_with_retry = empty
+    provider.chat_with_retry = empty
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+
+    result = await AgentRunner(provider).run(AgentRunSpec(
+        initial_messages=[{"role": "user", "content": "Ya lo hice"}],
+        tools=tools,
+        model="test-model",
+        max_iterations=5,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        hook=TrackingHook(),
+    ))
+
+    assert result.stop_reason == "empty_final_response"
+    assert stream_end_calls and all(stream_end_calls)

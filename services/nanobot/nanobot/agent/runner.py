@@ -2336,8 +2336,14 @@ class AgentRunner:
             if should_continue:
                 had_injections = True
 
+            # A turn that ends with no answer is not over for its caller: the
+            # loop hands an empty_final_response to the stronger model, on the
+            # same stream. Ending it here sent the API's [DONE] first, the
+            # client hung up, and the escalation was cancelled unseen. The
+            # API's `_run` closes the stream when the whole turn returns.
+            ends_unanswered = response.finish_reason != "error" and is_blank_text(clean)
             if hook.wants_streaming():
-                await hook.on_stream_end(context, resuming=should_continue)
+                await hook.on_stream_end(context, resuming=should_continue or ends_unanswered)
 
             if should_continue:
                 await hook.after_iteration(context)
