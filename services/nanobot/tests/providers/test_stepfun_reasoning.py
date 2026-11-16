@@ -295,3 +295,114 @@ def test_parse_sdk_gateway_reasoning_is_not_the_reply() -> None:
 
     assert not result.content
     assert result.reasoning_content == "Let me get the forecast."
+
+
+# ── Reasoning echoed back as the reply ──────────────────────────────────────
+#
+# NanoGPT streaming DeepSeek V4 Flash, on a turn where the model gave no
+# answer, carried the reasoning again as `content`, word for word. A reply is
+# never identical to the thinking behind it, so that is no reply at all.
+
+
+def test_parse_chunks_reasoning_echo_is_no_reply() -> None:
+    notes = 'He says "Ya lo hice". Let me check the list first.'
+    chunks = [
+        _make_sdk_chunk(reasoning=notes),
+        _make_sdk_chunk(content=notes, finish="stop"),
+    ]
+
+    result = OpenAICompatProvider._parse_chunks(chunks)
+
+    assert not result.content
+    assert result.reasoning_content == notes
+
+
+def test_parse_chunks_reply_that_differs_is_kept() -> None:
+    chunks = [
+        _make_sdk_chunk(reasoning="He fed the cat."),
+        _make_sdk_chunk(content="¡Listo, la marqué!", finish="stop"),
+    ]
+
+    assert OpenAICompatProvider._parse_chunks(chunks).content == "¡Listo, la marqué!"
+
+
+def test_parse_dict_gateway_reasoning_echo_is_no_reply() -> None:
+    response = {"choices": [{"message": {
+        "content": "Let me get the forecast.", "reasoning": "Let me get the forecast.",
+    }, "finish_reason": "stop"}]}
+
+    assert not _gateway()._parse(response).content
+
+
+def test_parse_dict_stepfun_answer_in_reasoning_still_kept() -> None:
+    response = {"choices": [{"message": {
+        "content": None, "reasoning": "The answer is 42.",
+    }, "finish_reason": "stop"}]}
+
+    assert _stepfun()._parse(response).content == "The answer is 42."
+
+
+def _stream_of(*chunks):
+    class _S:
+        def __aiter__(self):
+            self._it = iter(chunks)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration
+    return _S()
+
+
+def _streamed(chunks):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    provider = _gateway()
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=AsyncMock(return_value=_stream_of(*chunks)))))
+    shown: list[str] = []
+
+    async def on_content(d: str) -> None:
+        shown.append(d)
+
+    result = asyncio.run(provider.chat_stream(
+        messages=[{"role": "user", "content": "Ya lo hice"}],
+        model="deepseek/deepseek-v4.1-flash", on_content_delta=on_content))
+    return result, "".join(shown)
+
+
+def test_stream_echo_is_never_shown_live() -> None:
+    notes = "He says he did it. Let me complete 1111."
+    result, shown = _streamed([
+        _make_sdk_chunk(reasoning=notes[:20]),
+        _make_sdk_chunk(reasoning=notes[20:]),
+        _make_sdk_chunk(content=notes[:25]),
+        _make_sdk_chunk(content=notes[25:], finish="stop"),
+    ])
+
+    assert shown == ""
+    assert not result.content
+
+
+def test_stream_real_reply_is_shown() -> None:
+    result, shown = _streamed([
+        _make_sdk_chunk(reasoning="He fed the cat."),
+        _make_sdk_chunk(content="¡Listo, "),
+        _make_sdk_chunk(content="la marqué!", finish="stop"),
+    ])
+
+    assert shown == "¡Listo, la marqué!"
+    assert result.content == "¡Listo, la marqué!"
+
+
+def test_stream_reply_opening_like_the_reasoning_is_still_shown() -> None:
+    result, shown = _streamed([
+        _make_sdk_chunk(reasoning="Listo, he did it. Mark 1111."),
+        _make_sdk_chunk(content="Listo", finish="stop"),
+    ])
+
+    assert shown == "Listo"
+    assert result.content == "Listo"

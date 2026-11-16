@@ -244,6 +244,22 @@ def _responses_circuit_key(
     return f"{model_name}:{effort}"
 
 
+def _drop_reasoning_echo(content: str | None, reasoning: Any) -> str | None:
+    """None when `content` is just the reasoning again, else `content`.
+
+    A reply is never word for word what the model thought. When the two match,
+    the model gave no answer and the gateway (or the model) repeated its
+    reasoning as `content` -- NanoGPT streaming DeepSeek V4 Flash did, on a
+    conversation whose earlier replies were already such copies. Published,
+    that is the assistant's private planning in English ("He says he did it...
+    let me check the list"), sent as the reply, with none of the calls it
+    describes made. Empty instead, it goes through the runner's empty-response
+    retry like any turn that came back with nothing."""
+    if not content or not isinstance(reasoning, str) or not reasoning.strip():
+        return content
+    return None if content.strip() == reasoning.strip() else content
+
+
 class OpenAICompatProvider(LLMProvider):
     """Unified provider for all OpenAI-compatible APIs.
 
@@ -943,7 +959,8 @@ class OpenAICompatProvider(LLMProvider):
 
         True only for StepFun's Plan API. Elsewhere it is the model's thinking,
         which is never shown to the person it is talking to."""
-        return bool(self._spec and self._spec.name == "stepfun")
+        spec = getattr(self, "_spec", None)
+        return bool(spec and spec.name == "stepfun")
 
     def _parse(self, response: Any) -> LLMResponse:
         if isinstance(response, str):
@@ -997,6 +1014,8 @@ class OpenAICompatProvider(LLMProvider):
                 if not reasoning_content:
                     reasoning_content = m.get("reasoning_content")
 
+            if not self._reasoning_is_answer():
+                content = _drop_reasoning_echo(content, reasoning_content)
             parsed_tool_calls = []
             for tc in raw_tool_calls:
                 tc_map = self._maybe_mapping(tc) or {}
@@ -1060,6 +1079,8 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_content = getattr(msg, "reasoning_content", None) or None
         if not reasoning_content and getattr(msg, "reasoning", None):
             reasoning_content = msg.reasoning
+        if not self._reasoning_is_answer():
+            content = _drop_reasoning_echo(content, reasoning_content)
 
         return LLMResponse(
             content=content,
@@ -1154,8 +1175,11 @@ class OpenAICompatProvider(LLMProvider):
             for tc in (delta.tool_calls or []) if delta else []:
                 _accum_tc(tc, getattr(tc, "index", 0))
 
+        content = "".join(content_parts) or None
+        reasoning = "".join(reasoning_parts) or None
+        content = _drop_reasoning_echo(content, reasoning)
         return LLMResponse(
-            content="".join(content_parts) or None,
+            content=content,
             tool_calls=[
                 ToolCallRequest(
                     id=b["id"] or _short_tool_id(),
@@ -1169,7 +1193,7 @@ class OpenAICompatProvider(LLMProvider):
             ],
             finish_reason=finish_reason,
             usage=usage,
-            reasoning_content="".join(reasoning_parts) or None,
+            reasoning_content=reasoning,
         )
 
     @classmethod
@@ -1424,6 +1448,8 @@ class OpenAICompatProvider(LLMProvider):
                     kwargs.pop('temperature', None)
                     stream = await self._client.chat.completions.create(**kwargs)
             chunks: list[Any] = []
+            streamed_reasoning = ""
+            held_content = ""
             stream_iter = stream.__aiter__()
             while True:
                 try:
@@ -1436,22 +1462,39 @@ class OpenAICompatProvider(LLMProvider):
                 chunks.append(chunk)
                 if chunk.choices:
                     delta = chunk.choices[0].delta
-                    if on_content_delta:
-                        text = getattr(delta, "content", None)
-                        if text:
-                            await on_content_delta(text)
-                    if on_reasoning_delta:
+                    thought = getattr(delta, "reasoning_content", None) or getattr(
+                        delta, "reasoning", None
+                    )
+                    if thought:
+                        streamed_reasoning += thought
+                    text = getattr(delta, "content", None)
+                    if text:
+                        held_content += text
+                        # Held while it is still a copy of the reasoning: on a
+                        # turn where the model gave no answer, the wire can
+                        # carry its reasoning again as `content`, and streaming
+                        # that live shows the household its planning notes
+                        # before `_parse_chunks` gets to drop it. Released the
+                        # moment it says anything the reasoning did not.
+                        if not (streamed_reasoning
+                                and streamed_reasoning.startswith(held_content)):
+                            if on_content_delta and held_content:
+                                await on_content_delta(held_content)
+                            held_content = ""
+                    if on_reasoning_delta and thought:
                         # DeepSeek-style thinking arrives here and nowhere else.
                         # On a hard question it is the *only* thing on the wire
                         # for a minute or more, so a caller watching just
                         # `content` sees a dead stream on the turns that are
                         # working hardest.
-                        thought = getattr(delta, "reasoning_content", None) or getattr(
-                            delta, "reasoning", None
-                        )
-                        if thought:
-                            await on_reasoning_delta(thought)
-            return self._parse_chunks(chunks)
+                        await on_reasoning_delta(thought)
+            response = self._parse_chunks(chunks)
+            # Still held at the end and not the whole reasoning: a short reply
+            # that happened to open with the reasoning's first words. Send it.
+            if (on_content_delta and held_content
+                    and held_content.strip() != streamed_reasoning.strip()):
+                await on_content_delta(held_content)
+            return response
         except asyncio.TimeoutError:
             return LLMResponse(
                 content=(
