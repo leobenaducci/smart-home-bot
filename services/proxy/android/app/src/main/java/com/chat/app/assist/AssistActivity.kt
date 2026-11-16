@@ -80,6 +80,12 @@ class AssistActivity : Activity() {
         // Unmeasured guesses; stopRecording reports the real peak so they can be set.
         private const val ONSET_MIN_RAW = 1500f
         private const val END_MIN_RAW = 900f
+        // "Still speaking" is also a share of how loud this person's speech got.
+        // The floor alone froze at onset, so a room whose noise sat above 1.5x
+        // that floor kept the recording open to MAX_MS (first VOICE_RECOGNITION
+        // press: floor 2228, speech peak 25896, end level was 3342).
+        private const val END_OF_PEAK = 0.25f
+        private const val ONSET_POLLS = 2        // a click or a bang is one poll; speech is several
         private const val REQ_MIC = 41
         private const val REARM_MS = 250L        // let the recognizer's mic go before ours opens
         private const val MIN_SENDING_MS = 700L  // hold the transcript on screen this long
@@ -133,6 +139,7 @@ class AssistActivity : Activity() {
     private var lastVoiceAt = 0L
     private var floor = 0f
     private var peak = 0
+    private var onsetHits = 0
     private var rawSource = false // VOICE_RECOGNITION rather than MIC; see the class doc
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -488,6 +495,7 @@ class AssistActivity : Activity() {
             lastVoiceAt = startAt
             floor = 0f
             peak = 0
+            onsetHits = 0
             spoke = false
             waveView?.setPartial(null)
             waveView?.setState(MicWaveView.State.LISTENING)
@@ -508,15 +516,18 @@ class AssistActivity : Activity() {
             val r = recorder ?: return
             val amp = (try { r.maxAmplitude } catch (e: Exception) { 0 }).toFloat()
             val now = SystemClock.elapsedRealtime()
-            if (!spoke) floor = if (floor == 0f) amp else floor * 0.9f + amp * 0.1f
-            if (amp > peak) peak = amp.toInt()
+            if (floor == 0f) floor = amp // the first poll is the room, whatever it holds
             val onset = max(if (rawSource) ONSET_MIN_RAW else ONSET_MIN, floor * 2.2f)
-            val endLevel = max(if (rawSource) END_MIN_RAW else END_MIN, floor * 1.5f)
-            if (amp > onset) {
-                spoke = true; lastVoiceAt = now
-            } else if (spoke && amp > endLevel) {
-                lastVoiceAt = now
+            if (!spoke) {
+                onsetHits = if (amp > onset) onsetHits + 1 else 0
+                if (onsetHits >= ONSET_POLLS) { spoke = true; lastVoiceAt = now }
+                // Only quiet polls teach the floor: a first syllable folded into it
+                // would raise the bar the second one has to clear.
+                else if (onsetHits == 0) floor = floor * 0.9f + amp * 0.1f
             }
+            if (spoke && amp > peak) peak = amp.toInt()
+            val endLevel = maxOf(if (rawSource) END_MIN_RAW else END_MIN, floor * 1.5f, peak * END_OF_PEAK)
+            if (spoke && amp > endLevel) lastVoiceAt = now
             waveView?.setLevel(amp.toInt())
             val tooLong = now - startAt > MAX_MS
             val silenceDone = spoke && (now - lastVoiceAt > SILENCE_MS)
@@ -676,6 +687,9 @@ class AssistActivity : Activity() {
     /** Give up on this utterance: release everything, send nothing. */
     private fun cancelAll() {
         if (st == St.SENDING) return
+        if (st == St.REC) {
+            AppLog.report(this, TAG, "recording cancelled spoke=$spoke peak=$peak floor=${floor.toInt()}")
+        }
         st = St.DONE
         handler.removeCallbacksAndMessages(null)
         releaseMic()
