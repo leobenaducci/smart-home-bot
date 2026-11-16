@@ -180,3 +180,23 @@ def test_the_wording_file_is_symlinked_into_every_workspace():
     line = next(ln for ln in entrypoint.read_text(encoding="utf-8").splitlines()
                 if ln.startswith("for f in "))
     assert "MORNING.md" in line
+
+
+class _Delegated(_Response):
+    def __init__(self):
+        super().__init__("No pude terminarlo acá, así que sigo en segundo plano; "
+                         "aviso por acá cuando esté listo.")
+        self.metadata = {"_delegated": True}
+
+
+@pytest.mark.asyncio
+async def test_a_turn_handed_to_a_sub_agent_posts_nothing_itself(tmp_path):
+    """The sub-agent writes the greeting into the same chat when it is done.
+    Its "carrying on in the background" line was once the whole greeting."""
+    class _A(_Agent):
+        async def run_turn(self, prompt, **kw):
+            self.calls.append(kw)
+            return _Delegated()
+    g, _, bus = _greeting(tmp_path, agent=_A())
+    assert await g.run(now_ms=FIRE_MS) is None
+    assert bus.published == []

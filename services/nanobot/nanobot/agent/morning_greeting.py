@@ -115,6 +115,13 @@ class MorningGreeting:
             prompt, session_key=session_key, channel=CHANNEL, chat_id=chat_id,
         )
         text = ((getattr(response, "content", "") or "") if response else "").strip()
+        if ((getattr(response, "metadata", None) or {}) if response else {}).get("_delegated"):
+            # Handed to a sub-agent, which writes the greeting into this same
+            # chat when it is done. Its "I couldn't finish it here, carrying on
+            # in the background" was the whole greeting one morning
+            # (2026-11-16): nobody asked, so nobody is waiting to be told.
+            logger.info("morning greeting: handed to a sub-agent, which delivers it into {}", chat_id)
+            return None
         if not text:
             logger.warning("morning greeting: the turn produced nothing to send")
             return None
