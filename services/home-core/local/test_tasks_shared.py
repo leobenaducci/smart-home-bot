@@ -41,6 +41,12 @@ dst = os.path.join(tmp, "local")
 shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns(
     "__pycache__", "backup_data", "history", "certs"))
 os.makedirs(os.path.join(dst, "backup_data"), exist_ok=True)
+# The deployer stages the catalogues beside app.py; from a checkout, copy the
+# repository's own so the pushes below are real strings and not key names.
+_I18N = os.path.join(SRC, "..", "..", "..", "i18n")
+if not os.path.isdir(os.path.join(dst, "i18n")) and os.path.isdir(_I18N):
+    shutil.copytree(_I18N, os.path.join(dst, "i18n"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
 os.chdir(dst)
 os.environ.update(SECRET_KEY="t" * 32, PROXY_SHARED_SECRET="p" * 32,
                   DEBUG_API_KEY="d" * 32,
@@ -60,8 +66,18 @@ import app as A  # noqa: E402
 A.init_tasks_db()
 
 pushed, to_admins = [], []
-A._notify_user = lambda u, msg, **kw: pushed.append((u, msg))
-A._notify_tasks_admins = lambda msg, **kw: to_admins.append(msg)
+pushed_titles = []
+
+
+def _push(u, msg, **kw):
+    pushed.append((u, msg))
+    pushed_titles.append((u, kw.get('title')))
+
+
+A._notify_user = _push
+# A parent's push may be a function of that parent (it reads in their language).
+A._notify_tasks_admins = lambda msg, **kw: to_admins.append(
+    msg(PARENT) if callable(msg) else msg)
 
 failures = []
 
@@ -247,6 +263,38 @@ check("together with one person left who resolves is refused", code == 400, (cod
 code, body = call('PUT', f'/tasks/api/templates/{gone_tpl}', PARENT,
                   {'assignees': [TOMI, MORA], 'shared': True})
 check("naming two people who resolve is accepted", code == 200 and body.get('ok'), (code, body))
+
+# --- the shared pushes are localised ----------------------------------------------
+print("\nthe shared pushes read in the recipient's language")
+check("the catalogue was loaded", A._translator is not None)
+A._MEMBER_LOCALES[MORA] = 'en'
+A._MEMBER_LOCALES[TOMI] = 'es'
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ordenar', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r5 = rows('Ordenar')
+pushed.clear(); pushed_titles.clear(); to_admins.clear()
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r5[TOMI][0]})
+check("Mora's nudge is in English",
+      (MORA, 'Tomi did their part of: Ordenar. Your turn!') in pushed, pushed)
+check("under an English title", (MORA, 'Shared chore') in pushed_titles, pushed_titles)
+pushed.clear(); pushed_titles.clear()
+call('POST', '/tasks/api/complete', MORA, {'task_id': r5[MORA][0]})
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Ordenar2', 'points': 30, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r6 = rows('Ordenar2')
+pushed.clear()
+call('POST', '/tasks/api/complete', MORA, {'task_id': r6[MORA][0]})
+check("Tomi's nudge is in Spanish",
+      (TOMI, 'Mora hizo su parte de: Ordenar2. ¡Te toca!') in pushed, pushed)
+check("no push carries a key name",
+      not any('tasks.' in (m or '') for _, m in pushed) and
+      not any('tasks.' in (m or '') for m in to_admins), (pushed, to_admins))
+_es = A._translator('tasks.push_shared_finished', locale='es', names='Mora, Tomi',
+                    title='Ordenar', points=30)
+check("the parents' message is in the house language",
+      any(m == _es for m in to_admins), (to_admins, _es))
 
 print()
 if failures:

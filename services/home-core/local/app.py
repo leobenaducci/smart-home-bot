@@ -11760,8 +11760,13 @@ def _reminder_actions(reminder):
 
 
 def _notify_tasks_admins(message, title=None, tags=None, click=None):
+    """Push to every parent. *message* and *title* may each be a function of
+    the parent's login, so a localised push reads in each parent's own
+    language (`t_for`) rather than in the language of whoever triggered it."""
     for admin in ADVANCED_USERS:
-        _notify_user(admin, message, title=title, tags=tags, click=click)
+        _notify_user(admin, message(admin) if callable(message) else message,
+                     title=title(admin) if callable(title) else title,
+                     tags=tags, click=click)
 
 
 def _count_weekday_hits(start, end, weekdays):
@@ -11912,15 +11917,17 @@ def _notify_shared_completion(task_id):
     me = _tasks_display_name(assignee)
     if owing:
         for pid, user in owing:
-            _notify_user(user, f'{me} did their part of: {title}. Your turn!',
-                         title='Tarea compartida', tags='handshake',
+            _notify_user(user, t_for(user, 'tasks.push_shared_turn', name=me, title=title),
+                         title=t_for(user, 'tasks.push_shared_title'), tags='handshake',
                          click=tasks_link(pid))
         return True
     done = [me] + [_tasks_display_name(a) for _, a, st, _ in partners
                    if st in ('review', 'approved')]
-    _notify_tasks_admins(f'{", ".join(done)} finished: {title} (+{points} pts each) — to review',
-                         title='Tarea por revisar', tags='hourglass_flowing_sand',
-                         click=tasks_link(task_id, review=True))
+    _notify_tasks_admins(
+        lambda admin: t_for(admin, 'tasks.push_shared_finished',
+                            names=', '.join(done), title=title, points=points),
+        title=lambda admin: t_for(admin, 'tasks.push_review_title'),
+        tags='hourglass_flowing_sand', click=tasks_link(task_id, review=True))
     return True
 
 
