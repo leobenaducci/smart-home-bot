@@ -6540,21 +6540,47 @@ def publish_entry_page(target: Target, unit: dict, cfg: dict, secrets: dict,
     target.run(f"rm -rf {shlex.quote(staging)}", check=False)
 
 
+def unit_image_specs(unit: dict) -> list[tuple[str, str, str | None]]:
+    """(tag, context, stage) for every image the unit's `image_build` names --
+    one entry or a list, each a tag string or a dict. The one reading of that
+    field, for the build and for the tags a red run has to put back, so the two
+    cannot drift apart."""
+    builds = unit.get("image_build")
+    out = []
+    for b in (builds if isinstance(builds, list) else ([builds] if builds else [])):
+        if isinstance(b, dict):
+            out.append((b["tag"], b.get("context", "."), b.get("target")))
+        else:
+            out.append((str(b), ".", None))
+    return out
+
+
 def unit_image_tags(unit: dict) -> list[str]:
     """Every tag `build_unit_images` writes for this unit."""
-    builds = unit.get("image_build")
-    return [b["tag"] if isinstance(b, dict) else str(b)
-            for b in (builds if isinstance(builds, list) else ([builds] if builds else []))]
+    return [tag for tag, _ctx, _stage in unit_image_specs(unit)]
+
+
+# What a tag pointed at could not be read (the daemon or ssh failed). Kept
+# apart from "unset", which a restore answers by removing the tag: a transient
+# error must never turn into deleting a tag that existed.
+UNKNOWN_IMAGE = "?"
 
 
 def image_ids(target, tags: list[str], remote_dir: str) -> dict[str, str | None]:
-    """What each tag points at right now: an image id, or None if it is unset."""
+    """What each tag points at right now: an image id, None if it is unset, or
+    UNKNOWN_IMAGE if docker could not say."""
+    if not tags:
+        return {}
     ids: dict[str, str | None] = {}
     for tag in tags:
-        r = target.run(f"docker image inspect -f '{{{{.Id}}}}' {shlex.quote(tag)} 2>/dev/null",
+        r = target.run(f"docker image inspect -f '{{{{.Id}}}}' {shlex.quote(tag)}",
                        cwd=remote_dir, check=False, capture=True)
-        got = (r.stdout or "").strip() if r.returncode == 0 else ""
-        ids[tag] = got or None
+        if r.returncode == 0 and (r.stdout or "").strip():
+            ids[tag] = (r.stdout or "").strip().splitlines()[0]
+        elif "no such image" in ((r.stderr or "") + (r.stdout or "")).lower():
+            ids[tag] = None
+        else:
+            ids[tag] = UNKNOWN_IMAGE
     return ids
 
 
@@ -6570,6 +6596,10 @@ def restore_image_tags(target, before: dict[str, str | None], remote_dir: str, o
     could be pruned, taking the rollback with it. A tag that did not exist
     before is removed, so nothing can start on the rejected build by name."""
     for tag, old in before.items():
+        if old == UNKNOWN_IMAGE:
+            out.warn(f"{tag} was not readable before the build, so it is left as it is; "
+                     f"check it with `docker image ls` before the next `up`")
+            continue
         if old:
             r = target.run(f"docker tag {shlex.quote(old)} {shlex.quote(tag)}",
                            cwd=remote_dir, check=False, capture=True)
@@ -6595,16 +6625,11 @@ def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out) -> No
     # A list, when a unit builds more than one image out of one context --
     # a runtime image and the test stage beside it. One entry stays one
     # entry; nothing that declared a single image has to change.
-    builds = unit.get("image_build")
-    for spec_img in (builds if isinstance(builds, list) else
-                     ([builds] if builds else [])):
-        tag = spec_img["tag"] if isinstance(spec_img, dict) else str(spec_img)
-        context = (spec_img.get("context", ".") if isinstance(spec_img, dict) else ".")
+    for tag, context, stage in unit_image_specs(unit):
         # A named stage, for a Dockerfile that keeps its test tooling out
         # of the runtime image. Without it the only way to run a service's
         # own suite against the thing being deployed is to ship pytest to
         # the house.
-        stage = (spec_img.get("target") if isinstance(spec_img, dict) else None)
         staged = f"--target {shlex.quote(stage)} " if stage else ""
         target.run(
             f"docker build {staged}-t {shlex.quote(tag)} {shlex.quote(context)}",
@@ -7375,36 +7400,43 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                                     check=False, capture=True)
                 tags += [t for t in (listed.stdout or "").split() if t not in tags]
             tags_before = image_ids(target, tags, remote_dir)
-        build_unit_images(unit, target, remote_dir, env, out)
+        # Build and gate as one: any way out of here before the tests pass --
+        # a red suite, a second image failing to build, `compose build`
+        # failing, the test run itself raising -- puts the tags back.
+        try:
+            build_unit_images(unit, target, remote_dir, env, out)
 
-        # Tests run against the built image before it replaces the running one,
-        # so a red run stops the house getting the change rather than reporting
-        # on it afterwards.
-        if test and unit.get("build", False):
-            target.run(f"{compose} build", cwd=remote_dir, env=env)
-            out.ok("image built")
-        if test:
-            if test.get("host"):
-                cmd = " ".join(shlex.quote(c) for c in test["command"])
-            else:
-                mount = test.get("mount", {})
-                mount_flag = (
-                    f"-v {shlex.quote(remote_dir + '/' + mount['from'])}:{mount['to']}:ro"
-                    if mount else ""
-                )
-                cmd = (
-                    f"docker run --rm {mount_flag} {shlex.quote(test['image'])} "
-                    + " ".join(shlex.quote(c) for c in test["command"])
-                )
-            result = target.run(cmd, cwd=remote_dir, env=env, check=False, capture=True)
-            if result.returncode != 0 and not target.dry_run:
+            # Tests run against the built image before it replaces the running
+            # one, so a red run stops the house getting the change rather than
+            # reporting on it afterwards.
+            if test and unit.get("build", False):
+                target.run(f"{compose} build", cwd=remote_dir, env=env)
+                out.ok("image built")
+            if test:
+                if test.get("host"):
+                    cmd = " ".join(shlex.quote(c) for c in test["command"])
+                else:
+                    mount = test.get("mount", {})
+                    mount_flag = (
+                        f"-v {shlex.quote(remote_dir + '/' + mount['from'])}:{mount['to']}:ro"
+                        if mount else ""
+                    )
+                    cmd = (
+                        f"docker run --rm {mount_flag} {shlex.quote(test['image'])} "
+                        + " ".join(shlex.quote(c) for c in test["command"])
+                    )
+                result = target.run(cmd, cwd=remote_dir, env=env, check=False, capture=True)
+                if result.returncode != 0 and not target.dry_run:
+                    raise DeployError(
+                        f"tests failed before deploy; the running service was not "
+                        f"touched and its image tags were put back\n"
+                        f"    {(result.stdout or '')[-800:]}"
+                    )
+                out.ok("tests passed")
+        except BaseException:
+            if tags_before and not target.dry_run:
                 restore_image_tags(target, tags_before, remote_dir, out)
-                raise DeployError(
-                    f"tests failed before deploy; the running service was not "
-                    f"touched and its image tags were put back\n"
-                    f"    {(result.stdout or '')[-800:]}"
-                )
-            out.ok("tests passed")
+            raise
 
         for container in unit.get("pre_remove_containers", []):
             # Container names are global, not project-scoped: one created by

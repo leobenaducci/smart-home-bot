@@ -4914,9 +4914,10 @@ class _TagTarget:
     def run(self, cmd, **_kw):
         self.cmds.append(cmd)
         if cmd.startswith("docker image inspect"):
-            tag = cmd.split()[-2]
+            tag = cmd.split()[-1]
             got = self.ids.get(tag)
-            return _sp.CompletedProcess(cmd, 0 if got else 1, (got or "") + "\n", "")
+            return _sp.CompletedProcess(cmd, 0 if got else 1, (got or "") + "\n",
+                                        "" if got else f"Error: No such image: {tag}")
         return _sp.CompletedProcess(cmd, 0, "", "")
 
 
@@ -4930,10 +4931,18 @@ D.restore_image_tags(_tt, _before, "/s", _Out())
 check("  a tag that existed points at its old image again, one that did not is removed",
       _tt.cmds == ["docker tag sha256:old svc:latest", "docker image rm svc-test:latest"],
       _tt.cmds)
-check("  and the deploy does it before refusing, and says so",
-      _ds.index("restore_image_tags(target, tags_before") < _ds.index("tests failed before deploy")
-      and "image tags were put back" in _ds
-      and _ds.index("tags_before = image_ids(") < _ds.index("build_unit_images(unit"))
+check("  and the deploy does it on any failure before the gate passes, and says so",
+      "image tags were put back" in _ds
+      and _ds.index("tags_before = image_ids(") < _ds.index("# Build and gate as one")
+      < _ds.index("build_unit_images(unit") < _ds.index("except BaseException:")
+      < _ds.index("restore_image_tags(target, tags_before"))
+_tt = _TagTarget({})
+_tt.run = (lambda cmd, **kw: _sp.CompletedProcess(cmd, 1, "", "Cannot connect to the Docker daemon"))
+check("  a tag docker could not read is not mistaken for one that never existed",
+      D.image_ids(_tt, ["svc:latest"], "/s") == {"svc:latest": D.UNKNOWN_IMAGE})
+_tt = _TagTarget({})
+D.restore_image_tags(_tt, {"svc:latest": D.UNKNOWN_IMAGE}, "/s", _Out())
+check("  and is left alone rather than removed", _tt.cmds == [], _tt.cmds)
 check("  a unit built with `build: true` has its compose images recorded too",
       "config --images" in _ds)
 
