@@ -779,6 +779,14 @@ check("and the runner's codes", "parse:dsml" in M.events(state, days=10000))
 check("which tools", "skill:lights" in M.tools(state, days=10000))
 
 print("\nwhat the Programmer reads first")
+# A checkout of its own, so this reads the same from the working checkout and
+# from a fix's worktree (where the real ROOT is a linked worktree, and is
+# refused on purpose -- see write_shim).
+_checkout = tmp / "checkout"
+(_checkout / ".git").mkdir(parents=True)
+(_checkout / ".venv" / "bin").mkdir(parents=True)
+(_checkout / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+_real_root, W.ROOT = W.ROOT, _checkout
 dd = cli.improve_dir({"paths": {"state": str(state)}})
 check("the map and the rules, beside the inbox",
       (dd / "docs" / "MAP.md").exists() and (dd / "docs" / "CLAUDE.md").exists()
@@ -793,12 +801,21 @@ check("and never reseeded over the household's own",
 shim = W.write_shim(imp)
 check("the Programmer's shim lives in the pipeline's folder and runs this cli",
       shim == imp / "bin" / "improve" and "deploy/improve/cli.py" in shim.read_text()
-      and os.access(shim, os.X_OK))
+      and str(_checkout) in shim.read_text() and os.access(shim, os.X_OK))
+W.ROOT = _real_root
 _good = shim.read_text()
 _copy = tmp / "copia-desplegada"
 (_copy / "deploy" / "improve").mkdir(parents=True)
 check("a copy with no .venv leaves the shim alone",
       W.write_shim(imp, root=_copy) is None and shim.read_text() == _good, shim.read_text())
+# A fix's worktree: link_local gave it the checkout's .venv, and its .git is a
+# file. Its cli is code the Programmer is writing.
+_wt = tmp / "work" / "30-stack"
+(_wt / "deploy" / "improve").mkdir(parents=True)
+(_wt / ".git").write_text(f"gitdir: {_checkout}/.git/worktrees/30-stack\n", encoding="utf-8")
+(_wt / ".venv").symlink_to(_checkout / ".venv")
+check("a worktree, .venv and all, leaves the shim alone",
+      W.write_shim(imp, root=_wt) is None and shim.read_text() == _good, shim.read_text())
 
 print("\nplugins that share one git repository")
 # Two invented plugins, each in its own folder of one repository with a remote.

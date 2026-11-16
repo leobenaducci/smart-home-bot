@@ -264,7 +264,7 @@ def status(d: Path, rid: str) -> str:
     return "\n".join(out) or f"no worktree for #{rid}"
 
 
-def write_shim(d: Path, root: Path = ROOT) -> Path | None:
+def write_shim(d: Path, root: Path | None = None) -> Path | None:
     """`{improve}/bin/improve`: how the Programmer calls this. Inside the one
     folder its config lets it reach, so running it asks nobody for anything.
 
@@ -272,9 +272,18 @@ def write_shim(d: Path, root: Path = ROOT) -> Path | None:
     this cli rewrites the shim to point at itself, and the admin page's
     deployed copy has no `.venv`: one run of it (the Programmer reached it by
     path, 2026-11-09) left a shim that failed every command until the
-    checkout ran again. None, and the shim untouched, from such a copy."""
+    checkout ran again. None, and the shim untouched, from such a copy.
+
+    And never from a fix's worktree. `link_local` gives every stack worktree
+    the checkout's `.venv`, so the interpreter test alone passes there, and
+    one run of a worktree's cli -- code the Programmer is writing -- would
+    leave `bin/improve` running that worktree's copy from then on, with its
+    own `improve deploy` and its own checks. A linked worktree is told apart
+    by its `.git`, which is a file pointing at the repository, not the
+    repository itself."""
+    root = ROOT if root is None else root
     py = root / ".venv" / "bin" / "python"
-    if not py.exists():
+    if not py.exists() or not (root / ".git").is_dir():
         return None
     b = d / "bin"
     b.mkdir(exist_ok=True)
