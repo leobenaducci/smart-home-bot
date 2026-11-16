@@ -155,7 +155,11 @@ def ensure_venv(repo: dict, path: Path) -> None:
     if venv.is_symlink():
         venv.unlink()
     py = venv / "bin" / "python"
-    if py.exists() or not live.exists():
+    # Done only once the .pth is written too: a run that stopped between the
+    # venv and the .pth left an interpreter that imports nothing, and testing
+    # for the interpreter alone would keep it that way.
+    if not live.exists() or (py.exists() and any(venv.glob(f"lib/python*/site-packages/"
+                                                           f"{WORKTREE_VENV_PTH}"))):
         return
     # The checkout's interpreter, not whichever one runs this cli: the venv
     # has to match the version its packages were installed for, or every
