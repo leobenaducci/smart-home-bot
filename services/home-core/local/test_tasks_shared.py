@@ -16,7 +16,8 @@ What must hold:
 - the last part in releases them all, and the parents get one message;
 - each person is approved separately and paid in full;
 - a partner who never does it is auto-excused (and charged), which releases
-  the part that was done;
+  the part that was done -- and any excuse that releases a part tells the
+  parents then, and starts that part's auto-approve clock then;
 - a partner a parent sent back does not hold the other one hostage;
 - rotate and together together is refused.
 
@@ -209,13 +210,68 @@ check("Mora's part is held", ('Recoger', MORA) not in queue(), queue())
 # and charged, and Mora's part is free to be approved.
 far = NOW + timedelta(days=max(A.TASKS_AUTO_EXCUSE_DAYS, A.TASKS_AUTO_APPROVE_DAYS) + 1)
 m_before, t_before = balance(MORA), balance(TOMI)
+to_admins.clear()
 sweep(far)          # excuses Tomi
-approved, _ = sweep(far)
 st = rows('Recoger')
 check("Tomi is excused", st[TOMI][1] == 'excused', st)
 check("and charged", balance(TOMI) < t_before, (t_before, balance(TOMI)))
-check("Mora's part goes through", st[MORA][1] == 'approved', st)
+check("the parents are told Mora's part is there to review",
+      any('Mora' in m and 'Tomi' in m and 'Recoger' in m for m in to_admins), to_admins)
+check("it is in the review queue", ('Recoger', MORA) in queue(), queue())
+# Done days ago, but released only now: the parents get their full window.
+approved, _ = sweep(far)
+check("auto-approve does not take it the moment it is released",
+      rows('Recoger')[MORA][1] == 'review', rows('Recoger'))
+approved, _ = sweep(far + timedelta(days=A.TASKS_AUTO_APPROVE_DAYS, minutes=5))
+st = rows('Recoger')
+check("it goes through once the window has passed", st[MORA][1] == 'approved', st)
 check("and she is paid", balance(MORA) - m_before == 100, balance(MORA) - m_before)
+
+print("\na partner who says they could not")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Pasear', 'points': 60, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r8 = rows('Pasear')
+call('POST', '/tasks/api/complete', MORA, {'task_id': r8[MORA][0]})
+_c = A._tasks_conn()
+_c.execute('UPDATE tasks SET completed_at = ? WHERE id = ?',
+           (int(NOW.timestamp()) - (A.TASKS_AUTO_APPROVE_DAYS + 1) * 86400, r8[MORA][0]))
+_c.close()
+to_admins.clear()
+code, _ = call('POST', '/tasks/api/excuse', TOMI, {'task_id': r8[TOMI][0], 'note': 'enfermo'})
+check("the excuse is accepted", code == 200, code)
+check("the parents are told Mora's part is there to review",
+      any('Mora' in m and 'Pasear' in m and 'Tomi' in m for m in to_admins), to_admins)
+check("it is in the review queue", ('Pasear', MORA) in queue(), queue())
+approved, _ = sweep(NOW)
+check("an old completion is not auto-approved on release",
+      r8[MORA][0] not in [a[0] for a in approved], approved)
+
+print("\na partner who taps No pude on the push")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Tender', 'points': 15, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r10 = rows('Tender')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r10[TOMI][0]})
+to_admins.clear()
+code, _ = call('POST', '/tasks/api/notify-action', MORA,
+               {'task_id': r10[MORA][0], 'do': 'excuse', 'note': 'sin tiempo'})
+check("the excuse is accepted", code == 200, code)
+check("the parents are told Tomi's part is there to review",
+      any('Tender' in m and 'Tomi' in m and 'Mora' in m and 'Motivo' not in m
+          for m in to_admins), to_admins)
+
+print("\na partner whose whole day is excused")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Cocinar', 'points': 70, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r9 = rows('Cocinar')
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r9[TOMI][0]})
+to_admins.clear()
+code, _ = call('POST', '/tasks/api/excuse-day', PARENT, {'user': MORA, 'note': 'viaje'})
+check("the day is excused", code == 200, code)
+check("the parents are told Tomi's part is there to review",
+      sum('Cocinar' in m for m in to_admins) == 1, to_admins)
 
 # --- a partner sent back -----------------------------------------------------------
 print("\na partner a parent sent back")

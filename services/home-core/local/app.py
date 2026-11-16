@@ -11973,6 +11973,41 @@ def _notify_shared_completion(task_id):
     return True
 
 
+def _release_after_excuse(conn, task_ids, now_ts):
+    """A partner was excused: release the parts that were waiting on them.
+
+    Without this the held part slipped into the review queue silently, and --
+    since the auto-approve clock ran from when it was *done* -- the next sweep
+    could approve it before a parent had ever been told it was there. Now the
+    parents get the "to review" push at the moment of release, and the
+    release stamps `released_at`, which is where the auto-approve clock starts
+    for a shared part: they get the same window as for any other chore.
+
+    Every excuse path calls this: "no pude" (page, push button, Alfred), the
+    excused day, and the auto-excuse sweep."""
+    seen = set()
+    for task_id in task_ids:
+        row = conn.execute('SELECT shared, template_id, due_date, title, points FROM tasks '
+                           'WHERE id = ?', (task_id,)).fetchone()
+        if not row or not row[0] or (row[1], row[2]) in seen:
+            continue
+        _, template_id, due_date, title, points = row
+        seen.add((template_id, due_date))
+        released = _release_shared(conn, template_id, due_date, now_ts)
+        if not released:
+            continue
+        names = ', '.join(_tasks_display_name(a) for _, a in released)
+        others = ', '.join(_tasks_display_name(a) for (a,) in conn.execute(
+            """SELECT assignee FROM tasks WHERE shared = 1 AND template_id = ?
+                 AND due_date = ? AND status = 'excused' ORDER BY id""",
+            (template_id, due_date)).fetchall())
+        _notify_tasks_admins(
+            lambda admin: t_for(admin, 'tasks.push_shared_released', names=names,
+                                others=others, title=title, points=points),
+            title=lambda admin: t_for(admin, 'tasks.push_review_title'),
+            tags='hourglass_flowing_sand', click=tasks_link(released[0][0], review=True))
+
+
 def _materialize_tasks(day):
     """Idempotently create `day`'s instances of all active templates. The
     tasks_meta fast-path just avoids rescanning templates on every request;
@@ -12006,7 +12041,12 @@ def _tasks_auto_resolve(conn, now, today):
     approved = []
     rows = conn.execute(
         "SELECT id, assignee, title, points FROM tasks "
-        "WHERE status = 'review' AND completed_at IS NOT NULL AND completed_at <= ? "
+        # A shared part's clock starts when the parents were told it was there
+        # (`released_at`, see _release_shared), not when it was done: a part
+        # held for days behind a partner would otherwise go through the moment
+        # it was released, before anybody had a chance to look.
+        "WHERE status = 'review' AND completed_at IS NOT NULL "
+        "AND MAX(completed_at, COALESCE(released_at, 0)) <= ? "
         f"AND NOT {_TASK_HELD}",
         (cutoff,)).fetchall()
     for task_id, assignee, title, points in rows:
@@ -12065,6 +12105,7 @@ def _tasks_auto_resolve(conn, now, today):
             # stamps reviewed_at here), so an admin who disagrees can accept it
             # or grant the points, and either gives the penalty back.
             _penalize_and_tell(conn, task_id, assignee, title, points, now)
+        _release_after_excuse(conn, [r[0] for r in excused], int(now.timestamp()))
     # An excuse a person wrote and nobody approved. Charged after the same
     # window, and stamped as decided so it stops sitting in the review panel —
     # see TASKS_PENALTY_UNREVIEWED_DAYS for why silence costs points here while
@@ -12891,6 +12932,7 @@ def tasks_api_notify_action():
             conn.execute("UPDATE tasks SET status='excused', excuse_note=?, excused_at=?, "
                          "reviewed_at=NULL, reviewed_by=NULL WHERE id=? AND status='pending'",
                          (note or 'No pude hacerla', int(time.time()), task_id))
+            _release_after_excuse(conn, [task_id], int(time.time()))
     finally:
         conn.close()
     if do == 'complete' and _notify_shared_completion(task_id):
@@ -12932,6 +12974,7 @@ def tasks_api_excuse():
                         reviewed_at = NULL, reviewed_by = NULL
                         WHERE id = ? AND status = 'pending'""",
                      (note, int(time.time()), data.get('task_id')))
+        _release_after_excuse(conn, [data.get('task_id')], int(time.time()))
     finally:
         conn.close()
     _notify_tasks_admins(f'{_tasks_display_name(assignee)} no pudo hacer: {title}\nMotivo: {note}',
@@ -12969,15 +13012,17 @@ def tasks_api_excuse_day():
         _materialize_tasks(day)  # ensure today's recurring occurrences exist
     conn = _tasks_conn()
     try:
-        titles = [t for (t,) in conn.execute(
-            "SELECT title FROM tasks WHERE assignee = ? AND due_date = ? AND status = 'pending'",
-            (target, iso)).fetchall()]
+        day_rows = conn.execute(
+            "SELECT id, title FROM tasks WHERE assignee = ? AND due_date = ? AND status = 'pending'",
+            (target, iso)).fetchall()
+        titles = [t for _, t in day_rows]
         if titles:
             conn.execute(
                 "UPDATE tasks SET status = 'excused', excuse_note = ?, excused_at = ?, "
                 "reviewed_at = NULL, reviewed_by = NULL "
                 "WHERE assignee = ? AND due_date = ? AND status = 'pending'",
                 (note, int(time.time()), target, iso))
+            _release_after_excuse(conn, [i for i, _ in day_rows], int(time.time()))
     finally:
         conn.close()
     # Let the person know their day was cleared (only when someone else did it).

@@ -1245,6 +1245,7 @@
   "tasks.points_history": "Mi historial de puntos",
   "tasks.postpone_done": "OK, te recordamos en 1 hora ⏰",
   "tasks.push_review_title": "Tarea por revisar",
+  "tasks.push_shared_released": "Parte hecha de {title}: {names} (+{points} pts). No la hizo: {others} — por revisar",
   "tasks.push_shared_finished": "{names} terminaron: {title} (+{points} pts cada uno) — por revisar",
   "tasks.push_shared_title": "Tarea compartida",
   "tasks.push_shared_turn": "{name} hizo su parte de: {title}. ¡Te toca!",

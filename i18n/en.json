@@ -1243,6 +1243,7 @@
   "tasks.points_history": "My points history",
   "tasks.postpone_done": "OK, we'll remind you in 1 hour ⏰",
   "tasks.push_review_title": "Chore to review",
+  "tasks.push_shared_released": "Part done of {title}: {names} (+{points} pts). Not done: {others} — to review",
   "tasks.push_shared_finished": "{names} finished: {title} (+{points} pts each) — to review",
   "tasks.push_shared_title": "Shared chore",
   "tasks.push_shared_turn": "{name} did their part of: {title}. Your turn!",
