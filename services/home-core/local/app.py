@@ -12005,17 +12005,21 @@ def _release_after_excuse(conn, task_ids, now_ts, note=None):
     return pushes
 
 
-def _release_pushes(conn, template_id, due_date, title, points, now_ts, note=None):
+def _release_pushes(conn, template_id, due_date, title, points, now_ts, note=None, gone=()):
     """Release one day of a shared chore and return the parents' push for it
-    (as a callable), or [] when nothing was released."""
+    (as a callable), or [] when nothing was released. *gone* names partners
+    whose row is no longer on that day (deleted, moved), so the push can still
+    say who did not do their part."""
     released = _release_shared(conn, template_id, due_date, now_ts)
     if not released:
         return []
     names = ', '.join(_tasks_display_name(a) for _, a in released)
-    others = ', '.join(_tasks_display_name(a) for (a,) in conn.execute(
+    missing = [a for (a,) in conn.execute(
         """SELECT assignee FROM tasks WHERE template_id = ? AND due_date = ?
              AND status = 'excused' ORDER BY id""",
-        (template_id, due_date)).fetchall())
+        (template_id, due_date)).fetchall()]
+    others = ', '.join(_tasks_display_name(a)
+                       for a in dict.fromkeys([*missing, *gone]))
 
     def body(admin):
         text = t_for(admin, 'tasks.push_shared_released', names=names,
@@ -13353,10 +13357,11 @@ def _confirm_flag():
 def tasks_api_edit(task_id):
     conn = _tasks_conn()
     try:
-        row = conn.execute('SELECT status, title, assignee FROM tasks WHERE id = ?', (task_id,)).fetchone()
+        row = conn.execute('SELECT status, title, assignee, shared, template_id, due_date, points '
+                           'FROM tasks WHERE id = ?', (task_id,)).fetchone()
         if not row:
             return jsonify(error='Tarea no encontrada'), 404
-        status, title, assignee = row
+        status, title, assignee, shared, template_id, due_date, points = row
         if status == 'approved':
             return jsonify(error='La tarea ya fue aprobada'), 409
         if request.method == 'DELETE':
@@ -13366,13 +13371,13 @@ def tasks_api_edit(task_id):
                                title=title, assignee_name=who,
                                message=(f'Confirmation required: to delete "{title}" from {who} '
                                         f'vuelve a llamar con confirm=true. No se puede deshacer.'))
-            shared_day = conn.execute('SELECT shared, template_id, due_date, title, points '
-                                      'FROM tasks WHERE id = ?', (task_id,)).fetchone()
             conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
             # A deleted partner owes nothing any more: release what waited on
-            # them, with the push and the clock an excuse gets.
-            if shared_day and shared_day[0]:
-                pushes = _release_pushes(conn, *shared_day[1:], int(time.time()))
+            # them, with the push and the clock an excuse gets. The row is gone,
+            # so the push names its person as the one who did not do it.
+            if shared:
+                pushes = _release_pushes(conn, template_id, due_date, title, points,
+                                         int(time.time()), gone=[assignee])
                 conn.close()
                 _send_pushes(pushes)
             return jsonify(ok=True, deleted=True, title=title)
@@ -13384,6 +13389,15 @@ def tasks_api_edit(task_id):
             return jsonify(error='Nada que actualizar'), 400
         sets = ', '.join(f'{k} = ?' for k in fields)
         conn.execute(f'UPDATE tasks SET {sets} WHERE id = ?', [*fields.values(), task_id])
+        # A shared part moved to another day no longer holds the partners it
+        # left behind: release them like a deleted one, or a part held for days
+        # went through the next auto-approve sweep without the parents ever
+        # being told (its clock would still run from when it was done).
+        if shared and fields.get('due_date', due_date) != due_date:
+            pushes = _release_pushes(conn, template_id, due_date, title, points,
+                                     int(time.time()), gone=[assignee])
+            conn.close()
+            _send_pushes(pushes)
         return jsonify(ok=True)
     finally:
         conn.close()
@@ -13423,13 +13437,22 @@ def _valid_template_fields(data, require_all):
         out['rotate'] = 1 if data.get('rotate') else 0
     if 'shared' in data or require_all:
         out['shared'] = 1 if data.get('shared') else 0
-    # Rotating gives the day to one person; together needs two. Refused rather
-    # than one quietly winning, so the form and Alfred both learn which it is.
-    if out.get('shared') and out.get('rotate'):
-        return None, 'A chore either rotates or is done together, not both'
-    if out.get('shared') and 'assignees' in out and len(json.loads(out['assignees'])) < 2:
-        return None, 'A chore done together needs at least two people'
+    err = _template_rule_error(out.get('rotate'), out.get('shared'),
+                               json.loads(out['assignees']) if 'assignees' in out else None)
+    if err:
+        return None, err
     return out, None
+
+
+def _template_rule_error(rotate, shared, people):
+    """Rotating gives the day to one person; together needs two. Refused rather
+    than one quietly winning, so the form and Alfred both learn which it is.
+    *people* None means the assignees are not known here, and not checked."""
+    if shared and rotate:
+        return 'A chore either rotates or is done together, not both'
+    if shared and people is not None and len(people) < 2:
+        return 'A chore done together needs at least two people'
+    return None
 
 
 @app.route('/tasks/api/templates')
@@ -13504,13 +13527,13 @@ def _template_combination_error(row, fields):
             people = [a for a in json.loads(assignees_j or '[]') if a in FILES_FOLDERS]
         except ValueError:
             people = []
+    # A stored row saying both is read as rotating (`_parse_template_row`), so
+    # that is what the edit is checked against: refusing an assignees-only edit
+    # of it over a "shared" the page never shows is the same trap as above.
+    stored_shared = shared and not rotate
     rotate = fields.get('rotate', rotate)
-    shared = fields.get('shared', shared)
-    if shared and rotate:
-        return 'A chore either rotates or is done together, not both'
-    if shared and len(people) < 2:
-        return 'A chore done together needs at least two people'
-    return None
+    shared = fields.get('shared', stored_shared)
+    return _template_rule_error(rotate, shared, people)
 
 
 def _reshare_today(conn, tpl_id):
@@ -13565,6 +13588,11 @@ def tasks_api_template_edit(tpl_id):
         fields, err = _valid_template_fields(data, require_all=False)
         if not err and any(k in data for k in ('rotate', 'shared', 'assignees')):
             err = _template_combination_error(row, fields)
+            if not err and row[1] and row[2] and 'shared' not in fields:
+                # Stored as both, read and checked as rotating: store it that
+                # way, so turning rotation off does not wake a "together" that
+                # was never shown and never checked.
+                fields['shared'] = 0
         if err:
             return jsonify(error=err), 400
         if 'active' in data:
