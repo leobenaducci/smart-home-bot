@@ -157,18 +157,27 @@ def ensure_venv(repo: dict, path: Path) -> None:
     py = venv / "bin" / "python"
     if py.exists() or not live.exists():
         return
-    base = getattr(sys, "_base_executable", None) or sys.executable
-    r = subprocess.run([os.path.realpath(base), "-m", "venv", "--without-pip", str(venv)],
+    # The checkout's interpreter, not whichever one runs this cli: the venv
+    # has to match the version its packages were installed for, or every
+    # site-packages path below misses and the worktree can import nothing.
+    live_py = live / "bin" / "python"
+    base = (os.path.realpath(live_py) if live_py.exists()
+            else os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable))
+    r = subprocess.run([base, "-m", "venv", "--without-pip", str(venv)],
                        capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         raise WorkError(f"could not make the worktree's .venv: {(r.stderr or r.stdout).strip()[:300]}")
-    ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    live_sites = [str(d) for d in (live / "lib" / ver / "site-packages",
-                                   live / "lib" / ver / "dist-packages",
-                                   live / "local" / "lib" / ver / "dist-packages") if d.is_dir()]
-    site = venv / "lib" / ver / "site-packages"
-    site.mkdir(parents=True, exist_ok=True)
-    (site / WORKTREE_VENV_PTH).write_text("".join(f"{d}\n" for d in live_sites), encoding="utf-8")
+    live_sites = [str(d) for pat in ("lib/python*/site-packages", "lib/python*/dist-packages",
+                                     "local/lib/python*/dist-packages")
+                  for d in sorted(live.glob(pat)) if d.is_dir()]
+    sites = sorted(venv.glob("lib/python*/site-packages"))
+    if not sites:
+        raise WorkError(f"the worktree's new .venv has no site-packages under {venv}")
+    # `site.addsitedir`, not bare path lines: it also runs the .pth files in
+    # those directories, which is how an editable install (the nanobot
+    # package) is found at all.
+    (sites[0] / WORKTREE_VENV_PTH).write_text(
+        "".join(f"import site; site.addsitedir({d!r})\n" for d in live_sites), encoding="utf-8")
 
 
 def _changed(path: Path) -> list[tuple[str, str]]:
@@ -193,14 +202,19 @@ def _changed(path: Path) -> list[tuple[str, str]]:
             continue
         status, name = entry[:2], entry[3:]
         out.append((status, name))
-        if status[0] in "RC":
+        # Either column can carry the rename: the index's once the move is
+        # staged ("R "), the worktree's after `mv` plus `git add -N` (" R").
+        # Both are followed by the source as its own entry, which read as a
+        # file of its own made `deploy/deploy.py` parse as "loy/deploy.py" and
+        # pass the protected-path check.
+        if "R" in status or "C" in status:
             # The source follows its destination. A rename takes a file away
             # from where it was, so the source counts too: listing only the
             # destination let a staged `mv` carry a protected file out of
             # deploy/, or a neighbour plugin's file into this one's folder,
             # past every check that reads this list. A copy leaves its source
             # as it was, so only a rename's is listed.
-            if status[0] == "R" and i < len(entries) and entries[i]:
+            if "R" in status and i < len(entries) and entries[i]:
                 out.append((status, entries[i]))
             i += 1
     return out
@@ -307,6 +321,18 @@ def status(d: Path, rid: str) -> str:
     return "\n".join(out) or f"no worktree for #{rid}"
 
 
+def _is_linked_worktree(root: Path) -> bool:
+    """Whether *root* is a `git worktree` of another checkout. Not a git
+    repository at all reads as no."""
+    r = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute",
+                        "--git-dir", "--git-common-dir"],
+                       capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        return False
+    lines = r.stdout.split()
+    return len(lines) == 2 and Path(lines[0]).resolve() != Path(lines[1]).resolve()
+
+
 def write_shim(d: Path, root: Path | None = None) -> Path | None:
     """`{improve}/bin/improve`: how the Programmer calls this. Inside the one
     folder its config lets it reach, so running it asks nobody for anything.
@@ -317,16 +343,17 @@ def write_shim(d: Path, root: Path | None = None) -> Path | None:
     path, 2026-11-09) left a shim that failed every command until the
     checkout ran again. None, and the shim untouched, from such a copy.
 
-    And never from a fix's worktree. `link_local` gives every stack worktree
-    the checkout's `.venv`, so the interpreter test alone passes there, and
-    one run of a worktree's cli -- code the Programmer is writing -- would
-    leave `bin/improve` running that worktree's copy from then on, with its
-    own `improve deploy` and its own checks. A linked worktree is told apart
-    by its `.git`, which is a file pointing at the repository, not the
-    repository itself."""
+    And never from a fix's worktree. Every stack worktree has a `.venv` with
+    an interpreter (see `ensure_venv`), so the interpreter test alone passes
+    there, and one run of a worktree's cli -- code the Programmer is writing
+    -- would leave `bin/improve` running that worktree's copy from then on,
+    with its own `improve deploy` and its own checks. A linked worktree is
+    told apart by git itself: its git directory is not the repository's
+    common one. A checkout whose `.git` is a file for another reason (a
+    separate git dir, a submodule) still writes the shim."""
     root = ROOT if root is None else root
     py = root / ".venv" / "bin" / "python"
-    if not py.exists() or not (root / ".git").is_dir():
+    if not py.exists() or _is_linked_worktree(root):
         return None
     b = d / "bin"
     b.mkdir(exist_ok=True)

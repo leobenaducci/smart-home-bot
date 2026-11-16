@@ -827,14 +827,32 @@ _copy = tmp / "copia-desplegada"
 (_copy / "deploy" / "improve").mkdir(parents=True)
 check("a copy with no .venv leaves the shim alone",
       W.write_shim(imp, root=_copy) is None and shim.read_text() == _good, shim.read_text())
-# A fix's worktree with a .venv that has an interpreter (once a link, now its own), and its .git is a
-# file. Its cli is code the Programmer is writing.
+# A fix's worktree -- a real `git worktree`, with a .venv that has an
+# interpreter, as every stack worktree has. Its cli is code the Programmer is
+# writing.
+_main = tmp / "repo-principal"
+_main.mkdir()
+for cmd in (["init", "-q"], ["config", "user.email", "dueno@example.org"],
+            ["config", "user.name", "Dueño"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+    subprocess.run(["git", "-C", str(_main), *cmd], check=True)
 _wt = tmp / "work" / "30-stack"
-(_wt / "deploy" / "improve").mkdir(parents=True)
-(_wt / ".git").write_text(f"gitdir: {_checkout}/.git/worktrees/30-stack\n", encoding="utf-8")
-(_wt / ".venv").symlink_to(_checkout / ".venv")
+_wt.parent.mkdir(parents=True, exist_ok=True)
+subprocess.run(["git", "-C", str(_main), "worktree", "add", "-q", "-b", "improve/30", str(_wt)],
+               check=True)
+(_wt / ".venv" / "bin").mkdir(parents=True)
+(_wt / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
 check("a worktree, .venv and all, leaves the shim alone",
       W.write_shim(imp, root=_wt) is None and shim.read_text() == _good, shim.read_text())
+# A checkout whose .git is a file for another reason is still the checkout.
+_sep = tmp / "separado"
+_sep.mkdir()
+subprocess.run(["git", "init", "-q", f"--separate-git-dir={tmp / 'separado.git'}", str(_sep)],
+               check=True)
+(_sep / ".venv" / "bin").mkdir(parents=True)
+(_sep / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+check("a checkout with a separate git dir still writes the shim",
+      W.write_shim(imp, root=_sep) is not None and str(_sep) in shim.read_text())
+W.write_shim(imp, root=_checkout)
 
 print("\nplugins that share one git repository")
 # Two invented plugins, each in its own folder of one repository with a remote.
@@ -928,6 +946,24 @@ check("and moving a neighbour's file into this plugin's folder is too",
       any("piscina/bomba.py" in w for w in W.outside_plugin({"name": "riego", "subdir": "riego"},
                                                              _ch)),
       W.outside_plugin({"name": "riego", "subdir": "riego"}, _ch))
+# The worktree column carries the rename too: `mv` plus `git add -N`.
+_rn2 = tmp / "renombres2"
+_rn2.mkdir()
+for cmd in (["init", "-q"], ["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(_rn2), *cmd], check=True)
+(_rn2 / "deploy").mkdir()
+(_rn2 / "deploy" / "deploy.py").write_text("# the deployer\nx = 1\n" * 20, encoding="utf-8")
+subprocess.run(["git", "-C", str(_rn2), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_rn2), "commit", "-q", "-m", "base"], check=True)
+(_rn2 / "docs").mkdir()
+(_rn2 / "deploy" / "deploy.py").rename(_rn2 / "docs" / "x.py")
+subprocess.run(["git", "-C", str(_rn2), "add", "-N", "docs/x.py"], check=True)
+_ch2 = W._changed(_rn2)
+check("a rename in the worktree column lists its source whole, not garbled",
+      "deploy/deploy.py" in {n for _, n in _ch2}
+      and not any(n.startswith("loy/") for _, n in _ch2), _ch2)
+check("  and moving the deployer out that way is refused",
+      any("deploy/deploy.py" in w for w in W.refusals("stack", _ch2)), W.refusals("stack", _ch2))
 check("a rename's source is not taken for a deleted test",
       not any("a test is deleted" in w for w in W.refusals("plugin", _ch)), W.refusals("plugin", _ch))
 
