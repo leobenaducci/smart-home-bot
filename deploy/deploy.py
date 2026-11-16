@@ -1326,9 +1326,10 @@ OPENCODE_FALLBACK_LAN_PORT = 11462
 OPENCODE_FALLBACK_LAN_MODES = ("off", "reserved", "demand")
 # The two engines that can serve it. Strata is a container with its own
 # llama.cpp, for the GGUFs only it runs (Qwen3.8-Flash-Next); pinned, because
-# the tag is what was measured here (5/5 on the coding problems, 2026-11-05).
+# the tag is what was measured here (5/5 on the coding problems, 2026-11-05;
+# 0.2.13 again 5/5 against 0.2.11 on 2026-11-16, prompt reading level).
 OPENCODE_FALLBACK_ENGINES = ("llamacpp", "strata")
-STRATA_IMAGE = "ghcr.io/niko1221/strata:0.2.11-cuda13"
+STRATA_IMAGE = "ghcr.io/niko1221/strata:0.2.13-cuda13"
 # The env var opencode reads the local model's key from ({env:...} in its
 # config), so the config itself stays free of credentials.
 OPENCODE_FALLBACK_KEY_ENV = "PROGRAMMER_LOCAL_API_KEY"
