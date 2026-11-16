@@ -726,6 +726,18 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
     /* ── Apps dropdown ── */
     .apps-menu { position:relative; flex-shrink:0; }
     #apps-btn { font-size:.72rem; padding:5px 12px; border:1px solid var(--line); border-radius:999px; background:var(--paper-2); color:var(--ink-soft); cursor:pointer; white-space:nowrap; font-weight:700; transition:background .15s,color .15s,border-color .15s; }
+    #report-btn { font-size:.72rem; padding:5px 10px; border:1px solid var(--line); border-radius:999px; background:var(--paper-2); color:var(--ink-soft); cursor:pointer; white-space:nowrap; font-weight:700; transition:background .15s,color .15s,border-color .15s; }
+    #report-btn:hover { border-color:#c0574a; color:#c0574a; }
+    @media (max-width:580px) { #report-btn .report-label { display:none; } }
+    #report-dlg { border:1px solid var(--line); border-radius:14px; background:var(--paper); color:var(--ink); padding:18px; width:min(440px, calc(100vw - 32px)); }
+    #report-dlg::backdrop { background:rgba(0,0,0,.35); }
+    #report-dlg h2 { margin:0 0 6px; font-size:1rem; }
+    #report-dlg p { margin:0 0 10px; font-size:.82rem; color:var(--ink-soft); }
+    #report-dlg textarea { width:100%; box-sizing:border-box; min-height:90px; font:inherit; font-size:.85rem; padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--paper-2); color:var(--ink); resize:vertical; }
+    #report-dlg .report-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+    #report-dlg .report-actions button { font:inherit; font-size:.82rem; font-weight:600; padding:6px 14px; border-radius:8px; border:1px solid var(--line); background:var(--paper-2); color:var(--ink); cursor:pointer; }
+    #report-dlg .report-actions button[type=submit] { background:var(--honey); border-color:var(--honey); color:#fff; }
+    #report-dlg .report-status { font-size:.8rem; margin-top:8px; min-height:1em; }
     #apps-btn:hover, #apps-btn.open { border-color:var(--honey-lt); color:var(--honey); background:rgba(198,137,43,.1); }
     /* max-height + scroll so the menu can never grow past the screen again. It
        did: four rows added to the Debug group pushed it off a phone, and every
@@ -1342,6 +1354,19 @@ stroke='%233E7D74' stroke-opacity='.15' stroke-width='1.2'/>\
   </a>
   {% endfor %}
 {% endmacro %}
+      <button id="report-btn" type="button" title="{{ t('chat.report.hint') }}" aria-haspopup="dialog">⚑ <span class="report-label">{{ t('chat.report.button') }}</span></button>
+      <dialog id="report-dlg" aria-labelledby="report-title">
+        <form id="report-form" method="dialog">
+          <h2 id="report-title">{{ t('chat.report.title') }}</h2>
+          <p>{{ t('chat.report.explain') }}</p>
+          <textarea id="report-note" maxlength="2000" placeholder="{{ t('chat.report.placeholder') }}" aria-label="{{ t('chat.report.placeholder') }}"></textarea>
+          <div class="report-status" id="report-status" role="status"></div>
+          <div class="report-actions">
+            <button type="button" id="report-cancel">{{ t('chat.report.cancel') }}</button>
+            <button type="submit" id="report-send">{{ t('chat.report.send') }}</button>
+          </div>
+        </form>
+      </dialog>
       <div class="apps-menu">
         <button id="apps-btn" title="Apps" aria-haspopup="true" aria-expanded="false">▦ {{ t('nav.apps') }}</button>
         <div id="apps-dropdown" class="apps-dropdown" role="menu">
@@ -3984,6 +4009,34 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     messagesEl.appendChild(div); scrollBottom();
     return { div:div, textSpan:textSpan };
   }
+
+  /* ── Reporting a problem ──
+     The whole conversation that is open, with an optional note, kept by the
+     server for whoever investigates (/chat/report). The page only names the
+     conversation; the server copies it from its own history. */
+  (function() {
+    var btn = document.getElementById('report-btn'), dlg = document.getElementById('report-dlg');
+    if (!btn || !dlg || typeof dlg.showModal !== 'function') { if (btn) btn.hidden = true; return; }
+    var form = document.getElementById('report-form'), note = document.getElementById('report-note'),
+        status = document.getElementById('report-status'), send = document.getElementById('report-send');
+    var RT = { sending: {{ t('chat.report.sending') | tojson }}, thanks: {{ t('chat.report.thanks') | tojson }},
+               failed: {{ t('chat.report.failed') | tojson }} };
+    btn.addEventListener('click', function() {
+      note.value = ''; status.textContent = ''; send.disabled = false;
+      dlg.showModal(); note.focus();
+    });
+    document.getElementById('report-cancel').addEventListener('click', function() { dlg.close(); });
+    form.addEventListener('submit', function(e) {
+      e.preventDefault();
+      send.disabled = true; status.textContent = RT.sending;
+      fetch('/chat/report', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+        body: JSON.stringify({ date: curDay, space: SPACE, conv: convStart(), note: note.value.trim() })
+      }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function() { status.textContent = RT.thanks; setTimeout(function() { dlg.close(); }, 1500); })
+        .catch(function() { status.textContent = RT.failed; send.disabled = false; });
+    });
+  })();
 
   /* ── Rating an answer ──
      👍 or 👎 on each of Alfred's answers, and for a 👎 an optional line on

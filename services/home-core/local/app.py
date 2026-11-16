@@ -2664,6 +2664,99 @@ def chat_feedback():
     return jsonify(ok=False, error='not found'), 404
 
 
+# ── "Report a problem" ──
+# A person says a conversation went wrong, optionally in their own words, and
+# a copy of it is kept for whoever investigates later. A copy rather than a
+# pointer: the history file can still be edited, rewritten by a fork or pruned,
+# and the report is about what the person saw when they pressed the button.
+# The server reads the conversation itself; the page only names it.
+PROBLEM_REPORTS_DB_PATH = os.path.join('backup_data', 'problem_reports.db')
+PROBLEM_NOTE_MAX = 2000
+
+
+def init_problem_reports_db():
+    os.makedirs(os.path.dirname(PROBLEM_REPORTS_DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(PROBLEM_REPORTS_DB_PATH)
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS problem_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at INTEGER NOT NULL,       -- ms since the epoch
+            username TEXT NOT NULL,            -- the login id
+            space TEXT NOT NULL DEFAULT '',    -- '' is the ordinary chat
+            day TEXT NOT NULL,                 -- the history file's YYYY-MM-DD
+            conv INTEGER,                      -- the conversation's start ms, NULL = the whole day
+            note TEXT NOT NULL DEFAULT '',
+            messages TEXT NOT NULL,            -- JSON, the conversation as it was
+            message_count INTEGER NOT NULL,
+            user_agent TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open'
+        );
+        CREATE INDEX IF NOT EXISTS problem_reports_status ON problem_reports (status, created_at);
+    ''')
+    conn.commit()
+    conn.close()
+
+
+@app.route('/chat/report', methods=['POST'])
+@api_login_required
+def chat_report_problem():
+    body = request.get_json(silent=True) or {}
+    user = session['user']
+    space = _valid_space(body.get('space'))
+    day = _valid_day(body.get('date'))
+    try:
+        conv = int(body.get('conv') or 0) or None
+    except (TypeError, ValueError):
+        conv = None
+    note = str(body.get('note') or '').strip()[:PROBLEM_NOTE_MAX]
+    with _history_lock((user, day, space)):
+        msgs = load_user_history(user, day, space)
+    if conv:
+        msgs = _session_read(msgs, conv, space) or msgs
+    if not msgs and not note:
+        return jsonify(ok=False, error='nothing to report'), 400
+    conn = sqlite3.connect(PROBLEM_REPORTS_DB_PATH)
+    try:
+        cur = conn.execute(
+            'INSERT INTO problem_reports (created_at, username, space, day, conv, note, messages, '
+            'message_count, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (int(time.time() * 1000), user, space or '', day, conv, note,
+             json.dumps(msgs, ensure_ascii=False), len(msgs),
+             (request.headers.get('User-Agent') or '')[:300]))
+        conn.commit()
+        rid = cur.lastrowid
+    finally:
+        conn.close()
+    app.logger.info('problem report %s from %s (%s messages)', rid, user, len(msgs))
+    return jsonify(ok=True, id=rid)
+
+
+@app.route('/chat/reports', methods=['GET'])
+@api_login_required
+def chat_problem_reports():
+    """The reports, newest first, for an admin: who, when, the note and how
+    long the conversation was. `?id=` returns one with its messages."""
+    if not _tasks_is_admin(session['user']):
+        return jsonify(error='forbidden'), 403
+    conn = sqlite3.connect(PROBLEM_REPORTS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rid = request.args.get('id', type=int)
+        if rid:
+            row = conn.execute('SELECT * FROM problem_reports WHERE id = ?', (rid,)).fetchone()
+            if not row:
+                return jsonify(error='not found'), 404
+            out = dict(row)
+            out['messages'] = json.loads(out['messages'])
+            return jsonify(out)
+        rows = conn.execute('SELECT id, created_at, username, space, day, conv, note, '
+                            'message_count, status FROM problem_reports '
+                            'ORDER BY id DESC LIMIT 200').fetchall()
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
 @app.route('/chat/history', methods=['PUT'])
 @api_login_required
 def replace_chat_history():
@@ -25831,6 +25924,7 @@ if __name__ == '__main__':
     init_persona_db()
     init_theme_db()
     init_chat_titles_db()
+    init_problem_reports_db()
     init_family_db()
     # The admin page owns names, birthdays and languages; the directory
     # keeps the copy. Synced at boot and again whenever the deployer
