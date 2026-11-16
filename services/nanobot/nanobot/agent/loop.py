@@ -2507,6 +2507,11 @@ class AgentLoop:
         meta = dict(msg.metadata or {})
         if on_stream is not None and stop_reason != "error":
             meta["_streamed"] = True
+        if stop_reason == "delegated":
+            # The reply is only the "carrying on in the background" line; the
+            # sub-agent delivers the real one. A caller nobody is waiting on
+            # (the morning greeting) can leave the line unsaid.
+            meta["_delegated"] = True
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,

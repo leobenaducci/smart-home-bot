@@ -1966,6 +1966,7 @@ class AgentRunner:
         served_by_provider: str | None = None
         tool_call_counts: dict[tuple[str, str], int] = {}
 
+        queued_response = None
         for iteration in _budget(spec):
             try:
                 # Keep the persisted conversation untouched. Context governance
@@ -1995,8 +1996,14 @@ class AgentRunner:
                     messages_for_model = messages
             context = AgentHookContext(iteration=iteration, messages=messages)
             await hook.before_iteration(context)
-            response = await self._request_model(spec, messages_for_model, hook, context)
-            raw_usage = self._usage_dict(response.usage)
+            if queued_response is not None:
+                # The finalization retry wrote a tool call as text: run it now,
+                # as the model meant, instead of asking the model again.
+                response, queued_response = queued_response, None
+                raw_usage = {}
+            else:
+                response = await self._request_model(spec, messages_for_model, hook, context)
+                raw_usage = self._usage_dict(response.usage)
             context.response = response
             context.usage = dict(raw_usage)
             context.tool_calls = list(response.tool_calls)
@@ -2256,6 +2263,30 @@ class AgentRunner:
                 served_by_model = response.served_by_model or served_by_model
                 served_by_provider = response.served_by_provider or served_by_provider
                 raw_usage = self._merge_usage(raw_usage, retry_usage)
+                # Asked without tools, DeepSeek writes its call out as text
+                # ("<｜DSML｜ calls><｜DSML｜ invoke name=\"weather\">..."), and
+                # that markup was published as four people's morning greeting
+                # (2026-11-16). The same parsing every other response gets:
+                # the markup never reaches the person, and a call it names is
+                # run next pass so the model can answer from its result.
+                response = self._apply_text_tool_call_parsing(response, spec, messages)
+                if response.has_tool_calls and messages:
+                    response = await self._maybe_translate_skill_calls(response, spec, messages)
+                if (
+                    response.has_tool_calls
+                    and response.finish_reason not in ("error", "length")
+                    and iteration + 1 < spec.max_iterations
+                ):
+                    note_event("retry:finalize_called")
+                    logger.info(
+                        "Finalization for {} wrote a tool call as text; running it",
+                        spec.session_key or "default",
+                    )
+                    queued_response = response
+                    await hook.after_iteration(context)
+                    continue
+                if response.has_tool_calls:
+                    response = dataclasses.replace(response, tool_calls=[])
                 context.response = response
                 context.usage = dict(raw_usage)
                 context.tool_calls = list(response.tool_calls)

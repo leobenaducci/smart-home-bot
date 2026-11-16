@@ -20,7 +20,14 @@ Write, in this order and in one short message:
    ahead today), not stock phrases. Avoid repeating yesterday's even though you
    won't remember them: pick different angles each morning.
 4. Today's weather in **one line**: conditions, low and high, and if it is going
-   to rain, say so. Look it up with the `weather` skill in this same turn.
+   to rain, say so. Look it up in this same turn with
+   `{"skill": "weather", "action": "get_forecast", "days": 1}` -- the forecast
+   is what has the low, the high and the rain; `get_weather` is only the
+   temperature right now.
+
+That forecast is the only lookup this message needs. Don't open other apps'
+documents, search the web, fetch pages or ask Home Assistant for it: those
+mornings the greeting wandered off into tools that had nothing to say about it.
 
 Warm and brief — four or five lines in all, like a message from somebody who
 knows them, not a bulletin. No numbered lists and no headings.

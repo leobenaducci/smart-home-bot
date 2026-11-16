@@ -195,6 +195,41 @@ check("the export route still serves the same thing",
       client.get("/family/api/markdown").get_data(as_text=True).strip() == md.strip())
 
 print()
+print("\na password is its owner's alone")
+_c = A._family_conn()
+try:
+    for who in (MEMBER_B, MEMBER_C):
+        _c.execute("INSERT OR IGNORE INTO family_profiles (person, display_name) VALUES (?, ?)",
+                   (who, who))
+    _c.execute("INSERT OR REPLACE INTO family_facts (person, key, label, value, updated_by, updated_at) "
+               "VALUES (?, 'contraseña portal escolar', 'Contraseña portal escolar', 'hunter22', ?, 0)", (MEMBER_B, MEMBER_B))
+    _c.execute("INSERT OR REPLACE INTO family_facts (person, key, label, value, updated_by, updated_at) "
+               "VALUES (?, 'colegio', 'Colegio', 'Los Aromos', ?, 0)", (MEMBER_B, MEMBER_B))
+    _c.commit()
+finally:
+    _c.close()
+
+
+def _facts(user, person):
+    as_user(user)
+    prof = client.get(f"/family/api/profile?person={person}").get_json().get("profile") or {}
+    return {f["label"]: f["value"] for f in prof.get("facts", [])}
+
+
+other = _facts(MEMBER_C, MEMBER_B)
+check("another member's Alfred sees the label, not the password",
+      other.get("Contraseña portal escolar") == A.FAMILY_SECRET_HIDDEN, other)
+check("and still sees ordinary facts", other.get("Colegio") == "Los Aromos", other)
+check("the owner's own Alfred sees it", _facts(MEMBER_B, MEMBER_B).get("Contraseña portal escolar") == "hunter22")
+as_user(MEMBER_C)
+md = client.get("/family/api/markdown").get_data(as_text=True)
+check("FAMILY.md loaded by another member's Alfred leaves it out", "hunter22" not in md and "Los Aromos" in md, md[:300])
+found = client.get("/family/api/search?q=hunter").get_json().get("matches")
+check("searching for the value finds nothing", not found, found)
+as_user(MEMBER_A)
+adm = client.get("/family/api/admin").get_data(as_text=True)
+check("the admin editor gets the real value, so a save cannot write the mask back", "hunter22" in adm)
+
 if failures:
     print(f"FAILED: {len(failures)}")
     for f in failures:

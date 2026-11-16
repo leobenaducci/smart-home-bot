@@ -369,6 +369,19 @@ for label, reply in (("delivered by Alfred", "Te quedan 3 cosas"), ("fallback", 
     check(f"{label}: an ordinary reminder does not",
           sent and 'panel=grocery' not in (sent[0] or ''), sent)
 
+print("\na shopping-list reminder asks Alfred to read the list, not to repeat the text")
+prompts = []
+A._alfred_notify = lambda user, prompt, **kw: prompts.append(prompt) or "ok"
+for text in (A.GROCERY_GEOFENCE_TEXT, GROCERY_OLD):
+    prompts.clear()
+    A._geo_deliver(USER1, USER1, text, 'Mall', 'enter')
+    p = prompts[0] if prompts else ''
+    check("the prompt is the job", 'list_groceries' in p and 'this reminder' not in p, p)
+    check("the stored text is not in it", text not in p, p)
+prompts.clear()
+A._geo_deliver(USER1, USER1, 'comprar pan', 'casa', 'enter')
+check("an ordinary reminder is still passed on", prompts and '"comprar pan"' in prompts[0], prompts)
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")
 raise SystemExit(1 if failures else 0)

@@ -210,3 +210,20 @@ def test_spawn_hands_the_pictures_on(tmp_path, monkeypatch):
         await asyncio.gather(*m._running_tasks.values(), return_exceptions=True)
     asyncio.run(go_spawn())
     assert got.get("media") == ["/x/a.jpg"]
+
+
+def test_pi_is_told_whose_assistant_it_is(tmp_path, pi_installed):
+    # 2026-11-16: asked for a greeting "for your person", pi picked another
+    # member from the family list and greeted a child by her mother's name.
+    (tmp_path / "USER.md").write_text("# User Profile\n\n- **Name**: Mora\n- **Timezone**: Etc/UTC\n",
+                                      encoding="utf-8")
+    go(manager(tmp_path), "websocket:homeweb:999000111:2026-11-16:1")
+    assert pi_installed, "the task did not run on pi"
+    ctx = pi_installed[0][2].get("context") or ""
+    assert "You are working for Mora" in ctx
+
+
+def test_a_profile_naming_nobody_adds_nothing(tmp_path, pi_installed):
+    (tmp_path / "USER.md").write_text("# User Profile\n\n- **Name**: (your name)\n", encoding="utf-8")
+    go(manager(tmp_path), "websocket:homeweb:999000111:2026-11-16:1")
+    assert "You are working for" not in (pi_installed[0][2].get("context") or "")

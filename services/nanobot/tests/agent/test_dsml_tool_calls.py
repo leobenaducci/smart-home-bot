@@ -90,3 +90,52 @@ def test_doubled_bars_and_a_bare_calls_wrapper_run_too():
 def test_stray_markup_never_reaches_the_person():
     from nanobot.agent.runner import _dsml_as_qwen35
     assert "DSML" not in _dsml_as_qwen35("Listo.<｜｜DSML｜｜ end_of_calls>")
+
+
+async def _final_markup_run(final_text, max_iterations=6):
+    """Two empty replies, then a finalization (asked without tools) that
+    writes `final_text`; whatever is asked after that answers in words."""
+    from unittest.mock import AsyncMock
+    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from nanobot.config.schema import AgentDefaults
+    calls = []
+
+    async def chat_with_retry(*, messages, tools=None, **kw):
+        calls.append(tools)
+        n = len(calls)
+        if n <= 2:
+            return LLMResponse(content=None, tool_calls=[], usage={})
+        if n == 3:
+            return LLMResponse(content=final_text, tool_calls=[], usage={}, finish_reason="stop")
+        return LLMResponse(content="¡Buenos días! Nublado, 15° a 19°.", tool_calls=[], usage={})
+
+    provider = MagicMock()
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.tool_names = ["exec"]
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value="15-19 nublado")
+    result = await AgentRunner(provider).run(AgentRunSpec(
+        initial_messages=[{"role": "user", "content": "buenos días"}], tools=tools, model="m",
+        max_iterations=max_iterations, max_tool_result_chars=AgentDefaults().max_tool_result_chars,
+        session_key="homeweb:999000111:2026-11-16:1"))
+    return result, tools, calls
+
+
+async def test_markup_from_the_finalization_retry_is_run_not_published():
+    # 2026-11-16: four morning greetings were exactly this markup. The final
+    # retry is asked without tools, and its answer skipped the parsing every
+    # other answer gets.
+    import pytest  # noqa: F401
+    result, tools, calls = await _final_markup_run(DOUBLED)
+    assert tools.execute.await_count == 1, "the call the model wrote was not run"
+    assert "DSML" not in (result.final_content or "")
+    assert result.final_content == "¡Buenos días! Nublado, 15° a 19°."
+    assert calls[2] is None, "the finalization is still asked without tools"
+
+
+async def test_markup_from_the_last_possible_pass_is_still_never_published():
+    # No pass left to run the call in: drop it, and never show the markup.
+    result, tools, _ = await _final_markup_run(DOUBLED, max_iterations=2)
+    assert "DSML" not in (result.final_content or "")
+    assert tools.execute.await_count == 0

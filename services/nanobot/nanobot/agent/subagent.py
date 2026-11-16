@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import os
 import time
 import uuid
@@ -299,6 +300,21 @@ class SubagentManager:
             return None
         return ep
 
+    def _person_line(self) -> str:
+        """Whose assistant this is, from USER.md's `**Name**:` line; "" when
+        the profile names nobody (the house instance)."""
+        try:
+            text = (self.workspace / "USER.md").read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        m = re.search(r"^\s*[-*]\s*\*\*Name\*\*\s*:\s*(.+?)\s*$", text, re.M)
+        name = m.group(1).strip() if m else ""
+        if not name or name.startswith("(") or len(name) > 60:
+            return ""
+        return (f"You are working for {name}: this assistant is {name}'s. \"Your person\", "
+                f"\"me\" and \"I\" in the task mean {name}. Address {name}, and do not read or "
+                f"use another family member's profile unless the task asks about that person.")
+
     async def _run_on_harness(self, task_id: str, task: str, label: str, origin: dict[str, str],
                               status: "SubagentStatus", context: str | None,
                               hook: "_SubagentHook", endpoint) -> tuple[str, str]:
@@ -321,6 +337,13 @@ class SubagentManager:
         async def on_nudge(n: int, of: int, short: str) -> None:
             await hook._publish("phase", f"asked to continue ({n}/{of}): {short}")
 
+        # pi starts from its own short prompt and knows nobody: asked for a
+        # morning greeting "for your person", it listed the family, picked
+        # another member and greeted a child by her mother's name, from the
+        # mother's profile (2026-11-16). Say who this assistant belongs to.
+        who = self._person_line()
+        if who:
+            context = f"{who}\n\n{context}" if context else who
         root = self.workspace / "harness"
         workdir = pi_runner.new_workdir(root)
         with PROFILER.span("task", f"{origin_channel}:{origin_chat_id}", label=label or "subagent",
