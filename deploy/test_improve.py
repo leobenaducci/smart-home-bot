@@ -917,6 +917,37 @@ check("and moving a neighbour's file into this plugin's folder is too",
 check("a rename's source is not taken for a deleted test",
       not any("a test is deleted" in w for w in W.refusals("plugin", _ch)), W.refusals("plugin", _ch))
 
+print("\nimprove list and improve deploy agree on what is published")
+# Merged through a pull request and caught up with `pull --rebase`: the fix's
+# commits are in HEAD as copies, so the branch is no longer an ancestor.
+_pr = tmp / "publicado"
+_pr.mkdir()
+subprocess.run(["git", "-C", str(_pr), "init", "-q"], check=True)
+for cmd in (["config", "user.email", "dueno@example.org"], ["config", "user.name", "Dueño"]):
+    subprocess.run(["git", "-C", str(_pr), *cmd], check=True)
+(_pr / "a.py").write_text("x = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_pr), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_pr), "commit", "-q", "-m", "base"], check=True)
+_trunk = W._git(_pr, "rev-parse", "--abbrev-ref", "HEAD")
+subprocess.run(["git", "-C", str(_pr), "checkout", "-q", "-b", "improve/40"], check=True)
+(_pr / "a.py").write_text("x = 2\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_pr), "commit", "-q", "-am",
+                "Fix x\n\nFix request #40, made in the Programmer."], check=True)
+subprocess.run(["git", "-C", str(_pr), "checkout", "-q", _trunk], check=True)
+check("a fix not yet in the checkout has commits to publish",
+      cli.fix_state(str(_pr), "improve/40", "40") == "1 commit(s) to publish",
+      cli.fix_state(str(_pr), "improve/40", "40"))
+(_pr / "b.py").write_text("y = 1\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(_pr), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(_pr), "commit", "-q", "-m", "somebody else's work"], check=True)
+subprocess.run(["git", "-C", str(_pr), "cherry-pick", "improve/40"], check=True,
+               capture_output=True)
+check("the branch itself is no longer an ancestor",
+      not S._is_ancestor(str(_pr), "improve/40", "HEAD"))
+check("deploy calls the rebased copy published", S._published(str(_pr), "improve/40"))
+check("and so does list", cli.fix_state(str(_pr), "improve/40", "40") == "published",
+      cli.fix_state(str(_pr), "improve/40", "40"))
+
 import shutil  # noqa: E402
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n%d checks failed" % len(failures) if failures else "\nall checks passed")

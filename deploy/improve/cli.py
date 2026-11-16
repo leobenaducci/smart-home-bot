@@ -262,9 +262,29 @@ def requests(state: Path, login: str | None = None, limit: int = 20) -> list[dic
             for r in rows]
 
 
+def fix_state(live: str | None, fix: str, rid: str) -> str:
+    """What `improve list` says about one fix: published, commits to publish,
+    or nothing committed.
+
+    "Published" by the same test `improve deploy` applies (`ship._published`:
+    ancestry, or the same changes by content), plus a commit in HEAD naming
+    the request -- a branch with no commits of its own is trivially an
+    ancestor. By ancestry alone, a fix merged through a pull request and
+    caught up with `git pull --rebase` read here as commits still to publish
+    while deploy treated it as published."""
+    if not live:
+        return "nothing committed"
+    published = S._published(live, fix) and bool(W._git(
+        live, "log", "--format=%h", "--fixed-strings",
+        f"--grep=Fix request #{rid},", "HEAD", "-n", "1", check=False))
+    if published:
+        return "published"
+    n = len([c for c in W._git(live, "rev-list", f"HEAD..{fix}", check=False).split() if c])
+    return f"{n} commit(s) to publish" if n else "nothing committed"
+
+
 def cmd_list(args) -> int:
     import datetime  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
     cfg = live_config()
     state = Path((cfg.get("paths") or {}).get("state") or "/var/lib/home-stack/state")
     d = improve_dir(cfg)
@@ -280,15 +300,7 @@ def cmd_list(args) -> int:
             name = wt.name.split("-", 1)[1]
             live = (repos.get(name) or {}).get("path")
             fix = W.branch(repos[name], q["id"]) if name in repos else f"improve/{q['id']}"
-            n = len([c for c in W._git(live or wt, "rev-list", f"HEAD..{fix}",
-                                       check=False).split() if c]) if live else 0
-            published = bool(live) and subprocess.run(
-                ["git", "-C", live, "merge-base", "--is-ancestor", fix, "HEAD"],
-                capture_output=True).returncode == 0 and bool(W._git(
-                    live, "log", "--format=%h", "--fixed-strings",
-                    f"--grep=Fix request #{q['id']},", "HEAD", "-n", "1", check=False))
-            state_ = ("published" if published else
-                      f"{n} commit(s) to publish" if n else "nothing committed")
+            state_ = fix_state(live, fix, q["id"])
             dirty = len(W._changed(wt))
             print(f"      {name:<16} {state_}{f', {dirty} uncommitted' if dirty else ''}  {wt}")
     return 0
