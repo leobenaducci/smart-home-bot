@@ -296,6 +296,30 @@ _es = A._translator('tasks.push_shared_finished', locale='es', names='Mora, Tomi
 check("the parents' message is in the house language",
       any(m == _es for m in to_admins), (to_admins, _es))
 
+# --- both partners finish at the same moment --------------------------------------
+print("\nboth partners finish at the same moment")
+call('POST', '/tasks/api/templates', PARENT, {
+    'title': 'Secar', 'points': 40, 'assignees': [TOMI, MORA], 'weekdays': ALL_DAYS,
+    'shared': True})
+r7 = rows('Secar')
+# Both requests have marked their own row done before either asks "am I the
+# last?" -- the interleaving that told the parents twice.
+_c = A._tasks_conn()
+_c.execute("UPDATE tasks SET status = 'review', completed_at = ? WHERE id IN (?, ?)",
+           (int(NOW.timestamp()), r7[TOMI][0], r7[MORA][0]))
+_c.close()
+to_admins.clear()
+A._notify_shared_completion(r7[TOMI][0])
+A._notify_shared_completion(r7[MORA][0])
+check("the parents are told once", len(to_admins) == 1, to_admins)
+check("and it names both", to_admins and 'Tomi' in to_admins[0] and 'Mora' in to_admins[0],
+      to_admins)
+print("\none part sent back and done again")
+call('POST', '/tasks/api/reject', PARENT, {'task_id': r7[TOMI][0], 'note': 'otra vez'})
+to_admins.clear()
+call('POST', '/tasks/api/complete', TOMI, {'task_id': r7[TOMI][0]})
+check("the parents hear about the redone part", len(to_admins) == 1, to_admins)
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + "; ".join(failures))

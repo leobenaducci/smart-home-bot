@@ -11464,6 +11464,7 @@ def init_tasks_db():
             created_by TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             shared INTEGER NOT NULL DEFAULT 0, -- one of a shared template's rows
+            released_at INTEGER,              -- shared: when the parents were told; see _release_shared
             UNIQUE(template_id, due_date, assignee)
         );
         CREATE TABLE IF NOT EXISTS prizes (
@@ -11511,6 +11512,7 @@ def init_tasks_db():
         ('tasks', 'remind_before', 'INTEGER'),
         ('task_templates', 'shared', 'INTEGER NOT NULL DEFAULT 0'),
         ('tasks', 'shared', 'INTEGER NOT NULL DEFAULT 0'),
+        ('tasks', 'released_at', 'INTEGER'),
     ):
         cols = {r[1] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
         if col not in cols:
@@ -11894,13 +11896,49 @@ def _attach_partners(conn, tasks):
     return tasks
 
 
+def _release_shared(conn, template_id, due_date, now_ts):
+    """Claim the parents' "to review" message for one day of a shared chore.
+
+    Returns the rows it released ([(id, assignee)]) -- the parts done and not
+    yet announced -- or [] when a partner still owes theirs or somebody else
+    already announced them. Whoever gets a non-empty list sends the message;
+    nobody else does.
+
+    Decided inside one write transaction because two partners can finish in the
+    same second: each request marks its own row done and then asks "am I the
+    last?", and asked outside a transaction both see the other's row done and
+    both tell the parents. `released_at` is the claim -- stamped here, cleared
+    when a row is marked done again (after a parent sent it back) -- and the
+    moment the parents could first see the part, which is when its
+    auto-approve clock starts."""
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        owing = conn.execute(
+            """SELECT 1 FROM tasks WHERE shared = 1 AND template_id = ? AND due_date = ?
+                 AND status = 'pending' AND reviewed_at IS NULL LIMIT 1""",
+            (template_id, due_date)).fetchone()
+        rows = [] if owing else conn.execute(
+            """SELECT id, assignee FROM tasks WHERE shared = 1 AND template_id = ?
+                 AND due_date = ? AND status = 'review' AND released_at IS NULL
+               ORDER BY id""", (template_id, due_date)).fetchall()
+        if rows:
+            conn.executemany('UPDATE tasks SET released_at = ? WHERE id = ?',
+                             [(now_ts, rid) for rid, _ in rows])
+        conn.execute('COMMIT')
+    except BaseException:
+        conn.execute('ROLLBACK')
+        raise
+    return rows
+
+
 def _notify_shared_completion(task_id):
     """After a part of a shared chore is marked done, tell whoever is next.
 
     Returns False for a chore that is not shared, so the caller sends its usual
     "to review" message. For a shared one: while a partner still owes their
     part, that partner is nudged and the parents hear nothing yet; once the
-    last part is in, the parents get one message naming everybody."""
+    last part is in, the parents get one message naming everybody -- once,
+    however many parts land at the same moment (`_release_shared`)."""
     conn = _tasks_conn()
     try:
         row = conn.execute('SELECT assignee, title, points, template_id, due_date, shared '
@@ -11909,11 +11947,13 @@ def _notify_shared_completion(task_id):
             return False
         assignee, title, points, template_id, due_date, _ = row
         partners = _task_partners(conn, template_id, due_date, task_id)
+        owing = [(pid, a) for pid, a, st, rv in partners if st == 'pending' and rv is None]
+        released = (_release_shared(conn, template_id, due_date, int(time.time()))
+                    if partners and not owing else [])
     finally:
         conn.close()
     if not partners:
         return False
-    owing = [(pid, a) for pid, a, st, rv in partners if st == 'pending' and rv is None]
     me = _tasks_display_name(assignee)
     if owing:
         for pid, user in owing:
@@ -11921,6 +11961,8 @@ def _notify_shared_completion(task_id):
                          title=t_for(user, 'tasks.push_shared_title'), tags='handshake',
                          click=tasks_link(pid))
         return True
+    if not released:
+        return True     # a partner finishing at the same moment told them
     done = [me] + [_tasks_display_name(a) for _, a, st, _ in partners
                    if st in ('review', 'approved')]
     _notify_tasks_admins(
@@ -12766,7 +12808,8 @@ def tasks_api_complete():
             return jsonify(error='Acceso denegado'), 403
         if status != 'pending':
             return jsonify(error='That chore is not pending'), 409
-        conn.execute("UPDATE tasks SET status = 'review', completed_at = ? WHERE id = ? AND status = 'pending'",
+        conn.execute("UPDATE tasks SET status = 'review', completed_at = ?, released_at = NULL "
+                     "WHERE id = ? AND status = 'pending'",
                      (int(time.time()), data.get('task_id')))
     finally:
         conn.close()
@@ -12838,7 +12881,8 @@ def tasks_api_notify_action():
         if status != 'pending':
             return jsonify(ok=True, status=status, noop=True)
         if do == 'complete':
-            conn.execute("UPDATE tasks SET status='review', completed_at=? WHERE id=? AND status='pending'",
+            conn.execute("UPDATE tasks SET status='review', completed_at=?, released_at=NULL "
+                         "WHERE id=? AND status='pending'",
                          (int(time.time()), task_id))
         elif do == 'postpone':
             conn.execute("UPDATE tasks SET snoozed_until=? WHERE id=? AND status='pending'",
