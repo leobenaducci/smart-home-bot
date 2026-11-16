@@ -244,20 +244,32 @@ def _responses_circuit_key(
     return f"{model_name}:{effort}"
 
 
-def _drop_reasoning_echo(content: str | None, reasoning: Any) -> str | None:
-    """None when `content` is just the reasoning again, else `content`.
+def _squash(text: str) -> str:
+    """Whitespace-insensitive form: an echo that only gained a blank line is
+    still an echo."""
+    return " ".join(text.split())
 
-    A reply is never word for word what the model thought. When the two match,
-    the model gave no answer and the gateway (or the model) repeated its
-    reasoning as `content` -- NanoGPT streaming DeepSeek V4 Flash did, on a
-    conversation whose earlier replies were already such copies. Published,
-    that is the assistant's private planning in English ("He says he did it...
-    let me check the list"), sent as the reply, with none of the calls it
-    describes made. Empty instead, it goes through the runner's empty-response
-    retry like any turn that came back with nothing."""
-    if not content or not isinstance(reasoning, str) or not reasoning.strip():
-        return content
-    return None if content.strip() == reasoning.strip() else content
+
+# Below this, a reply that merely appears inside the reasoning ("Listo.") is
+# more likely a short answer the model also thought than a copy of its notes.
+_ECHO_MIN_PARTIAL_CHARS = 40
+
+
+def _is_reasoning_echo(content: Any, reasoning: Any) -> bool:
+    """Whether `content` is the model's reasoning again rather than a reply.
+
+    A reply is never word for word what the model thought. NanoGPT streaming
+    DeepSeek V4 Flash, on a turn where the model gave no answer, carried the
+    reasoning again as `content` -- whole, or cut short -- and it was published
+    as the assistant's reply: its private planning, in English, with none of
+    the calls it describes made. Whole copies match after squashing whitespace;
+    a partial copy matches when it is long enough to be one."""
+    if not isinstance(content, str) or not isinstance(reasoning, str):
+        return False
+    c, r = _squash(content), _squash(reasoning)
+    if not c or not r:
+        return False
+    return c == r or (len(c) >= _ECHO_MIN_PARTIAL_CHARS and c in r)
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -954,13 +966,46 @@ class OpenAICompatProvider(LLMProvider):
                 current = getattr(current, segment, None)
         return int(current or 0) if current is not None else 0
 
-    def _reasoning_is_answer(self) -> bool:
-        """Whether this provider's `reasoning` field carries the reply itself.
+    def _reasoning_is_answer(self, model: str | None = None) -> bool:
+        """Whether the `reasoning` field carries the reply itself.
 
-        True only for StepFun's Plan API. Elsewhere it is the model's thinking,
-        which is never shown to the person it is talking to."""
+        True only for StepFun, whose Plan API answers there -- recognised by
+        its provider entry, its base URL (a `custom` provider pointed at it) or
+        its model name (reached through a gateway). Everywhere else it is the
+        model's thinking, which is never shown to the person it is talking to."""
         spec = getattr(self, "_spec", None)
-        return bool(spec and spec.name == "stepfun")
+        if spec and spec.name == "stepfun":
+            return True
+        base = (getattr(self, "_effective_base", None) or getattr(self, "api_base", None) or "")
+        if "stepfun" in str(base).lower():
+            return True
+        name = (model or getattr(self, "default_model", "") or "").lower()
+        return "stepfun" in name or name.split("/")[-1].startswith("step-")
+
+    def _settle_reply(self, response: LLMResponse, model: str | None = None) -> LLMResponse:
+        """The one place a reply and its reasoning are reconciled, for every
+        path -- chat/completions or Responses, plain or streamed -- so they
+        cannot disagree the way per-parser copies did.
+
+        StepFun: an empty reply takes the reasoning, which is its answer.
+        Anyone else: a reply that is the reasoning again is no reply, and goes
+        through the runner's empty-response retry instead of being published."""
+        if not isinstance(response, LLMResponse) or response.finish_reason == "error":
+            return response
+        if self._reasoning_is_answer(model):
+            if not response.content and response.reasoning_content:
+                response.content = response.reasoning_content
+            return response
+        if _is_reasoning_echo(response.content, response.reasoning_content):
+            # Loud on purpose: if a gateway ever copies every real reply into
+            # `reasoning` too, this is the line that says why turns go empty.
+            logger.warning(
+                "provider: {} via {} sent its reasoning back as the reply "
+                "({} chars); dropped so the turn retries instead of publishing it",
+                model or self.default_model, self.provider_label(),
+                len(response.content or ""))
+            response.content = None
+        return response
 
     def _parse(self, response: Any) -> LLMResponse:
         if isinstance(response, str):
@@ -991,13 +1036,9 @@ class OpenAICompatProvider(LLMProvider):
             finish_reason = str(choice0.get("finish_reason") or "stop")
 
             raw_tool_calls: list[Any] = []
-            # StepFun Plan puts its answer in `reasoning` when `content` is empty.
-            # Only StepFun: every other gateway (NanoGPT, OpenRouter) uses that
-            # field for the model's actual reasoning, and promoting it published
-            # the assistant's private planning as its reply -- and, beside a tool
-            # call, as a progress message nobody should see.
-            if not content and msg0.get("reasoning") and self._reasoning_is_answer():
-                content = self._extract_text_content(msg0.get("reasoning"))
+            # `reasoning` stays reasoning here. Whether it is the answer (StepFun)
+            # is decided once, in `_settle_reply`; promoting it for every
+            # gateway published DeepSeek's private planning as its reply.
             reasoning_content = msg0.get("reasoning_content")
             if not reasoning_content and msg0.get("reasoning"):
                 reasoning_content = self._extract_text_content(msg0.get("reasoning"))
@@ -1014,8 +1055,6 @@ class OpenAICompatProvider(LLMProvider):
                 if not reasoning_content:
                     reasoning_content = m.get("reasoning_content")
 
-            if not self._reasoning_is_answer():
-                content = _drop_reasoning_echo(content, reasoning_content)
             parsed_tool_calls = []
             for tc in raw_tool_calls:
                 tc_map = self._maybe_mapping(tc) or {}
@@ -1058,8 +1097,6 @@ class OpenAICompatProvider(LLMProvider):
                     finish_reason = ch.finish_reason
             if not content and m.content:
                 content = m.content
-            if not content and getattr(m, "reasoning", None) and self._reasoning_is_answer():
-                content = m.reasoning
 
         tool_calls = []
         for tc in raw_tool_calls:
@@ -1079,8 +1116,6 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_content = getattr(msg, "reasoning_content", None) or None
         if not reasoning_content and getattr(msg, "reasoning", None):
             reasoning_content = msg.reasoning
-        if not self._reasoning_is_answer():
-            content = _drop_reasoning_echo(content, reasoning_content)
 
         return LLMResponse(
             content=content,
@@ -1177,7 +1212,6 @@ class OpenAICompatProvider(LLMProvider):
 
         content = "".join(content_parts) or None
         reasoning = "".join(reasoning_parts) or None
-        content = _drop_reasoning_echo(content, reasoning)
         return LLMResponse(
             content=content,
             tool_calls=[
@@ -1292,6 +1326,20 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> LLMResponse:
+        return self._settle_reply(await self._chat_unsettled(
+            messages, tools, model, max_tokens, temperature, reasoning_effort,
+            tool_choice), model)
+
+    async def _chat_unsettled(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> LLMResponse:
         try:
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
@@ -1397,13 +1445,18 @@ class OpenAICompatProvider(LLMProvider):
                         on_content_delta,
                     )
                     self._record_responses_success(model, reasoning_effort)
-                    return LLMResponse(
+                    # Settled like every other reply, though its deltas were
+                    # already streamed by consume_sdk_stream with no hold: an
+                    # echo here is kept out of the stored reply and the retry
+                    # runs, but what was painted stays. No gateway in this
+                    # house reaches /responses with a reasoning echo today.
+                    return self._settle_reply(LLMResponse(
                         content=content or None,
                         tool_calls=tool_calls,
                         finish_reason=finish_reason,
                         usage=usage,
                         reasoning_content=reasoning_content,
-                    )
+                    ), model)
                 except Exception as responses_error:
                     if self._spec and self._spec.name == "github_copilot":
                         # Copilot gateway exposes GPT-5/o-series only via /responses;
@@ -1448,8 +1501,16 @@ class OpenAICompatProvider(LLMProvider):
                     kwargs.pop('temperature', None)
                     stream = await self._client.chat.completions.create(**kwargs)
             chunks: list[Any] = []
-            streamed_reasoning = ""
+            # The live half of `_settle_reply`'s echo rule: content is held
+            # while it could still be the reasoning coming back, and released
+            # for good the moment it is not. StepFun's answer arrives in
+            # `reasoning` legitimately, so nothing is held for it.
+            hold = on_content_delta is not None and not self._reasoning_is_answer(model)
+            reasoning_parts: list[str] = []
+            squashed_reasoning = ""
+            reasoning_dirty = False
             held_content = ""
+            released = False
             stream_iter = stream.__aiter__()
             while True:
                 try:
@@ -1466,21 +1527,26 @@ class OpenAICompatProvider(LLMProvider):
                         delta, "reasoning", None
                     )
                     if thought:
-                        streamed_reasoning += thought
+                        reasoning_parts.append(thought)
+                        reasoning_dirty = True
                     text = getattr(delta, "content", None)
-                    if text:
-                        held_content += text
-                        # Held while it is still a copy of the reasoning: on a
-                        # turn where the model gave no answer, the wire can
-                        # carry its reasoning again as `content`, and streaming
-                        # that live shows the household its planning notes
-                        # before `_parse_chunks` gets to drop it. Released the
-                        # moment it says anything the reasoning did not.
-                        if not (streamed_reasoning
-                                and streamed_reasoning.startswith(held_content)):
-                            if on_content_delta and held_content:
+                    if text and on_content_delta:
+                        if released or not hold:
+                            await on_content_delta(text)
+                        else:
+                            held_content += text
+                            if reasoning_dirty:
+                                squashed_reasoning = _squash("".join(reasoning_parts))
+                                reasoning_dirty = False
+                            squashed = _squash(held_content)
+                            # Still possibly the reasoning again (blank so far,
+                            # or found inside it): keep holding. Otherwise it
+                            # is a reply -- send what was held and stop holding.
+                            if squashed and not (squashed_reasoning
+                                                 and squashed in squashed_reasoning):
+                                released = True
                                 await on_content_delta(held_content)
-                            held_content = ""
+                                held_content = ""
                     if on_reasoning_delta and thought:
                         # DeepSeek-style thinking arrives here and nowhere else.
                         # On a hard question it is the *only* thing on the wire
@@ -1488,11 +1554,11 @@ class OpenAICompatProvider(LLMProvider):
                         # `content` sees a dead stream on the turns that are
                         # working hardest.
                         await on_reasoning_delta(thought)
-            response = self._parse_chunks(chunks)
-            # Still held at the end and not the whole reasoning: a short reply
-            # that happened to open with the reasoning's first words. Send it.
-            if (on_content_delta and held_content
-                    and held_content.strip() != streamed_reasoning.strip()):
+            response = self._settle_reply(self._parse_chunks(chunks), model)
+            # One rule decides both what is stored and what is shown: whatever
+            # is still held goes out only if the settled reply kept it -- a
+            # short answer that also appeared in the reasoning.
+            if held_content and response.content:
                 await on_content_delta(held_content)
             return response
         except asyncio.TimeoutError:

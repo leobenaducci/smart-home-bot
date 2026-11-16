@@ -136,6 +136,19 @@ def announces_next_step(content: str | None) -> bool:
     return any(rx.search(last) for rx in _ANNOUNCED_STEP_RES)
 
 
+EMPTY_REPLY_PROMPT = (
+    "[Your last reply reached the person empty: you worked out what to do, "
+    "but sent no tool call and no answer. If something needs doing, make the "
+    "call now. Otherwise reply with the final answer exactly as they should "
+    "read it, in their language.]"
+)
+
+
+def build_empty_reply_message() -> dict[str, str]:
+    """Ask a model that thought but answered nothing to act or answer."""
+    return {"role": "user", "content": EMPTY_REPLY_PROMPT}
+
+
 def build_announced_step_message() -> dict[str, str]:
     """Ask the model to act on the step it announced, or answer."""
     return {"role": "user", "content": ANNOUNCED_STEP_PROMPT}

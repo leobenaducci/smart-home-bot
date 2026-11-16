@@ -3264,3 +3264,38 @@ async def test_empty_retry_keeps_the_stream_open():
 
     assert result.final_content == "¡Listo!"
     assert stream_end_calls == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_empty_reply_after_thinking_is_nudged_once():
+    """A model that thought and answered nothing is told so before the retry --
+    resending the identical request gets the identical non-answer when the
+    conversation primes it. Once per turn, and only when it thought."""
+    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from nanobot.utils.runtime import EMPTY_REPLY_PROMPT
+
+    provider = MagicMock()
+    seen: list[list[dict]] = []
+
+    async def chat_with_retry(*, messages, tools=None, **kwargs):
+        seen.append(list(messages))
+        if len(seen) == 1:
+            return LLMResponse(content=None, tool_calls=[], usage={},
+                               reasoning_content="He did it. Let me check.")
+        return LLMResponse(content="¡Listo!", tool_calls=[], usage={})
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+
+    result = await AgentRunner(provider).run(AgentRunSpec(
+        initial_messages=[{"role": "user", "content": "Ya lo hice"}],
+        tools=tools,
+        model="test-model",
+        max_iterations=5,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    assert result.final_content == "¡Listo!"
+    assert seen[1][-1] == {"role": "user", "content": EMPTY_REPLY_PROMPT}
+    assert sum(m.get("content") == EMPTY_REPLY_PROMPT for m in seen[1]) == 1

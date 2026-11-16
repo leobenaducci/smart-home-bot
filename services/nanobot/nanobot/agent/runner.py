@@ -34,6 +34,7 @@ from nanobot.utils.helpers import (
 )
 from nanobot.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
+    build_empty_reply_message,
     announces_next_step,
     build_announced_step_message,
     build_finalization_retry_message,
@@ -1956,6 +1957,7 @@ class AgentRunner:
         external_lookup_counts: dict[str, int] = {}
         exec_error_counts: dict[str, int] = {}
         empty_content_retries = 0
+        empty_reply_nudged = False
         length_recovery_count = 0
         announced_step_nudged = False
         had_injections = False
@@ -2222,6 +2224,14 @@ class AgentRunner:
                         empty_content_retries,
                         _MAX_EMPTY_RETRIES,
                     )
+                    # Retrying the identical request gets the identical non-answer
+                    # when the model is primed to give one (an echo of its
+                    # reasoning, three times out of three on the conversation
+                    # it came from). A model that *thought* and said nothing
+                    # is told so, once.
+                    if response.reasoning_content and not empty_reply_nudged:
+                        empty_reply_nudged = True
+                        messages.append(build_empty_reply_message())
                     # Resuming: the turn goes on to another model call. Saying
                     # it ended told the API to close the stream, the client
                     # hung up, and the retry -- the whole point -- was
