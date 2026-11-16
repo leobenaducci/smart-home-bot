@@ -145,6 +145,15 @@ def discover(cfg: dict) -> list[dict]:
     result = []
     for r in out:
         where = (r["path"], r.get("subdir") or "")
+        # Anything inside the stack's own checkout is the stack: listed as its
+        # own entry it is a plugin or an extra, and skips what only the stack
+        # entry is held to (STACK_PROTECTED, the sanitizer, the deploy order)
+        # while publishing into the same checkout. Telling plugins apart by
+        # folder (above) is for repositories that are not this one.
+        if stack and r is not stack and r["path"] == stack["path"]:
+            print(f"  note: {r['name']} is inside this checkout, so a fix there is a fix "
+                  "to the stack", file=sys.stderr)
+            continue
         if r["name"] in exclude or where in seen:
             continue
         seen.add(where)

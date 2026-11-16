@@ -282,6 +282,11 @@ check("and an extra one from the config", names.get("otro", {}).get("source") ==
 check("each says what deploying it means: a plugin, by its services",
       "luces-api" in names["luces"]["deploys"] and "./home-stack deploy" in names["luces"]["deploys"],
       names["luces"].get("deploys"))
+inside = RP.discover({"assistant": {"improve": {"repos": [
+    {"path": str(RP.ROOT / "deploy"), "name": "por-dentro"}]}}})
+check("an extra inside this checkout is the stack, not a place of its own",
+      "por-dentro" not in {r["name"] for r in inside}
+      and [r["kind"] for r in inside] == ["stack"], [(r["name"], r["kind"]) for r in inside])
 stack_name = next(r["name"] for r in found if r["kind"] == "stack")
 found = RP.discover({"plugins": [str(plug)], "assistant": {"improve": {"exclude": ["luces", stack_name]}}})
 check("exclude leaves an automatic one out", found == [], [r["name"] for r in found])
