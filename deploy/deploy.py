@@ -6540,6 +6540,48 @@ def publish_entry_page(target: Target, unit: dict, cfg: dict, secrets: dict,
     target.run(f"rm -rf {shlex.quote(staging)}", check=False)
 
 
+def unit_image_tags(unit: dict) -> list[str]:
+    """Every tag `build_unit_images` writes for this unit."""
+    builds = unit.get("image_build")
+    return [b["tag"] if isinstance(b, dict) else str(b)
+            for b in (builds if isinstance(builds, list) else ([builds] if builds else []))]
+
+
+def image_ids(target, tags: list[str], remote_dir: str) -> dict[str, str | None]:
+    """What each tag points at right now: an image id, or None if it is unset."""
+    ids: dict[str, str | None] = {}
+    for tag in tags:
+        r = target.run(f"docker image inspect -f '{{{{.Id}}}}' {shlex.quote(tag)} 2>/dev/null",
+                       cwd=remote_dir, check=False, capture=True)
+        got = (r.stdout or "").strip() if r.returncode == 0 else ""
+        ids[tag] = got or None
+    return ids
+
+
+def restore_image_tags(target, before: dict[str, str | None], remote_dir: str, out) -> None:
+    """Point every tag back where it was before a build whose tests failed.
+
+    The build retags first and the gate runs after (see deploy_service), so
+    without this a red run left the shared tag -- `alfred-nanobot:latest`, the
+    image five assistants run -- on the code the gate had just rejected. The
+    running containers hold the old image by id, so nothing changed at once;
+    but the next `compose up` without a rebuild (a sibling unit's deploy, `gpu
+    off`, a manual up) recreated them on it, and the old image, now untagged,
+    could be pruned, taking the rollback with it. A tag that did not exist
+    before is removed, so nothing can start on the rejected build by name."""
+    for tag, old in before.items():
+        if old:
+            r = target.run(f"docker tag {shlex.quote(old)} {shlex.quote(tag)}",
+                           cwd=remote_dir, check=False, capture=True)
+        else:
+            r = target.run(f"docker image rm {shlex.quote(tag)}",
+                           cwd=remote_dir, check=False, capture=True)
+        if r.returncode == 0:
+            out.sub(f"{tag} put back to {'the previous image' if old else 'unset'}")
+        else:
+            out.warn(f"could not put {tag} back: {((r.stderr or r.stdout) or '').strip()[:200]}")
+
+
 def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out) -> None:
     # One image, built by name, before compose runs. Not the same thing as
     # `build: true`: that maps to `docker compose build`, which builds what
@@ -7322,12 +7364,22 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
         # deploy" on a missing image. Retagging before the gate leaves the
         # running containers alone -- they hold the old image by id until `up`
         # -- which is what `build: true` below has always done.
+        # What every tag this deploy is about to move points at now, so a red
+        # test run can put them back (restore_image_tags).
+        test = unit.get("test")
+        tags_before: dict[str, str | None] = {}
+        if test:
+            tags = unit_image_tags(unit)
+            if unit.get("build", False):
+                listed = target.run(f"{compose} config --images", cwd=remote_dir, env=env,
+                                    check=False, capture=True)
+                tags += [t for t in (listed.stdout or "").split() if t not in tags]
+            tags_before = image_ids(target, tags, remote_dir)
         build_unit_images(unit, target, remote_dir, env, out)
 
         # Tests run against the built image before it replaces the running one,
         # so a red run stops the house getting the change rather than reporting
         # on it afterwards.
-        test = unit.get("test")
         if test and unit.get("build", False):
             target.run(f"{compose} build", cwd=remote_dir, env=env)
             out.ok("image built")
@@ -7346,9 +7398,11 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 )
             result = target.run(cmd, cwd=remote_dir, env=env, check=False, capture=True)
             if result.returncode != 0 and not target.dry_run:
+                restore_image_tags(target, tags_before, remote_dir, out)
                 raise DeployError(
                     f"tests failed before deploy; the running service was not "
-                    f"touched\n    {(result.stdout or '')[-800:]}"
+                    f"touched and its image tags were put back\n"
+                    f"    {(result.stdout or '')[-800:]}"
                 )
             out.ok("tests passed")
 
