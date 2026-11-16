@@ -15608,7 +15608,27 @@ def init_family_db():
     conn.close()
 
 
-def _family_profile_json(conn, person):
+# A fact that is a credential is its owner's alone. Every profile is readable
+# by every member's Alfred and FAMILY.md puts the directory in each of their
+# contexts, so a password one parent saved through her own Alfred was readable
+# by her child's (2026-11-16, found when that Alfred opened her profile).
+# Matched on the label, which is what the person called it.
+_FAMILY_SECRET_LABEL = re.compile(
+    r'contrase|password|passwd|\bclave\b|\bpin\b|passcode|token|c[oó]digo de acceso|'
+    r'secret', re.I)
+FAMILY_SECRET_HIDDEN = '(private)'
+
+
+def _family_viewer():
+    """The person key of whoever is asking, or None outside a request."""
+    if not has_request_context():
+        return None
+    return _family_key(session.get('user'))
+
+
+def _family_profile_json(conn, person, reveal=False):
+    """*reveal* shows credential facts whoever asks: only for the admin page's
+    editor, which saves facts back and must not save the mask."""
     row = conn.execute(
         'SELECT person, display_name, full_name, relationship, birthdate, '
         'timezone FROM family_profiles WHERE person=?', (person,)).fetchone()
@@ -15620,6 +15640,9 @@ def _family_profile_json(conn, person):
     notes = conn.execute(
         'SELECT id, note, added_by, added_at FROM family_notes WHERE person=? '
         'ORDER BY added_at', (person,)).fetchall()
+    if not reveal and _family_viewer() != person:
+        facts = [(f[0], f[1], FAMILY_SECRET_HIDDEN if _FAMILY_SECRET_LABEL.search(f[1] or '') else f[2],
+                  f[3]) for f in facts]
     return {
         'person': row[0], 'display_name': row[1], 'full_name': row[2],
         'relationship': row[3], 'birthdate': row[4], 'timezone': row[5],
@@ -15793,7 +15816,7 @@ def family_api_admin():
         genders = _family_genders(conn)
         out = []
         for person in people:
-            entry = _family_profile_json(conn, person)
+            entry = _family_profile_json(conn, person, reveal=True)
             if not entry:
                 continue
             entry['gender'] = genders.get(person, '')
@@ -16370,7 +16393,18 @@ def _geo_deliver(notify_user, target_user, text, place_name, direction):
     """Deliver a fired geofence reminder through the notified user's Alfred,
     falling back to plain ntfy — mirrors _tasks_send_reminders."""
     verb = 'left' if direction == 'exit' else 'arrived at'
-    if notify_user == target_user:
+    grocery = _geo_is_grocery(text)
+    if grocery and notify_user == target_user:
+        # The shopping-list reminder is a job, not words to pass on. Framed as
+        # "give them this reminder", the instruction itself was what arrived
+        # ("Please check the shopping list... (use the grocery skill /
+        # list_groceries)", 2026-11-12) and the list was never read.
+        prompt = ('[HomeCore system] The user arrived at ' + place_name + '. Read the '
+                  'shopping list now with the grocery skill (list_groceries) and tell them '
+                  'in one line how many items are still pending, naming a few. If nothing '
+                  'is pending, say so.' + _EVENT_REPLY_IS_THE_MESSAGE)
+        fallback = text
+    elif notify_user == target_user:
         prompt = (f'[HomeCore system] The user {verb} {place_name}. Give them now, '
                   f'in your own words, this reminder: "{text}"'
                   + _EVENT_REPLY_IS_THE_MESSAGE)
@@ -16390,7 +16424,6 @@ def _geo_deliver(notify_user, target_user, text, place_name, direction):
         fallback = f'{who} {verb} {place_name}: {text}'
     # A shopping-list reminder is for the list: tapping it opens the chat with
     # the grocery panel up, not the bare conversation.
-    grocery = _geo_is_grocery(text)
     delivered = _alfred_notify(notify_user, prompt, scope=_event_scope('ev-geo'), profile=EVENT_PROFILE)
     if delivered:
         if not _user_watching(notify_user):
@@ -17548,9 +17581,9 @@ def geo_track_status(user=None):
 # rows in geo.db, and seeding never removes a place.
 GROCERY_GEOFENCE_PLACES: list[tuple[str, float, float, int]] = []
 GROCERY_GEOFENCE_TEXT = (
-    'check the shopping list: tell me how many items are still '
-    'pendientes y nombra algunos (consulta la lista con la skill grocery / '
-    'list_groceries). If nothing is pending, tell me anyway.'
+    'check the shopping list: tell me how many items are still pending and name '
+    'a few (read the list with the grocery skill / list_groceries). If nothing '
+    'is pending, tell me anyway.'
 )
 
 
