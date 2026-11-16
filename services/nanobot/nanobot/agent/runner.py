@@ -2222,8 +2222,13 @@ class AgentRunner:
                         empty_content_retries,
                         _MAX_EMPTY_RETRIES,
                     )
+                    # Resuming: the turn goes on to another model call. Saying
+                    # it ended told the API to close the stream, the client
+                    # hung up, and the retry -- the whole point -- was
+                    # cancelled with the turn. The real end of the turn sends
+                    # its own resuming=False below.
                     if hook.wants_streaming():
-                        await hook.on_stream_end(context, resuming=False)
+                        await hook.on_stream_end(context, resuming=True)
                     await hook.after_iteration(context)
                     continue
                 note_event("retry:finalize")
@@ -2234,7 +2239,7 @@ class AgentRunner:
                     empty_content_retries,
                 )
                 if hook.wants_streaming():
-                    await hook.on_stream_end(context, resuming=False)
+                    await hook.on_stream_end(context, resuming=True)
                 response = await self._request_finalization_retry(spec, messages_for_model)
                 retry_usage = self._usage_dict(response.usage)
                 self._accumulate_usage(usage, retry_usage)

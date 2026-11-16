@@ -3217,3 +3217,50 @@ def test_a_missing_workspace_is_no_skills_not_an_error(tmp_path):
 
     # The builtins still resolve; the point is that it does not raise.
     assert isinstance(_available_skill_names(_Spec()), set)
+
+
+@pytest.mark.asyncio
+async def test_empty_retry_keeps_the_stream_open():
+    """A streamed turn retried after an empty reply must not end the stream.
+
+    Ending it told the API to send [DONE]; the client hung up, and the retry --
+    which was going to answer -- was cancelled with the turn. Only the turn's
+    real end says resuming=False."""
+    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from nanobot.agent.hook import AgentHook, AgentHookContext
+
+    provider = MagicMock()
+    calls = {"n": 0}
+    stream_end_calls: list[bool] = []
+
+    class TrackingHook(AgentHook):
+        def wants_streaming(self) -> bool:
+            return True
+
+        async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
+            stream_end_calls.append(resuming)
+
+        def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
+            return content
+
+    async def chat_stream_with_retry(*, messages, on_content_delta=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return LLMResponse(content=None, tool_calls=[], usage={})
+        return LLMResponse(content="¡Listo!", tool_calls=[], usage={})
+
+    provider.chat_stream_with_retry = chat_stream_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+
+    result = await AgentRunner(provider).run(AgentRunSpec(
+        initial_messages=[{"role": "user", "content": "Ya lo hice"}],
+        tools=tools,
+        model="test-model",
+        max_iterations=5,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        hook=TrackingHook(),
+    ))
+
+    assert result.final_content == "¡Listo!"
+    assert stream_end_calls == [True, False]
