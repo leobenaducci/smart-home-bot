@@ -15,6 +15,7 @@ failed turn each become a signal, and a turn billed in two rows is one
 episode.
 """
 import json
+import shutil
 import os
 import sqlite3
 import sys
@@ -394,16 +395,29 @@ except W.WorkError as exc:
 (stack / ".venv" / "bin").mkdir(parents=True)
 subprocess.run(["git", "-C", str(stack), "add", ".gitignore"], check=True)
 subprocess.run(["git", "-C", str(stack), "commit", "-qm", "ignore the venv"], check=True)
+(stack / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages").mkdir(parents=True)
 vwt = W.start(imp, [srepo], "18", "pila")
-check("a stack worktree gets the checkout's .venv, linked",
-      (vwt / ".venv").is_symlink() and (vwt / ".venv").resolve() == (stack / ".venv").resolve())
-check("  and the link is not a change", W._changed(vwt) == [], W._changed(vwt))
-(vwt / ".venv").unlink()
-check("a worktree made without it gets it at its next start",
-      W.start(imp, [srepo], "18", "pila") == vwt and (vwt / ".venv").is_symlink())
-(vwt / ".venv").unlink()
+check("a stack worktree gets a .venv of its own, not a link to the checkout's",
+      (vwt / ".venv" / "bin" / "python").exists() and not (vwt / ".venv").is_symlink())
+_pth = next((vwt / ".venv").glob(f"lib/python*/site-packages/{W.WORKTREE_VENV_PTH}"), None)
+check("  which reads the checkout's packages by absolute path",
+      _pth is not None and str(stack / ".venv") in _pth.read_text(encoding="utf-8"))
+check("  and has no pip to install into anything",
+      not list((vwt / ".venv" / "bin").glob("pip*")))
+_probe = subprocess.run([str(vwt / ".venv" / "bin" / "python"), "-c", "import sys; print(sys.prefix)"],
+                        capture_output=True, text=True)
+check("  and runs, as itself", _probe.returncode == 0
+      and Path(_probe.stdout.strip()).resolve() == (vwt / ".venv").resolve(), _probe)
+check("  and is not a change", W._changed(vwt) == [], W._changed(vwt))
+shutil.rmtree(vwt / ".venv")
+(vwt / ".venv").symlink_to(stack / ".venv")
+check("a link left by an older version is replaced at the next start",
+      W.start(imp, [srepo], "18", "pila") == vwt and not (vwt / ".venv").is_symlink()
+      and (vwt / ".venv" / "bin" / "python").exists())
+shutil.rmtree(vwt / ".venv")
+(vwt / ".venv").symlink_to(stack / ".venv")
 K.run_tests(imp, [srepo], "18", "pila", run=lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
-check("  or its next test run", (vwt / ".venv").is_symlink())
+check("  or at its next test run", not (vwt / ".venv").is_symlink())
 print("\npublishing and deploying a fix, with the checks in code")
 import ship as S  # noqa: E402
 remote = tmp / "luces-remote.git"
@@ -813,7 +827,7 @@ _copy = tmp / "copia-desplegada"
 (_copy / "deploy" / "improve").mkdir(parents=True)
 check("a copy with no .venv leaves the shim alone",
       W.write_shim(imp, root=_copy) is None and shim.read_text() == _good, shim.read_text())
-# A fix's worktree: link_local gave it the checkout's .venv, and its .git is a
+# A fix's worktree with a .venv that has an interpreter (once a link, now its own), and its .git is a
 # file. Its cli is code the Programmer is writing.
 _wt = tmp / "work" / "30-stack"
 (_wt / "deploy" / "improve").mkdir(parents=True)

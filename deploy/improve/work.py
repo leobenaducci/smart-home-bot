@@ -117,23 +117,58 @@ def start(d: Path, repos: list[dict], rid: str, name: str) -> Path:
 
 
 # What a stack worktree needs from the working checkout that git does not
-# carry, because each is gitignored: the sanitizer's household rules (without
-# them a check sees shapes only) and the interpreter the suites name as
-# `./.venv/bin/python` (without it `test_backup.py` fails on a missing file,
-# which reads as the fix's fault). Linked, never copied, never committed.
-LOCAL_LINKS = ("deploy/sanitize-rules.local.py", ".venv")
+# carry, because it is gitignored: the sanitizer's household rules (without
+# them a check sees shapes only). Linked, never copied, never committed.
+LOCAL_LINKS = ("deploy/sanitize-rules.local.py",)
+WORKTREE_VENV_PTH = "live-checkout.pth"
 
 
 def link_local(repo: dict, path: Path) -> None:
     """Link LOCAL_LINKS into a stack worktree, where the checkout has them and
-    the worktree does not. Idempotent, so a worktree made before an entry was
-    added gets it at its next start or test run."""
+    the worktree does not, and give it its own interpreter. Idempotent, so a
+    worktree made before an entry was added gets it at its next start or test
+    run."""
     if repo["kind"] != "stack":
         return
     for rel in LOCAL_LINKS:
         src, dst = Path(repo["path"]) / rel, path / rel
         if src.exists() and not dst.exists() and not dst.is_symlink():
             dst.symlink_to(src)
+    ensure_venv(repo, path)
+
+
+def ensure_venv(repo: dict, path: Path) -> None:
+    """A `.venv` of the worktree's own, for the suites that name
+    `./.venv/bin/python` (test_backup.py fails on a missing file without one,
+    which reads as the fix's fault).
+
+    Its own, not a link to the checkout's: the Programmer may write anywhere in
+    its worktree, and through a linked `.venv` that reached the interpreter the
+    house's deploys and the publish gate run under -- a `pip install` or an
+    edited module there was code every later deploy executed, invisible to git
+    status, the commit checks and the sanitizer. So it is a fresh venv made
+    without pip, and the checkout's packages are importable through a `.pth`
+    naming their absolute path: readable as before, but no longer a path inside
+    the worktree. A link left by an older version is replaced."""
+    venv = path / ".venv"
+    live = Path(repo["path"]) / ".venv"
+    if venv.is_symlink():
+        venv.unlink()
+    py = venv / "bin" / "python"
+    if py.exists() or not live.exists():
+        return
+    base = getattr(sys, "_base_executable", None) or sys.executable
+    r = subprocess.run([os.path.realpath(base), "-m", "venv", "--without-pip", str(venv)],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        raise WorkError(f"could not make the worktree's .venv: {(r.stderr or r.stdout).strip()[:300]}")
+    ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    live_sites = [str(d) for d in (live / "lib" / ver / "site-packages",
+                                   live / "lib" / ver / "dist-packages",
+                                   live / "local" / "lib" / ver / "dist-packages") if d.is_dir()]
+    site = venv / "lib" / ver / "site-packages"
+    site.mkdir(parents=True, exist_ok=True)
+    (site / WORKTREE_VENV_PTH).write_text("".join(f"{d}\n" for d in live_sites), encoding="utf-8")
 
 
 def _changed(path: Path) -> list[tuple[str, str]]:
