@@ -53,6 +53,20 @@ def _validate_url(url: str) -> tuple[bool, str]:
         return False, str(e)
 
 
+def _guarded_transport(proxy: str | None) -> httpx.AsyncBaseTransport | None:
+    """A transport that validates every hop -- each redirect included -- before
+    connecting, and connects to the very addresses it validated (no DNS
+    rebinding between the check and the request). Without it a redirect to a
+    container or loopback address was fetched first and refused afterwards.
+    (Upstream HKUDS/nanobot#4086, #6069.) Behind a proxy the proxy resolves
+    names, so the per-hop check falls back to the post-fetch one.
+    """
+    if proxy:
+        return None
+    from nanobot.security.network import PinnedDNSAsyncTransport
+    return PinnedDNSAsyncTransport()
+
+
 def _validate_url_safe(url: str) -> tuple[bool, str]:
     """Validate URL with SSRF protection: scheme, domain, and resolved IP check."""
     from nanobot.security.network import validate_url_target
@@ -317,7 +331,8 @@ class WebFetchTool(Tool):
 
         # Detect and fetch images directly to avoid Jina's textual image captioning
         try:
-            async with httpx.AsyncClient(proxy=self.proxy, follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=15.0) as client:
+            async with httpx.AsyncClient(proxy=self.proxy, transport=_guarded_transport(self.proxy),
+                                         follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=15.0) as client:
                 async with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as r:
                     from nanobot.security.network import validate_resolved_url
 
@@ -384,6 +399,7 @@ class WebFetchTool(Tool):
                 max_redirects=MAX_REDIRECTS,
                 timeout=30.0,
                 proxy=self.proxy,
+                transport=_guarded_transport(self.proxy),
             ) as client:
                 r = await client.get(url, headers={"User-Agent": USER_AGENT})
                 r.raise_for_status()
