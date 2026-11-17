@@ -3340,3 +3340,32 @@ async def test_unanswered_turn_leaves_the_stream_to_its_caller():
 
     assert result.stop_reason == "empty_final_response"
     assert stream_end_calls and all(stream_end_calls)
+
+
+@pytest.mark.asyncio
+async def test_max_iterations_answers_from_what_the_tools_found():
+    """Out of steps with tool results in hand: one no-tools call writes the answer
+    (after upstream HKUDS/nanobot#4269). The stop reason stays max_iterations so
+    the escalation router still sees an unfinished cheap-tier turn."""
+    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+
+    call = LLMResponse(content="", tool_calls=[ToolCallRequest(id="c1", name="list_dir", arguments={"path": "."})])
+    provider = MagicMock()
+    provider.chat_with_retry = AsyncMock(side_effect=[
+        call, call, LLMResponse(content="There are three files: a, b and c."),
+    ])
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value="a b c")
+
+    result = await AgentRunner(provider).run(AgentRunSpec(
+        initial_messages=[], tools=tools, model="test-model",
+        max_iterations=2, max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    assert result.stop_reason == "max_iterations"
+    assert result.final_content == "There are three files: a, b and c."
+    assert provider.chat_with_retry.await_count == 3
+    assert provider.chat_with_retry.await_args.kwargs.get("tools") is None
+    assert result.messages[-1]["role"] == "assistant"
+    assert result.messages[-1]["content"] == "There are three files: a, b and c."
