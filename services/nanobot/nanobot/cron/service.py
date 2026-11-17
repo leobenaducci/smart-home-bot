@@ -272,6 +272,13 @@ class CronService:
 
     def _arm_timer(self) -> None:
         """Schedule the next timer tick."""
+        # The timer task is also the one awaiting the job's agent turn. A store
+        # edit during that turn -- a reminder the turn itself adds, or one typed
+        # meanwhile -- used to cancel it here, killing the greeting or reminder
+        # before its result and next run were saved. `_on_timer` rearms once the
+        # due jobs have finished. (Upstream HKUDS/nanobot#5686.)
+        if self._timer_active:
+            return
         if self._timer_task:
             self._timer_task.cancel()
 
@@ -307,7 +314,12 @@ class CronService:
                 if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
             ]
 
-            for job in due_jobs:
+            for candidate in due_jobs:
+                # An earlier job's turn may have removed, disabled or rescheduled this one.
+                job = self.get_job(candidate.id)
+                if (job is None or not job.enabled or not job.state.next_run_at_ms
+                        or job.state.next_run_at_ms > _now_ms()):
+                    continue
                 await self._execute_job(job)
 
             self._save_store()
