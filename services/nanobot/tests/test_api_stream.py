@@ -758,3 +758,69 @@ async def test_a_turn_with_no_usage_sends_no_step(aiohttp_client, monkeypatch) -
 
     assert _steps(body) == []
     assert _streamed_text(body) == "Hola"
+
+
+# ---------------------------------------------------------------------------
+# A last answer that did not stream still reaches the reader
+# ---------------------------------------------------------------------------
+
+
+def _segmented_agent(segments: list[str], returned: str) -> MagicMock:
+    """Stream each segment as its own model call, then return `returned`.
+
+    An empty segment is a model call that streamed nothing -- the
+    finalization retry after empty replies is not a streaming call.
+    """
+    agent = MagicMock()
+    agent._connect_mcp = AsyncMock()
+    agent.close_mcp = AsyncMock()
+
+    async def fake_process_direct(*, on_stream=None, on_stream_end=None, **kwargs):
+        for i, seg in enumerate(segments):
+            if seg:
+                await on_stream(seg)
+            await on_stream_end(resuming=i < len(segments) - 1)
+        return returned
+
+    agent.process_direct = fake_process_direct
+    return agent
+
+
+async def _stream_text(aiohttp_client, agent) -> str:
+    client = await aiohttp_client(create_app(agent, model_name="m"))
+    resp = await client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+    body = await resp.text()
+    assert body.rstrip().endswith("data: [DONE]")
+    return _streamed_text(body)
+
+
+@pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
+@pytest.mark.asyncio
+async def test_an_unstreamed_answer_after_a_preamble_is_sent(aiohttp_client) -> None:
+    # "Voy a fijarme." streamed before a tool call; the answer came from the
+    # finalization retry, which does not stream. It used to be dropped.
+    text = await _stream_text(aiohttp_client, _segmented_agent(
+        ["Voy a fijarme.", ""], "Mora tiene dos tareas hoy."))
+    assert text.startswith("Voy a fijarme.")
+    assert text.count("Mora tiene dos tareas hoy.") == 1
+
+
+@pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
+@pytest.mark.asyncio
+async def test_a_streamed_answer_is_not_sent_twice(aiohttp_client) -> None:
+    text = await _stream_text(aiohttp_client, _segmented_agent(
+        ["Voy a fijarme.", "Mora tiene dos tareas hoy."], "Mora tiene dos tareas hoy."))
+    assert text.count("Mora tiene dos tareas hoy.") == 1
+
+
+@pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
+@pytest.mark.asyncio
+async def test_an_answer_already_on_screen_is_not_repeated(aiohttp_client) -> None:
+    # Streamed in an earlier segment, then a silent last call that returned
+    # the same words.
+    text = await _stream_text(aiohttp_client, _segmented_agent(
+        ["Listo, prendí Oficina Tomi.", ""], "Listo, prendí Oficina Tomi."))
+    assert text.count("Listo, prendí Oficina Tomi.") == 1
