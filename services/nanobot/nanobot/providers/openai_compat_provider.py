@@ -1212,11 +1212,19 @@ class OpenAICompatProvider(LLMProvider):
 
         content = "".join(content_parts) or None
         reasoning = "".join(reasoning_parts) or None
+        # Some providers reuse one id across parallel streamed calls; two tool
+        # results under one id and the next request is refused. The first keeps
+        # it, the rest get fresh ones. (Upstream HKUDS/nanobot#3943.)
+        seen_ids: set[str] = set()
+        for b in tc_bufs.values():
+            if not b["id"] or b["id"] in seen_ids:
+                b["id"] = _short_tool_id()
+            seen_ids.add(b["id"])
         return LLMResponse(
             content=content,
             tool_calls=[
                 ToolCallRequest(
-                    id=b["id"] or _short_tool_id(),
+                    id=b["id"],
                     name=b["name"],
                     arguments=json_repair.loads(b["arguments"]) if b["arguments"] else {},
                     extra_content=b.get("extra_content"),
