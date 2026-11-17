@@ -71,3 +71,27 @@ def test_local_provider_502_error_includes_reachability_hint() -> None:
     assert "local model endpoint" in result.content
     assert "http://localhost:11434/v1" in result.content
     assert "proxy/tunnel" in result.content
+
+
+def test_custom_provider_parse_chunks_deduplicates_parallel_tool_call_ids() -> None:
+    """Upstream HKUDS/nanobot#3943: a provider reusing one id across parallel calls."""
+    chunks = [{
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "delta": {
+                "tool_calls": [
+                    {"index": 0, "id": "call_dup",
+                     "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}},
+                    {"index": 1, "id": "call_dup",
+                     "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'}},
+                ],
+            },
+        }],
+    }]
+
+    result = OpenAICompatProvider._parse_chunks(chunks)
+    ids = [tool_call.id for tool_call in result.tool_calls or []]
+
+    assert ids[0] == "call_dup"
+    assert len(ids) == 2
+    assert len(set(ids)) == 2
