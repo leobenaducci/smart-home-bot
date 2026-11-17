@@ -9,10 +9,9 @@ must never arrive by accident cannot.
 
 Those two are worth naming, because both are silent when wrong:
 
-- **`rulesEnforced` is only true once a rule exists.** Enforcement with an
-  empty rule list is a mailbox Alfred reads nothing from — correct, and not
-  what an admin who filled in a mailbox and has not reached the rules yet
-  asked for.
+- **A mailbox is only exported once it has a rule.** Without one the
+  channel has no safe setting: an empty allowFrom stops nanobot from starting,
+  and allowFrom ["*"] reads every message and may answer any sender.
 - **An instance can only fetch its own.** The export takes no path segment:
   it answers for whoever the proxy header resolved to, so a container cannot
   ask for another member's mailbox password by changing a URL.
@@ -184,11 +183,18 @@ check("another member gets their own export, not this one",
 call("/profiles/api/user3/accounts", "POST",
      {**MAILBOX, "address": "sam-alfred@example.com"}, user=MEMBER_A)
 export3 = call("/profiles/api/export", user=MEMBER_B).get_json()
-check("a mailbox with no rules does not turn enforcement on",
-      export3["channels"]["email"]["rulesEnforced"] is False,
-      export3["channels"]["email"].get("rulesEnforced"))
-check("which is the difference between «no rules yet» and «read nothing»",
-      export3["channels"]["email"]["rules"] == [])
+# Neither state the channel could be handed is safe: an empty allowFrom makes
+# nanobot exit at start (the container restart-loops), and allowFrom ["*"]
+# with no rules reads every message and may answer any sender.
+check("a mailbox with no rules is not handed to the assistant at all",
+      "email" not in export3["channels"], export3["channels"])
+acct3 = [a for a in profile("user3")["accounts"]
+         if a["address"] == "sam-alfred@example.com"][0]
+call(f"/profiles/api/accounts/{acct3['id']}/rules", "POST",
+     {"match_kind": "from", "pattern": "*@example.com", "can_read": True}, user=MEMBER_A)
+export3 = call("/profiles/api/export", user=MEMBER_B).get_json()
+check("its first rule turns it on, enforced",
+      export3["channels"].get("email", {}).get("rulesEnforced") is True, export3["channels"])
 
 print("\na disabled profile exports nothing rather than failing")
 call("/profiles/api/user2", "PUT", {"display_name": "Alex", "enabled": False})

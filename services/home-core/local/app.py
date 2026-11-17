@@ -22480,10 +22480,17 @@ def _profiles_export(instance, redact=False):
                 'groupPolicy': 'open',
             }
         mailbox = next((a for a in accounts if a['imap_host']), None)
-        if mailbox:
-            rules = conn.execute(
-                'SELECT * FROM email_rules WHERE account_id=? ORDER BY id',
-                (mailbox['id'],)).fetchall()
+        rules = conn.execute(
+            'SELECT * FROM email_rules WHERE account_id=? ORDER BY id',
+            (mailbox['id'],)).fetchall() if mailbox else []
+        # A mailbox with no rules yet is not handed over at all. The channel
+        # has no safe way to run it: nanobot refuses an enabled channel with
+        # an empty allowFrom (the container restart-loops), and allowFrom
+        # ["*"] with no rules reads every message and may answer any sender.
+        # A member's assistant was down for a day on exactly this, once the
+        # mailbox's password became decryptable. Saving the first rule is
+        # what turns the mailbox on.
+        if mailbox and rules:
             channels['email'] = {
                 'enabled': True,
                 # Somebody filled this in on a page behind an admin session,
@@ -22512,11 +22519,9 @@ def _profiles_export(instance, redact=False):
                     'resend': bool(r['can_resend']),
                     'instructions': r['instructions'] or '',
                 } for r in rules],
-                # Only once somebody has written a rule. Turning enforcement on
-                # with an empty list is a mailbox he reads nothing from, which
-                # is correct and is not what an admin who has filled in a
-                # mailbox and not yet reached the rules meant to ask for.
-                'rulesEnforced': bool(rules),
+                # Always true here: the channel is only exported once a rule
+                # exists (above).
+                'rulesEnforced': True,
             }
         return {'channels': channels}
     finally:
