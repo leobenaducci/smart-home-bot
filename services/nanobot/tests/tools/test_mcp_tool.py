@@ -934,3 +934,47 @@ async def test_disabled_tools_take_out_a_prompt_and_a_resource_by_wrapped_name(
     for stack in stacks.values():
         await stack.aclose()
     assert sorted(registry.tool_names) == ["mcp_ha_HassTurnOn", "mcp_ha_prompt_Other"]
+
+
+# --- URLs in MCP failure logs (upstream HKUDS/nanobot#4584, #6067) ---------
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://user:secret@host.example/sse", "https://host.example/..."),
+        ("https://host.example:8443/mcp?token=abc#frag", "https://host.example:8443/..."),
+        ("https://user:secret@[::1]:8443/sse?token=abc", "https://[::1]:8443/..."),
+        ("https://host.example/sse", "https://host.example/..."),
+        ("https://host.example", "https://host.example"),
+        ("https://host.example/", "https://host.example/"),
+    ],
+)
+def test_redact_url_strips_credentials_and_query(url: str, expected: str) -> None:
+    assert mcp_mod._redact_url(url) == expected
+
+
+def test_scrub_redacts_every_url_in_text() -> None:
+    text = ("Client error '403 Forbidden' for url 'https://mcp.example.com/mcp?token=s3cret'"
+            " via http://u:pw@10.0.0.2:9000/p")
+    out = mcp_mod._scrub(text)
+    assert "s3cret" not in out and "pw" not in out
+    assert "https://mcp.example.com/..." in out and "http://10.0.0.2:9000/..." in out
+
+
+@pytest.mark.asyncio
+async def test_tool_failure_log_does_not_expose_the_url_token() -> None:
+    async def call_tool(_name: str, arguments: dict) -> object:
+        raise RuntimeError("POST https://mcp.example.com/mcp?token=s3cret failed")
+
+    messages: list[str] = []
+    mcp_mod.logger.enable("nanobot")  # CLI tests disable it and never re-enable
+    sink = mcp_mod.logger.add(lambda m: messages.append(str(m)), level="DEBUG")
+    try:
+        result = await _make_wrapper(SimpleNamespace(call_tool=call_tool)).execute()
+    finally:
+        mcp_mod.logger.remove(sink)
+    assert result == "(MCP tool call failed: RuntimeError)"
+    logs = "\n".join(messages)
+    assert "failed: RuntimeError" in logs
+    assert "s3cret" not in logs
+    assert "https://mcp.example.com/..." in logs

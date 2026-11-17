@@ -2,7 +2,10 @@
 
 import asyncio
 import os
+import re
 import shutil
+import traceback
+import urllib.parse
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -11,6 +14,39 @@ from loguru import logger
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
+
+def _redact_url(url: str) -> str:
+    """An MCP URL reduced to what is safe to log: scheme, host, port.
+
+    Server URLs carry secrets -- `user:token@host`, a `?token=` query (Bright
+    Data's does), an opaque token in the path -- and an httpx error repeats the
+    whole URL in its message. (Upstream HKUDS/nanobot#4584, #6067.)
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        hostname = parts.hostname or ""
+        netloc = f"[{hostname}]" if ":" in hostname else hostname
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        path = "/..." if parts.path and parts.path != "/" else parts.path
+        return urllib.parse.urlunsplit((parts.scheme, netloc, path, "", ""))
+    except Exception:
+        return "<redacted-url>"
+
+
+_URL_IN_TEXT = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
+
+
+def _scrub(value: object) -> str:
+    """Text of an exception (or anything) with every URL in it redacted."""
+    return _URL_IN_TEXT.sub(lambda m: _redact_url(m.group(0)), str(value))
+
+
+def _log_failure(message: str, *args: object) -> None:
+    """logger.exception, with the message and the traceback scrubbed of URLs."""
+    tb = _scrub(traceback.format_exc())
+    logger.error(message + "\n{}", *(_scrub(a) for a in args), tb)
+
 
 # Transient connection errors that warrant a single retry.
 # These typically happen when an MCP server restarts or a network
@@ -210,10 +246,10 @@ class MCPToolWrapper(Tool):
                         "MCP tool '{}' failed after retry: {}: {}",
                         self._name,
                         type(exc).__name__,
-                        exc,
+                        _scrub(exc),
                     )
                     return f"(MCP tool call failed after retry: {type(exc).__name__})"
-                logger.exception(
+                _log_failure(
                     "MCP tool '{}' failed: {}: {}",
                     self._name,
                     type(exc).__name__,
@@ -299,10 +335,10 @@ class MCPResourceWrapper(Tool):
                         "MCP resource '{}' failed after retry: {}: {}",
                         self._name,
                         type(exc).__name__,
-                        exc,
+                        _scrub(exc),
                     )
                     return f"(MCP resource read failed after retry: {type(exc).__name__})"
-                logger.exception(
+                _log_failure(
                     "MCP resource '{}' failed: {}: {}",
                     self._name,
                     type(exc).__name__,
@@ -412,10 +448,10 @@ class MCPPromptWrapper(Tool):
                         "MCP prompt '{}' failed after retry: {}: {}",
                         self._name,
                         type(exc).__name__,
-                        exc,
+                        _scrub(exc),
                     )
                     return f"(MCP prompt call failed after retry: {type(exc).__name__})"
-                logger.exception(
+                _log_failure(
                     "MCP prompt '{}' failed: {}: {}",
                     self._name,
                     type(exc).__name__,
@@ -616,7 +652,7 @@ async def connect_mcp_servers(
                         "MCP: registered resource '{}' from server '{}'", wrapper.name, name
                     )
             except Exception as e:
-                logger.debug("MCP server '{}': resources not supported or failed: {}", name, e)
+                logger.debug("MCP server '{}': resources not supported or failed: {}", name, type(e).__name__)
 
             try:
                 prompts_result = await session.list_prompts()
@@ -631,7 +667,7 @@ async def connect_mcp_servers(
                     registered_count += 1
                     logger.debug("MCP: registered prompt '{}' from server '{}'", wrapper.name, name)
             except Exception as e:
-                logger.debug("MCP server '{}': prompts not supported or failed: {}", name, e)
+                logger.debug("MCP server '{}': prompts not supported or failed: {}", name, type(e).__name__)
 
             logger.info(
                 "MCP server '{}': connected, {} capabilities registered", name, registered_count
@@ -655,7 +691,7 @@ async def connect_mcp_servers(
                     " Hint: this looks like stdio protocol pollution. Make sure the MCP server writes "
                     "only JSON-RPC to stdout and sends logs/debug output to stderr instead."
                 )
-            logger.error("MCP server '{}': failed to connect: {}{}", name, e, hint)
+            logger.error("MCP server '{}': failed to connect: {}{}", name, _scrub(e), hint)
             try:
                 await server_stack.aclose()
             except Exception:
@@ -675,7 +711,7 @@ async def connect_mcp_servers(
         name = list(mcp_servers.keys())[i]
         if isinstance(result, BaseException):
             if not isinstance(result, asyncio.CancelledError):
-                logger.error("MCP server '{}' connection task failed: {}", name, result)
+                logger.error("MCP server '{}' connection task failed: {}", name, _scrub(result))
         elif result is not None and result[1] is not None:
             server_stacks[result[0]] = result[1]
 
