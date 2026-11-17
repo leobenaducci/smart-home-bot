@@ -30,6 +30,15 @@ class Session:
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0  # Number of messages already consolidated to files
 
+    def __post_init__(self) -> None:
+        # An offset past the end (corrupt or hand-edited metadata) made get_history
+        # return nothing -- amnesia with no error. Reset it; get_history still caps
+        # what one prompt carries. (Upstream HKUDS/nanobot#4169.)
+        if (isinstance(self.last_consolidated, bool)
+                or not isinstance(self.last_consolidated, int)
+                or not 0 <= self.last_consolidated <= len(self.messages)):
+            self.last_consolidated = 0
+
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
         msg = {
