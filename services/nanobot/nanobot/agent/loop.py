@@ -942,6 +942,10 @@ class AgentLoop:
         self._running = False
         self._mcp_servers = mcp_servers or {}
         self._mcp_stacks: dict[str, AsyncExitStack] = {}
+        self._mcp_sessions: dict[str, Any] = {}           # server -> live session
+        self._mcp_retired: list[AsyncExitStack] = []      # dead servers' stacks, closed at shutdown
+        self._mcp_reconnect_locks: dict[str, asyncio.Lock] = {}
+        self._mcp_last_attempt = 0.0                      # monotonic, last try at the missing ones
         self._mcp_connected = False
         self._mcp_connecting = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
@@ -1040,27 +1044,84 @@ class AgentLoop:
                 CronTool(self.cron_service, default_timezone=self.context.timezone or "UTC")
             )
 
+    # A server that was down when we last tried is tried again at the start of a
+    # turn, but not on every turn: an unreachable HTTP server costs a probe
+    # timeout, and five assistants paying it on each message is worse than
+    # waiting a few minutes for it to come back.
+    _MCP_RETRY_S = 300.0
+
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
-        if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
+        """Connect configured MCP servers that are not connected (lazy, retried).
+
+        Used to connect once and then never again: a server that was down when
+        the first message arrived stayed missing until nanobot restarted, as long
+        as any other server had connected.
+        """
+        if self._mcp_connecting or not self._mcp_servers:
             return
+        missing = {n: c for n, c in self._mcp_servers.items() if n not in self._mcp_stacks}
+        if not missing:
+            return
+        now = time.monotonic()
+        # With nothing connected, every turn tries (as it always did); once some
+        # servers are up, the missing ones wait their turn.
+        if (self._mcp_stacks and self._mcp_last_attempt
+                and now - self._mcp_last_attempt < self._MCP_RETRY_S):
+            return
+        self._mcp_last_attempt = now
         self._mcp_connecting = True
         from nanobot.agent.tools.mcp import connect_mcp_servers
 
         try:
-            self._mcp_stacks = await connect_mcp_servers(self._mcp_servers, self.tools)
-            if self._mcp_stacks:
-                self._mcp_connected = True
-            else:
-                logger.warning("No MCP servers connected successfully (will retry next message)")
+            stacks = await connect_mcp_servers(
+                missing, self.tools, reconnect=self._reconnect_mcp_server, sessions=self._mcp_sessions,
+            )
+            self._mcp_stacks.update(stacks)
+            self._mcp_connected = bool(self._mcp_stacks)
+            still = sorted(set(missing) - set(stacks))
+            if still:
+                logger.warning("MCP servers not connected: {} (retrying in {}s)",
+                               ", ".join(still), int(self._MCP_RETRY_S))
         except asyncio.CancelledError:
             logger.warning("MCP connection cancelled (will retry next message)")
-            self._mcp_stacks.clear()
+            self._mcp_last_attempt = 0.0
         except BaseException as e:
-            logger.error("Failed to connect MCP servers (will retry next message): {}", e)
-            self._mcp_stacks.clear()
+            logger.error("Failed to connect MCP servers (will retry): {}", e)
         finally:
             self._mcp_connecting = False
+
+    async def _reconnect_mcp_server(self, name: str, dead_session: Any) -> Any | None:
+        """A live session for `name`, replacing `dead_session` if nobody has yet.
+
+        Called by an MCP wrapper whose session died -- the server restarted. One
+        reconnect per server at a time; a wrapper arriving after it finished gets
+        the session it made. The dead stack is not closed here: it was entered in
+        another task, and exiting anyio cancel scopes from this one is how a
+        reconnect corrupts the turn it is serving. It is closed at shutdown.
+        """
+        cfg = self._mcp_servers.get(name)
+        if cfg is None:
+            return None
+        lock = self._mcp_reconnect_locks.setdefault(name, asyncio.Lock())
+        async with lock:
+            current = self._mcp_sessions.get(name)
+            if current is not None and current is not dead_session:
+                return current
+            from nanobot.agent.tools.mcp import connect_mcp_servers
+
+            old = self._mcp_stacks.pop(name, None)
+            if old is not None:
+                self._mcp_retired.append(old)
+            self._mcp_sessions.pop(name, None)
+            stacks = await connect_mcp_servers(
+                {name: cfg}, self.tools, reconnect=self._reconnect_mcp_server, sessions=self._mcp_sessions,
+            )
+            if name not in stacks:
+                logger.warning("MCP server '{}': reconnect failed; next try at the start of a turn", name)
+                return None
+            self._mcp_stacks[name] = stacks[name]
+            logger.info("MCP server '{}': reconnected", name)
+            return self._mcp_sessions.get(name)
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
@@ -2169,12 +2230,14 @@ class AgentLoop:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._background_tasks.clear()
-        for name, stack in self._mcp_stacks.items():
+        for name, stack in [*self._mcp_stacks.items(), *(("(retired)", s) for s in self._mcp_retired)]:
             try:
                 await stack.aclose()
             except (RuntimeError, BaseExceptionGroup):
                 logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
         self._mcp_stacks.clear()
+        self._mcp_retired.clear()
+        self._mcp_sessions.clear()
 
     def _schedule_background(self, coro) -> None:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""
