@@ -1568,6 +1568,34 @@ with open(_store, encoding="utf-8") as fh:
 check("  a member with no entry yet gets one", _new.get("topics") == ["Mora", "Family"],
       _new)
 
+print("\na Paperless token belongs to the person's own account, not `userN`")
+# The button used the member id as the Paperless username, so it created an
+# empty `user1` and handed the assistant its token while the person's real
+# account -- with their documents -- sat beside it.
+_pcfg = {"members": [{"id": "user1", "display_name": "Tomi"},
+                     {"id": "user2", "display_name": "Mora", "paperless_user": "mora.p"}],
+         "hosts": {"storage": {"address": "127.0.0.1"}}}
+check("  the display name, as the share spells it",
+      A.paperless_username(_pcfg, "user1") == "tomi", A.paperless_username(_pcfg, "user1"))
+check("  an explicit paperless_user wins", A.paperless_username(_pcfg, "user2") == "mora.p")
+_seen = []
+
+
+class _Done:
+    returncode, stderr, stdout = 0, "", "a" * 40 + "\n"
+
+
+_real_run = A.subprocess.run
+A.subprocess.run = lambda argv, **kw: _seen.append(argv) or _Done()
+try:
+    _tok, _err = A.issue_paperless_token(_pcfg, "user1")
+finally:
+    A.subprocess.run = _real_run
+_script = _seen[0][-1] if _seen else ""
+check("  the container is asked for that account",
+      "username='tomi'" in _script and "username='user1'" not in _script, _script)
+check("  and its token comes back", _tok == "a" * 40, (_tok, _err))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

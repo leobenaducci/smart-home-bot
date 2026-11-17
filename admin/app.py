@@ -2215,6 +2215,30 @@ def finance_token(member_id: str) -> tuple[str | None, str]:
     return hashlib.sha256(f"{secret}:{login}".encode()).hexdigest(), ""
 
 
+def paperless_username(cfg: dict, member_id: str) -> str:
+    """The Paperless account that is this person's.
+
+    `paperless_user:` on the member wins; otherwise the same name the share
+    uses (`share_folder()`, the slugified display name), which is what an
+    archive set up by hand already calls them -- `tomi`, not `user1`. Using the
+    member id here once handed four assistants tokens for freshly created,
+    empty accounts while each person's real one sat beside it with their
+    documents: Alfred searched an archive with nothing in it, without an error.
+    """
+    member = next((m for m in cfg.get("members") or []
+                   if str(m.get("id")) == str(member_id)), None) or {"id": member_id}
+    explicit = str(member.get("paperless_user") or "").strip()
+    if explicit:
+        return explicit
+    D = _deployer()
+    if D is not None:
+        return D.share_folder(member)
+    import unicodedata
+    name = str(member.get("display_name") or member_id)
+    folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", folded.lower()) or str(member_id)
+
+
 def issue_paperless_token(cfg: dict, member_id: str) -> tuple[str | None, str]:
     """Create (or fetch) the member's Paperless API token, via the container.
 
@@ -2229,7 +2253,7 @@ def issue_paperless_token(cfg: dict, member_id: str) -> tuple[str | None, str]:
     script = (
         "from django.contrib.auth.models import User; "
         "from rest_framework.authtoken.models import Token; "
-        f"u, _ = User.objects.get_or_create(username={member_id!r}); "
+        f"u, _ = User.objects.get_or_create(username={paperless_username(cfg, member_id)!r}); "
         "print(Token.objects.get_or_create(user=u)[0].key)"
     )
     storage = (cfg.get("hosts") or {}).get("storage") or {}
