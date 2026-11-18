@@ -671,9 +671,21 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         _first_token_at: list[float | None] = [None]
         _llm_calls: list[int] = [0]
 
+        # What was streamed, and how much of it since the last model call
+        # began. A turn's last answer can come from a call that does not stream
+        # -- the finalization retry after empty replies, the one after too many
+        # steps -- and the API used to send the returned text only when nothing
+        # at all had streamed. A turn that opened with "Voy a fijarme" before
+        # its tool call had streamed something, so its real answer was dropped
+        # and the reader was left with the preamble.
+        _streamed_text: list[str] = [""]
+        _segment_chars: list[int] = [0]
+
         async def _on_stream(token: str) -> None:
             if _first_token_at[0] is None and token:
                 _first_token_at[0] = time.monotonic()
+            _streamed_text[0] += token
+            _segment_chars[0] += len(token)
             await queue.put(token)
 
         _last_ts: list[float] = [time.monotonic()]
@@ -716,6 +728,8 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
             await _finish()
 
         async def _on_stream_end(*_a: Any, resuming: bool = False, **_kw: Any) -> None:
+            if resuming:
+                _segment_chars[0] = 0
             if not resuming:
                 # This is what ends the consumer on a turn with no tool call --
                 # and it fires *before* the hook reports that iteration's usage:
@@ -1112,9 +1126,16 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                     active_runs.pop(session_key, None)
 
         if not stream_failed:
-            # Emit fallback content from message tool if nothing was streamed
-            if fallback_content and not any_tokens_sent:
-                await resp.write(_sse_chunk(fallback_content[0], model_name, chunk_id))
+            # The returned text goes out when the reader has not seen it: the
+            # message tool sent it (nothing streamed), or the last model call
+            # did not stream and only earlier segments did. Never when it is
+            # already on screen.
+            if fallback_content:
+                final = fallback_content[0]
+                if not any_tokens_sent:
+                    await resp.write(_sse_chunk(final, model_name, chunk_id))
+                elif _segment_chars[0] == 0 and final.strip() not in _streamed_text[0]:
+                    await resp.write(_sse_chunk("\n\n" + final, model_name, chunk_id))
             await resp.write(_sse_chunk("", model_name, chunk_id, finish_reason="stop"))
             await resp.write(_SSE_DONE)
         else:
