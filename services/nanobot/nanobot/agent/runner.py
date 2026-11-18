@@ -2444,11 +2444,39 @@ class AgentRunner:
             break
         else:
             stop_reason = "max_iterations"
-            if spec.max_iterations_message:
+            final_content = None
+            # Out of steps with tool results in hand: one call with the tools
+            # off asks for an answer from what was found, the way the
+            # repeated-call stop above already does. The stop reason stays
+            # max_iterations on purpose -- the escalation router reads it as
+            # "the cheap tier did not finish" and redoes the turn on the strong
+            # one, discarding this; only when there is no escalation does the
+            # person get this answer instead of the canned sentence.
+            # (After upstream HKUDS/nanobot#4269.)
+            if tools_used:
+                try:
+                    finalised = await self._request_finalization_retry(spec, messages)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Max iterations: finalization call failed for {}: {}",
+                                   spec.session_key or "default", e)
+                    finalised = None
+                if finalised is not None:
+                    fin_usage = self._usage_dict(finalised.usage)
+                    self._accumulate_usage(usage, fin_usage)
+                    served_by_model = finalised.served_by_model or served_by_model
+                    served_by_provider = finalised.served_by_provider or served_by_provider
+                    context.response = finalised
+                    fin_clean = hook.finalize_content(context, finalised.content)
+                    if (not finalised.tool_calls and finalised.finish_reason != "error"
+                            and not is_blank_text(fin_clean)):
+                        logger.info("Max iterations: {} answered with the tools switched off "
+                                    "({} chars)", spec.session_key or "default", len(fin_clean))
+                        final_content = fin_clean
+            if final_content is None and spec.max_iterations_message:
                 final_content = spec.max_iterations_message.format(
                     max_iterations=spec.max_iterations,
                 )
-            else:
+            elif final_content is None:
                 final_content = _dead_end(
                     "max_iterations", max_iterations=spec.max_iterations,
                 ) or render_template(
