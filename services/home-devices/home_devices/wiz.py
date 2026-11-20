@@ -54,6 +54,26 @@ def parse_subnets(raw: str) -> list[ipaddress.IPv4Network]:
     return out
 
 
+def local_network() -> ipaddress.IPv4Network | None:
+    """This machine's own network, as a /24 around the address it would send
+    from. No packet leaves: connecting a UDP socket only picks a route.
+
+    Swept host by host on every scan, because some bulbs never answer a
+    broadcast -- measured here: one bulb ignored both the all-ones and the
+    directed broadcast and answered a unicast at once."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))      # TEST-NET-1: routed, never reached
+            addr = s.getsockname()[0]
+    except OSError:
+        return None
+    ip = ipaddress.ip_address(addr)
+    if ip.is_loopback or not ip.is_private:
+        return None
+    return ipaddress.ip_network(f"{addr}/24", strict=False)
+
+
 def pilot_state(pilot: dict) -> dict:
     """A bulb's getPilot result, in the shape the rest of the service reads
     (Home Assistant's: brightness 0-255, rgb_color, color_temp_kelvin)."""
@@ -90,8 +110,13 @@ class _Protocol(asyncio.DatagramProtocol):
 
 
 class Wiz:
-    def __init__(self, subnets: str, on_scan, broadcast: str = "255.255.255.255"):
+    def __init__(self, subnets: str, on_scan, broadcast: str = "255.255.255.255",
+                 sweep_local: bool = True):
         self.subnets = parse_subnets(subnets)
+        if sweep_local:
+            own = local_network()
+            if own and own not in self.subnets:
+                self.subnets.append(own)
         self.broadcast = broadcast
         self.on_scan = on_scan            # callable(list[Candidate]) -> None
         self.bulbs: dict[str, dict] = {}  # mac -> {ip, module, pilot, seen}

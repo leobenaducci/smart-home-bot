@@ -44,7 +44,7 @@ def with_bulb(scenario, module="ESP01_SHRGB_03"):
         port = transport.get_extra_info("sockname")[1]
         old, wiz.PORT = wiz.PORT, port
         found = []
-        w = wiz.Wiz("127.0.0.1/32", on_scan=found.extend, broadcast="127.0.0.1")
+        w = wiz.Wiz("127.0.0.1/32", on_scan=found.extend, broadcast="127.0.0.1", sweep_local=False)
         task = asyncio.create_task(w.run())
         try:
             for _ in range(100):
