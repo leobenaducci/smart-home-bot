@@ -1,0 +1,30 @@
+# Dispositivos / Devices.
+#
+# Host networking, not a bridge: the backends that come after Home Assistant
+# (WiZ bulbs, phase 3) are found by UDP broadcast, and a broadcast does not
+# cross the docker bridge, and a bulb discovered that way would answer to the docker gateway instead.
+services:
+  home-devices:
+    build:
+      context: .
+    image: home-devices:latest
+    container_name: home-devices
+    restart: unless-stopped
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      HOME_DEVICES_PORT: ${HOME_DEVICES_PORT}
+      HOMEASSISTANT_URL: ${HOME_DEVICES_HA_URL}
+      HOMEASSISTANT_TOKEN: ${HOMEASSISTANT_TOKEN:-}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET}
+      HOME_STACK_DEFAULT_LOCALE: ${HOME_STACK_DEFAULT_LOCALE:-en}
+      MEMBER_LOCALES: ${MEMBER_LOCALES:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${HOME_DEVICES_DATA_DIR:?the devices state directory}:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request,json; r=json.load(urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ['HOME_DEVICES_PORT'], timeout=5)); assert r['service']=='home-devices'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    mem_limit: 256m

@@ -661,6 +661,15 @@ services:
     # menu leaves it out rather than offering a timeout.
     # menu: casa
 
+  # Every device in the house in one list -- lights, plugs, sensors, from
+  # Home Assistant first and other backends later -- with the household's own
+  # names and rooms, and an inbox of what a scan found that nobody has looked
+  # at yet. The portal carries its page at /home-devices/. Needs
+  # HOMEASSISTANT_TOKEN to see Home Assistant's devices.
+  home-devices:
+    enabled: false
+    port: 21068
+
   # Workflow automation. Off unless you already have workflows: the whole
   # value is in the ones somebody built.
   #

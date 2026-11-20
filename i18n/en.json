@@ -2195,5 +2195,21 @@
   "admin.models.tab_coding": "Code",
   "admin.codebench.hold_take": "Reserve for",
   "admin.codebench.copy": "Copy",
-  "admin.codebench.copied": "Copied"
+  "admin.codebench.copied": "Copied",
+  "devices.title": "Devices",
+  "devices.back_portal": "Back to the portal",
+  "devices.new_heading": "New devices",
+  "devices.new_hint": "Found by a scan. Accept the ones that are things in the house; ignore the rest.",
+  "devices.active_heading": "In the house",
+  "devices.ignored_heading": "Ignored",
+  "devices.filter": "Filter",
+  "devices.empty": "No devices yet. They appear here as Home Assistant reports them.",
+  "devices.room": "Room",
+  "devices.missing": "not seen in the last scan",
+  "devices.accept": "Accept",
+  "devices.ignore": "Ignore",
+  "devices.restore": "Restore",
+  "devices.connected": "connected",
+  "portal.service.home-devices": "Devices",
+  "portal.service.home-devices.about": "Every device in the house, where it is, and how to reach it."
 }

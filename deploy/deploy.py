@@ -5985,12 +5985,22 @@ def plugin_service_url(cfg: dict, name: str) -> str:
 
 
 def plugin_mounts(cfg: dict, plugins: list | None = None) -> list[dict]:
-    """Every mount of a plugin service that is switched on, as the portal reads
-    it: `{path, upstream, house_only, writes, max_bytes, wasm}`. House only and
+    """Every mount of a shipped or plugin service that is switched on, as the
+    portal reads it: `{path, upstream, house_only, writes, max_bytes, wasm}`. House only and
     writable unless the plugin says otherwise: a mount carries a member's own
     data more often than not, and the safe way to be wrong is closed."""
     out = []
-    for plugin in plugins if plugins is not None else load_plugins(cfg):
+    # The shipped services' own mounts first, held to the same rules: a page
+    # this package serves through the portal is declared beside the service in
+    # the manifest, exactly as a plugin declares one, rather than written into
+    # the portal by name.
+    shipped = []
+    for name, spec in ((load_yaml(MANIFEST) or {}).get("services") or {}).items():
+        if spec.get("mounts"):
+            _check_mounts({"contract": 2, "services": {name: spec}, "mounts": spec["mounts"]},
+                          MANIFEST)
+            shipped.append({"doc": {"services": {name: spec}, "mounts": spec["mounts"]}})
+    for plugin in shipped + list(plugins if plugins is not None else load_plugins(cfg)):
         doc = plugin.get("doc") or {}
         services = list((doc.get("services") or {}).keys())
         for m in doc.get("mounts") or []:

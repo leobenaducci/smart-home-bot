@@ -2197,5 +2197,21 @@
   "admin.models.tab_coding": "Código",
   "admin.codebench.hold_take": "Reservar por",
   "admin.codebench.copy": "Copiar",
-  "admin.codebench.copied": "Copiado"
+  "admin.codebench.copied": "Copiado",
+  "devices.title": "Dispositivos",
+  "devices.back_portal": "Volver al portal",
+  "devices.new_heading": "Dispositivos nuevos",
+  "devices.new_hint": "Encontrados en una búsqueda. Acepta los que son cosas de la casa; ignora el resto.",
+  "devices.active_heading": "En la casa",
+  "devices.ignored_heading": "Ignorados",
+  "devices.filter": "Filtrar",
+  "devices.empty": "Aún no hay dispositivos. Aparecen aquí a medida que Home Assistant los informa.",
+  "devices.room": "Habitación",
+  "devices.missing": "no visto en la última búsqueda",
+  "devices.accept": "Aceptar",
+  "devices.ignore": "Ignorar",
+  "devices.restore": "Restaurar",
+  "devices.connected": "conectado",
+  "portal.service.home-devices": "Dispositivos",
+  "portal.service.home-devices.about": "Todos los dispositivos de la casa, dónde están y cómo llegar a ellos."
 }

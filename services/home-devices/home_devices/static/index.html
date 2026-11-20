@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="devices.title">Devices</title>
+<link rel="stylesheet" href="static/app.css">
+<script src="static/i18n/i18n.js"></script>
+<script src="static/app.js" defer></script>
+</head>
+<body>
+<header>
+  <a class="home" href="/" data-i18n="devices.back_portal" data-i18n-attr="title" title="Portal">⌂</a>
+  <h1 data-i18n="devices.title">Devices</h1>
+  <span id="backend" class="pill"></span>
+</header>
+<main>
+  <section id="new-section" hidden>
+    <h2><span data-i18n="devices.new_heading">New devices</span> <span id="new-count" class="count"></span></h2>
+    <p class="hint" data-i18n="devices.new_hint">Found by a scan. Accept the ones that are things in the house; ignore the rest.</p>
+    <div id="new-list" class="list"></div>
+  </section>
+  <section>
+    <div class="toolbar">
+      <h2 data-i18n="devices.active_heading">In the house</h2>
+      <input id="filter" type="search" data-i18n="devices.filter" data-i18n-attr="placeholder" placeholder="Filter">
+    </div>
+    <div id="active-list" class="list"></div>
+    <p id="empty" class="hint" hidden data-i18n="devices.empty">No devices yet. They appear here as Home Assistant reports them.</p>
+  </section>
+  <details>
+    <summary><span data-i18n="devices.ignored_heading">Ignored</span> <span id="ignored-count" class="count"></span></summary>
+    <div id="ignored-list" class="list"></div>
+  </details>
+</main>
+<template id="row">
+  <div class="row">
+    <span class="icon"></span>
+    <div class="main">
+      <input class="name" maxlength="80">
+      <div class="meta"><input class="room" maxlength="80"><span class="info"></span></div>
+    </div>
+    <span class="state"></span>
+    <div class="actions"></div>
+  </div>
+</template>
+</body>
+</html>

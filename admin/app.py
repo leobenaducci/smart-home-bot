@@ -1165,7 +1165,7 @@ IMPACT = {
     # force-decodes speech as the old language, which produces confident
     # nonsense rather than an error, in front of a room.
     "locale": ["home-core", "admin", "mqtt", "home-cameras", "nanobot",
-               "nanobot-house", "home-voice", "home-paperless"],
+               "nanobot-house", "home-voice", "home-paperless", "home-devices"],
     "hosts": ["*"],
     "paths": ["*"],
     # Every service whose env the manifest builds out of a `dns:` name. This

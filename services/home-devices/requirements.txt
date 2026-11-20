@@ -1,0 +1,3 @@
+# One dependency: the HTTP server for the page and API, and the WebSocket
+# client Home Assistant's live registry and state events arrive on.
+aiohttp>=3.10,<4
