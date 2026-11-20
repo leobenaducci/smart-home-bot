@@ -4098,7 +4098,13 @@ def build_portal_dashboard(cfg: dict, plugins: list | None = None) -> str:
             continue
         path = spec.get("portal_path")
         if path:
-            url, lan_only = path, HOUSE_ONLY_APPS.get(name) in lan_only_keys
+            # A page carried by a house-only mount is refused off the house
+            # network, so its tile is house only too -- offering it from a
+            # phone on mobile data would offer a 404.
+            mounted_house_only = any(m.get("house_only", True) is not False
+                                     for m in spec.get("mounts") or [])
+            url = path
+            lan_only = mounted_house_only or HOUSE_ONLY_APPS.get(name) in lan_only_keys
         else:
             address = browsable_address(cfg, spec.get("role", "hub"))
             # `tile_path:` is the path on that service's *own* port, for the
