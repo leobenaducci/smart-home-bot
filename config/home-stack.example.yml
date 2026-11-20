@@ -669,6 +669,11 @@ services:
   home-devices:
     enabled: false
     port: 21068
+    # WiZ bulbs are found by broadcast on this machine's network. A bulb on
+    # another network behind a router never hears a broadcast; list that
+    # network here (comma-separated, /22 or smaller) and it is swept host by
+    # host instead.
+    # wiz_subnets: "192.168.100.0/24"
 
   # Workflow automation. Off unless you already have workflows: the whole
   # value is in the ones somebody built.

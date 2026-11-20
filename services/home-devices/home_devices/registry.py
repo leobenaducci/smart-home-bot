@@ -195,3 +195,30 @@ class Registry:
             dev.update(changes)
             self.save()
             return dev
+
+    def merge(self, src_id: str, dst_id: str) -> dict:
+        """One device, two records: a WiZ bulb found on the LAN and the same
+        bulb as Home Assistant knows it. ``src``'s routes move to ``dst`` and
+        ``src`` is gone. What the household typed on ``dst`` stays; a blank
+        there takes ``src``'s, and aliases and a position are kept from either.
+        Later scans find each route already owned and leave it where it is."""
+        with self._lock:
+            if src_id == dst_id:
+                raise ValueError("a device cannot be merged into itself")
+            src, dst = self.devices.get(src_id), self.devices.get(dst_id)
+            if src is None or dst is None:
+                raise KeyError(src_id if src is None else dst_id)
+            have = {r["key"] for r in dst["routes"]}
+            dst["routes"] += [r for r in src["routes"] if r["key"] not in have]
+            for key in ("name", "room"):
+                if not dst.get(key) and src.get(key):
+                    dst[key] = src[key]
+            dst["aliases"] = list(dict.fromkeys(dst.get("aliases", []) + src.get("aliases", [])))
+            if dst.get("position") is None:
+                dst["position"] = src.get("position")
+            if dst.get("status") != "active" and src.get("status") == "active":
+                dst["status"] = "active"
+            dst["missing"] = all(r.get("missing") for r in dst["routes"])
+            del self.devices[src_id]
+            self.save()
+            return dst

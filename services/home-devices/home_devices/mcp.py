@@ -57,8 +57,9 @@ TOOLS = [
             "Do something to one device (`device`) or to every light in a room (`room`; add `kind` "
             "for something other than lights). Actions: on, off, toggle; brightness (value 0-100); "
             "color (rgb [r,g,b]); temperature (value in kelvin, 2000 warm - 6500 cold); position "
-            "(covers, value 0-100); target_temperature (climate, value in degrees). Answers with "
-            "the state each device ended in."),
+            "(covers, value 0-100); target_temperature (climate, value in degrees); identify (blinks "
+            "it and leaves it as it was, to tell which lamp is which). Answers with the state "
+            "each device ended in."),
         "inputSchema": {
             "type": "object",
             "properties": {

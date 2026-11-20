@@ -2213,5 +2213,9 @@
   "portal.service.home-devices": "Devices",
   "portal.service.home-devices.about": "Every device in the house, where it is, and how to reach it.",
   "devices.turn_on": "Turn on",
-  "devices.turn_off": "Turn off"
+  "devices.turn_off": "Turn off",
+  "devices.identify": "Identify",
+  "devices.identify_hint": "Blinks it, then leaves it as it was",
+  "devices.same_as": "Same device as…",
+  "devices.merge_confirm": "Join \"{a}\" into \"{b}\"? They become one device, controlled the fastest way available."
 }

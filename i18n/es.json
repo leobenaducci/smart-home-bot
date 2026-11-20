@@ -2215,5 +2215,9 @@
   "portal.service.home-devices": "Dispositivos",
   "portal.service.home-devices.about": "Todos los dispositivos de la casa, dónde están y cómo llegar a ellos.",
   "devices.turn_on": "Encender",
-  "devices.turn_off": "Apagar"
+  "devices.turn_off": "Apagar",
+  "devices.identify": "Identificar",
+  "devices.identify_hint": "Parpadea y queda como estaba",
+  "devices.same_as": "Es el mismo que…",
+  "devices.merge_confirm": "¿Unir \"{a}\" con \"{b}\"? Pasan a ser un solo dispositivo, controlado por la vía más rápida."
 }

@@ -1971,6 +1971,7 @@ services:
           # What the assistants present at /mcp. Derived, so there is nothing
           # to fill in; the nanobot units get the same value.
           HOME_DEVICES_MCP_TOKEN: "{derived.home_devices_token}"
+          HOME_DEVICES_WIZ_SUBNETS: "{derived.home_devices_wiz_subnets}"
           HOME_STACK_DEFAULT_LOCALE: "{locale.default}"
           MEMBER_LOCALES: "{derived.member_locales}"
         state:

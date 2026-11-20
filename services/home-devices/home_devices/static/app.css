@@ -34,3 +34,5 @@ summary { cursor:pointer; font-weight:600; }
 @media (max-width:560px) { .meta .room { width:7em; } .state { display:none; } }
 button.power { min-width:5.5em; }
 button.power.on { background:#f3c94a; border-color:#d9ad2b; color:#1d1d1b; }
+select.merge { font:inherit; font-size:13px; max-width:11em; padding:3px 4px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--muted); }
+.actions { flex-wrap:wrap; justify-content:flex-end; }

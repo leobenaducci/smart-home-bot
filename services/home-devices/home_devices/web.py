@@ -21,6 +21,7 @@ from aiohttp import web
 from . import control
 from .ha import HomeAssistant
 from .mcp import McpServer
+from .wiz import Wiz
 from .registry import KINDS, STATUSES, Registry
 
 log = logging.getLogger("home-devices")
@@ -47,9 +48,11 @@ def member_locales(raw: str) -> dict[str, str]:
 
 class App:
     def __init__(self, registry: Registry, ha: HomeAssistant | None, secret: str,
-                 default_locale: str = "en", locales: dict | None = None, mcp_token: str = ""):
+                 default_locale: str = "en", locales: dict | None = None, mcp_token: str = "",
+                 wiz: Wiz | None = None):
         self.registry = registry
         self.ha = ha
+        self.wiz = wiz
         self.secret = secret
         self.default_locale = default_locale
         self.locales = locales or {}
@@ -68,14 +71,30 @@ class App:
                         st = self.ha.state_of(e["entity_id"])
                         if st:
                             states[e["entity_id"]] = st
+        if self.wiz:
+            for route in dev.get("routes", []):
+                if route["backend"] == "wiz":
+                    st = self.wiz.state_of(control.wiz_mac(route))
+                    if st:
+                        states[route["key"]] = st
         view["states"] = states
-        primary = control.control_entity(view)
-        view["primary_state"] = states.get(primary[0]) if primary else next(iter(states.values()), None)
+        preferred = control.preferred_route(view)
+        if preferred and preferred["backend"] == "wiz":
+            view["primary_state"] = states.get(preferred["key"])
+        else:
+            primary = control.control_entity(view)
+            view["primary_state"] = states.get(primary[0]) if primary else next(iter(states.values()), None)
+        view["via"] = preferred["backend"] if preferred else None
         view["actions"] = control.capabilities(view)
         return view
 
     async def act(self, view: dict, action: str, value=None, rgb=None) -> dict:
         """Do one action on one device and answer with the state it ended in."""
+        route = control.preferred_route(view)
+        if route and route["backend"] == "wiz":
+            return await self._act_wiz(view, route, action, value, rgb)
+        if action == "identify":
+            raise control.ActionError(f"{view['name']} cannot be identified by blinking")
         domain, service, entity, data = control.plan(view, action, value, rgb)
         if not self.ha:
             raise ConnectionError("Home Assistant is off")
@@ -100,10 +119,11 @@ class App:
         return await handler(request)
 
     async def healthz(self, request):
-        ha = {"status": self.ha.status, "last_scan": self.ha.last_scan,
-              "error": self.ha.error} if self.ha else {"status": "off"}
+        def report(b):
+            return {"status": b.status, "last_scan": b.last_scan, "error": b.error} if b else {"status": "off"}
         return web.json_response({"status": "ok", "service": "home-devices",
-                                  "devices": len(self.registry.devices), "backends": {"ha": ha}})
+                                  "devices": len(self.registry.devices),
+                                  "backends": {"ha": report(self.ha), "wiz": report(self.wiz)}})
 
     async def index(self, request):
         return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
@@ -112,7 +132,8 @@ class App:
         return web.json_response({
             "locale": self.locales.get(request["user"], self.default_locale),
             "statuses": STATUSES, "kinds": KINDS,
-            "backends": {"ha": self.ha.status if self.ha else "off"}})
+            "backends": {"ha": self.ha.status if self.ha else "off",
+                         "wiz": self.wiz.status if self.wiz else "off"}})
 
     async def list_devices(self, request):
         devs = [self.device_view(d) for d in self.registry.devices.values()]
@@ -132,6 +153,41 @@ class App:
             return web.json_response({"error": "no such device"}, status=404)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"device": self.device_view(dev)})
+
+    async def _act_wiz(self, view, route, action, value, rgb) -> dict:
+        if not self.wiz:
+            raise ConnectionError("the WiZ backend is off")
+        mac = control.wiz_mac(route)
+        before = self.wiz.state_of(mac) or {}
+        is_on = before.get("state") == "on"
+        if action == "identify":
+            # Blink, then put it back exactly as it was: a bulb somebody is
+            # reading under must not end up off, or at another colour.
+            pilot = dict((self.wiz.bulbs.get(mac) or {}).get("pilot") or {})
+            if action not in control.capabilities(view):
+                raise control.ActionError(f"{view['name']} cannot be identified")
+            for state in (not is_on, is_on, not is_on, is_on):
+                await self.wiz.set_pilot(mac, {"state": state} if not state else
+                                         {"state": True, "dimming": 100})
+                await asyncio.sleep(0.6)
+            restore = control.wiz_restore(pilot)
+            await self.wiz.set_pilot(mac, restore)
+        else:
+            await self.wiz.set_pilot(mac, control.plan_wiz(view, action, value, rgb, is_on))
+        log.info("%s %s -> wiz %s", view["id"], action, mac)
+        after = self.device_view(self.registry.devices[view["id"]])
+        return {"name": after["name"], "room": after["room"],
+                "state": (after.get("primary_state") or {}).get("state")}
+
+    async def merge_device(self, request):
+        try:
+            body = await request.json()
+            dev = self.registry.merge(request.match_info["dev_id"], str(body.get("into") or ""))
+        except KeyError:
+            return web.json_response({"error": "no such device"}, status=404)
+        except (ValueError, AttributeError) as exc:
+            return web.json_response({"error": str(exc) or "JSON body expected"}, status=400)
         return web.json_response({"device": self.device_view(dev)})
 
     async def device_action(self, request):
@@ -162,6 +218,7 @@ class App:
             web.get("/api/devices", self.list_devices),
             web.patch("/api/devices/{dev_id}", self.update_device),
             web.post("/api/devices/{dev_id}/action", self.device_action),
+            web.post("/api/devices/{dev_id}/merge", self.merge_device),
             web.route("*", "/mcp", self.mcp.handle),
             web.static("/static", STATIC),
         ])
@@ -173,16 +230,20 @@ def main():
     registry = Registry(Path(os.environ.get("HOME_DEVICES_DATA", "/data")) / "devices.json")
     ha = HomeAssistant(os.environ.get("HOMEASSISTANT_URL", ""), os.environ.get("HOMEASSISTANT_TOKEN", ""),
                        on_scan=lambda cands: _announce(registry.observe("ha", cands)))
+    wiz = Wiz(os.environ.get("HOME_DEVICES_WIZ_SUBNETS", ""),
+              on_scan=lambda cands: _announce(registry.observe("wiz", cands)))
     app = App(registry, ha, os.environ.get("PROXY_SHARED_SECRET", ""),
               os.environ.get("HOME_STACK_DEFAULT_LOCALE", "en"),
               member_locales(os.environ.get("MEMBER_LOCALES", "")),
-              os.environ.get("HOME_DEVICES_MCP_TOKEN", ""))
+              os.environ.get("HOME_DEVICES_MCP_TOKEN", ""), wiz)
 
     async def start_backends(_app):
         _app["ha_task"] = asyncio.create_task(ha.run())
+        _app["wiz_task"] = asyncio.create_task(wiz.run())
 
     async def stop_backends(_app):
         _app["ha_task"].cancel()
+        _app["wiz_task"].cancel()
 
     webapp = app.build()
     webapp.on_startup.append(start_backends)

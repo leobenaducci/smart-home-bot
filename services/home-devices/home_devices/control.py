@@ -10,7 +10,7 @@ from __future__ import annotations
 import unicodedata
 
 ACTIONS = ("on", "off", "toggle", "brightness", "color", "temperature", "position",
-           "target_temperature")
+           "target_temperature", "identify")
 
 # The entity in a device that an action drives, most specific first. Sensors,
 # buttons and cameras are not here: they report, they are not switched.
@@ -45,7 +45,31 @@ def control_entity(device: dict) -> tuple[str, str] | None:
     return None
 
 
+def preferred_route(device: dict) -> dict | None:
+    """The route an action goes down. A WiZ device on the LAN beats any cloud
+    copy of it: it answers in milliseconds and its state is the truth."""
+    routes = [r for r in device.get("routes", []) if not r.get("missing")]
+    for backend in ("wiz", "ha"):
+        for r in routes:
+            if r.get("backend") == backend and (backend != "ha" or control_entity(device)):
+                return r
+    return None
+
+
+def wiz_mac(route: dict) -> str:
+    return route["key"].split(":", 1)[1]
+
+
 def capabilities(device: dict) -> list[str]:
+    route = preferred_route(device)
+    if route and route["backend"] == "wiz":
+        if (route.get("entities") or [{}])[0].get("domain") == "plug":
+            return ["on", "off", "toggle", "identify"]
+        return ["on", "off", "toggle", "brightness", "color", "temperature", "identify"]
+    return ha_capabilities(device)
+
+
+def ha_capabilities(device: dict) -> list[str]:
     found = control_entity(device)
     if not found:
         return []
@@ -85,8 +109,8 @@ def plan(device: dict, action: str, value=None, rgb=None) -> tuple[str, str, str
     entity, domain = found
     if domain in REFUSED_DOMAINS:
         raise ActionError(f"{name} is a lock; locks are not operated from here")
-    if action not in capabilities(device):
-        raise ActionError(f"{name} cannot do '{action}'; it can: {', '.join(capabilities(device))}")
+    if action not in ha_capabilities(device):
+        raise ActionError(f"{name} cannot do '{action}'; it can: {', '.join(ha_capabilities(device))}")
 
     if domain == "cover":
         service = {"on": "open_cover", "off": "close_cover", "toggle": "toggle",
@@ -158,3 +182,55 @@ def in_room(devices: list[dict], room: str, kind: str | None = None) -> list[dic
         raise ActionError(f"no room called '{room}'. Rooms: {', '.join(sorted(rooms.values()))}")
     return [d for d in devices if d.get("status") == "active" and fold(d["room"]) == want
             and d.get("kind") in kinds and not d.get("missing")]
+
+
+def plan_wiz(device: dict, action: str, value=None, rgb=None, is_on: bool | None = None) -> dict:
+    """The setPilot params for one action on a WiZ device."""
+    name = device.get("name") or device.get("id")
+    if action not in ACTIONS:
+        raise ActionError(f"action is one of {', '.join(ACTIONS)}")
+    if action not in capabilities(device):
+        raise ActionError(f"{name} cannot do '{action}'; it can: {', '.join(capabilities(device))}")
+    if action == "on":
+        return {"state": True}
+    if action == "off":
+        return {"state": False}
+    if action == "toggle":
+        return {"state": not is_on}
+    if action == "brightness":
+        pct = _pct(value)
+        # WiZ refuses dimming under 10; 0 means off, as it does for HA lights.
+        return {"state": False} if pct == 0 else {"state": True, "dimming": max(10, pct)}
+    if action == "color":
+        if not (isinstance(rgb, (list, tuple)) and len(rgb) == 3 and
+                all(isinstance(c, (int, float)) and 0 <= c <= 255 for c in rgb)):
+            raise ActionError("color needs rgb: three numbers from 0 to 255")
+        return {"state": True, "r": int(rgb[0]), "g": int(rgb[1]), "b": int(rgb[2])}
+    if action == "temperature":
+        try:
+            kelvin = int(float(value))
+        except (TypeError, ValueError):
+            raise ActionError("temperature is a colour temperature in kelvin, 2200-6500") from None
+        if not 1500 <= kelvin <= 9000:
+            raise ActionError("temperature is a colour temperature in kelvin, 2200-6500")
+        return {"state": True, "temp": min(6500, max(2200, kelvin))}
+    raise ActionError(f"'{action}' is not a single WiZ command")
+
+
+def wiz_restore(pilot: dict) -> dict:
+    """setPilot params that put a bulb back as its getPilot said it was: off,
+    or on at the same brightness and the same scene, white or colour."""
+    if not pilot.get("state"):
+        return {"state": False}
+    out = {"state": True}
+    if pilot.get("dimming"):
+        out["dimming"] = int(pilot["dimming"])
+    if pilot.get("sceneId"):
+        out["sceneId"] = int(pilot["sceneId"])
+        if pilot.get("speed"):
+            out["speed"] = int(pilot["speed"])
+    elif pilot.get("temp"):
+        out["temp"] = int(pilot["temp"])
+    elif all(pilot.get(c) is not None for c in ("r", "g", "b")):
+        out.update(r=int(pilot["r"]), g=int(pilot["g"]), b=int(pilot["b"]))
+    return out

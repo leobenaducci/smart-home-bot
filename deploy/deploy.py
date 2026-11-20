@@ -2190,6 +2190,10 @@ def derive(cfg: dict, secrets: dict) -> dict:
             f"http://host.docker.internal:{(cfg.get('services') or {}).get('home-devices', {}).get('port')}"
             if (cfg.get("services") or {}).get("home-devices", {}).get("enabled")
             and isinstance((cfg.get("services") or {}).get("home-devices", {}).get("port"), int) else ""),
+        # Networks a WiZ broadcast cannot reach (behind another router), swept
+        # host by host. Empty is the common case: one flat network.
+        "home_devices_wiz_subnets": str(
+            ((cfg.get("services") or {}).get("home-devices") or {}).get("wiz_subnets") or "").strip(),
         "home_devices_token": (
             derive_service_token(secrets["PROXY_SHARED_SECRET"], "home-devices")
             if secrets.get("PROXY_SHARED_SECRET") else ""),

@@ -30,7 +30,7 @@ function row(d) {
   name.value = d.name; room.value = d.room;
   room.placeholder = t('devices.room');
   const found = d.discovered || {};
-  const via = (d.routes || []).map(r => r.backend.toUpperCase()).join(' · ');
+  const via = (d.routes || []).map(r => r.backend.toUpperCase() + (r.missing ? '?' : '')).join(' · ');
   el.querySelector('.info').textContent =
     [via, [found.manufacturer, found.model].filter(Boolean).join(' '), d.missing ? t('devices.missing') : '']
       .filter(Boolean).join(' — ');
@@ -60,6 +60,37 @@ function row(d) {
       } catch (e) { alert(e.message); b.disabled = false; }
     });
     actions.append(b);
+  }
+  if ((d.actions || []).includes('identify')) {
+    const b = document.createElement('button');
+    b.textContent = t('devices.identify'); b.title = t('devices.identify_hint');
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await api(`api/devices/${encodeURIComponent(d.id)}/action`,
+        { method: 'POST', body: JSON.stringify({ action: 'identify' }) }); }
+      catch (e) { alert(e.message); }
+      b.disabled = false;
+    });
+    actions.append(b);
+  }
+  if (d.status !== 'ignored') {
+    const sel = document.createElement('select');
+    sel.className = 'merge';
+    const others = devices.filter(x => x.id !== d.id && x.status !== 'ignored' &&
+      ['light', 'plug', 'switch'].includes(x.kind) === ['light', 'plug', 'switch'].includes(d.kind));
+    sel.append(new Option(t('devices.same_as'), ''));
+    others.sort((a, b) => a.name.localeCompare(b.name))
+      .forEach(x => sel.append(new Option(`${x.name}${x.room ? ' — ' + x.room : ''}`, x.id)));
+    sel.addEventListener('change', async () => {
+      const into = devices.find(x => x.id === sel.value);
+      if (!into || !confirm(t('devices.merge_confirm', { a: d.name, b: into.name }))) { sel.value = ''; return; }
+      try {
+        const { device } = await api(`api/devices/${encodeURIComponent(d.id)}/merge`,
+          { method: 'POST', body: JSON.stringify({ into: into.id }) });
+        devices = devices.filter(x => x.id !== d.id).map(x => x.id === device.id ? device : x); render();
+      } catch (e) { alert(e.message); sel.value = ''; }
+    });
+    actions.append(sel);
   }
   if (d.status === 'new') { button('devices.accept', 'active', true); button('devices.ignore', 'ignored'); }
   else if (d.status === 'active') button('devices.ignore', 'ignored');
@@ -103,7 +134,8 @@ async function refresh() {
   window.i18n.apply();
   const pill = document.getElementById('backend');
   const ok = cfg.backends.ha === 'connected';
-  pill.textContent = `Home Assistant: ${ok ? t('devices.connected') : cfg.backends.ha}`;
+  pill.textContent = `Home Assistant: ${ok ? t('devices.connected') : cfg.backends.ha} · WiZ: ${
+    cfg.backends.wiz === 'running' ? t('devices.connected') : cfg.backends.wiz}`;
   pill.classList.toggle('bad', !ok);
   try { csrf = (await (await fetch('_csrf')).json()).csrf || ''; } catch { /* outside the portal */ }
   document.getElementById('filter').addEventListener('input', render);

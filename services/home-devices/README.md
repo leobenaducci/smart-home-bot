@@ -36,8 +36,8 @@ replaced by an empty registry.
 ## Roadmap
 
 1. HA backend, registry, inbox, page *(this)*
-2. Control through HA; an MCP server and skill for the assistant
-3. WiZ bulbs locally over UDP (true state; HA's cloud copy of them is stale)
+2. Control through HA; an MCP server (`find`, `set`) for the assistant
+3. WiZ bulbs locally over UDP, preferred over a cloud copy; identify (blink) and merge two records of one device
 4. Floor plan: import a DXF from any CAD app and drag devices onto it
 5. Location-aware answers ("the lamp by the window", "everything upstairs")
 6. The assistant switches over; overlapping HA entities leave Assist
