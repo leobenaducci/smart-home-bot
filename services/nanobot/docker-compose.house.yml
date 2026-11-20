@@ -124,6 +124,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - HOMEASSISTANT_TOKEN=${HOMEASSISTANT_TOKEN:-}
       - HOMEASSISTANT_URL=${HOMEASSISTANT_URL:-http://127.0.0.1:8123}
+      - HOME_DEVICES_URL=${HOME_DEVICES_URL:-}
+      - HOME_DEVICES_TOKEN=${HOME_DEVICES_TOKEN:-}
       # Empty on purpose: no LAN exemption unless the household names one.
       - NANOBOT_LAN_CIDR=${NANOBOT_LAN_CIDR:-}
       - SITE_LOCATION=${SITE_LOCATION:-}

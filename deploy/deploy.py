@@ -2180,6 +2180,19 @@ def derive(cfg: dict, secrets: dict) -> dict:
         "usage_token_voice": (
             derive_service_token(secrets["PROXY_SHARED_SECRET"], "voice-gateway")
             if secrets.get("PROXY_SHARED_SECRET") else ""),
+        # The devices service, as the assistants reach it, and the token its
+        # MCP endpoint takes. Both empty while it is off: the MCP entry is
+        # removed then (`disable_mcp`), and an empty value is visibly nothing.
+        # host.docker.internal because the service runs on host networking
+        # (UDP discovery) and the assistants on a bridge; their compose files
+        # map that name to the host gateway.
+        "home_devices_url": (
+            f"http://host.docker.internal:{(cfg.get('services') or {}).get('home-devices', {}).get('port')}"
+            if (cfg.get("services") or {}).get("home-devices", {}).get("enabled")
+            and isinstance((cfg.get("services") or {}).get("home-devices", {}).get("port"), int) else ""),
+        "home_devices_token": (
+            derive_service_token(secrets["PROXY_SHARED_SECRET"], "home-devices")
+            if secrets.get("PROXY_SHARED_SECRET") else ""),
         "usage_token_cameras": (
             derive_service_token(secrets["PROXY_SHARED_SECRET"], "home-cameras")
             if secrets.get("PROXY_SHARED_SECRET") else ""),

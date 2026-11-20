@@ -2213,5 +2213,7 @@
   "devices.restore": "Restaurar",
   "devices.connected": "conectado",
   "portal.service.home-devices": "Dispositivos",
-  "portal.service.home-devices.about": "Todos los dispositivos de la casa, dónde están y cómo llegar a ellos."
+  "portal.service.home-devices.about": "Todos los dispositivos de la casa, dónde están y cómo llegar a ellos.",
+  "devices.turn_on": "Encender",
+  "devices.turn_off": "Apagar"
 }

@@ -32,3 +32,5 @@ button.primary { background:var(--accent); border-color:var(--accent); color:#ff
 details { margin-top:24px; }
 summary { cursor:pointer; font-weight:600; }
 @media (max-width:560px) { .meta .room { width:7em; } .state { display:none; } }
+button.power { min-width:5.5em; }
+button.power.on { background:#f3c94a; border-color:#d9ad2b; color:#1d1d1b; }

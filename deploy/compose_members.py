@@ -167,6 +167,8 @@ def member_env(cfg: dict, mid: str, index: int) -> list[str]:
         # appended in the nanobot config; the default here is the shape an
         # in-stack Home Assistant would have, never a household address.
         "HOMEASSISTANT_URL=${HOMEASSISTANT_URL:-http://127.0.0.1:8123}",
+        "HOME_DEVICES_URL=${HOME_DEVICES_URL:-}",
+        "HOME_DEVICES_TOKEN=${HOME_DEVICES_TOKEN:-}",
         # Empty on purpose: no LAN exemption unless the household names one.
         "NANOBOT_LAN_CIDR=${NANOBOT_LAN_CIDR:-}",
         # Where "the weather" means when nobody named a place. The weather skill

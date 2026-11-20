@@ -18,7 +18,9 @@ from pathlib import Path
 
 from aiohttp import web
 
+from . import control
 from .ha import HomeAssistant
+from .mcp import McpServer
 from .registry import KINDS, STATUSES, Registry
 
 log = logging.getLogger("home-devices")
@@ -45,13 +47,14 @@ def member_locales(raw: str) -> dict[str, str]:
 
 class App:
     def __init__(self, registry: Registry, ha: HomeAssistant | None, secret: str,
-                 default_locale: str = "en", locales: dict | None = None):
+                 default_locale: str = "en", locales: dict | None = None, mcp_token: str = ""):
         self.registry = registry
         self.ha = ha
         self.secret = secret
         self.default_locale = default_locale
         self.locales = locales or {}
         self.started = time.time()
+        self.mcp = McpServer(self, mcp_token)
 
     # --- helpers ----------------------------------------------------------
 
@@ -66,13 +69,29 @@ class App:
                         if st:
                             states[e["entity_id"]] = st
         view["states"] = states
+        primary = control.control_entity(view)
+        view["primary_state"] = states.get(primary[0]) if primary else next(iter(states.values()), None)
+        view["actions"] = control.capabilities(view)
         return view
+
+    async def act(self, view: dict, action: str, value=None, rgb=None) -> dict:
+        """Do one action on one device and answer with the state it ended in."""
+        domain, service, entity, data = control.plan(view, action, value, rgb)
+        if not self.ha:
+            raise ConnectionError("Home Assistant is off")
+        before = (self.ha.states.get(entity) or {}).get("last_updated")
+        await self.ha.call_service(domain, service, entity, data)
+        await self.ha.wait_for_change(entity, before)
+        log.info("%s %s -> %s.%s %s", view["id"], action, domain, service, data or "")
+        after = self.device_view(self.registry.devices[view["id"]])
+        return {"name": after["name"], "room": after["room"],
+                "state": (after.get("primary_state") or {}).get("state")}
 
     # --- handlers ---------------------------------------------------------
 
     @web.middleware
     async def auth(self, request: web.Request, handler):
-        if request.path == "/healthz":
+        if request.path in ("/healthz", "/mcp"):  # /mcp checks its own token
             return await handler(request)
         user = proxy_user(request, self.secret)
         if not user:
@@ -115,6 +134,25 @@ class App:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"device": self.device_view(dev)})
 
+    async def device_action(self, request):
+        dev = self.registry.devices.get(request.match_info["dev_id"])
+        if dev is None:
+            return web.json_response({"error": "no such device"}, status=404)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"error": "JSON body expected"}, status=400)
+        view = self.device_view(dev)
+        if view["status"] != "active":
+            return web.json_response({"error": "accept the device first"}, status=409)
+        try:
+            await self.act(view, body.get("action"), body.get("value"), body.get("rgb"))
+        except control.ActionError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except ConnectionError as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        return web.json_response({"device": self.device_view(self.registry.devices[dev["id"]])})
+
     def build(self) -> web.Application:
         app = web.Application(middlewares=[self.auth])
         app.add_routes([
@@ -123,6 +161,8 @@ class App:
             web.get("/api/config", self.config),
             web.get("/api/devices", self.list_devices),
             web.patch("/api/devices/{dev_id}", self.update_device),
+            web.post("/api/devices/{dev_id}/action", self.device_action),
+            web.route("*", "/mcp", self.mcp.handle),
             web.static("/static", STATIC),
         ])
         return app
@@ -135,7 +175,8 @@ def main():
                        on_scan=lambda cands: _announce(registry.observe("ha", cands)))
     app = App(registry, ha, os.environ.get("PROXY_SHARED_SECRET", ""),
               os.environ.get("HOME_STACK_DEFAULT_LOCALE", "en"),
-              member_locales(os.environ.get("MEMBER_LOCALES", "")))
+              member_locales(os.environ.get("MEMBER_LOCALES", "")),
+              os.environ.get("HOME_DEVICES_MCP_TOKEN", ""))
 
     async def start_backends(_app):
         _app["ha_task"] = asyncio.create_task(ha.run())

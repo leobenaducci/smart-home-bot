@@ -217,6 +217,15 @@
         "enabledTools": [
           "browse"
         ]
+      },
+      "devices": {
+        "_comment": "Every device in the house, through the home-devices service: `find` and `set`. Its URL and token are derived by the deployer; with the service off this entry is removed (disable_mcp), because nanobot dials whatever is listed.",
+        "type": "streamableHttp",
+        "url": "${HOME_DEVICES_URL}/mcp",
+        "headers": {
+          "Authorization": "Bearer ${HOME_DEVICES_TOKEN}"
+        },
+        "toolTimeout": 30
       }
     }
   }

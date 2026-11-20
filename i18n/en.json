@@ -2211,5 +2211,7 @@
   "devices.restore": "Restore",
   "devices.connected": "connected",
   "portal.service.home-devices": "Devices",
-  "portal.service.home-devices.about": "Every device in the house, where it is, and how to reach it."
+  "portal.service.home-devices.about": "Every device in the house, where it is, and how to reach it.",
+  "devices.turn_on": "Turn on",
+  "devices.turn_off": "Turn off"
 }

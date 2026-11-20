@@ -16,7 +16,7 @@ async function api(path, opts = {}) {
 }
 
 function stateText(d) {
-  const first = Object.values(d.states || {})[0];
+  const first = d.primary_state || Object.values(d.states || {})[0];
   if (!first) return '';
   const unit = first.attributes.unit_of_measurement || '';
   return `${first.state}${unit ? ' ' + unit : ''}`;
@@ -45,6 +45,22 @@ function row(d) {
     b.addEventListener('click', () => update(d.id, { status }).catch(e => alert(e.message)));
     actions.append(b);
   };
+  if (d.status === 'active' && (d.actions || []).includes('toggle')) {
+    const st = (d.primary_state || {}).state;
+    const on = ['on', 'open', 'playing', 'heat', 'cool', 'auto', 'cleaning'].includes(st);
+    const b = document.createElement('button');
+    b.className = 'power' + (on ? ' on' : '');
+    b.textContent = on ? t('devices.turn_off') : t('devices.turn_on');
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        const { device } = await api(`api/devices/${encodeURIComponent(d.id)}/action`,
+          { method: 'POST', body: JSON.stringify({ action: on ? 'off' : 'on' }) });
+        devices = devices.map(x => x.id === d.id ? device : x); render();
+      } catch (e) { alert(e.message); b.disabled = false; }
+    });
+    actions.append(b);
+  }
   if (d.status === 'new') { button('devices.accept', 'active', true); button('devices.ignore', 'ignored'); }
   else if (d.status === 'active') button('devices.ignore', 'ignored');
   else button('devices.restore', 'active');

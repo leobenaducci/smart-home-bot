@@ -224,6 +224,23 @@ class HomeAssistant:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 300)
 
+    async def call_service(self, domain: str, service: str, entity_id: str, data: dict) -> None:
+        if self._ws is None or self.status != "connected":
+            raise ConnectionError(f"Home Assistant is {self.status}")
+        await self._call({"type": "call_service", "domain": domain, "service": service,
+                          "target": {"entity_id": entity_id}, "service_data": data})
+
+    async def wait_for_change(self, entity_id: str, before: str | None, timeout: float = 2.0) -> None:
+        """Give the device a moment to report back, so an answer can carry
+        the state it ended in rather than the one it started from."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while loop.time() < end:
+            s = self.states.get(entity_id) or {}
+            if s.get("last_updated") and s.get("last_updated") != before:
+                return
+            await asyncio.sleep(0.1)
+
     def state_of(self, entity_id: str) -> dict | None:
         s = self.states.get(entity_id)
         if not s:
