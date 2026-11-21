@@ -189,12 +189,25 @@ class Registry:
                 changes["aliases"] = [str(a).strip()[:80] for a in raw if str(a).strip()][:20]
             if "position" in changes:
                 pos = changes["position"]
-                if pos is not None and not (isinstance(pos, dict) and
-                                            all(isinstance(pos.get(k), (int, float)) for k in ("x", "y"))):
-                    raise ValueError("position is null or {x, y}")
+                if pos is not None:
+                    if not (isinstance(pos, dict) and isinstance(pos.get("plan"), str) and
+                            all(isinstance(pos.get(k), (int, float)) and not isinstance(pos.get(k), bool)
+                                for k in ("x", "y"))):
+                        raise ValueError("position is null or {plan, x, y}")
+                    changes["position"] = {"plan": pos["plan"], "x": float(pos["x"]), "y": float(pos["y"])}
             dev.update(changes)
             self.save()
             return dev
+
+    def unplace(self, plan_id: str) -> int:
+        """Take every device off a plan that is gone. They keep their room."""
+        with self._lock:
+            moved = [d for d in self.devices.values() if (d.get("position") or {}).get("plan") == plan_id]
+            for dev in moved:
+                dev["position"] = None
+            if moved:
+                self.save()
+            return len(moved)
 
     def merge(self, src_id: str, dst_id: str) -> dict:
         """One device, two records: a WiZ bulb found on the LAN and the same

@@ -19,6 +19,7 @@ from pathlib import Path
 from aiohttp import web
 
 from . import control
+from .floorplan import PlanError, PlanStore, room_at
 from .ha import HomeAssistant
 from .mcp import McpServer
 from .wiz import Wiz
@@ -49,8 +50,9 @@ def member_locales(raw: str) -> dict[str, str]:
 class App:
     def __init__(self, registry: Registry, ha: HomeAssistant | None, secret: str,
                  default_locale: str = "en", locales: dict | None = None, mcp_token: str = "",
-                 wiz: Wiz | None = None):
+                 wiz: Wiz | None = None, plans: PlanStore | None = None):
         self.registry = registry
+        self.plans = plans or PlanStore(registry.path.parent / "plans")
         self.ha = ha
         self.wiz = wiz
         self.secret = secret
@@ -147,6 +149,18 @@ class App:
             return web.json_response({"error": "JSON body expected"}, status=400)
         if not isinstance(body, dict):
             return web.json_response({"error": "JSON object expected"}, status=400)
+        pos = body.get("position")
+        if isinstance(pos, dict):
+            # Dropped on a plan: the plan must exist, and a drop inside a
+            # labelled room is the household saying which room it is in.
+            try:
+                plan = self.plans.get(str(pos.get("plan") or ""))
+            except KeyError:
+                return web.json_response({"error": "no such plan"}, status=400)
+            if "room" not in body and isinstance(pos.get("x"), (int, float)) and isinstance(pos.get("y"), (int, float)):
+                room = room_at(plan, pos["x"], pos["y"])
+                if room:
+                    body["room"] = room
         try:
             dev = self.registry.update(request.match_info["dev_id"], body)
         except KeyError:
@@ -209,8 +223,56 @@ class App:
             return web.json_response({"error": str(exc)}, status=503)
         return web.json_response({"device": self.device_view(self.registry.devices[dev["id"]])})
 
+    # --- plans ------------------------------------------------------------
+
+    async def list_plans(self, request):
+        return web.json_response({"plans": self.plans.list()})
+
+    async def get_plan(self, request):
+        try:
+            return web.json_response(self.plans.get(request.match_info["plan_id"]))
+        except KeyError:
+            return web.json_response({"error": "no such plan"}, status=404)
+
+    async def upload_plan(self, request):
+        """The DXF is the body as it is; the name and file name ride in the
+        query, so the page sends a file without building a form."""
+        raw = await request.read()
+        if not raw:
+            return web.json_response({"error": "send the DXF file as the body"}, status=400)
+        plan_id = request.match_info.get("plan_id")
+        try:
+            doc = await asyncio.to_thread(self.plans.save, request.query.get("name", ""), raw,
+                                          request.query.get("source", ""), plan_id)
+        except KeyError:
+            return web.json_response({"error": "no such plan"}, status=404)
+        except PlanError as exc:
+            return web.json_response({"error": str(exc), "code": "plan_unreadable"}, status=400)
+        log.info("plan %s %s from %s", doc["id"], "replaced" if plan_id else "added", doc["source"] or "upload")
+        return web.json_response(doc, status=200 if plan_id else 201)
+
+    async def rename_plan(self, request):
+        try:
+            body = await request.json()
+            doc = self.plans.rename(request.match_info["plan_id"], body.get("name"))
+        except KeyError:
+            return web.json_response({"error": "no such plan"}, status=404)
+        except (ValueError, AttributeError) as exc:
+            return web.json_response({"error": str(exc) or "JSON body expected"}, status=400)
+        return web.json_response({"id": doc["id"], "name": doc["name"]})
+
+    async def delete_plan(self, request):
+        plan_id = request.match_info["plan_id"]
+        try:
+            self.plans.delete(plan_id)
+        except KeyError:
+            return web.json_response({"error": "no such plan"}, status=404)
+        return web.json_response({"deleted": plan_id, "unplaced": self.registry.unplace(plan_id)})
+
     def build(self) -> web.Application:
-        app = web.Application(middlewares=[self.auth])
+        # A house plan with its hatches can run to a few megabytes; the
+        # portal's own cap is 16.
+        app = web.Application(middlewares=[self.auth], client_max_size=16 * 1024 * 1024)
         app.add_routes([
             web.get("/healthz", self.healthz),
             web.get("/", self.index),
@@ -219,6 +281,12 @@ class App:
             web.patch("/api/devices/{dev_id}", self.update_device),
             web.post("/api/devices/{dev_id}/action", self.device_action),
             web.post("/api/devices/{dev_id}/merge", self.merge_device),
+            web.get("/api/plans", self.list_plans),
+            web.post("/api/plans", self.upload_plan),
+            web.get("/api/plans/{plan_id}", self.get_plan),
+            web.put("/api/plans/{plan_id}", self.upload_plan),
+            web.patch("/api/plans/{plan_id}", self.rename_plan),
+            web.delete("/api/plans/{plan_id}", self.delete_plan),
             web.route("*", "/mcp", self.mcp.handle),
             web.static("/static", STATIC),
         ])

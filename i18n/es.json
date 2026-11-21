@@ -2219,5 +2219,20 @@
   "devices.identify": "Identificar",
   "devices.identify_hint": "Parpadea y queda como estaba",
   "devices.same_as": "Es el mismo que…",
-  "devices.merge_confirm": "¿Unir \"{a}\" con \"{b}\"? Pasan a ser un solo dispositivo, controlado por la vía más rápida."
+  "devices.merge_confirm": "¿Unir \"{a}\" con \"{b}\"? Pasan a ser un solo dispositivo, controlado por la vía más rápida.",
+  "devices.plan_heading": "Plano",
+  "devices.plan_add": "Agregar plano",
+  "devices.plan_hint": "Dibuja la casa en cualquier programa de CAD y guárdala como DXF. Las paredes son líneas; una habitación es un contorno cerrado con su nombre escrito adentro. Un dispositivo que sueltas en una habitación toma su nombre.",
+  "devices.plan_name_prompt": "Nombre de este plano (por ejemplo, el piso)",
+  "devices.plan_replace": "Reemplazar dibujo",
+  "devices.plan_rename": "Renombrar",
+  "devices.plan_delete": "Borrar plano",
+  "devices.plan_delete_confirm": "¿Borrar el plano \"{name}\"? Sus dispositivos vuelven a la lista sin ubicar y conservan su habitación.",
+  "devices.plan_edit": "Mover dispositivos",
+  "devices.plan_done": "Listo",
+  "devices.plan_unplaced": "Sin ubicar: arrástralos al plano.",
+  "devices.plan_all_placed": "Todos los dispositivos aceptados están en un plano.",
+  "devices.plan_fit": "Ajustar",
+  "devices.plan_unreadable": "No se pudo leer el archivo: {reason}",
+  "devices.plan_drag_off": "Arrastra un dispositivo fuera del plano para quitarlo."
 }

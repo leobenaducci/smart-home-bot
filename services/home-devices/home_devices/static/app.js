@@ -118,11 +118,13 @@ function render() {
   document.getElementById('new-count').textContent = groups.new.length ? `(${groups.new.length})` : '';
   document.getElementById('ignored-count').textContent = groups.ignored.length ? `(${groups.ignored.length})` : '';
   document.getElementById('empty').hidden = devices.length > 0;
+  if (window.planRender) window.planRender();
 }
 
 async function refresh() {
   // Skip while someone is typing in a row, so a refresh does not eat the edit.
   if (document.activeElement && document.activeElement.closest('.row')) return;
+  if (window.planBusy && window.planBusy()) return;
   devices = (await api('api/devices')).devices;
   render();
 }
@@ -140,5 +142,6 @@ async function refresh() {
   try { csrf = (await (await fetch('_csrf')).json()).csrf || ''; } catch { /* outside the portal */ }
   document.getElementById('filter').addEventListener('input', render);
   await refresh();
+  await window.planStart().catch(e => console.warn('plans:', e));
   setInterval(() => refresh().catch(() => {}), 10000);
 })();

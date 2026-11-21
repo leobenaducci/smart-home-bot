@@ -2217,5 +2217,20 @@
   "devices.identify": "Identify",
   "devices.identify_hint": "Blinks it, then leaves it as it was",
   "devices.same_as": "Same device as…",
-  "devices.merge_confirm": "Join \"{a}\" into \"{b}\"? They become one device, controlled the fastest way available."
+  "devices.merge_confirm": "Join \"{a}\" into \"{b}\"? They become one device, controlled the fastest way available.",
+  "devices.plan_heading": "Floor plan",
+  "devices.plan_add": "Add a plan",
+  "devices.plan_hint": "Draw the house in any CAD program and save it as DXF. Walls are lines; a room is a closed outline with its name written inside. A device dropped in a room takes its name.",
+  "devices.plan_name_prompt": "Name of this plan (the floor, for example)",
+  "devices.plan_replace": "Replace drawing",
+  "devices.plan_rename": "Rename",
+  "devices.plan_delete": "Delete plan",
+  "devices.plan_delete_confirm": "Delete the plan \"{name}\"? Its devices go back to the unplaced list and keep their rooms.",
+  "devices.plan_edit": "Move devices",
+  "devices.plan_done": "Done",
+  "devices.plan_unplaced": "Not on a plan yet: drag them onto it.",
+  "devices.plan_all_placed": "Every accepted device is on a plan.",
+  "devices.plan_fit": "Fit",
+  "devices.plan_unreadable": "That file could not be read: {reason}",
+  "devices.plan_drag_off": "Drag a device off the plan to take it off."
 }

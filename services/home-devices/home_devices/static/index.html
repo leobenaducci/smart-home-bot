@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="static/app.css">
 <script src="static/i18n/i18n.js"></script>
 <script src="static/app.js" defer></script>
+<script src="static/plan.js" defer></script>
 </head>
 <body>
 <header>
@@ -19,6 +20,33 @@
     <h2><span data-i18n="devices.new_heading">New devices</span> <span id="new-count" class="count"></span></h2>
     <p class="hint" data-i18n="devices.new_hint">Found by a scan. Accept the ones that are things in the house; ignore the rest.</p>
     <div id="new-list" class="list"></div>
+  </section>
+  <section id="plan-section">
+    <div class="toolbar">
+      <h2 data-i18n="devices.plan_heading">Floor plan</h2>
+      <button id="plan-edit" hidden data-i18n="devices.plan_edit">Move devices</button>
+      <details id="plan-menu" class="menu" hidden>
+        <summary aria-label="Plan">⋯</summary>
+        <div class="menu-items">
+          <button id="plan-replace" data-i18n="devices.plan_replace">Replace drawing</button>
+          <button id="plan-rename" data-i18n="devices.plan_rename">Rename</button>
+          <button id="plan-delete" data-i18n="devices.plan_delete">Delete plan</button>
+        </div>
+      </details>
+    </div>
+    <div class="tabs"><span id="plan-tabs"></span><button id="plan-add" class="tab add" data-i18n="devices.plan_add">Add a plan</button></div>
+    <div id="plan-body" hidden>
+      <div id="plan-stage">
+        <svg id="plan-svg" preserveAspectRatio="xMidYMid meet"></svg>
+        <div id="plan-markers"></div>
+        <button id="plan-fit" class="fit" data-i18n="devices.plan_fit">Fit</button>
+      </div>
+      <div id="plan-tray-wrap" hidden>
+        <p class="hint"><span id="plan-tray-hint"></span> <span data-i18n="devices.plan_drag_off">Drag a device off the plan to take it off.</span></p>
+        <div id="plan-tray"></div>
+      </div>
+    </div>
+    <p class="hint" data-i18n="devices.plan_hint">Draw the house in any CAD program and save it as DXF.</p>
   </section>
   <section>
     <div class="toolbar">
