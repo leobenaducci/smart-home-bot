@@ -2222,7 +2222,7 @@
   "devices.merge_confirm": "¿Unir \"{a}\" con \"{b}\"? Pasan a ser un solo dispositivo, controlado por la vía más rápida.",
   "devices.plan_heading": "Plano",
   "devices.plan_add": "Agregar plano",
-  "devices.plan_hint": "Dibuja la casa en cualquier programa de CAD y guárdala como DXF. Las paredes son líneas; una habitación es un contorno cerrado con su nombre escrito adentro. Un dispositivo que sueltas en una habitación toma su nombre.",
+  "devices.plan_hint": "Dibuja la casa en cualquier programa de CAD y guárdala como DXF. Las paredes son líneas; escribe el nombre de cada habitación adentro, más grande que las otras etiquetas (una ventana, la cama), que quedan como referencias. Un dispositivo que sueltas en una habitación toma su nombre.",
   "devices.plan_name_prompt": "Nombre de este plano (por ejemplo, el piso)",
   "devices.plan_replace": "Reemplazar dibujo",
   "devices.plan_rename": "Renombrar",

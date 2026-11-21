@@ -24,6 +24,7 @@ import logging
 from aiohttp import web
 
 from . import control
+from .places import Places
 
 log = logging.getLogger("home-devices.mcp")
 
@@ -35,15 +36,21 @@ TOOLS = [
         "description": (
             "The house's devices: lights, plugs, switches, fans, covers, climate, sensors, TVs. "
             "Returns each device's name, room, kind, current state and the actions it accepts. "
-            "Filter by room, kind or text; with no filter, everything. Call this before `set` and "
-            "use the exact names it returns. Also reports devices a scan found that nobody has "
-            "accepted yet (`new_devices`): those cannot be controlled until someone accepts them "
-            "on the Devices page."),
+            "Filter by room, kind, floor or text; with no filter, everything. Call this before `set` "
+            "and use the exact names it returns. Where the house has floor plans, each device also "
+            "says its `floor` and, when it is beside something labelled on the plan, `near` (e.g. "
+            "'Ventana'), and the answer lists the `floors` and their rooms. For 'the lamp by the "
+            "window' or 'the light closest to the TV', pass `near` (a label on the plan or a device "
+            "name): devices come back nearest first, with `distance_m`. Also reports devices a scan "
+            "found that nobody has accepted yet (`new_devices`): those cannot be controlled until "
+            "someone accepts them on the Devices page."),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Text in the name, e.g. 'lamp'"},
                 "room": {"type": "string"},
+                "floor": {"type": "string", "description": "A floor's name, as `floors` lists them"},
+                "near": {"type": "string", "description": "A label on the plan or a device name; sorts by distance"},
                 "kind": {"type": "string", "enum": list(("light", "switch", "plug", "fan", "cover",
                                                          "climate", "lock", "media", "vacuum", "sensor",
                                                          "binary_sensor", "button", "camera", "other"))},
@@ -54,8 +61,9 @@ TOOLS = [
     {
         "name": "set",
         "description": (
-            "Do something to one device (`device`) or to every light in a room (`room`; add `kind` "
-            "for something other than lights). Actions: on, off, toggle; brightness (value 0-100); "
+            "Do something to one device (`device`), or to every light in a room (`room`) or on a "
+            "floor (`floor`, e.g. 'everything upstairs'; both together narrow it); add `kind` for "
+            "something other than lights. Actions: on, off, toggle; brightness (value 0-100); "
             "color (rgb [r,g,b]); temperature (value in kelvin, 2000 warm - 6500 cold); position "
             "(covers, value 0-100); target_temperature (climate, value in degrees); identify (blinks "
             "it and leaves it as it was, to tell which lamp is which). Answers with the state "
@@ -65,6 +73,7 @@ TOOLS = [
             "properties": {
                 "device": {"type": "string", "description": "A name from `find`"},
                 "room": {"type": "string"},
+                "floor": {"type": "string"},
                 "kind": {"type": "string"},
                 "action": {"type": "string", "enum": list(control.ACTIONS)},
                 "value": {"type": "number"},
@@ -126,9 +135,19 @@ class McpServer:
     def _views(self) -> list[dict]:
         return [self.app.device_view(d) for d in self.app.registry.devices.values()]
 
+    def _places(self) -> Places:
+        return Places(self.app.plans.docs())
+
     @staticmethod
-    def _brief(d: dict) -> dict:
+    def _brief(d: dict, places: Places | None = None) -> dict:
         out = {"name": d["name"], "room": d["room"], "kind": d["kind"]}
+        if places and places.plans:
+            floor = places.floor_of(d)
+            if floor:
+                out["floor"] = floor
+            mark = places.landmark_near(d)
+            if mark:
+                out["near"] = mark
         st = d.get("primary_state")
         if st:
             out["state"] = st["state"]
@@ -150,14 +169,19 @@ class McpServer:
 
     async def call(self, name: str, args: dict) -> dict:
         if name == "find":
-            return self.find(**{k: args.get(k) for k in ("query", "room", "kind")})
+            return self.find(**{k: args.get(k) for k in ("query", "room", "kind", "floor", "near")})
         if name == "set":
-            return await self.set(**{k: args.get(k) for k in ("device", "room", "kind", "action", "value", "rgb")})
+            return await self.set(**{k: args.get(k) for k in ("device", "room", "floor", "kind", "action",
+                                                                "value", "rgb")})
         raise control.ActionError(f"no tool called {name}")
 
-    def find(self, query=None, room=None, kind=None) -> dict:
+    def find(self, query=None, room=None, kind=None, floor=None, near=None) -> dict:
         views = self._views()
+        places = self._places()
         active = [d for d in views if d["status"] == "active"]
+        if floor:
+            plan = places.find_floor(floor)
+            active = [d for d in active if (places.plan_of(d) or {}).get("id") == plan["id"]]
         if room:
             active = [d for d in active if control.fold(d["room"]) == control.fold(room)]
         if kind:
@@ -166,25 +190,47 @@ class McpServer:
             q = control.fold(query)
             active = [d for d in active if q in control.fold(d["name"]) or
                       any(q in control.fold(a) for a in d.get("aliases", []))]
-        out = {"devices": [self._brief(d) for d in active]}
+        if near:
+            matched, points = places.references(views, near)
+            ranked = [(dist, d) for d in active if (dist := places.nearest(d, points)) is not None
+                      and fold_name(d) != control.fold(matched)]
+            ranked.sort(key=lambda p: p[0])
+            out = {"near": matched,
+                   "devices": [{**self._brief(d, places), "distance_m": round(dist, 1)} for dist, d in ranked]}
+            unplaced = len(active) - len(ranked)
+            if unplaced:
+                out["not_on_a_plan"] = unplaced
+        else:
+            out = {"devices": [self._brief(d, places) for d in active]}
+        if places.plans:
+            out["floors"] = places.floors()
         new = [d["name"] for d in views if d["status"] == "new"]
         if new:
             out["new_devices"] = {"count": len(new), "names": new[:20],
                                   "note": "found by a scan; accept them on the Devices page to use them"}
-        if not active and not (query or room or kind):
+        if not active and not (query or room or kind or floor or near):
             out["note"] = "No accepted devices yet: someone has to accept them on the Devices page."
         return out
 
-    async def set(self, device=None, room=None, kind=None, action=None, value=None, rgb=None) -> dict:
+    async def set(self, device=None, room=None, floor=None, kind=None, action=None, value=None, rgb=None) -> dict:
         views = self._views()
         if device:
             targets = [control.resolve(views, device)]
-        elif room:
-            targets = control.in_room(views, room, kind)
+        elif room or floor:
+            if room:
+                targets = control.in_room(views, room, kind)
+            else:
+                targets = [d for d in views if d.get("status") == "active" and not d.get("missing")
+                           and d.get("kind") in ((kind,) if kind else control.ROOM_DEFAULT_KINDS)]
+            if floor:
+                places = self._places()
+                plan = places.find_floor(floor)
+                targets = [d for d in targets if (places.plan_of(d) or {}).get("id") == plan["id"]]
             if not targets:
-                raise control.ActionError(f"no {kind or 'light'}s in {room}")
+                where = " ".join(filter(None, [f"in {room}" if room else "", f"on {floor}" if floor else ""]))
+                raise control.ActionError(f"no {kind or 'light'}s {where}")
         else:
-            raise control.ActionError("name a device or a room")
+            raise control.ActionError("name a device, a room or a floor")
         results = []
         for d in targets:
             try:
@@ -194,6 +240,10 @@ class McpServer:
         if all("error" in r for r in results):
             raise control.ActionError("; ".join(r["error"] for r in results))
         return {"done": results}
+
+
+def fold_name(d: dict) -> str:
+    return control.fold(d["name"])
 
 
 def _result(msg_id, result):

@@ -413,8 +413,14 @@ def parse_dxf(raw: bytes) -> dict:
 #
 # A label whose region runs off the edge of the drawing and that sits outside
 # every closed outline is a note on the sheet ("double glazing"), not a room.
+#
+# Not every label inside the walls names a room: "Ventana", "Cama", "TV" are
+# landmarks. Room names are written larger, so within each walled-off space
+# only the labels at least ROOM_TEXT_RATIO of the largest one there are rooms;
+# the rest stay on the plan as landmarks (`places.py` reads them).
 
 GRID_CELLS = 600
+ROOM_TEXT_RATIO = 0.8
 # Lines are thickened by a cell, so walls drawn a hair apart still meet.
 _THICK = ((0, 0), (1, 0), (0, 1), (1, 1))
 NEAREST_CELLS = 60
@@ -445,7 +451,7 @@ def find_rooms(lines: list[dict], texts: list[dict], bounds: list[float]) -> tup
     with room -1 for a wall or a place no room reached, rows bottom to top."""
     from collections import deque
 
-    labels = [(name, t["x"], t["y"]) for t in texts if (name := _room_name(t["text"]))]
+    labels = [(name, t["x"], t["y"], t.get("h") or 0) for t in texts if (name := _room_name(t["text"]))]
     if not labels:
         return [], None
     x0, y0, x1, y1 = bounds
@@ -470,21 +476,48 @@ def find_rooms(lines: list[dict], texts: list[dict], bounds: list[float]) -> tup
             for k in range(n + 1):
                 mark(ax + (bx - ax) * k / n, ay + (by - ay) * k / n)
 
-    owner = [-1] * (w * h)
-    queue = deque()
-    for idx, (_name, lx, ly) in enumerate(labels):
+    def neighbours(i):
+        cx = i % w
+        return (i - w if i >= w else -1, i + w if i + w < w * h else -1,
+                i - 1 if cx > 0 else -1, i + 1 if cx < w - 1 else -1)
+
+    starts = {}
+    for idx, (_name, lx, ly, _h) in enumerate(labels):
         cx, cy = int((lx - x0) / cell), int((ly - y0) / cell)
         if 0 <= cx < w and 0 <= cy < h:
-            i = cy * w + cx
-            if owner[i] == -1:
-                owner[i] = idx
-                wall[i] = 0               # a label written over a line still counts
-                queue.append(i)
+            starts[idx] = cy * w + cx
+            wall[cy * w + cx] = 0          # a label written over a line still counts
+
+    # Which labels share a walled-off space, and which of them name it.
+    space = [-1] * (w * h)
+    space_of = {}
+    for idx, start in starts.items():
+        if space[start] == -1:
+            space[start] = idx
+            queue = deque([start])
+            while queue:
+                i = queue.popleft()
+                for j in neighbours(i):
+                    if j >= 0 and space[j] == -1 and not wall[j]:
+                        space[j] = idx
+                        queue.append(j)
+        space_of[idx] = space[start]
+    tallest: dict[int, float] = {}
+    for idx, sp in space_of.items():
+        tallest[sp] = max(tallest.get(sp, 0), labels[idx][3])
+    naming = {idx for idx, sp in space_of.items() if labels[idx][3] >= ROOM_TEXT_RATIO * tallest[sp]}
+    del space
+
+    owner = [-1] * (w * h)
+    queue = deque()
+    for idx, i in starts.items():
+        if idx in naming and owner[i] == -1:
+            owner[i] = idx
+            queue.append(i)
     while queue:
         i = queue.popleft()
-        o, cx = owner[i], i % w
-        for j in (i - w if i >= w else -1, i + w if i + w < w * h else -1,
-                  i - 1 if cx > 0 else -1, i + 1 if cx < w - 1 else -1):
+        o = owner[i]
+        for j in neighbours(i):
             if j >= 0 and owner[j] == -1 and not wall[j]:
                 owner[j] = o
                 queue.append(j)
@@ -498,11 +531,12 @@ def find_rooms(lines: list[dict], texts: list[dict], bounds: list[float]) -> tup
             edge.add(owner[i])
     outlines = [ln["pts"] for ln in lines if ln["closed"] and len(ln["pts"]) >= 3]
     dropped = {idx for idx in edge if not any(contains(o, labels[idx][1], labels[idx][2]) for o in outlines)}
+    dropped |= set(range(len(labels))) - naming
 
     # One name may label two regions (a hall labelled twice); they are one room.
     names: list[str] = []
     remap: dict[int, int] = {}
-    for idx, (name, _x, _y) in enumerate(labels):
+    for idx, (name, _x, _y, _h) in enumerate(labels):
         if idx in dropped:
             remap[idx] = -1
             continue
@@ -521,7 +555,7 @@ def find_rooms(lines: list[dict], texts: list[dict], bounds: list[float]) -> tup
             prev, count = v, 1
     runs += [prev, count]
     rooms = []
-    for idx, (name, lx, ly) in enumerate(labels):
+    for idx, (name, lx, ly, _h) in enumerate(labels):
         if remap[idx] >= 0 and not any(r["name"] == name for r in rooms):
             rooms.append({"name": name, "x": lx, "y": ly})
     grid = {"x0": round(x0, 4), "y0": round(y0, 4), "cell": cell, "w": w, "h": h, "runs": runs}
@@ -574,6 +608,23 @@ class PlanStore:
     def __init__(self, root: Path):
         self.root = Path(root)
         self._lock = threading.RLock()
+        self._cache: dict[str, tuple[float, dict]] = {}
+
+    def docs(self) -> list[dict]:
+        """Every plan, whole, read again only when its file changed: the
+        assistant's every `find` reads them all. Callers must not modify."""
+        out = []
+        for p in sorted(self.root.glob("*.json")) if self.root.exists() else []:
+            try:
+                mtime = p.stat().st_mtime
+                hit = self._cache.get(p.stem)
+                if not hit or hit[0] != mtime:
+                    hit = (mtime, json.loads(p.read_text()))
+                    self._cache[p.stem] = hit
+            except (OSError, ValueError):
+                continue
+            out.append(hit[1])
+        return out
 
     def _path(self, plan_id: str, ext: str = "json") -> Path:
         if not re.fullmatch(r"[a-z0-9-]{1,48}", plan_id or ""):

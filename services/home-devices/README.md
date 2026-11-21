@@ -49,7 +49,18 @@ only closed outline is usually the whole flat. Every line is rasterised (about
 crossing a line; a cell belongs to the label that reaches it first. A door's
 leaf and swing close its opening, an archway splits about halfway, a spot
 inside furniture takes the nearest room, and a note outside the walls is not a
-room. A device dropped inside a room takes that room's name.
+room. Not every label names a room: within each walled-off space only labels
+at least 80% of the largest text height there are rooms, so write room names
+bigger than "Ventana" or "Cama". The smaller ones are landmarks.
+
+## Where things are, for the assistant
+
+`find` and `set` take a `floor` (a plan's name: "everything upstairs"), and
+`find` takes `near`: a landmark or a placed device, answered nearest first with
+`distance_m`, in metres whatever unit the drawing uses (`places.py`). Every
+placed device reports its floor and, within 1.5 m of a landmark, `near` ("the
+lamp by the window"). A device with a room but no spot is on the floor whose
+plan has that room.
 
 ## Roadmap
 
@@ -57,7 +68,7 @@ room. A device dropped inside a room takes that room's name.
 2. Control through HA; an MCP server (`find`, `set`) for the assistant
 3. WiZ bulbs locally over UDP, preferred over a cloud copy; identify (blink) and merge two records of one device
 4. Floor plans: import a DXF from any CAD app, drag devices onto it, rooms found from the walls
-5. Location-aware answers ("the lamp by the window", "everything upstairs")
+5. Location-aware answers: floors, landmarks and distances ("the lamp by the window", "everything upstairs")
 6. The assistant switches over; overlapping HA entities leave Assist
 7. MQTT devices
 

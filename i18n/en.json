@@ -2220,7 +2220,7 @@
   "devices.merge_confirm": "Join \"{a}\" into \"{b}\"? They become one device, controlled the fastest way available.",
   "devices.plan_heading": "Floor plan",
   "devices.plan_add": "Add a plan",
-  "devices.plan_hint": "Draw the house in any CAD program and save it as DXF. Walls are lines; a room is a closed outline with its name written inside. A device dropped in a room takes its name.",
+  "devices.plan_hint": "Draw the house in any CAD program and save it as DXF. Walls are lines; write each room's name inside it, larger than other labels (a window, the bed), which become landmarks. A device dropped in a room takes its name.",
   "devices.plan_name_prompt": "Name of this plan (the floor, for example)",
   "devices.plan_replace": "Replace drawing",
   "devices.plan_rename": "Rename",

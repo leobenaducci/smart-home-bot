@@ -48,7 +48,7 @@ LWPOLYLINE
 {y1}"""
 
 
-def label(x, y, text, kind="MTEXT"):
+def label(x, y, text, kind="MTEXT", h=0.3):
     return f"""0
 {kind}
 8
@@ -58,7 +58,7 @@ ROOMS
 20
 {y}
 40
-0.3
+{h}
 1
 {text}"""
 
@@ -125,6 +125,12 @@ def test_rooms_are_found_between_loose_walls():
     assert room_at(plan, 4, 4.5) == "Living"               # near the archway, on its own side
     assert room_at(plan, 8.5, 1.5) == "Dormitorio"        # a lamp on the bed
     assert room_at(plan, 5, -1) is None and room_at(plan, 50, 50) is None
+
+
+def test_a_smaller_label_is_a_landmark_not_a_room():
+    plan = parse_dxf(dxf(DRAWN + "\n" + label(0.5, 3, "Ventana", kind="TEXT", h=0.15)))
+    assert [r["name"] for r in plan["rooms"]] == ["Living", "Dormitorio"]
+    assert room_at(plan, 0.5, 3) == "Living"
 
 
 def test_a_door_block_is_placed_rotated_and_its_arc_drawn():

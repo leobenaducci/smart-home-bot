@@ -125,3 +125,66 @@ def test_a_room_action_drives_its_lights(tmp_path):
         assert not err and [r["name"] for r in out["done"]] == ["Oficina Tomi"]
     ha = run(tmp_path, scenario)
     assert ha.calls == [("light", "turn_off", "light.oficina_tomi", {})]
+
+
+def run_with_plans(tmp_path, scenario):
+    """Two floors: the flat downstairs (Living, Dormitorio, a window labelled
+    on the plan) and a study upstairs. Oficina Tomi sits by the window, Luz
+    Paula in the bedroom, Lámpara alta upstairs; Puerta is on no plan."""
+    from home_devices.floorplan import PlanStore
+    from test_floorplan import DRAWN, dxf, label, rect
+
+    reg, ha, app = setup(tmp_path)
+    store = PlanStore(tmp_path / "plans")
+    store.save("Planta baja", dxf(DRAWN + "\n" + label(0.5, 3, "Ventana", kind="TEXT", h=0.15)))
+    store.save("Planta alta", dxf(rect(0, 0, 4, 4) + "\n" + label(2, 2, "Estudio")))
+    reg.observe("ha", [Candidate(key="ha:device:d", backend="ha", name="Lámpara alta", kind="light",
+                                 entities=[{"entity_id": "light.lampara_alta", "domain": "light", "name": "x"}])],
+                complete=False)
+    reg.update("oficina-tomi", {"position": {"plan": "planta-baja", "x": 1, "y": 3}})
+    reg.update("luz-paula", {"status": "active", "position": {"plan": "planta-baja", "x": 9, "y": 5}})
+    reg.update("lampara-alta", {"status": "active", "room": "Estudio"})      # no position: floor from its room
+
+    async def go():
+        async with TestClient(TestServer(app)) as client:
+            await scenario(client)
+    asyncio.run(go())
+    return ha
+
+
+def test_find_says_which_floor_and_what_a_device_is_beside(tmp_path):
+    async def scenario(c):
+        out, err = await call(c, "find", {})
+        assert not err
+        assert out["floors"] == [{"name": "Planta baja", "rooms": ["Living", "Dormitorio"]},
+                                 {"name": "Planta alta", "rooms": ["Estudio"]}]
+        by = {d["name"]: d for d in out["devices"]}
+        assert by["Oficina Tomi"]["floor"] == "Planta baja" and by["Oficina Tomi"]["near"] == "Ventana"
+        assert by["Lámpara alta"]["floor"] == "Planta alta"
+        assert "floor" not in by["Puerta"]
+        out, _ = await call(c, "find", {"floor": "planta alta"})
+        assert [d["name"] for d in out["devices"]] == ["Lámpara alta"]
+        out, err = await call(c, "find", {"floor": "sótano"})
+        assert err and "Planta baja" in out["error"]
+    run_with_plans(tmp_path, scenario)
+
+
+def test_near_ranks_by_distance_from_a_label_or_a_device(tmp_path):
+    async def scenario(c):
+        out, err = await call(c, "find", {"near": "ventana", "kind": "light"})
+        assert not err and out["near"] == "Ventana"
+        assert [(d["name"], d["distance_m"]) for d in out["devices"]] == [("Oficina Tomi", 0.5), ("Luz Paula", 8.7)]
+        assert out["not_on_a_plan"] == 1                    # Lámpara alta has a room, not a spot
+        out, _ = await call(c, "find", {"near": "Oficina Tomi"})
+        assert [d["name"] for d in out["devices"]] == ["Luz Paula"]
+        out, err = await call(c, "find", {"near": "piano"})
+        assert err and "nothing on the plans" in out["error"]
+    run_with_plans(tmp_path, scenario)
+
+
+def test_set_on_a_floor_drives_that_floors_lights_only(tmp_path):
+    async def scenario(c):
+        out, err = await call(c, "set", {"floor": "Planta baja", "action": "off"})
+        assert not err and sorted(r["name"] for r in out["done"]) == ["Luz Paula", "Oficina Tomi"]
+    ha = run_with_plans(tmp_path, scenario)
+    assert sorted(e for _d, _s, e, _x in ha.calls) == ["light.luz_paula", "light.oficina_tomi"]
