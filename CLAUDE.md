@@ -633,6 +633,11 @@ hidden, read-only is the default and the runtime enforces it).
   `docs/`, `SECURITY.md` and `CONTRIBUTING.md` describe stock nanobot, not this
   deployment, and carry the upstream maintainer's contact details. Read
   `services/nanobot/AGENTS.md` for what this stack actually does with it.
+  `services/nanobot-v04/` is the same assistant rebased on upstream nanobot
+  0.4.x (household code in `nanobot/household/`, short `# household` seams in
+  upstream files); it builds `alfred-nanobot-v04:latest` only for a member or
+  the house whose `nanobot_image` names it, and carries upstream's docs and
+  contacts the same way.
 - **One assistant config, one entrypoint.** `services/nanobot/config/` holds the
   base — `config.json` plus the prompt files nanobot itself names (`SOUL.md`,
   `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`, `MORNING.md`). `NANOBOT_INSTANCE`

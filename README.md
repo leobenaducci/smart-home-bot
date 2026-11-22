@@ -243,7 +243,7 @@ deploy/     installer, manifest, deployer, backups, sanitizer, the Ollama and
             llama.cpp host helpers, units for the services built from images
 admin/      the admin page
 i18n/       seven catalogues and the Python/PHP/JS bindings
-services/   the fourteen service directories the shipped services build from
+services/   the fifteen service directories the shipped services build from
 docs/       the conventions that span more than one service
 ```
 
