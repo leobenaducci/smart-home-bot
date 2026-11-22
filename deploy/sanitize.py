@@ -210,6 +210,15 @@ UPSTREAM = {
     "services/nanobot/SECURITY.md",
     "services/nanobot/CONTRIBUTING.md",
     "services/nanobot/docs/chat-apps.md",
+    # The same upstream documents in the rebased tree, and two more of
+    # upstream's that carry its maintainers' and example addresses.
+    "services/nanobot-v04/SECURITY.md",
+    "services/nanobot-v04/CONTRIBUTING.md",
+    "services/nanobot-v04/docs/chat-apps.md",
+    "services/nanobot-v04/docs/guides/email-ai-agent.md",
+    "services/nanobot-v04/tui/SOURCE_OFFER.md",
+    # Copyright attributions, which have to stay verbatim (see _is_vendored).
+    "services/nanobot-v04/THIRD_PARTY_NOTICES.md",
 }
 
 
