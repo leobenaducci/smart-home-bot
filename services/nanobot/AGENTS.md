@@ -251,7 +251,7 @@ So a service can hand out its own skill instead. Anything answering
     GET <its API base>/skill
 
 with `{name, version, mode, description?, instructions, python?}` owns that
-skill; `nanobot/agent/remote_skills.py` fetches it on a background thread and
+skill; `nanobot/household/remote_skills.py` fetches it on a background thread and
 writes it to `<workspace>/.skills-remote/<name>/`, which `SkillsLoader` reads as
 a third root. Precedence is **workspace > remote > builtin**: the service wins
 over the bundled copy because it is the authority on its own API, and a file in
@@ -803,7 +803,7 @@ somebody stopped the chat turn that spawned it. `cancel_by_session` is the call
 to add if that is ever wanted.
 
 **Standing context is shown every turn and stored on none.**
-`nanobot/utils/standing_context.py` marks a region a caller re-sends each turn
+`nanobot/household/standing_context.py` marks a region a caller re-sends each turn
 (HomeCore wraps each profession's persona in it). `for_prompt` strips the markers
 and keeps the text — the model sees it in full, every turn. `for_history` drops
 the region — the session stores only what the person actually said. Without the
@@ -928,7 +928,7 @@ fits a 12 GB card. `agents.defaults.harness` (off by default) runs the member's
 own background tasks on **pi** (pi.dev, pinned in the image at `/opt/pi` from
 `nanobot/harness/pi/package-lock.json`) instead:
 
-- `nanobot/harness/pi_runner.py` — runs pi with the model picked for the
+- `nanobot/household/harness/pi_runner.py` — runs pi with the model picked for the
   sub-agent (the powerful sub-agent's for a complex task), reached the way
   nanobot reaches it; nudges it until a file the task asked for actually came
   back from `make_document`, and returns the answer. OpenCode requests carry
@@ -940,7 +940,7 @@ own background tasks on **pi** (pi.dev, pinned in the image at `/opt/pi` from
   the task's folder. **No bash**, and pi's own environment holds no secrets;
   the skills get the household's environment through a 0600 file handed to the
   skill subprocess alone.
-- `nanobot/harness/alfred_skill.py` — every skill with a Python guide, run
+- `nanobot/household/harness/alfred_skill.py` — every skill with a Python guide, run
   through the runner's own translation, so a skill behaves the same here.
 - `nanobot/harness/pi/SYSTEM.md` — the 250-word long-task prompt.
 
