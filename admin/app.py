@@ -1203,7 +1203,7 @@ IMPACT = {
     # titler gets CHAT_TITLE_MODEL from `titles`; Paperless's own AI gets
     # PAPERLESS_AI_MODEL from `documents`. Both arrive through `{derived.*}`
     # exports, so the service holding the old name is the one to redeploy.
-    # Background tasks on pi (services/nanobot/nanobot/harness): written into
+    # Background tasks on pi (services/nanobot/nanobot/household/harness): written into
     # both assistants' config at deploy, so both have to be redeployed.
     "assistant.harness": ["nanobot", "nanobot-house"],
     "assistant.routing": ["nanobot", "nanobot-house"],
@@ -7158,8 +7158,9 @@ def _bench_one(model: str, roles: str, repeat: int, effort: str, container: str,
         tmp = f"/tmp/{run_id}.json"
         # The benchmark and its cases come from this checkout, copied in per
         # run, so editing a case needs an admin deploy and not a nanobot one --
-        # which would cut off whoever is talking to Alfred. The copy baked into
-        # the image is the fallback.
+        # which would cut off whoever is talking to Alfred. Images before the
+        # rebased assistant also baked a copy in, kept as the fallback; the
+        # rebased image does not, so a failed copy fails the run there.
         script = "/app/bench/model_bench.py"
         bench_src = ROOT / "services" / "nanobot" / "bench"
         work = f"/tmp/{run_id}-bench"

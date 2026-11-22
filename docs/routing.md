@@ -13,7 +13,7 @@ Two mechanisms, and they are only safe together.
 
 ## 1. The classifier: a guess before the turn
 
-`services/nanobot/nanobot/agent/classify.py`. A small local model reads the
+`services/nanobot/nanobot/household/classify.py`. A small local model reads the
 request and answers one JSON line with one of three labels:
 
 | label | means | tier | effort | iterations |

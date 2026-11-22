@@ -1,190 +1,206 @@
-"""Subagent manager for background task execution."""
+from __future__ import annotations
 
 import asyncio
 import json
-import re
-import os
 import time
 import uuid
-from dataclasses import dataclass, field
+import warnings
+from collections.abc import Awaitable, Callable, Collection, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
 
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
-from nanobot.utils.helpers import strip_think
-from nanobot.utils.prompt_templates import render_template
-from nanobot.agent.classify import TurnClass, TurnClassifier, continuation_messages
-from nanobot.agent.runner import AgentRunResult, AgentRunSpec, AgentRunner
-from nanobot.utils.profiling import PROFILER
-from nanobot.agent.usage_report import report_cut, report_usage
-from nanobot.agent.skills import BUILTIN_SKILLS_DIR
-from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.hooks import create_file_edit_activity_hook
+from nanobot.agent.runner import AgentCheckpoint, AgentRunner, AgentRunSpec
+from nanobot.agent.session_activity import SessionActivity
+from nanobot.agent.subagent_sessions import SubagentSessions
+from nanobot.agent.subagent_status import SubagentState as SubagentState
+from nanobot.agent.subagent_status import SubagentStatus
+from nanobot.agent.tools.base import Tool, ToolResult
+from nanobot.agent.tools.context import (
+    RequestContext,
+    ToolContext,
+    bind_request_context,
+    reset_request_context,
+)
+from nanobot.agent.tools.exec_session import ExecSessionManager
+from nanobot.agent.tools.file_state import FileStates
+from nanobot.agent.tools.loader import ToolLoader
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.search import GlobTool, GrepTool
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
+from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ExecToolConfig, HarnessConfig, RoutingConfig, WebToolsConfig
-from nanobot.utils.homeweb_chat_id import is_third_party_session
-from nanobot.providers.base import LLMProvider
+from nanobot.bus.runtime_events import RuntimeEventContext, SubagentTaskChanged
+from nanobot.config.network import NetworkConfig
+from nanobot.config.schema import AgentDefaults, ToolsConfig
+from nanobot.context_sources import without_source_capture
+from nanobot.events import AgentEvent, EventSink
+from nanobot.llm_usage.context import LLMUsageSource, current_llm_usage_source
+from nanobot.providers.base import LLMProvider, ToolCallRequest
+from nanobot.security.workspace_access import (
+    WorkspaceScope,
+    bind_workspace_scope,
+    reset_workspace_scope,
+    workspace_sandbox_status,
+)
+from nanobot.session.manager import Session, SessionManager, SessionPolicy
+from nanobot.utils.cancellation import shield_and_drain
+from nanobot.utils.llm_runtime import LLMRuntime
+from nanobot.utils.prompt_templates import render_template
+
+if TYPE_CHECKING:
+    from nanobot.agent.memory import Consolidator
 
 
-# Hard cap on a single subagent's total runtime. A long research task can
-# legitimately take a while, but it must not run forever; on timeout we
-# announce whatever partial progress we have rather than dying silently.
-# OpenCode Go: models written `opencode-go/<name>`. Recognised so they can be
-# refused -- neither pi nor nanobot's loop calls the flat plan.
-GO_PREFIX = "opencode-go/"
+class _SubagentOrigin(TypedDict):
+    channel: str
+    chat_id: str
+    session_key: str | None
+    llm_usage_source: NotRequired[LLMUsageSource]
 
 
-def is_go_model(model: str | None) -> bool:
-    return str(model or "").strip().lower().startswith(GO_PREFIX)
 
 
-SUBAGENT_MAX_RUNTIME_S = float(os.environ.get("NANOBOT_SUBAGENT_MAX_RUNTIME_S", "1200"))
+class SubagentControlError(ValueError):
+    """A task control request violates ownership or admission rules."""
 
-# What the runner puts in final_content when it stops without the model ever
-# writing an answer. Named because the result path has to recognise it: it
-# occupies final_content, so "did we get an answer?" cannot be a truthiness
-# check, and treating this as an answer is how a task whose every tool failed
-# came to announce that it had completed.
-NO_ANSWER_PLACEHOLDER = "Task completed but no final response was generated."
+
+class SubagentMessageReceipt(TypedDict):
+    task_id: str
+    message_id: str
+    receipt: Literal["accepted"]
+    delivered: Literal[False]
+
+
+@dataclass(frozen=True, slots=True)
+class _SubagentOutcome:
+    """Execution outcome, independent of process cleanup errors."""
+
+    state: Literal["done", "incomplete", "error", "cancelled"]
+    result: str
+    stop_reason: str | None = None
+    error: str | None = None
 
 
 @dataclass(slots=True)
-class SubagentStatus:
-    """Real-time status of a running subagent."""
+class _SubagentTask:
+    """Own one execution, its inbox, and resources until cleanup succeeds."""
 
-    task_id: str
-    label: str
-    task_description: str
-    started_at: float          # time.monotonic()
-    phase: str = "initializing"  # initializing | awaiting_tools | tools_completed | final_response | done | error
-    iteration: int = 0
-    tool_events: list = field(default_factory=list)   # [{name, status, detail}, ...]
-    usage: dict = field(default_factory=dict)          # token usage
-    stop_reason: str | None = None
-    error: str | None = None
-    powerful: bool = False  # whether this subagent uses the powerful model
+    status: SubagentStatus
+    session: Session
+    runtime: LLMRuntime
+    origin: _SubagentOrigin
+    origin_message_id: str | None = None
+    workspace_scope: WorkspaceScope | None = None
+    announce: bool = True
+    begun: bool = False
+    suppress_notice: bool = False
+    inbox: list[tuple[str, str]] = field(default_factory=list)
+    outcome: _SubagentOutcome | None = None
+    exec_manager: ExecSessionManager = field(default_factory=ExecSessionManager)
+    cleanup_task: asyncio.Task[int] | None = None
 
+    def raise_if_stopping(self) -> None:
+        if self.outcome is not None:
+            raise asyncio.CancelledError
 
-# Ceilings on what one subagent may narrate. A four-hour research task runs
-# dozens of iterations with several tool calls each; without these, a single
-# task could push tens of thousands of rows at whoever is storing the trace.
-# Both are per-task, and hitting either only stops the *commentary* — the task
-# itself runs to completion exactly as before.
-PROGRESS_MAX_EVENTS = int(os.environ.get("NANOBOT_SUBAGENT_PROGRESS_MAX", "600"))
-# How many sub-agents run at once in one assistant; the rest queue (_gated).
-MAX_CONCURRENT = max(1, int(os.environ.get("NANOBOT_SUBAGENT_CONCURRENCY", "2")))
-# One line, before it reaches the wire. The consumer truncates again; this keeps
-# a tool argument holding a whole file from being serialised in the first place.
-PROGRESS_MAX_CHARS = 1000
+    def decide(self, outcome: _SubagentOutcome) -> bool:
+        """Seal execution once, before cancellation or cleanup can yield."""
+        if self.outcome is not None:
+            return False
+        self.outcome = outcome
+        self.status.state = self.status.phase = "stopping"
+        return True
 
+    def finish(self, max_chars: int, cleanup_error: str | None = None) -> _SubagentOutcome:
+        execution_outcome = self.outcome
+        if execution_outcome is None:
+            raise RuntimeError("cannot finish a task before execution has an outcome")
+        outcome = execution_outcome
+        if cleanup_error is not None:
+            outcome = _SubagentOutcome("error", cleanup_error, "error", cleanup_error)
+        status = self.status
+        has_partial_result = outcome.state != "done" and bool(status.result)
+        if outcome.state != "done" and status.result:
+            outcome = replace(outcome, result=status.result)
+        status.state = status.phase = outcome.state
+        status.finished_at = time.monotonic()
+        status.completed_at = time.time()
+        status.result = outcome.result[:max_chars]
+        status.partial = has_partial_result
+        status.stop_reason = outcome.stop_reason
+        status.error = outcome.error[:max_chars] if outcome.error else None
+        status.task_description = status.task_description[:max_chars]
+        status.label = status.label[:256]
+        status.tool_events = []
+        for message_id, _ in self.inbox:
+            status.receipts[message_id] = "undelivered"
+        self.inbox.clear()
+        # Failed cleanup can retain this task after its public status is evicted.
+        self.outcome = replace(
+            execution_outcome,
+            result=execution_outcome.result[:max_chars],
+            error=execution_outcome.error[:max_chars] if execution_outcome.error else None,
+        )
+        return outcome
 
-def _clip(text: str, limit: int = PROGRESS_MAX_CHARS) -> str:
-    # Cut before normalising, not after: `detail` is a json.dumps of the tool
-    # arguments, which for a write_file is the whole file. Splitting a 2 MB
-    # string into half a million words and rejoining it to keep 1000 characters
-    # is ~170 ms of synchronous work on the event loop, per tool call. The
-    # 8x headroom leaves room for whitespace runs to collapse.
-    text = (text or "")[: limit * 8]
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    def snapshot(self) -> SubagentStatus:
+        return deepcopy(self.status)
 
 
 class _SubagentHook(AgentHook):
-    """Hook for subagent execution — logs tool calls, updates status, and
-    narrates.
+    """Update task status at runner boundaries."""
 
-    The narration is what HomeCore's "En segundo plano" panel draws as a live
-    timeline. Everything it publishes is something the runner already produced
-    and threw away: the model's own text in the turn *before* a tool call, and
-    the tool calls themselves with their outcome.
-
-    Deliberately not the raw chain-of-thought (`reasoning_content`): it is far
-    larger, arrives in fragments that read as nonsense out of context, and the
-    pre-tool-call text is the part that actually explains what the task is
-    doing. The panel is meant to be readable by whoever asked for the task.
-    """
-
-    def __init__(
-        self,
-        task_id: str,
-        status: SubagentStatus | None = None,
-        emit: Any | None = None,
-    ) -> None:
+    def __init__(self, status: SubagentStatus | None = None,
+                 *, check_active: Callable[[], None] | None = None,
+                 max_result_chars: int = 16000,
+                 on_status: Callable[[SubagentStatus], Awaitable[None]] | None = None) -> None:
         super().__init__()
-        self._task_id = task_id
         self._status = status
-        self._emit = emit
-        self._seq = 0
-        self._emitted = 0
+        self._check_active = check_active
+        self._max_result_chars = max_result_chars
+        self._on_status = on_status
 
-    async def _publish(self, kind: str, text: str = "", detail: str = "", status: str = "") -> None:
-        """Best-effort: narration must never be able to kill the task.
-
-        A publish that raises here would propagate out of the hook and end a
-        task that may have hours of work behind it, for the sake of a line in a
-        panel. Nothing about the work depends on anyone hearing about it.
-        """
-        if self._emit is None or self._emitted >= PROGRESS_MAX_EVENTS:
+    def _remember_output(self, context: AgentHookContext) -> None:
+        if self._status is None or context.error or context.response is None:
             return
-        self._emitted += 1
-        self._seq += 1
-        try:
-            await self._emit({
-                "kind": kind,
-                "text": _clip(text),
-                "detail": _clip(detail),
-                "status": status,
-                "seq": self._seq,
-            })
-        except Exception as e:  # noqa: BLE001 — see docstring
-            logger.debug("Subagent [{}] progress publish failed: {}", self._task_id, e)
+        content = context.response.content
+        if content and content.strip():
+            self._status.result = content[:self._max_result_chars]
+            self._status.partial = True
 
     async def before_execute_tools(self, context: AgentHookContext) -> None:
-        if self._emit is not None:
-            # Strip the model's own thinking wrapper if the provider left it in
-            # the content. `strip_think` rather than a local regex because it
-            # also handles the unclosed opener a pre-tool-call turn routinely
-            # carries — matching only `<think>…</think>` would publish the raw
-            # reasoning dump this hook exists not to publish.
-            thought = strip_think((context.response.content if context.response else "") or "")
-            if thought.strip():
-                await self._publish("thought", thought)
-        for tool_call in context.tool_calls:
-            args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-            logger.debug(
-                "Subagent [{}] executing: {} with arguments: {}",
-                self._task_id, tool_call.name, args_str,
-            )
-            await self._publish("tool", tool_call.name, detail=args_str)
+        self._remember_output(context)
+        if self._status is not None:
+            self._status.tool_events = [
+                {"name": call.name, "status": "running"} for call in context.tool_calls
+            ]
+        if self._status is not None and self._on_status is not None:
+            await self._on_status(self._status)
+
+    async def before_execute_tool(
+        self, context: AgentHookContext, tool_call: ToolCallRequest,
+        tool: Tool | None, params: dict[str, Any],
+    ) -> None:
+        if self._check_active is not None:
+            self._check_active()
 
     async def after_iteration(self, context: AgentHookContext) -> None:
-        # Outcomes, paired with the calls announced above. `tool_events` is
-        # positional against `tool_calls`, which is how the runner builds both.
-        for idx, event in enumerate(context.tool_events or []):
-            if not isinstance(event, dict):
-                continue
-            name = event.get("name") or ""
-            if not name and idx < len(context.tool_calls or []):
-                name = getattr(context.tool_calls[idx], "name", "")
-            status = event.get("status") or ""
-            await self._publish(
-                "tool_result", name,
-                detail=str(event.get("detail") or "") if status == "error" else "",
-                status=status,
-            )
         if self._status is None:
             return
         self._status.iteration = context.iteration
         self._status.tool_events = list(context.tool_events)
-        self._status.usage = dict(context.usage)
+        self._status.usage = context.usage
+        self._remember_output(context)
         if context.error:
             self._status.error = str(context.error)
+        if self._on_status is not None:
+            await self._on_status(self._status)
 
 
 class SubagentManager:
@@ -192,547 +208,721 @@ class SubagentManager:
 
     def __init__(
         self,
-        provider: LLMProvider,
-        workspace: Path,
-        bus: MessageBus,
-        max_tool_result_chars: int,
+        provider: LLMProvider | None = None,
+        workspace: Path | None = None,
+        bus: MessageBus | None = None,
+        max_tool_result_chars: int | None = None,
         model: str | None = None,
-        web_config: "WebToolsConfig | None" = None,
-        exec_config: "ExecToolConfig | None" = None,
+        tools_config: ToolsConfig | None = None,
         restrict_to_workspace: bool = False,
         disabled_skills: list[str] | None = None,
-        powerful_model: str | None = None,
-        powerful_provider: LLMProvider | None = None,
-        classifier: "TurnClassifier | None" = None,
-        routing: "RoutingConfig | None" = None,
-        harness: "HarnessConfig | None" = None,
-        main_model: str | None = None,
-        main_provider: LLMProvider | None = None,
+        max_iterations: int | None = None,
+        max_concurrent_subagents: int | None = None,
+        *,
+        consolidator: Consolidator,
+        network_config: NetworkConfig | None = None,
+        session_manager: SessionManager | None = None,
     ):
-        self.provider = provider
+        if cast(object, consolidator) is None:
+            raise TypeError("SubagentManager requires a consolidator")
+        if workspace is None:
+            raise TypeError("SubagentManager.__init__() missing required argument: 'workspace'")
+        if bus is None:
+            raise TypeError("SubagentManager.__init__() missing required argument: 'bus'")
+        if max_tool_result_chars is None:
+            raise TypeError(
+                "SubagentManager.__init__() missing required argument: 'max_tool_result_chars'"
+            )
+        if model is not None and provider is None:
+            raise TypeError("SubagentManager model compatibility argument requires provider")
+
+        defaults = AgentDefaults()
+        self._compat_runtime: LLMRuntime | None = None
+        if provider is not None:
+            warnings.warn(
+                "SubagentManager provider/model constructor arguments are deprecated; "
+                "pass runtime=... to spawn() instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._compat_runtime = LLMRuntime.capture(
+                provider,
+                model or provider.get_default_model(),
+                context_window_tokens=defaults.context_window_tokens,
+            )
         self.workspace = workspace
         self.bus = bus
-        self.model = model or provider.get_default_model()
-        self.powerful_model = powerful_model
-        self.powerful_provider = powerful_provider
-        # The same classifier and routing rules the main loop uses -- a
-        # sub-agent task is a request like any other, and before 2026-09-21 it
-        # ran on the cheap model unless the spawner remembered to say
-        # `complex=true`, which it mostly did not.
-        self.classifier = classifier
-        self.routing = routing or RoutingConfig()
-        self.web_config = web_config or WebToolsConfig()
+        self.tools_config = tools_config or ToolsConfig()
+        self.network_config = network_config or NetworkConfig()
         self.max_tool_result_chars = max_tool_result_chars
-        self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self.disabled_skills = set(disabled_skills or [])
-        self.harness = harness or HarnessConfig()
-        # The everyday model: what a task runs on when its sub-agent model is
-        # an OpenCode Go one but it cannot go to pi. nanobot's own loop never
-        # calls Go (CLAUDE.md).
-        self._main_model = main_model
-        self._main_provider = main_provider
-        self.runner = AgentRunner(provider)
-        self._running_tasks: dict[str, asyncio.Task[None]] = {}
-        self._task_statuses: dict[str, SubagentStatus] = {}
-        self._task_routes: dict[str, "TurnClass | None"] = {}
-        self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
-        self._intentional_cancels: set[str] = set()  # task_ids cancelled on purpose (/stop)
-        self._slots: asyncio.Semaphore | None = None     # see _gated
+        self.max_iterations = (
+            max_iterations
+            if max_iterations is not None
+            else defaults.max_tool_iterations
+        )
+        self.max_concurrent_subagents = (
+            max_concurrent_subagents
+            if max_concurrent_subagents is not None
+            else defaults.max_concurrent_subagents
+        )
+        self.consolidator = consolidator
+        self._run_slots = asyncio.Semaphore(self.max_concurrent_subagents)
+        self.runner = AgentRunner()
+        self._exec_session_manager = ExecSessionManager()
+        self._running_tasks: dict[str, asyncio.Task[str]] = {}
+        self._tasks: dict[str, _SubagentTask] = {}
+        self._terminal_statuses: dict[str, SubagentStatus] = {}
+        self._closed = False
+        self._close_task: asyncio.Task[int] | None = None
+        self._admitting = 0
+        self.sessions = SubagentSessions(session_manager) if session_manager is not None else None
 
-    async def _classify_task(self, task: str, context: str | None) -> tuple[bool, "TurnClass | None"]:
-        """Whether an unmarked task gets the strong model, and the label that said so."""
-        if self.classifier is None or self.routing.mode == "off" or not self.routing.subagents:
-            return False, None
-        text = task if not context else f"{context.strip()}\n\n{task}"
-        route = await self.classifier.classify(text)
-        if self.routing.mode != "active" or not self.powerful_model:
-            return False, route
-        return route.tier == "powerful", route
+    MAX_ACTIVE = 128
+    MAX_TERMINAL = 128
+    MAX_INBOX = 16
+    MAX_MESSAGES = 128
+    MAX_MESSAGE_BYTES = 8192
 
-    def _should_escalate(self, result: "AgentRunResult", powerful: bool) -> bool:
-        return (
-            not powerful
-            and self.routing.mode == "active"
-            and bool(self.powerful_model)
-            and self.routing.max_escalations_per_turn > 0
-            and result.stop_reason in set(self.routing.escalate_on)
+    CANCEL_WAIT_SECONDS = 5.0
+
+    async def _save_status(
+        self, status: SubagentStatus,
+    ) -> None:
+        status.revision += 1
+        if self.sessions is not None and not await self.sessions.save(status):
+            return
+        self._publish_status(status)
+
+    def _publish_status(self, status: SubagentStatus) -> None:
+        origin = self._tasks[status.task_id].origin
+        self.bus.publish_nowait(SubagentTaskChanged(
+            context=RuntimeEventContext(
+                channel=origin["channel"], chat_id=origin["chat_id"], session_key=status.owner,
+            ),
+            task_id=status.task_id,
+        ))
+
+    async def recover_interrupted(self) -> None:
+        """Recover observations only after the host has claimed execution ownership."""
+        if self.sessions is not None:
+            await self.sessions.interrupt_pending()
+
+    def _start_cleanup(self, record: _SubagentTask, *, retry: bool = False) -> asyncio.Task[int]:
+        cleanup = record.cleanup_task
+        if retry and cleanup is not None and cleanup.done():
+            record.cleanup_task = None
+        if record.cleanup_task is None:
+            record.cleanup_task = asyncio.create_task(record.exec_manager.close_all())
+            record.cleanup_task.add_done_callback(partial(self._cleanup_done, record))
+        return record.cleanup_task
+
+    def _cleanup_done(self, record: _SubagentTask, task: asyncio.Task[int]) -> None:
+        if not task.cancelled() and task.exception() is None:
+            self._release_task(record)
+
+    def _release_task(self, record: _SubagentTask) -> None:
+        cleanup = record.cleanup_task
+        if (record.status.finished_at is not None
+                and record.status.task_id not in self._running_tasks
+                and cleanup is not None and cleanup.done()
+                and not cleanup.cancelled() and cleanup.exception() is None):
+            self._tasks.pop(record.status.task_id, None)
+
+    async def _finish(self, record: _SubagentTask,
+                cleanup_error: str | None = None) -> _SubagentOutcome:
+        outcome = record.finish(self.max_tool_result_chars, cleanup_error)
+        await self._save_transcript(record)
+        await self._save_status(record.status)
+        self._terminal_statuses[record.status.task_id] = record.snapshot()
+        while len(self._terminal_statuses) > self.MAX_TERMINAL:
+            del self._terminal_statuses[next(iter(self._terminal_statuses))]
+        return outcome
+
+    async def _drain_inbox(self, record: _SubagentTask) -> list[dict[str, str]]:
+        record.raise_if_stopping()
+        snapshot, record.inbox = record.inbox, []
+        for message_id, _ in snapshot:
+            record.status.receipts[message_id] = "delivered"
+        if snapshot:
+            await self._save_status(record.status)
+        return [{"role": "user", "content": content} for _, content in snapshot]
+
+    def _owned_status(self, task_id: str, owner: str | None) -> SubagentStatus:
+        status = self._terminal_statuses.get(task_id)
+        record = self._tasks.get(task_id)
+        if status is None and record is not None and record.status.finished_at is None:
+            status = record.status
+        if self.sessions is not None and owner:
+            if not self.sessions.exists(owner) or not self.sessions.contains(task_id, owner):
+                raise SubagentControlError("task unavailable")
+            if status is None:
+                status = self.sessions.status(task_id, owner)
+        if not owner or status is None or status.owner != owner:
+            raise SubagentControlError("task unavailable")
+        return status
+
+    def check(self, task_id: str, owner: str | None) -> SubagentStatus:
+        """Return detached status for one task owned by the caller's session."""
+        return deepcopy(self._owned_status(task_id, owner))
+
+    def accepts_result(self, msg: InboundMessage, owner: str) -> bool:
+        """Reject a completion whose owning child was removed after publication."""
+        task_id = msg.metadata.get("subagent_task_id")
+        if msg.sender_id != "subagent" or not isinstance(task_id, str) or self.sessions is None:
+            return True
+        return self.sessions.contains(task_id, owner)
+
+    def read_session(self, task_id: str, owner: str) -> tuple[SubagentStatus, Session]:
+        """Return task status and detached history through the ownership boundary."""
+        status = self.check(task_id, owner)
+        child = self.sessions.snapshot(task_id, owner) if self.sessions is not None else None
+        if child is None:
+            raise SubagentControlError("task unavailable")
+        return status, child
+
+    async def send(self, task_id: str, owner: str | None,
+             message: str | None) -> SubagentMessageReceipt:
+        """Accept a bounded follow-up only while execution is open."""
+        status = self._owned_status(task_id, owner)
+        if status.state not in {"queued", "running"}:
+            raise SubagentControlError("task is not accepting messages")
+        if not message or not message.strip() or len(message.encode("utf-8")) > self.MAX_MESSAGE_BYTES:
+            raise SubagentControlError("message must contain text and be at most 8192 UTF-8 bytes")
+        record = self._tasks[task_id]
+        if len(record.inbox) >= self.MAX_INBOX or len(status.receipts) >= self.MAX_MESSAGES:
+            raise SubagentControlError("task message capacity reached")
+        message_id = str(uuid.uuid4())
+        record.inbox.append((message_id, message))
+        status.receipts[message_id] = "accepted"
+        await self._save_status(status)
+        return {"task_id": task_id, "message_id": message_id,
+                "receipt": "accepted", "delivered": False}
+
+    async def cancel(self, task_id: str, owner: str | None) -> SubagentStatus:
+        """Stop an owned task and return its detached state after the bounded wait."""
+        status = self._owned_status(task_id, owner)
+        record = self._tasks.get(task_id)
+        if record is not None and record.status.finished_at is None:
+            await self._cancel_task(record)
+            status = record.status
+        return deepcopy(status)
+
+    async def _cancel_task(self, record: _SubagentTask,
+                           *, suppress_notice: bool = False) -> None:
+        record.suppress_notice |= suppress_notice
+        task_id = record.status.task_id
+        task = self._running_tasks.get(task_id)
+        if record.decide(_SubagentOutcome("cancelled", "Task cancelled.", "cancelled")):
+            await self._save_status(record.status)
+            if task is not None and record.begun and not task.done():
+                task.cancel()
+        if record.status.finished_at is None:
+            self._start_cleanup(record)
+        if task is not None:
+            # wait_for waits for cancellation acknowledgement and can hang here.
+            # Keep resistant work tracked, with its slot held, until it really exits.
+            await asyncio.wait({task}, timeout=self.CANCEL_WAIT_SECONDS)
+
+    def runtime_statuses(self) -> Mapping[str, SubagentStatus]:
+        """Return detached active and retained terminal data, never task resources."""
+        return {
+            **{tid: record.snapshot() for tid, record in self._tasks.items()
+               if record.status.finished_at is None},
+            **deepcopy(self._terminal_statuses),
+        }
+
+    def _runtime_statuses_for_session(self, session_key: str) -> dict[str, SubagentStatus]:
+        return {
+            **{tid: record.snapshot() for tid, record in self._tasks.items()
+               if record.status.owner == session_key and record.status.finished_at is None},
+            **{tid: deepcopy(status) for tid, status in self._terminal_statuses.items()
+               if status.owner == session_key},
+        }
+
+    def _turn_statuses_for_session(
+        self, session_key: str, *, turns: Collection[str], tracked: Collection[str],
+    ) -> dict[str, SubagentStatus]:
+        """Keep live work plus the tasks the caller still tracks outside the loaded turns."""
+        return {
+            **{tid: record.snapshot() for tid, record in self._tasks.items()
+               if record.status.owner == session_key and record.status.finished_at is None},
+            **{tid: deepcopy(status) for tid, status in self._terminal_statuses.items()
+               if status.owner == session_key
+               and (tid in tracked or status.origin_turn_id in turns)},
+        }
+
+    def _runtime_for_request(
+        self, session_key: str, turns: Collection[str] | None, tracked: Collection[str],
+    ) -> dict[str, SubagentStatus]:
+        if turns is None:
+            return self._runtime_statuses_for_session(session_key)
+        return self._turn_statuses_for_session(session_key, turns=set(turns), tracked=set(tracked))
+
+    def _merge_session_statuses(
+        self, session_key: str, runtime: Mapping[str, SubagentStatus], *, include_history: bool,
+        turns: Collection[str] | None = None, tracked: Collection[str] = (),
+    ) -> Mapping[str, SubagentStatus]:
+        sessions = self.sessions
+        if sessions is None:
+            return dict(runtime)
+
+        def read() -> Mapping[str, SubagentStatus]:
+            if not sessions.exists(session_key):
+                return {}
+            if not include_history:
+                statuses: dict[str, SubagentStatus] = {}
+            elif turns is None:
+                statuses = sessions.load(session_key)
+            else:
+                statuses = sessions.load_turns(session_key, turn_ids=list(turns))
+                outside = [task_id for task_id in tracked if task_id not in statuses]
+                if outside:
+                    statuses.update(sessions.load_tracked(session_key, outside))
+            for task_id, status in runtime.items():
+                if not sessions.contains(task_id, session_key):
+                    continue
+                persisted = statuses.get(task_id)
+                if persisted is None or status.revision >= persisted.revision:
+                    statuses[task_id] = status
+            return statuses
+
+        # One connection per request: existence, the turn read, tracked fallbacks and
+        # ownership checks are separate transactions on the same worker.
+        return sessions.read_batch(read)
+
+    def statuses_for_session(
+        self, session_key: str | None, *, include_history: bool = True,
+        turns: Collection[str] | None = None, tracked: Collection[str] = (),
+    ) -> Mapping[str, SubagentStatus]:
+        """Return only tasks owned by the given session, never a global fallback."""
+        if not session_key:
+            return {}
+        return self._merge_session_statuses(
+            session_key, self._runtime_for_request(session_key, turns, tracked),
+            include_history=include_history, turns=turns, tracked=tracked,
         )
 
-    def harness_takes_long_tasks(self) -> bool:
-        """The household sends `long` turns to pi, and pi can run one now."""
-        return bool(self.harness.long_tasks) and self._harness_endpoint() is not None
+    async def read_statuses_for_session(
+        self, session_key: str, *, turns: Collection[str] | None = None,
+        tracked: Collection[str] = (),
+    ) -> Mapping[str, SubagentStatus]:
+        """Capture runtime observations on the owner loop; read stored metadata on a worker."""
+        return await asyncio.to_thread(
+            self._merge_session_statuses, session_key,
+            self._runtime_for_request(session_key, turns, tracked),
+            include_history=True, turns=turns, tracked=tracked,
+        )
 
-    def _harness_endpoint(self, powerful: bool = False):
-        """pi's endpoint for this task, or None when it may not run there.
+    def set_provider(self, provider: LLMProvider, model: str) -> None:
+        """Update the deprecated runtime source used by legacy ``spawn`` calls."""
+        warnings.warn(
+            "SubagentManager.set_provider() is deprecated; pass runtime=... to spawn() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        context_window_tokens = (
+            self._compat_runtime.context_window_tokens
+            if self._compat_runtime is not None
+            else AgentDefaults().context_window_tokens
+        )
+        self._compat_runtime = LLMRuntime.capture(
+            provider,
+            model,
+            context_window_tokens=context_window_tokens,
+        )
 
-        The model the household picked: the sub-agent's, or the powerful
-        sub-agent's for a complex task -- reached the way nanobot reaches it,
-        unless `harness.base_url`/`model` override it. Never an OpenCode Go
-        model: those stay in nanobot's loop, which runs the everyday model
-        instead. Whether the task came from the member's own session is the
-        caller's check.
-        """
-        h = self.harness
-        if not (h.enabled and h.engine == "pi"):
-            return None
-        from nanobot.harness import pi_runner
-        if not pi_runner.available():
-            logger.warning("harness is on but pi is not installed at {}", pi_runner.PI_HOME)
-            return None
-        use_powerful = bool(powerful and self.powerful_model)
-        model = self.powerful_model if use_powerful else self.model
-        provider = (self.powerful_provider or self.provider) if use_powerful else self.provider
-        if h.base_url and h.model:
-            ep = pi_runner.Endpoint(base_url=h.base_url, model=h.model, api_key=h.api_key or "local",
-                                    context_window=h.context_window, reasoning=h.reasoning)
-        elif is_go_model(model):
-            logger.info("harness: {} is an OpenCode Go model, which pi may not run", model)
-            return None
-        else:
-            ep = pi_runner.endpoint_for_provider(provider, model, context_window=h.context_window)
-        if ep is None:
-            logger.info("harness: pi cannot reach {} -- nanobot's loop runs it", model)
-            return None
-        why = ep.check()
-        if why:
-            logger.warning("harness endpoint refused: {}", why)
-            return None
-        return ep
+    def _compat_spawn_runtime(self) -> LLMRuntime:
+        runtime = self._compat_runtime
+        if runtime is None:
+            raise TypeError(
+                "SubagentManager.spawn() missing required keyword-only argument: 'runtime'"
+            )
+        warnings.warn(
+            "SubagentManager.spawn() without runtime is deprecated; pass runtime=... explicitly",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return LLMRuntime.capture(
+            runtime.provider,
+            runtime.model,
+            context_window_tokens=runtime.context_window_tokens,
+        )
 
-    def _person_line(self) -> str:
-        """Whose assistant this is, from USER.md's `**Name**:` line; "" when
-        the profile names nobody (the house instance)."""
+    def _subagent_tools_config(self) -> ToolsConfig:
+        return self.tools_config.model_copy(
+            update={"restrict_to_workspace": self.restrict_to_workspace},
+        )
+
+    def _build_tools(
+        self,
+        *,
+        tools_config: ToolsConfig | None = None,
+        exec_manager: ExecSessionManager | None = None,
+    ) -> ToolRegistry:
+        root = self.workspace
+        registry = ToolRegistry()
+        cfg = tools_config if tools_config is not None else self._subagent_tools_config()
+        ctx = ToolContext(
+            config=cfg,
+            network=self.network_config,
+            workspace=str(root.resolve()),
+            exec_session_manager=exec_manager or self._exec_session_manager,
+            file_state_store=FileStates(),
+            workspace_sandbox=workspace_sandbox_status(
+                restrict_to_workspace=cfg.restrict_to_workspace,
+                workspace=root,
+            ),
+        )
+        ToolLoader().load(ctx, registry, scope="subagent")
+        return registry
+
+    async def _create_task(
+        self, task: str, label: str | None, origin_channel: str, origin_chat_id: str,
+        session_key: str | None, origin_message_id: str | None,
+        temperature: float | None, workspace_scope: WorkspaceScope | None,
+        runtime: LLMRuntime | None, *, announce: bool, origin_turn_id: str | None,
+        session_policy: SessionPolicy | None,
+    ) -> _SubagentTask:
+        self.bus.admission.check()
+        if runtime is None:
+            runtime = self._compat_spawn_runtime()
+        if temperature is not None:
+            runtime = runtime.with_generation_overrides(temperature=temperature)
+        # A failed cleanup owns admission even after its status has been evicted.
+        if self._closed or len(self._tasks) + self._admitting >= self.MAX_ACTIVE:
+            raise SubagentControlError("subagent manager is closed or at task capacity")
+        owner = session_key or f"{origin_channel}:{origin_chat_id}"
+        task_id = str(uuid.uuid4())
+        status = SubagentStatus(
+            task_id=task_id,
+            revision=1,
+            label=label or task[:30] + ("..." if len(task) > 30 else ""),
+            task_description=task,
+            started_at=time.monotonic(),
+            owner=owner,
+            origin_message_id=origin_message_id,
+            origin_turn_id=origin_turn_id,
+        )
+        self._admitting += 1
         try:
-            text = (self.workspace / "USER.md").read_text(encoding="utf-8")
-        except OSError:
-            return ""
-        m = re.search(r"^\s*[-*]\s*\*\*Name\*\*\s*:\s*(.+?)\s*$", text, re.M)
-        name = m.group(1).strip() if m else ""
-        if not name or name.startswith("(") or len(name) > 60:
-            return ""
-        return (f"You are working for {name}: this assistant is {name}'s. \"Your person\", "
-                f"\"me\" and \"I\" in the task mean {name}. Address {name}, and do not read or "
-                f"use another family member's profile unless the task asks about that person.")
-
-    async def _run_on_harness(self, task_id: str, task: str, label: str, origin: dict[str, str],
-                              status: "SubagentStatus", context: str | None,
-                              hook: "_SubagentHook", endpoint) -> tuple[str, str]:
-        """The task on pi. (what to announce, "ok" or "error"); the caller announces."""
-        from nanobot.harness import pi_runner
-        origin_channel = origin.get("channel") or "cli"
-        origin_chat_id = origin.get("chat_id") or "direct"
-
-        async def on_note(text: str) -> None:
-            if text:
-                await hook._publish("thought", text)
-
-        async def on_start(call) -> None:
-            await hook._publish("tool", call.name, detail=json.dumps(call.args, ensure_ascii=False))
-
-        async def on_tool(call) -> None:
-            await hook._publish("tool_result", call.name, status="error" if call.is_error else "ok",
-                                detail=call.result[:300] if call.is_error else "")
-
-        async def on_nudge(n: int, of: int, short: str) -> None:
-            await hook._publish("phase", f"asked to continue ({n}/{of}): {short}")
-
-        # pi starts from its own short prompt and knows nobody: asked for a
-        # morning greeting "for your person", it listed the family, picked
-        # another member and greeted a child by her mother's name, from the
-        # mother's profile (2026-11-16). Say who this assistant belongs to.
-        who = self._person_line()
-        if who:
-            context = f"{who}\n\n{context}" if context else who
-        root = self.workspace / "harness"
-        workdir = pi_runner.new_workdir(root)
-        with PROFILER.span("task", f"{origin_channel}:{origin_chat_id}", label=label or "subagent",
-                           channel=origin_channel, chat_id=origin_chat_id,
-                           model=f"pi:{endpoint.model}") as span:
-            res = await pi_runner.run(
-                task, endpoint, workdir, context=context,
-                timeout=min(float(self.harness.timeout_s), SUBAGENT_MAX_RUNTIME_S),
-                thinking=self.harness.thinking, max_nudges=self.harness.max_nudges,
-                on_tool=on_tool, on_note=on_note, on_start=on_start, on_nudge=on_nudge)
-            span.note(task_id=task_id, harness="pi", rounds=res.rounds,
-                      delivered=res.delivered, error=res.error or None)
-        # pi calls its model itself, so the profiler saw none of it: what it
-        # spent comes from pi's own count, one per answer.
-        if res.usage:
-            report_usage(f"sub:{origin_chat_id}", endpoint.model, res.usage,
-                         [c.name for c in res.tools],
-                         route={"tier": "subagent", "label": "pi", "source": "harness"},
-                         stop_reason="completed" if res.text else "error", span=span)
-        pi_runner.prune_workdirs(root, keep=self.harness.keep_workdirs)
-        logger.info("Subagent [{}] on pi: {} round(s), {} turn(s), {}s, delivered={}", task_id,
-                    res.rounds, res.turns, res.seconds, res.delivered)
-        if res.text:
-            status.phase = "done"
-            return res.text, "ok"
-        status.phase = "error"
-        status.error = res.error or "no reply"
-        steps = ", ".join(c.name for c in res.tools if not c.is_error) or "none"
-        return (f"The background task did not produce an answer ({res.error or 'no reply'}). "
-                f"Steps that ran: {steps}.", "error")
+            if self.sessions is not None:
+                admission = asyncio.create_task(self.sessions.create(status, policy=session_policy))
+                try:
+                    child = await shield_and_drain(admission)
+                except asyncio.CancelledError:
+                    if not admission.cancelled() and admission.exception() is None:
+                        child = admission.result()
+                        await shield_and_drain(self.sessions.sessions.state.delete(
+                            child.key, expected_generation=child.generation,
+                        ))
+                    raise
+            else:
+                child = Session(key=SubagentSessions.key(task_id), policy=session_policy or SessionPolicy())
+                child.add_message("user", task)
+        finally:
+            self._admitting -= 1
+        if self._closed:
+            if self.sessions is not None:
+                await self.sessions.sessions.state.delete(child.key, expected_generation=child.generation)
+            raise SubagentControlError("subagent manager is closed")
+        record = _SubagentTask(
+            status=status,
+            session=child,
+            runtime=runtime,
+            origin={
+                "channel": origin_channel, "chat_id": origin_chat_id,
+                "session_key": owner, "llm_usage_source": current_llm_usage_source(),
+            },
+            origin_message_id=origin_message_id,
+            workspace_scope=workspace_scope,
+            announce=announce,
+        )
+        self._tasks[task_id] = record
+        self._publish_status(status)
+        with without_source_capture():
+            execution = asyncio.create_task(self._run_subagent(record))
+        self._running_tasks[task_id] = execution
+        execution.add_done_callback(partial(self._task_done, record))
+        logger.info("Started subagent [{}]: {}", task_id,
+                    record.status.label if child.policy.log_content else "[content hidden]")
+        return record
 
     async def spawn(
         self,
         task: str,
-        context: str | None = None,
         label: str | None = None,
-        complex: bool | None = None,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
-        media: list[str] | None = None,
+        origin_message_id: str | None = None,
+        temperature: float | None = None,
+        workspace_scope: WorkspaceScope | None = None,
+        *,
+        runtime: LLMRuntime | None = None,
+        origin_turn_id: str | None = None,
+        session_policy: SessionPolicy | None = None,
     ) -> str:
-        """Spawn a subagent to execute a task in the background.
+        """Start background work and route its terminal result to the parent."""
+        try:
+            record = await self._create_task(
+                task, label, origin_channel, origin_chat_id, session_key,
+                origin_message_id, temperature, workspace_scope, runtime, announce=True, origin_turn_id=origin_turn_id,
+                session_policy=session_policy,
+            )
+        except SubagentControlError as exc:
+            return ToolResult.error(f"Error: {exc}")
+        status = record.status
+        return (f"Subagent [{status.label}] started (id: {status.task_id}). "
+                "I'll notify you when it completes. Don't duplicate its work.")
 
-        ``media``: files the person attached to the turn this task comes from
-        (pictures, documents), by path. A turn handed over mid-way -- the chat
-        timed out and escalated -- used to arrive with its words and none of
-        its pictures, and "extract the five characters from that image" ran on
-        a sub-agent that looked everywhere for the image and wrote a report
-        saying it had none (2026-09-30).
-
-        ``complex`` is the spawner's word and wins when given. Left unset, the
-        task text is classified the way a chat turn is; in ``shadow`` mode the
-        label is recorded and the fast model runs, in ``active`` mode a
-        `complex` label picks the strong one.
-        """
-        task_id = str(uuid.uuid4())[:8]
-        route = None
-        if complex is None:
-            complex, route = await self._classify_task(task, context)
-            logger.info("Subagent [{}] classified as {} ({}) -> powerful={}",
-                        task_id, route.label if route else "?",
-                        route.source if route else "no classifier", complex)
-        self._task_routes[task_id] = route
-        display_label = label or task[:30] + ("..." if len(task) > 30 else "")
-        origin = {"channel": origin_channel, "chat_id": origin_chat_id, "session_key": session_key}
-
-        status = SubagentStatus(
-            task_id=task_id,
-            label=display_label,
-            task_description=task,
-            started_at=time.monotonic(),
-            powerful=complex,
-        )
-        self._task_statuses[task_id] = status
-
-        bg_task = asyncio.create_task(
-            self._gated(status, self._run_subagent(task_id, task, display_label, origin,
-                                                   status, complex, context, media=media))
-        )
-        self._running_tasks[task_id] = bg_task
-        if session_key:
-            self._session_tasks.setdefault(session_key, set()).add(task_id)
-
-        def _cleanup(t: asyncio.Task) -> None:
-            self._running_tasks.pop(task_id, None)
-            self._task_statuses.pop(task_id, None)
-            if session_key and (ids := self._session_tasks.get(session_key)):
-                ids.discard(task_id)
-                if not ids:
-                    del self._session_tasks[session_key]
-            intentional = task_id in self._intentional_cancels
-            self._intentional_cancels.discard(task_id)
-            # _run_subagent announces its own result on every normal path. If the
-            # task instead ended cancelled or with an unretrieved exception, that
-            # path was skipped and the user would get nothing. Surface it: log,
-            # and (unless the user cancelled on purpose) best-effort notify them.
-            try:
-                if t.cancelled():
-                    logger.warning("Subagent [{}] cancelled before finishing", task_id)
-                    if intentional:
-                        return
-                    reason = ("The background task was interrupted before it could "
-                              "finish (the assistant may have restarted). Ask me to "
-                              "run it again if you still need it.")
-                else:
-                    exc = t.exception()
-                    if exc is None:
-                        return
-                    logger.error("Subagent [{}] died with unhandled error: {!r}", task_id, exc)
-                    reason = f"The background task stopped unexpectedly: {exc}"
-            except asyncio.CancelledError:
-                return
-            except Exception:
-                return
-            try:
-                asyncio.get_running_loop().create_task(
-                    self._announce_result(task_id, display_label, task, reason, origin, "error")
+    async def run_inline(
+        self,
+        task: str,
+        label: str | None = None,
+        origin_channel: str = "cli",
+        origin_chat_id: str = "direct",
+        session_key: str | None = None,
+        origin_message_id: str | None = None,
+        temperature: float | None = None,
+        workspace_scope: WorkspaceScope | None = None,
+        *,
+        runtime: LLMRuntime | None = None,
+        origin_turn_id: str | None = None,
+        session_policy: SessionPolicy | None = None,
+    ) -> str:
+        """Wait for the same task lifecycle without a background notice."""
+        try:
+            record = await self._create_task(
+                task, label, origin_channel, origin_chat_id, session_key,
+                origin_message_id, temperature, workspace_scope, runtime, announce=False, origin_turn_id=origin_turn_id,
+                session_policy=session_policy,
+            )
+        except SubagentControlError as exc:
+            return ToolResult.error(f"Error: {exc}")
+        execution = self._running_tasks[record.status.task_id]
+        try:
+            result = await asyncio.shield(execution)
+        except asyncio.CancelledError:
+            caller = asyncio.current_task()
+            if execution.cancelled() and caller is not None and not caller.cancelling():
+                partial_result = record.status.result if record.status.partial else None
+                return ToolResult.error(
+                    "Task cancelled." + (f"\nPartial result:\n{partial_result}" if partial_result else "")
                 )
-            except RuntimeError:
-                pass  # event loop gone (hard shutdown) — nothing we can do
+            await self._cancel_task(record, suppress_notice=True)
+            raise
+        if record.status.state == "error":
+            error = record.status.error or result
+            return ToolResult.error(error + (f"\nPartial result:\n{result}" if error != result else ""))
+        if record.status.state == "incomplete":
+            return ToolResult.error(f"Task incomplete ({record.status.stop_reason}).\n{result}")
+        return result
 
-        bg_task.add_done_callback(_cleanup)
+    def _task_done(self, record: _SubagentTask, task: asyncio.Task[str]) -> None:
+        self._running_tasks.pop(record.status.task_id, None)
+        error = None if task.cancelled() else task.exception()
+        if error is not None:
+            logger.error("Subagent [{}] failed: {}", record.status.task_id,
+                         error if record.session.policy.log_content else type(error).__name__)
+        if record.status.finished_at is None:
+            # An externally cancelled execution still owns cleanup and a terminal result.
+            record.decide(
+                _SubagentOutcome("error", f"Error: {error}", "error", str(error))
+                if error is not None
+                else _SubagentOutcome("cancelled", "Task cancelled.", "cancelled")
+            )
+            self._start_cleanup(record)
+            settlement = asyncio.create_task(self._settle_unfinished_task(record))
+            self._running_tasks[record.status.task_id] = settlement
+            settlement.add_done_callback(partial(self._task_done, record))
+        self._release_task(record)
 
-        logger.info("Spawned subagent [{}]: {}", task_id, display_label)
+    async def _save_transcript(self, record: _SubagentTask) -> None:
+        if self.sessions is not None:
+            from nanobot.session.sqlite_store import SessionConflictError
 
-        # Notify the origin channel that a sub-agent started
-        await self.bus.publish_outbound(OutboundMessage(
-            channel=origin_channel,
-            chat_id=origin_chat_id,
-            content="",
-            metadata={"_subagent_event": "start", "task_id": task_id, "label": display_label, "powerful": complex},
+            try:
+                await self.sessions.sessions.state.finish_turn(record.session)
+            except SessionConflictError:
+                # A removed child must not be recreated by a late observation.
+                return
+
+    async def _settle_unfinished_task(self, record: _SubagentTask) -> str:
+        outcome = await self._finish(record)
+        return outcome.result
+
+    async def _run_subagent(self, record: _SubagentTask) -> str:
+        status = record.status
+        task_text, label = status.task_description, status.label
+        record.begun = True
+        try:
+            record.raise_if_stopping()
+            async with self._run_slots:
+                record.raise_if_stopping()
+                status.state = "running"
+                status.phase = "initializing"
+                await self._save_status(status)
+                outcome = await self._run_admitted_subagent(record)
+                record.decide(outcome)
+        except asyncio.CancelledError:
+            record.decide(_SubagentOutcome("cancelled", "Task cancelled.", "cancelled"))
+        except Exception as exc:
+            logger.opt(exception=record.session.policy.log_content).error("Subagent [{}] failed", status.task_id)
+            record.decide(_SubagentOutcome("error", f"Error: {exc}", "error", str(exc)))
+        cleanup_error = None
+        try:
+            await asyncio.shield(self._start_cleanup(record))
+        except Exception as exc:
+            logger.opt(exception=record.session.policy.log_content).error(
+                "Subagent [{}] exec cleanup failed", status.task_id,
+            )
+            cleanup_error = f"Error cleaning up task processes: {exc}"
+        outcome = await self._finish(record, cleanup_error)
+        if record.announce and not record.suppress_notice and not self._closed:
+            await self._announce_result(
+                status.task_id, label, task_text, outcome.result, record.origin,
+                "ok" if outcome.state == "done" else outcome.state, record.origin_message_id,
+                receipts=dict(status.receipts),
+                stop_reason=status.stop_reason, error=status.error, partial_result=status.partial,
+            )
+        if outcome.state == "cancelled":
+            raise asyncio.CancelledError
+        return outcome.result
+
+    def _extra_turn_hooks(self, record: _SubagentTask, tools: Any = None,
+                          workspace: Any = None) -> list[AgentHook]:
+        """household seam: further hooks for one sub-agent run (none upstream)."""
+        return []
+
+    async def _run_admitted_subagent(self, record: _SubagentTask) -> _SubagentOutcome:
+        status, origin, runtime = record.status, record.origin, record.runtime
+        task_id, label = status.task_id, status.label
+        origin_message_id, workspace_scope = record.origin_message_id, record.workspace_scope
+        logger.info("Subagent [{}] starting task: {}", task_id,
+                    label if record.session.policy.log_content else "[content hidden]")
+
+        async def _on_checkpoint(payload: AgentCheckpoint) -> None:
+            record.raise_if_stopping()
+            phase = payload.get("phase", status.phase)
+            iteration = payload.get("iteration", status.iteration)
+            if (phase, iteration) != (status.phase, status.iteration):
+                status.phase, status.iteration = phase, iteration
+                await self._save_status(status)
+
+        root = workspace_scope.project_path if workspace_scope is not None else self.workspace
+        cfg = None
+        if workspace_scope is not None:
+            cfg = self._subagent_tools_config()
+            cfg.restrict_to_workspace = workspace_scope.restrict_to_workspace
+        # Construct from the agent workspace; the bound scope below supplies the project cwd.
+        tools = self._build_tools(tools_config=cfg, exec_manager=record.exec_manager)
+        system_prompt = self._build_subagent_prompt(workspace=root)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            *record.session.get_history(),
+        ]
+        activity = SessionActivity()
+
+        async def save_observation(status: SubagentStatus) -> None:
+            record.session.messages = activity.transcript()
+            await self._save_transcript(record)
+            await self._save_status(status)
+
+        async def publish_activity(event: AgentEvent) -> None:
+            if activity.remember(event):
+                await save_observation(status)
+
+        events = EventSink(publish_activity)
+        hook = build_agent_turn_hook(AgentTurnHookSpec(
+            events=events,
+            streaming=True,
+            channel=origin["channel"],
+            chat_id=origin["chat_id"],
+            message_id=origin_message_id,
+            session_key=record.session.key,
+            workspace=root,
+            registered_hook_factories=[create_file_edit_activity_hook],
+            turn_hooks=[activity, _SubagentHook(
+                status, check_active=record.raise_if_stopping,
+                max_result_chars=self.max_tool_result_chars,
+                on_status=save_observation,
+            ), *self._extra_turn_hooks(record, tools, root)],  # household: runner hooks, task panel
+            ephemeral=not record.session.policy.persist,
+            run_extra_hooks_for_ephemeral=True,
+            log_content=record.session.policy.log_content,
         ))
 
-        return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
-
-    async def _run_subagent(
-        self,
-        task_id: str,
-        task: str,
-        label: str,
-        origin: dict[str, str],
-        status: SubagentStatus,
-        powerful: bool = False,
-        context: str | None = None,
-        media: list[str] | None = None,
-    ) -> None:
-        """Execute the subagent task and announce the result."""
-        logger.info("Subagent [{}] starting task: {}", task_id, label)
-        media = [p for p in (media or []) if isinstance(p, str) and os.path.isfile(p)]
-        if media:
-            # Named in the task, with where they are: this runner's tools
-            # (describe_image, read_file, exec) open a path as given.
-            task = (task + "\n\nThe person attached " + ("this file" if len(media) == 1 else "these files")
-                    + " to the request -- this is what it refers to:\n"
-                    + "\n".join(f"- {p}" for p in media))
-
-        origin_channel = origin.get("channel") or "cli"
-        origin_chat_id = origin.get("chat_id") or "direct"
-
-        async def _emit_progress(payload: dict) -> None:
-            """One line of commentary, out to the origin channel.
-
-            Same envelope as the start/done events (`_subagent_event`), so the
-            channels that already route those need only learn one more value —
-            and the ones that do not care keep ignoring the whole family.
-            """
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=origin_channel,
-                chat_id=origin_chat_id,
-                content="",
-                metadata={
-                    "_subagent_event": "progress",
-                    "task_id": task_id,
-                    "label": label,
-                    **payload,
-                },
-            ))
-
-        hook = _SubagentHook(task_id, status, emit=_emit_progress)
-
-        # Both the session key and the channel's own address: with
-        # unified_session on, a WhatsApp message's session key is
-        # `unified:default` and says nothing about who wrote it.
-        third_party = (is_third_party_session(origin.get("session_key"))
-                       or is_third_party_session(f"{origin_channel}:{origin_chat_id}"))
-        # A task with attachments stays here, off pi: pi has no shell and no
-        # image tool, by design (pi_runner.TOOLS), and the work a picture is
-        # handed over for -- crop it, describe it, cut it into pieces -- needs
-        # both.
-        endpoint = None if (third_party or media) else self._harness_endpoint(powerful)
-        if endpoint is not None:
-            try:
-                answer, outcome = await self._run_on_harness(
-                    task_id, task, label, origin, status, context, hook, endpoint)
-            except Exception as e:                      # noqa: BLE001
-                status.phase = "error"
-                status.error = str(e)
-                logger.error("Subagent [{}] failed on the harness: {}", task_id, e)
-                answer, outcome = f"Error: {e}", "error"
-            await self._announce_result(task_id, label, task, answer, origin, outcome)
-            return
-
-        async def _on_checkpoint(payload: dict) -> None:
-            phase = payload.get("phase", status.phase)
-            if phase != status.phase:
-                # Through the hook, not straight to _emit_progress: that is
-                # where the try/except, the PROGRESS_MAX_EVENTS cap and the
-                # monotonic seq live, and `AgentRunner._emit_checkpoint` awaits
-                # this callback unguarded — a raise here ends a task that may
-                # have hours of work behind it.
-                await hook._publish("phase", str(phase))
-            status.phase = phase
-            status.iteration = payload.get("iteration", status.iteration)
-
-        # Use powerful model/provider if requested and configured
-        model = self.model
-        runner = self.runner
-        if powerful and self.powerful_model:
-            model = self.powerful_model
-            if self.powerful_provider:
-                runner = AgentRunner(self.powerful_provider)
-            logger.info("Subagent [{}] using powerful model: {}", task_id, model)
-        # An OpenCode Go model is for pi alone. Here, on nanobot's own loop --
-        # the task could not go to pi -- it runs on the everyday model instead.
-        if is_go_model(model):
-            logger.info("Subagent [{}]: {} is an OpenCode Go model and this task is not on pi; "
-                        "running it on {}", task_id, model, self._main_model)
-            model = self._main_model or self.provider.get_default_model()
-            runner = AgentRunner(self._main_provider or self.provider)
-
+        request_token = bind_request_context(RequestContext(
+            channel=origin["channel"],
+            chat_id=origin["chat_id"],
+            message_id=origin_message_id,
+            session_key=record.session.key,
+            runtime=runtime,
+            log_content=record.session.policy.log_content,
+            persist_session=record.session.policy.persist,
+        ))
+        token = bind_workspace_scope(workspace_scope) if workspace_scope is not None else None
         try:
-            # Build subagent tools (no message tool, no spawn tool)
-            tools = ToolRegistry()
-            allowed_dir = self.workspace if (self.restrict_to_workspace or self.exec_config.sandbox) else None
-            extra_read = [BUILTIN_SKILLS_DIR] if allowed_dir else None
-            tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir, extra_allowed_dirs=extra_read))
-            tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(GlobTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(GrepTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            if self.exec_config.enable:
-                tools.register(ExecTool(
-                    working_dir=str(self.workspace),
-                    timeout=self.exec_config.timeout,
-                    restrict_to_workspace=self.restrict_to_workspace,
-                    sandbox=self.exec_config.sandbox,
-                    path_append=self.exec_config.path_append,
-                    allowed_env_keys=self.exec_config.allowed_env_keys,
-                ))
-            if self.web_config.enable:
-                tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy))
-                tools.register(WebFetchTool(proxy=self.web_config.proxy))
-            system_prompt = self._build_subagent_prompt()
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-            ]
-            if context and context.strip():
-                messages.append({
-                    "role": "user",
-                    "content": f"Background context for this task:\n{context.strip()}",
-                })
-            messages.append({"role": "user", "content": task})
-
-            # Long/open-ended background work (house/product searches, multi-site
-            # research) needs room; complex tasks get a much bigger tool budget.
-            max_iters = self.routing.complex_iterations if powerful else 40
-            escalated = False
-            try:
-                # Filed against the chat that asked for it, so a session's cost
-                # includes the hours of background work it set off and not only
-                # the turns somebody waited through. The span closes on the way
-                # out whichever way this leaves — answer, timeout or cancel.
-                with PROFILER.span(
-                    "task",
-                    f"{origin_channel}:{origin_chat_id}",
-                    label=label or "subagent",
-                    channel=origin_channel,
-                    chat_id=origin_chat_id,
-                    model=model or "",
-                ) as span:
-                    result = await asyncio.wait_for(
-                        runner.run(AgentRunSpec(
-                            initial_messages=messages,
-                            tools=tools,
-                            model=model,
-                            max_iterations=max_iters,
-                            max_tool_result_chars=self.max_tool_result_chars,
-                            hook=hook,
-                            max_iterations_message=NO_ANSWER_PLACEHOLDER,
-                            error_message=None,
-                            fail_on_tool_error=False,
-                            checkpoint_callback=_on_checkpoint,
-                        )),
-                        timeout=SUBAGENT_MAX_RUNTIME_S,
-                    )
-                    span.note(
-                        stop_reason=result.stop_reason,
-                        served_by=result.served_by_model,
-                        task_id=task_id,
-                        powerful=powerful,
-                    )
-                    # The cheap attempt did not finish: the strong model takes
-                    # the same task over, from the tool results already in
-                    # hand. Same rule as the main loop -- see agent/classify.py.
-                    if self._should_escalate(result, powerful):
-                        reason = result.stop_reason
-                        route = self._task_routes.get(task_id)
-                        if route is not None:
-                            route.escalated_from = reason
-                        logger.info("Subagent [{}] ended with {} on the fast model; "
-                                    "continuing on {}", task_id, reason, self.powerful_model)
-                        span.note(escalated_from=reason)
-                        escalated = True
-                        result = await asyncio.wait_for(
-                            AgentRunner(self.powerful_provider or self.provider).run(AgentRunSpec(
-                                initial_messages=continuation_messages(
-                                    result.messages, reason, tools_ran=bool(result.tools_used)),
-                                tools=tools,
-                                model=self.powerful_model,
-                                max_iterations=self.routing.complex_iterations,
-                                max_tool_result_chars=self.max_tool_result_chars,
-                                hook=hook,
-                                max_iterations_message=NO_ANSWER_PLACEHOLDER,
-                                error_message=None,
-                                fail_on_tool_error=False,
-                                checkpoint_callback=_on_checkpoint,
-                            )),
-                            timeout=SUBAGENT_MAX_RUNTIME_S,
-                        )
-                        model = self.powerful_model or model
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Subagent [{}] exceeded {}s — stopping with partial progress",
-                    task_id, SUBAGENT_MAX_RUNTIME_S,
-                )
-                report_cut(f"sub:{origin_chat_id}", model, span, stop_reason="timeout",
-                           route={"tier": "subagent", "label": "nanobot", "source": "subagent"})
-                status.phase = "timeout"
-                await self._announce_result(
-                    task_id, label, task,
-                    self._format_partial_from_status(status),
-                    origin, "error",
-                )
-                return
-            status.phase = "done"
-            status.stop_reason = result.stop_reason
-            # The whole task, both attempts if it escalated: the span counted
-            # every call, the runner's result only the last one.
-            report_cut(f"sub:{origin_chat_id}", result.served_by_model or model, span,
-                       stop_reason=result.stop_reason,
-                       route={"tier": "subagent", "label": "nanobot", "source": "subagent",
-                              "escalated": escalated})
-
-            # A subagent runs with fail_on_tool_error=False on purpose: one bad
-            # tool call should not end a task that may have hours of work behind
-            # it. But that also means stop_reason is rarely "tool_error", so it
-            # cannot be the only thing that triggers a partial-progress report —
-            # relying on it alone made a task whose tools all failed announce
-            # "Task completed", which is both wrong and the opposite of useful.
-            # What decides is whether there is an answer to give.
-            tool_errors = [e for e in result.tool_events if e["status"] == "error"]
-            answer = (result.final_content or "").strip()
-            no_answer = not answer or answer == NO_ANSWER_PLACEHOLDER
-
-            if result.stop_reason == "tool_error" or (no_answer and tool_errors):
-                status.tool_events = list(result.tool_events)
-                await self._announce_result(
-                    task_id, label, task,
-                    self._format_partial_progress(result),
-                    origin, "error",
-                )
-            elif result.stop_reason == "error":
-                await self._announce_result(
-                    task_id, label, task,
-                    result.error or "Error: subagent execution failed.",
-                    origin, "error",
-                )
-            else:
-                final_result = result.final_content or NO_ANSWER_PLACEHOLDER
-                logger.info("Subagent [{}] completed successfully", task_id)
-                await self._announce_result(task_id, label, task, final_result, origin, "ok")
-
-        except Exception as e:
-            status.phase = "error"
-            status.error = str(e)
-            logger.error("Subagent [{}] failed: {}", task_id, e)
-            await self._announce_result(task_id, label, task, f"Error: {e}", origin, "error")
+            tool_definitions = tools.get_definitions()
+            consolidate_history = partial(
+                self.consolidator.summarize_transcript,
+                runtime=runtime,
+                session_key=record.session.key,
+                tools=tool_definitions,
+                persist=False,
+            )
+            consolidate_provider_compaction = partial(
+                self.consolidator.summarize_provider_compaction,
+                runtime=runtime,
+                session_key=record.session.key,
+                tools=tool_definitions,
+                persist=False,
+            )
+            result = await self.runner.run(AgentRunSpec(
+                initial_messages=messages,
+                tools=tools,
+                runtime=runtime,
+                max_iterations=self.max_iterations,
+                max_tool_result_chars=self.max_tool_result_chars,
+                hook=hook,
+                max_iterations_message="Task stopped at its iteration limit before producing a final response.",
+                finalize_on_max_iterations=False,
+                error_message=None,
+                checkpoint_callback=_on_checkpoint,
+                injection_callback=partial(self._drain_inbox, record),
+                session_key=record.session.key,
+                workspace=root if record.session.policy.persist else None,
+                llm_usage_source=origin.get(
+                    "llm_usage_source",
+                    current_llm_usage_source(),
+                ),
+                consolidate_history=consolidate_history,
+                consolidate_provider_compaction=consolidate_provider_compaction,
+                events=events,
+            ))
+        finally:
+            if token is not None:
+                reset_workspace_scope(token)
+            reset_request_context(request_token)
+        status.usage = result.usage
+        if result.messages:
+            record.session.messages = activity.transcript(result.messages)
+        record.session.provider_state = result.provider_state
+        checkpoint = result.summary_checkpoint
+        if checkpoint is not None:
+            boundary = checkpoint.transcript_boundary
+            if 0 <= boundary <= len(result.messages):
+                insert_at = sum(message.get("role") != "system" for message in result.messages[:boundary])
+                record.session.commit_summary_checkpoint(checkpoint.summary, insert_at=insert_at)
+        if result.stop_reason in {"error", "empty_final_response"}:
+            final_result = result.error or "Error: subagent execution failed."
+            return _SubagentOutcome("error", final_result, result.stop_reason, result.error)
+        if result.stop_reason == "max_iterations":
+            return _SubagentOutcome("incomplete", result.final_content or "Iteration limit reached.", result.stop_reason)
+        final_result = result.final_content or "Task completed but no final response was generated."
+        return _SubagentOutcome("done", final_result, result.stop_reason, result.error)
 
     async def _announce_result(
         self,
@@ -740,11 +930,19 @@ class SubagentManager:
         label: str,
         task: str,
         result: str,
-        origin: dict[str, str],
+        origin: _SubagentOrigin,
         status: str,
+        origin_message_id: str | None = None,
+        *,
+        receipts: dict[str, str] | None = None,
+        stop_reason: str | None = None,
+        error: str | None = None,
+        partial_result: bool = False,
     ) -> None:
-        """Announce the subagent result to the main agent via the message bus."""
-        status_text = "completed successfully" if status == "ok" else "failed"
+        status_text = {
+            "ok": "completed successfully", "cancelled": "was cancelled",
+            "incomplete": "stopped before completing the task",
+        }.get(status, "failed")
 
         announce_content = render_template(
             "agent/subagent_announce.md",
@@ -752,155 +950,112 @@ class SubagentManager:
             status_text=status_text,
             task=task,
             result=result,
+            stop_reason=stop_reason,
+            error=error,
+            partial_result=partial_result,
         )
 
-        # Inject as a system message so _process_message parses the delivery
-        # channel and chat_id from msg.chat_id (format: "{channel}:{chat_id}").
-        # session_key_override routes this to the correct session/pending queue.
+        # Inject as system message to trigger main agent.
+        # Use session_key_override to align with the main agent's effective
+        # session key (including any explicit override) so the result is
+        # routed to the correct pending queue (mid-turn injection) instead of
+        # being dispatched as a competing independent task.
         override = origin.get("session_key") or f"{origin['channel']}:{origin['chat_id']}"
+        if self.sessions is not None and (
+            not self.sessions.exists(override) or not self.sessions.contains(task_id, override)
+        ):
+            return
+        metadata: dict[str, Any] = {
+            "injected_event": "subagent_result",
+            "subagent_task_id": task_id,
+            "subagent_state": "done" if status == "ok" else status,
+            "subagent_stop_reason": stop_reason,
+            "subagent_partial": partial_result,
+        }
+        metadata["subagent_message_receipts"] = receipts or {}
+        if receipts:
+            announce_content += "\nMessage receipts: " + json.dumps(receipts)
+        if origin_message_id:
+            metadata["origin_message_id"] = origin_message_id
         msg = InboundMessage(
             channel="system",
             sender_id="subagent",
             chat_id=f"{origin['channel']}:{origin['chat_id']}",
             content=announce_content,
             session_key_override=override,
-            metadata={
-                "injected_event": "subagent_result",
-                "subagent_task_id": task_id,
-                "subagent_raw_result": result,  # fallback if LLM summarization stalls
-            },
+            require_existing_session=True,
+            metadata=metadata,
         )
-
-        # Notify the origin channel that the sub-agent finished
-        await self.bus.publish_outbound(OutboundMessage(
-            channel=origin.get("channel", "websocket"),
-            chat_id=origin["chat_id"],
-            content="",
-            metadata={"_subagent_event": "done", "task_id": task_id, "label": label, "status": status},
-        ))
 
         await self.bus.publish_inbound(msg)
         logger.debug("Subagent [{}] announced result to {}:{}", task_id, origin['channel'], origin['chat_id'])
 
-    @staticmethod
-    def _format_partial_progress(result) -> str:
-        completed = [e for e in result.tool_events if e["status"] == "ok"]
-        failure = next((e for e in reversed(result.tool_events) if e["status"] == "error"), None)
-        lines: list[str] = []
-        if completed:
-            lines.append("Completed steps:")
-            for event in completed[-3:]:
-                lines.append(f"- {event['name']}: {event['detail']}")
-        if failure:
-            if lines:
-                lines.append("")
-            lines.append("Failure:")
-            lines.append(f"- {failure['name']}: {failure['detail']}")
-        if result.error and not failure:
-            if lines:
-                lines.append("")
-            lines.append("Failure:")
-            lines.append(f"- {result.error}")
-        return "\n".join(lines) or (result.error or "Error: subagent execution failed.")
-
-    @staticmethod
-    def _format_partial_from_status(status) -> str:
-        """Partial-progress summary built from a running subagent's status,
-        used when the overall runtime cap trips before a result exists."""
-        events = status.tool_events or []
-        done = [e for e in events if e.get("status") == "ok"]
-        lines = ["The task ran longer than allowed and was stopped before finishing."]
-        if done:
-            lines.append("What it managed to do:")
-            for e in done[-5:]:
-                lines.append(f"- {e.get('name')}: {e.get('detail')}")
-        else:
-            lines.append("It did not complete any steps in time.")
-        lines.append("Ask me to continue if you want me to keep going.")
-        return "\n".join(lines)
-
-    def _build_subagent_prompt(self) -> str:
-        """Build a focused system prompt for the subagent."""
-        from nanobot.agent.context import ContextBuilder
+    def _build_subagent_prompt(self, workspace: Path | None = None) -> str:
         from nanobot.agent.skills import SkillsLoader
 
-        time_ctx = ContextBuilder._build_runtime_context(None, None)
+        agent_workspace = self.workspace.expanduser().resolve()
+        project_workspace = workspace.expanduser().resolve() if workspace else agent_workspace
         skills_summary = SkillsLoader(
             self.workspace,
             disabled_skills=self.disabled_skills,
-        ).build_skills_summary()
+        ).build_skills_summary(workspace=project_workspace)
+        history_log = (
+            str(agent_workspace / "memory" / "history.jsonl")
+            if agent_workspace != project_workspace
+            else "memory/history.jsonl"
+        )
         return render_template(
             "agent/subagent_system.md",
-            time_ctx=time_ctx,
-            workspace=str(self.workspace),
+            workspace=str(project_workspace),
+            agent_workspace=str(agent_workspace),
+            history_log=history_log,
             skills_summary=skills_summary or "",
         )
 
-    async def cancel(self, task_id: str) -> bool:
-        """Stop one subagent. True if it was running and is not any more.
-
-        `cancel_by_session` stops everything a session started, which is the
-        right shape for /stop — the person is cancelling the turn they are in.
-        It is the wrong shape for the «En segundo plano» panel, where each row
-        is a separate piece of work with its own hours behind it: the family
-        cancels *that* one, and taking its neighbours down with it is a bug that
-        looks like a feature until somebody loses four hours of research.
-
-        Marked as intentional first, or the cancellation is reported as a crash
-        — same bookkeeping the session-wide one does, and for the same reason.
-        """
-        task = self._running_tasks.get(task_id)
-        if task is None or task.done():
-            return False
-        self._intentional_cancels.add(task_id)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        return True
-
     async def cancel_by_session(self, session_key: str) -> int:
         """Cancel all subagents for the given session. Returns count cancelled."""
-        tids = [tid for tid in self._session_tasks.get(session_key, [])
-                if tid in self._running_tasks and not self._running_tasks[tid].done()]
-        self._intentional_cancels.update(tids)
-        tasks = [self._running_tasks[tid] for tid in tids]
-        for t in tasks:
-            t.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        return len(tasks)
+        records = [record for tid, record in self._tasks.items()
+                   if record.status.owner == session_key
+                   and tid in self._running_tasks and not self._running_tasks[tid].done()]
+        # Suppress every notice before cancellation can yield to a sibling.
+        for record in records:
+            record.suppress_notice = True
+        await asyncio.gather(*(self._cancel_task(record, suppress_notice=True) for record in records))
+        return len(records)
+
+    async def close(self) -> None:
+        """Request cancellation and bounded cleanup, retaining unfinished work."""
+        self._closed = True
+        await asyncio.gather(*(self._cancel_task(self._tasks[tid], suppress_notice=True)
+                               for tid in list(self._running_tasks)))
+        cleanups: set[asyncio.Task[int]] = set()
+        for record in list(self._tasks.values()):
+            cleanup = record.cleanup_task
+            retry = cleanup is not None and cleanup.done() and (
+                cleanup.cancelled() or cleanup.exception() is not None
+            )
+            cleanups.add(self._start_cleanup(record, retry=retry))
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._exec_session_manager.close_all())
+        cleanups.add(self._close_task)
+        done, _ = await asyncio.wait(cleanups, timeout=self.CANCEL_WAIT_SECONDS)
+        for task in done:
+            task.result()
+        if self._tasks:
+            logger.warning("Subagent shutdown returned with tasks or cleanup still pending")
 
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""
         return len(self._running_tasks)
 
-    async def _gated(self, status: "SubagentStatus", work) -> None:
-        """Run *work* when one of MAX_CONCURRENT places is free.
-
-        Since chat turns that take minutes are handed here (delegate.py), a
-        household can start several at once -- and they share the GPU server
-        that also answers notifications and routes turns. Two at a time keeps
-        one of its slots for those; the rest wait, marked queued.
-        """
-        if self._slots is None:
-            self._slots = asyncio.Semaphore(MAX_CONCURRENT)
-        if self._slots.locked():
-            status.phase = "queued"
-        async with self._slots:
-            await work
-
-    def is_running_task(self, session_key: str, task: str) -> bool:
-        """Whether this conversation already has this task running."""
-        for tid in self._session_tasks.get(session_key, set()):
-            t, st = self._running_tasks.get(tid), self._task_statuses.get(tid)
-            if t is not None and not t.done() and st is not None \
-                    and (st.task_description or "").strip() == task.strip():
-                return True
-        return False
+    @property
+    def has_pending_work(self) -> bool:
+        """Completed turns may still own exec cleanup, including failed cleanup."""
+        return bool(self._tasks) or self._exec_session_manager.has_pending_work
 
     def get_running_count_by_session(self, session_key: str) -> int:
         """Return the number of currently running subagents for a session."""
-        tids = self._session_tasks.get(session_key, set())
         return sum(
-            1 for tid in tids
-            if tid in self._running_tasks and not self._running_tasks[tid].done()
+            1 for tid, task in self._running_tasks.items()
+            if self._tasks[tid].status.owner == session_key and not task.done()
         )

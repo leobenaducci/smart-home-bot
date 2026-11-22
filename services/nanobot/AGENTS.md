@@ -1,5 +1,15 @@
 # AGENTS.md
 
+> **Layout changed (2026-11).** The code under this directory is now upstream
+> nanobot 0.4.x with the household's code in `nanobot/household/` and short
+> `# household` seams in upstream files, vendored from the rebase tree. Where
+> this guide names a fork file (`agent/runner.py`, `agent/tools/plan.py`,
+> `harness/`, `agent/classify.py`, ...), the behaviour now lives in
+> `nanobot/household/` (`hooks.py`, `plan.py`, `harness/`, `classify.py`, ...);
+> `git grep "# household"` lists every seam. Sections describing the fork's
+> internals are being rewritten; what it says about how the household *uses*
+> the assistant still holds.
+
 Guidance for working in this repo. This is **Alfred** — the household assistant
 the family talks to through HomeCore's chat, the Android app, and their phones'
 notifications.

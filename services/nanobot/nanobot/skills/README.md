@@ -8,16 +8,11 @@ Each skill is a directory containing a `SKILL.md` file with:
 - YAML frontmatter (name, description, metadata)
 - Markdown instructions for the agent
 
-When skills reference large local documentation or logs, prefer nanobot's built-in
-`grep` / `glob` tools to narrow the search space before loading full files.
-Use `grep(output_mode="count")` / `files_with_matches` for broad searches first,
-use `head_limit` / `offset` to page through large result sets,
-and `glob(entry_type="dirs")` when discovering directory structure matters.
+When skills reference large local documentation or logs, prefer nanobot's built-in `grep` tool to narrow the search space before loading full files. Use `grep(output_mode="count")` / `files_with_matches` for broad searches first, use `head_limit` / `offset` to page through large result sets, and `grep(glob="*.md")` to filter by file name pattern.
 
 ## Attribution
 
-These skills are adapted from [OpenClaw](https://github.com/openclaw/openclaw)'s skill system.
-The skill format and metadata structure follow OpenClaw's conventions to maintain compatibility.
+These skills are adapted from [OpenClaw](https://github.com/openclaw/openclaw)'s skill system. The skill format and metadata structure follow OpenClaw's conventions to maintain compatibility.
 
 ## Available Skills
 
@@ -29,9 +24,6 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 | `tmux` | Remote-control tmux sessions |
 | `clawhub` | Search and install skills from ClawHub registry |
 | `skill-creator` | Create new skills |
-| `n8n` | Interact with n8n workflow automation |
-| `home-assistant` | Read and edit Home Assistant configuration — automations, devices, entities (not device control: lights are `lights`, other devices the HA tools) |
-| `file-share` | Save, download, copy and share files on the family SMB share (per-user folders + HomeCore's share store) |
-| `family-message` | Send a direct message, optionally with an attachment, to another family member's Alfred |
-| `devices` | The household's phones and tablets by name: volume, open an app, ring one device (parents for anyone's) |
-| `studio` | Pictures, songs and videos on the house's own card, queued for everyone, into a Studio project |
+| `nanobot-document` | Explain nanobot usage, configuration, and troubleshooting from bundled docs |
+
+`nanobot-document/references/` is generated from the root `docs/` directory by the Hatch build hook for wheels, source distributions, and editable installs. Edit `docs/` rather than the generated copies; rerun the build or editable install to refresh them. Source distributions also include `docs/` so wheels built from them retain the same documentation.

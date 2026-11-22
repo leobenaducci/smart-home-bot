@@ -210,17 +210,13 @@ UPSTREAM = {
     "services/nanobot/SECURITY.md",
     "services/nanobot/CONTRIBUTING.md",
     "services/nanobot/docs/chat-apps.md",
-    # The same upstream documents in the rebased tree, and two more of
-    # upstream's that carry its maintainers' and example addresses.
-    "services/nanobot-v04/SECURITY.md",
-    "services/nanobot-v04/CONTRIBUTING.md",
-    "services/nanobot-v04/docs/chat-apps.md",
-    "services/nanobot-v04/docs/guides/email-ai-agent.md",
-    "services/nanobot-v04/tui/SOURCE_OFFER.md",
+    # Two more of upstream's that carry its maintainers' and example addresses.
+    "services/nanobot/docs/guides/email-ai-agent.md",
+    "services/nanobot/tui/SOURCE_OFFER.md",
     # Copyright attributions, which have to stay verbatim (see _is_vendored).
     # Listed here, --check skips this file as it skips every UPSTREAM one;
     # publish_check's real-value checks still read its added lines.
-    "services/nanobot-v04/THIRD_PARTY_NOTICES.md",
+    "services/nanobot/THIRD_PARTY_NOTICES.md",
 }
 
 
@@ -229,15 +225,24 @@ UPSTREAM = {
 # belong in someone else's copyright line -- "Copyright (c) 2024 J. Muller" is a
 # legal attribution, not a household member, and rewriting it to "J. Roe" is a
 # compliance problem rather than a redaction. --check still reads them.
-# Whole trees vendored from elsewhere. services/nanobot-v04 is upstream nanobot
-# with the household's code in it, copied from the rebase tree it is built in:
-# a fix belongs there, so --apply never rewrites a file here. --check still
-# reads every one of them.
-UPSTREAM_TREES = ("services/nanobot-v04/",)
+# Whole trees vendored from elsewhere. services/nanobot is upstream nanobot with
+# the household's code in it, copied from the rebase tree it is built in: a fix
+# belongs there, so --apply never rewrites a file of it. The household's own
+# deployment files that live beside it (its config, prompts, compose files,
+# bench, profiles and operator notes) are this repository's and are rewritten
+# like any other. --check still reads every one of them.
+UPSTREAM_TREES = ("services/nanobot/",)
+HOUSEHOLD_IN_UPSTREAM_TREES = (
+    "services/nanobot/config/", "services/nanobot/bench/", "services/nanobot/user-profiles/",
+    "services/nanobot/docker-compose.", "services/nanobot/AGENTS.md",
+    "services/nanobot/code-workspace-marker",
+)
 
 
 def _is_vendored(rel: Path) -> bool:
-    if str(rel) in UPSTREAM or str(rel).startswith(UPSTREAM_TREES):
+    if str(rel) in UPSTREAM:
+        return True
+    if str(rel).startswith(UPSTREAM_TREES) and not str(rel).startswith(HOUSEHOLD_IN_UPSTREAM_TREES):
         return True
     stem = rel.name.upper()
     return stem.startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")) or \
@@ -314,7 +319,7 @@ def candidate_files(rewriting: bool = False) -> list[Path]:
         # can hold an email address or an IP just as easily as code can, and
         # making the whole directory invisible to the checker trades one bug for
         # a blind spot. Matched at any depth, because each service also carries
-        # its own copy (services/nanobot/webui/src/i18n).
+        # its own copy (services/home-core/.../i18n and the like).
         if rewriting and "i18n" in path.parts:
             continue
         if rewriting and _is_vendored(path.relative_to(ROOT)):

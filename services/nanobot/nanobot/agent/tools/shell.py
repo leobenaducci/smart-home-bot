@@ -1,238 +1,429 @@
-"""Shell execution tool."""
+from __future__ import annotations
 
 import asyncio
-import base64
 import os
 import re
 import shlex
 import shutil
 import sys
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import unquote
 
 from loguru import logger
 
-from nanobot.agent.skill_invocation import (
-    ECHO_LIKE,
-    emit_as_text_hint,
-    is_registered_skill_translation,
-    is_skill_invocation_json,
+from nanobot.agent.tools.base import Tool, ToolResult
+from nanobot.agent.tools.context import ToolContext, current_request_session_key
+from nanobot.agent.tools.exec_session import (
+    DEFAULT_EXEC_SESSION_MANAGER,
+    DEFAULT_MAX_OUTPUT_CHARS,
+    DEFAULT_YIELD_MS,
+    MAX_OUTPUT_CHARS,
+    MAX_YIELD_MS,
+    ExecSessionManager,
+    clamp_session_int,
+    format_session_poll,
 )
-from nanobot.agent.tools.base import Tool, tool_parameters
-from nanobot.utils.profiling import current_span
-
-
-def with_session_key(env: dict[str, str]) -> dict[str, str]:
-    """*env* plus `NANOBOT_SESSION_KEY`: which conversation the running turn
-    belongs to, for a skill that has to say so -- a fix request continues the
-    Programmer session of the conversation it came from. From the turn's own
-    span, never from the model: a chat id the model had to pass along was the
-    thing that did not work (docs/roadmap.md, the coding harness)."""
-    span = current_span()
-    if span is not None and span.session_key:
-        env["NANOBOT_SESSION_KEY"] = span.session_key
-    return env
-from nanobot.agent.tools.sandbox import wrap_command
-from nanobot.agent.tools.schema import IntegerSchema, StringSchema, tool_parameters_schema
+from nanobot.agent.tools.schema import (
+    BooleanSchema,
+    IntegerSchema,
+    StringSchema,
+    tool_parameters_schema,
+)
+from nanobot.agent.tools.shell_config import ExecToolConfig
 from nanobot.config.paths import get_media_dir
-from nanobot.utils.shell_log import log_exec
+from nanobot.execution.sandbox import build_sandbox_argv
+from nanobot.security.sandbox_launcher import SandboxLauncherError
+from nanobot.security.workspace_access import current_scope_allows_loopback, current_tool_workspace
+from nanobot.security.workspace_policy import is_path_within
 
 _IS_WINDOWS = sys.platform == "win32"
+from nanobot.household.shell_guards import HouseholdShellGuards  # noqa: E402  household
 
-# Payload of the base64 wrapper the skill translator emits, and that the model
-# imitates by hand when it decides to reimplement a skill.
-_B64_PAYLOAD_RE = re.compile(r"b64decode\(\s*b?['\"]([A-Za-z0-9+/=]+)['\"]")
-_PY_EXE = frozenset({"python", "python3", "python3.11", "python3.12", "python3.13"})
 
-# Skills run through exec like anything else, so the reimplementation guard
-# below has to let their own generated code past. It asks
-# is_registered_skill_translation, which the translator writes to as it emits
-# the command (see _maybe_translate_skill_calls). Matching the *shape* of that
-# command was the previous test and it is not one: the shape is visible to the
-# model and the model copied it.
-
-# Services a skill already owns. Reaching one of these by hand means
-# reimplementing that skill — badly, and usually with its credential on the
-# command line. Observed: asked for a PDF from Paperless, the model wrote its
-# own python3 -c against PAPERLESS_URL, saved the file outside the workspace
-# where the chat cannot serve it, and reported "I sent them the file" having
-# sent nothing.
-#
-# Order is load-bearing: the first match names the skill the refusal tells the
-# model to use, so the *specific* service has to be found before the shared
-# base it is built on. grocery, menu, geo and family-message all reach HomeCore
-# by rewriting the tasks URL —
-#
-#     BASE = os.environ.get("TASKS_API_URL", ...).replace("/tasks/api", "/grocery/api")
-#
-# — so their own generated code carries TASKS_API_URL and /tasks/api too. With
-# the tasks entries first, every one of them was refused with "use the `tasks`
-# skill", which is advice that cannot be followed when the request is about the
-# shopping list. Live on 2026-08-12, "add 2 more of those": fifteen rounds of
-# the model trying to comply with an impossible instruction, ~60k prompt tokens
-# each, before the turn ran out. The list came out right; nothing else did.
-_SKILL_OWNED_SIGNALS: tuple[tuple[str, str], ...] = (
-    ("PAPERLESS_URL", "paperless"),
-    ("PAPERLESS_API_TOKEN", "paperless"),
-    ("HOME_LIGHTS_API_URL", "lights"),
-    ("NANOBOT_N8N", "n8n"),
-    # Built on the tasks URL — these must come first.
-    ("/geo/api", "geo"),
-    ("/devices/api", "devices"),
-    ("/studio/api", "studio"),
-    ("/chat/notifications", "notifications"),
-    ("/chat/whatsapp", "whatsapp"),
-    ("/chat/dm", "family-message"),
-    ("/chat/ask-family", "family-message"),
-    ("/menu/api", "menu"),
-    ("/grocery/api", "grocery"),
-    ("TASKS_API_URL", "tasks"),
-    ("/tasks/api", "tasks"),
+_WORKSPACE_BOUNDARY_NOTE = (
+    "\n\nNote: this is a hard policy boundary, not a transient failure. "
+    "Do NOT retry with shell tricks (symlinks, base64 piping, alternative "
+    "tools, working_dir overrides). If the user genuinely needs this "
+    "resource, tell them you cannot reach it under the current "
+    "restrict_to_workspace policy and ask how to proceed."
 )
 
 
-def _host_signals() -> tuple[tuple[str, str], ...]:
-    """The `host:port` of each service that owns a skill, read from its URL.
-
-    These used to be three literals ending in `.home`. A household whose
-    services answer to any other name -- which is most of them, since the
-    suffix is a setting -- had three signals that could never match, so a model
-    curling its own paperless box was never redirected to the `paperless`
-    skill. The address is in the environment the deployer already supplies, so
-    read it there rather than guessing what somebody calls their machines.
-    """
-    out: list[tuple[str, str]] = []
-    for var, skill in (("PAPERLESS_URL", "paperless"),
-                       ("CAMERA_API_URL", "camera-feed"),
-                       ("NANOBOT_N8N_BASE_URL", "n8n")):
-        url = (os.environ.get(var) or "").strip()
-        if not url:
-            continue
-        host = url.split("://", 1)[-1].split("/", 1)[0]
-        # Bare loopback is not a signal: it is every other service on the box
-        # too, and matching it would redirect unrelated commands into a skill.
-        if host and not host.split(":", 1)[0] in ("127.0.0.1", "localhost", ""):
-            out.append((host, skill))
-    return tuple(out)
-
-_PREFLIGHT_TIMEOUT = 5.0
-# What bash actually says when it cannot parse. Anything else from the probe is
-# treated as the probe's own problem, not the command's.
-_SHELL_SYNTAX_ERROR_RE = re.compile(
-    r"syntax error|unexpected EOF|unexpected token|unterminated|"
-    r"missing closing|no closing",
-    re.IGNORECASE,
-)
+@dataclass(slots=True)
+class _PreparedCommand:
+    command: str | list[str]
+    cwd: str
+    env: dict[str, str]
+    timeout: int | None
+    shell_program: str | None
+    login: bool
 
 
-@tool_parameters(
-    tool_parameters_schema(
+def _exec_parameters(config: ExecToolConfig) -> dict[str, Any]:
+    return tool_parameters_schema(
         command=StringSchema("The shell command to execute"),
+        cmd=StringSchema("Compatibility alias for command"),
         working_dir=StringSchema("Optional working directory for the command"),
-        timeout=IntegerSchema(
-            60,
+        workdir=StringSchema("Compatibility alias for working_dir"),
+        max_runtime=IntegerSchema(
             description=(
-                "Timeout in seconds. Increase for long-running commands "
-                "like compilation or installation (default 60, max 600)."
+                "Hard runtime budget in seconds. Omit for the configured default "
+                f"({'unlimited' if config.max_runtime == 0 else str(config.max_runtime) + 's'}). "
+                f"Explicit requests must not exceed {config.max_runtime_limit}s. "
+                "Output does not extend the budget."
             ),
             minimum=1,
-            maximum=600,
+            maximum=config.max_runtime_limit,
         ),
-        required=["command"],
+        timeout=IntegerSchema(
+            description="Compatibility alias for max_runtime; cannot be combined with it.",
+            minimum=1,
+            maximum=config.max_runtime_limit,
+        ),
+        shell=StringSchema(
+            (
+                "Shell override; omit for PowerShell, or pass 'cmd' for cmd.exe."
+                if _IS_WINDOWS
+                else "Shell override; omit for bash, or pass 'sh' or 'zsh'."
+            ),
+            nullable=True,
+        ),
+        login=BooleanSchema(
+            description="Run bash/zsh as a login shell.",
+            default=False,
+            nullable=True,
+        ),
+        yield_time_ms=IntegerSchema(
+            description="Return after this many milliseconds if still running (default 1000, max 30000); execution continues.",
+            minimum=0,
+            maximum=MAX_YIELD_MS,
+            nullable=True,
+        ),
+        max_output_chars=IntegerSchema(
+            description="Session output limit in characters (default 10000, max 50000).",
+            minimum=1000,
+            maximum=MAX_OUTPUT_CHARS,
+            nullable=True,
+        ),
+        max_output_tokens=IntegerSchema(
+            description="Compatibility alias for max_output_chars.",
+            minimum=1000,
+            maximum=MAX_OUTPUT_CHARS,
+            nullable=True,
+        ),
     )
-)
-class ExecTool(Tool):
+
+
+class ExecTool(HouseholdShellGuards, Tool):  # household: preflight guards
     """Tool to execute shell commands."""
+    _scopes = {"core", "subagent"}
+
+    config_key = "exec"
+
+    @classmethod
+    def config_cls(cls):
+        return ExecToolConfig
+
+    @classmethod
+    def enabled(cls, ctx: ToolContext) -> bool:
+        return ctx.config.exec.enable
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> Tool:
+        cfg = ctx.config.exec
+        return cls(
+            working_dir=ctx.workspace,
+            max_runtime=cfg.max_runtime,
+            max_runtime_limit=cfg.max_runtime_limit,
+            idle_timeout=cfg.idle_timeout,
+            idle_action=cfg.idle_action,
+            restrict_to_workspace=ctx.config.restrict_to_workspace,
+            webui_allow_local_service_access=ctx.config.webui_allow_local_service_access,
+            sandbox=cfg.sandbox,
+            sandbox_launcher=cfg.sandbox_launcher,
+            path_prepend=cfg.path_prepend,
+            path_append=cfg.path_append,
+            sandbox_ro_binds=cfg.sandbox_ro_binds,
+            sandbox_rw_binds=cfg.sandbox_rw_binds,
+            allowed_env_keys=cfg.allowed_env_keys,
+            allow_patterns=cfg.allow_patterns,
+            deny_patterns=cfg.deny_patterns,
+            session_manager=ctx.exec_session_manager,
+        )
 
     def __init__(
         self,
-        timeout: int = 60,
+        timeout: int | None = None,
         working_dir: str | None = None,
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
         restrict_to_workspace: bool = False,
+        webui_allow_local_service_access: bool = True,
+        allow_local_preview_access: bool | None = None,
         sandbox: str = "",
+        path_prepend: str = "",
         path_append: str = "",
+        sandbox_ro_binds: list[str] | None = None,
+        sandbox_rw_binds: list[str] | None = None,
         allowed_env_keys: list[str] | None = None,
+        session_manager: ExecSessionManager | None = None,
+        *,
+        max_runtime: int | None = None,
+        max_runtime_limit: int | None = None,
+        idle_timeout: int = 300,
+        idle_action: Literal["report", "terminate"] = "report",
+        sandbox_launcher: str = "",
     ):
-        self.timeout = timeout
+        if timeout is not None and max_runtime is not None:
+            raise ValueError("timeout and max_runtime are mutually exclusive")
+        values: dict[str, Any] = {"idle_timeout": idle_timeout, "idle_action": idle_action}
+        if (runtime := max_runtime if max_runtime is not None else timeout) is not None:
+            values["max_runtime"] = runtime
+        if max_runtime_limit is not None:
+            values["max_runtime_limit"] = max_runtime_limit
+        self._exec_config = ExecToolConfig.model_validate(values)
         self.working_dir = working_dir
         self.sandbox = sandbox
-        self.deny_patterns = deny_patterns or [
-            r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
-            r"\bdel\s+/[fq]\b",              # del /f, del /q
-            r"\brmdir\s+/s\b",               # rmdir /s
-            r"(?:^|[;&|]\s*)format\b",       # format (as standalone command only)
-            r"\b(mkfs|diskpart)\b",          # disk operations
-            r"\bdd\s+if=",                   # dd
-            r">\s*/dev/sd",                  # write to disk
-            r"\b(shutdown|reboot|poweroff)\b",  # system power
-            r":\(\)\s*\{.*\};\s*:",          # fork bomb
+        self.sandbox_launcher = sandbox_launcher
+        self.deny_patterns = (deny_patterns or []) + [
+            r"\brm\s+-[rf]{1,2}\b",
+            r"\bdel\s+/[fq]\b",
+            r"\brmdir\s+/s\b",
+            r"(?:^|[;&|]\s*)format(?!=)\b",
+            r"\b(mkfs|diskpart)\b",
+            r"\bdd\s+if=",
+            r">\s*/dev/sd",
+            r"\b(shutdown|reboot|poweroff)\b",
+            r":\(\)\s*\{.*\};\s*:",
             # Block writes to nanobot internal state files (#2989).
             # history.jsonl / .dream_cursor are managed by append_history();
             # direct writes corrupt the cursor format and crash /dream.
-            r">>?\s*\S*(?:history\.jsonl|\.dream_cursor)",            # > / >> redirect
-            r"\btee\b[^|;&<>]*(?:history\.jsonl|\.dream_cursor)",     # tee / tee -a
-            r"\b(?:cp|mv)\b(?:\s+[^\s|;&<>]+)+\s+\S*(?:history\.jsonl|\.dream_cursor)",  # cp/mv target
-            r"\bdd\b[^|;&<>]*\bof=\S*(?:history\.jsonl|\.dream_cursor)",  # dd of=
-            r"\bsed\s+-i[^|;&<>]*(?:history\.jsonl|\.dream_cursor)",  # sed -i
+            r">>?\s*\S*(?:history\.jsonl|\.dream_cursor)",
+            r"\btee\b[^|;&<>]*(?:history\.jsonl|\.dream_cursor)",
+            r"\b(?:cp|mv)\b(?:\s+[^\s|;&<>]+)+\s+\S*(?:history\.jsonl|\.dream_cursor)",
+            r"\bdd\b[^|;&<>]*\bof=\S*(?:history\.jsonl|\.dream_cursor)",
+            r"\bsed\s+-i[^|;&<>]*(?:history\.jsonl|\.dream_cursor)",
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
+        if allow_local_preview_access is not None:
+            webui_allow_local_service_access = allow_local_preview_access
+        self.webui_allow_local_service_access = webui_allow_local_service_access
+        self.path_prepend = path_prepend
         self.path_append = path_append
+        self.sandbox_ro_binds = self._normalize_bind_roots(sandbox_ro_binds)
+        self.sandbox_rw_binds = self._normalize_bind_roots(sandbox_rw_binds)
         self.allowed_env_keys = allowed_env_keys or []
+        self._session_manager = session_manager or DEFAULT_EXEC_SESSION_MANAGER
 
     @property
     def name(self) -> str:
         return "exec"
 
-    _MAX_TIMEOUT = 600
-    _MAX_OUTPUT = 10_000
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return _exec_parameters(self._exec_config)
+
+    @property
+    def timeout(self) -> int:
+        return self._exec_config.max_runtime
+
+    # Kernel device files safe as stdio redirect targets (#3599).
+    _BENIGN_DEVICE_PATHS: frozenset[str] = frozenset({
+        "/dev/null",
+        "/dev/zero",
+        "/dev/full",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/stdin",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/tty",
+    })
 
     @property
     def description(self) -> str:
-        return (
-            "Execute a shell command and return its output. "
-            "Prefer read_file/write_file/edit_file over cat/echo/sed, "
-            "and grep/glob over shell find/grep. "
-            "Use -y or --yes flags to avoid interactive prompts. "
-            "Output is truncated at 10 000 chars; timeout defaults to 60s."
-        )
+        return "Execute a shell command. timeout and max_runtime are mutually exclusive."
 
     @property
     def exclusive(self) -> bool:
         return True
 
     async def execute(
-        self, command: str, working_dir: str | None = None,
-        timeout: int | None = None, **kwargs: Any,
+        self, command: str | list[str] | None = None, cmd: str | None = None,
+        working_dir: str | None = None, workdir: str | None = None,
+        timeout: int | None = None, shell: str | None = None,
+        login: bool | None = None, yield_time_ms: int | None = None,
+        max_output_chars: int | None = None,
+        max_output_tokens: int | None = None,
+        max_runtime: int | None = None,
+        **kwargs: Any,
     ) -> str:
-        cwd = working_dir or self.working_dir or os.getcwd()
+        command = command or cmd
+        working_dir = working_dir or workdir
+        if not command:
+            return ToolResult.error("Error: Missing command. Provide command or cmd.")
+        if max_output_chars is None:
+            max_output_chars = max_output_tokens
 
+        if timeout is not None and max_runtime is not None:
+            return ToolResult.error("Error: timeout and max_runtime are mutually exclusive.")
+        # household: refuse no-ops, echoed skill blocks, hand-written skill
+        # reimplementations and unparseable commands before preparing them.
+        if isinstance(command, str):
+            preflight_error = await self._preflight_error(command)
+            if preflight_error:
+                return preflight_error
+        try:
+            prepared = self._prepare_command(
+                command, working_dir, max_runtime if max_runtime is not None else timeout,
+                shell, login,
+            )
+        except ValueError as exc:
+            return ToolResult.error(f"Error: {exc}")
+        if isinstance(prepared, str):
+            return prepared
+        return await self._execute_session(prepared, yield_time_ms, max_output_chars)
+
+    async def execute_to_completion(self, command: str, working_dir: str) -> str:
+        """Return the complete result for a trusted user shell command, without an agent observer."""
+        try:
+            prepared = self._prepare_command(command, working_dir)
+        except ValueError as exc:
+            return ToolResult.error(f"Error: {exc}")
+        if isinstance(prepared, str):
+            return prepared
+        return await self._execute_session(prepared, None, None, until_exit=True)
+
+    async def _execute_session(
+        self,
+        prepared: _PreparedCommand,
+        yield_time_ms: int | None,
+        max_output_chars: int | None,
+        *,
+        until_exit: bool = False,
+    ) -> str:
+        try:
+            session_id, poll = await self._session_manager.start(
+                command=prepared.command,
+                cwd=prepared.cwd,
+                env=prepared.env,
+                timeout=prepared.timeout,
+                shell_program=prepared.shell_program,
+                login=prepared.login,
+                yield_time_ms=0 if until_exit else clamp_session_int(
+                    yield_time_ms, DEFAULT_YIELD_MS, 0, MAX_YIELD_MS,
+                ),
+                until_exit=until_exit,
+                stdin=(asyncio.subprocess.DEVNULL if yield_time_ms is None else asyncio.subprocess.PIPE),
+                idle_timeout=self._exec_config.idle_timeout,
+                idle_action=self._exec_config.idle_action,
+                owner_session_key=current_request_session_key(),
+                max_output_chars=clamp_session_int(
+                    max_output_chars,
+                    DEFAULT_MAX_OUTPUT_CHARS,
+                    1000,
+                    MAX_OUTPUT_CHARS,
+                ),
+            )
+            result = format_session_poll(session_id, poll)
+            if not poll.done:
+                result += "\nInitial wait ended; session remains active."
+            return ToolResult.error(result) if poll.failed else result
+        except Exception as exc:
+            # Only an OS rejection of the actual launcher is attributable here.
+            # A command's nonzero exit or stderr is not proof of a sandbox fault.
+            code = "sandbox_start_failed" if (
+                isinstance(exc, OSError) and self.sandbox and not _IS_WINDOWS
+                and isinstance(prepared.command, list) and exc.filename == prepared.command[0]
+            ) else None
+            return ToolResult.error(f"Error executing command: {exc}", error_code=code)
+
+    def _resolve_timeout(self, timeout: object) -> int | None:
+        if timeout is not None:
+            if isinstance(timeout, bool) or not isinstance(timeout, int):
+                raise ValueError("max_runtime must be an integer number of seconds")
+            if not 1 <= timeout <= self._exec_config.max_runtime_limit:
+                raise ValueError(
+                    f"max_runtime must be between 1 and {self._exec_config.max_runtime_limit} seconds"
+                )
+            return timeout
+        return self.timeout or None
+
+    def _prepare_command(
+        self,
+        command: str | list[str],
+        working_dir: str | None = None,
+        timeout: int | None = None,
+        shell: str | None = None,
+        login: bool | None = None,
+    ) -> _PreparedCommand | str:
+        access = current_tool_workspace(
+            self.working_dir,
+            restrict_to_workspace=self.restrict_to_workspace,
+            sandbox_restricts_workspace=bool(self.sandbox),
+        )
+        workspace_root = str(access.project_path) if access.project_path is not None else self.working_dir
+        if working_dir:
+            requested_dir = Path(working_dir).expanduser()
+            cwd = str(
+                requested_dir
+                if requested_dir.is_absolute()
+                else Path(workspace_root or os.getcwd()) / requested_dir
+            )
+        else:
+            cwd = workspace_root or os.getcwd()
         # Prevent an LLM-supplied working_dir from escaping the configured
         # workspace when restrict_to_workspace is enabled (#2826). Without
         # this, a caller can pass working_dir="/etc" and then all absolute
         # paths under /etc would pass the _guard_command check that anchors
         # on cwd.
-        if self.restrict_to_workspace and self.working_dir:
+        if access.restrict_to_workspace and workspace_root:
             try:
                 requested = Path(cwd).expanduser().resolve()
-                workspace_root = Path(self.working_dir).expanduser().resolve()
+                resolved_root = Path(workspace_root).expanduser().resolve()
             except Exception:
-                return "Error: working_dir could not be resolved"
-            if requested != workspace_root and workspace_root not in requested.parents:
-                return "Error: working_dir is outside the configured workspace"
+                return ToolResult.error(
+                    "Error: working_dir could not be resolved"
+                    + _WORKSPACE_BOUNDARY_NOTE
+                )
+            if not is_path_within(requested, resolved_root):
+                return ToolResult.error(
+                    "Error: working_dir is outside the configured workspace"
+                    + _WORKSPACE_BOUNDARY_NOTE
+                )
 
-        guard_error = self._guard_command(command, cwd)
-        if guard_error:
-            return guard_error
+        # Full access is an explicit trust decision. Keep the application-level
+        # command guard aligned with the selected access mode instead of
+        # continuing to block commands after workspace restriction is disabled.
+        if access.restrict_to_workspace:
+            guard_error = self._guard_command(
+                shlex.join(command) if isinstance(command, list) else command,
+                cwd,
+                restrict_to_workspace=True,
+                workspace_root=workspace_root,
+            )
+            if guard_error:
+                return guard_error
 
-        # Validate before spending a process on it. Checked on the command as
-        # written, ahead of any sandbox wrapping, so the error points at what
-        # the caller actually wrote.
-        preflight_error = await self._preflight_error(command)
-        if preflight_error:
-            return preflight_error
+        effective_timeout = self._resolve_timeout(timeout)
+        env = self._build_env()
+
+        if isinstance(command, list):
+            parent_path = os.environ.get("PATH", env.get("PATH", ""))
+            env["PATH"] = self._compose_path(parent_path)
+        elif self.path_prepend or self.path_append:
+            if _IS_WINDOWS:
+                env["PATH"] = self._compose_path(env.get("PATH", ""))
+            else:
+                command = self._wrap_path_export(command, env)
+
+        shell_program, shell_error = self._resolve_shell(shell)
+        if shell_error:
+            return shell_error
 
         if self.sandbox:
             if _IS_WINDOWS:
@@ -241,336 +432,120 @@ class ExecTool(Tool):
                     self.sandbox,
                 )
             else:
-                workspace = self.working_dir or cwd
-                command = wrap_command(self.sandbox, command, workspace, cwd)
+                # The host launches the sandbox, not a caller-selected shell.
+                # Shell selection, profiles and PATH setup run after confinement.
+                if isinstance(command, list):
+                    payload = shlex.join(command)
+                else:
+                    interpreter = shell_program or shutil.which("bash") or "/bin/bash"
+                    args = [interpreter]
+                    if login and Path(interpreter).name in {"bash", "zsh"}:
+                        args.append("-l")
+                    payload = shlex.join([*args, "-c", command])
+                workspace = workspace_root or cwd
+                try:
+                    command = build_sandbox_argv(
+                        self.sandbox, payload, workspace, cwd,
+                        launcher=self.sandbox_launcher,
+                        sandbox_ro_binds=map(str, self.sandbox_ro_binds),
+                        sandbox_rw_binds=map(str, self.sandbox_rw_binds),
+                    )
+                except SandboxLauncherError as exc:
+                    if exc.reason == "launcher_missing":
+                        return ToolResult.error(
+                            f"Error: sandbox launcher not found: {exc.launcher}", error_code="sandbox_launcher_missing",
+                        )
+                    return ToolResult.error(
+                        f"Error: sandbox launcher rejected: {exc.reason}", error_code=f"sandbox_{exc.reason}",
+                    )
                 cwd = str(Path(workspace).resolve())
 
-        effective_timeout = min(timeout or self.timeout, self._MAX_TIMEOUT)
-        env = self._build_env()
-
-        if self.path_append:
-            if _IS_WINDOWS:
-                env["PATH"] = env.get("PATH", "") + ";" + self.path_append
-            else:
-                command = f'export PATH="$PATH:{self.path_append}"; {command}'
-
-        try:
-            process = await self._spawn(command, cwd, env)
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=effective_timeout,
-                )
-            except asyncio.TimeoutError:
-                await self._kill_process(process)
-                return f"Error: Command timed out after {effective_timeout} seconds"
-            except asyncio.CancelledError:
-                await self._kill_process(process)
-                raise
-
-            stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
-            stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
-            log_exec(command, process.returncode, stdout_str, stderr_str)
-
-            output_parts = []
-
-            if stdout_str:
-                output_parts.append(stdout_str)
-
-            if stderr_str.strip():
-                output_parts.append(f"STDERR:\n{stderr_str}")
-
-            output_parts.append(f"\nExit code: {process.returncode}")
-
-            result = "\n".join(output_parts) if output_parts else "(no output)"
-
-            max_len = self._MAX_OUTPUT
-            if len(result) > max_len:
-                half = max_len // 2
-                result = (
-                    result[:half]
-                    + f"\n\n... ({len(result) - max_len:,} chars truncated) ...\n\n"
-                    + result[-half:]
-                )
-
-            return result
-
-        except Exception as e:
-            return f"Error executing command: {str(e)}"
-
-    async def _preflight_error(self, command: str) -> str | None:
-        """Reject a command that cannot parse, before running it.
-
-        The model hand-writes these when it decides to reimplement a skill, and
-        gets them wrong in two ways worth catching. An unbalanced quote reaches
-        the family as bash's ``unexpected EOF while looking for matching `'``,
-        which says nothing about which quote; a typo inside a ``python -c``
-        payload costs a subprocess and comes back as a traceback. Both are
-        cheaper to catch here, and the message can say what to do instead.
-
-        The checker never blocks on its own failure: if bash is missing or the
-        probe times out, the command runs as before.
-        """
-        noop_error = self._noop_command_error(command)
-        if noop_error:
-            return noop_error
-        invocation_error = self._skill_invocation_error(command)
-        if invocation_error:
-            return invocation_error
-        reimplementation_error = self._skill_reimplementation_error(command)
-        if reimplementation_error:
-            return reimplementation_error
-        if not _IS_WINDOWS:
-            shell_error = await self._shell_syntax_error(command)
-            if shell_error:
-                return shell_error
-        return self._python_syntax_error(command)
-
-    # Commands whose whole effect is to succeed.
-    _NOOP_COMMANDS = frozenset(("true", ":", "/bin/true", "exit", "exit 0"))
-
-    @classmethod
-    def _noop_command_error(cls, command: str) -> str | None:
-        """Refuse a command that does nothing, and say what to do instead.
-
-        ``true`` is what a model runs when it wants to have acted without
-        acting — usually one turn after being told to emit a skill's invocation
-        block, because a block is text and text does not feel like a call. It
-        used to come back as an empty result and ``Exit code: 0``, which reads
-        as success and teaches nothing, so the model does it again: 132 of them
-        in five minutes on the evening two prize redemptions took Alfred six
-        minutes and a sub-agent to mark as delivered.
-
-        Costing the same round trip as the empty success it replaces, this at
-        least spends it on the one sentence that ends the loop. A block written
-        *beside* the no-op is no longer lost either — the runner drops the
-        placeholder and runs the block (see _resolve_block_beside_calls).
-        """
-        bare = command.strip().rstrip(";").strip()
-        if bare.lower() not in cls._NOOP_COMMANDS:
-            return None
-        logger.warning("exec: refused a no-op command ({})", bare)
-        return (
-            f"Error: `{bare}` runs nothing, so this turn did no work. A skill "
-            f"does not need a call to go with it: write its invocation block as "
-            f"the text of your reply and the runtime executes it. If you already "
-            f"have what you need, answer the person instead of calling a tool."
-        )
-
-    @classmethod
-    def _skill_reimplementation_error(cls, command: str) -> str | None:
-        """Refuse a command that does by hand what a skill already does.
-
-        SOUL.md and AGENTS.md both say not to hand-write curl or Python for a
-        skill's job, and the model does it anyway. It is not a style
-        preference:
-
-        - The skill carries the credential in the environment. Inline code puts
-          it on a command line, which is how a Paperless token reached an
-          unauthenticated debug log and every token in the house was rotated.
-        - Improvised code gets the details wrong in ways nobody sees. Asked for
-          a policy PDF, it saved outside the workspace — where the chat cannot
-          serve it — and announced the file had been sent.
-        - The skill's return shape is what makes files arrive. Hand-written
-          code prints a bare path, and a bare path is not a delivery.
-
-        Skills themselves run through exec, so their generated code has to be
-        let past — by the ledger the translator vouches into, not by the shape
-        of the wrapper. The shape is copyable, and was copied: the wrapper is
-        visible in the conversation as a tool call, and a hand-written payload
-        wearing it used to skip this check entirely. Signals are therefore
-        looked for in the decoded payload as well as the command line, because
-        base64 is exactly where they were hiding.
-
-        A model that wants to reach one of these services has exactly one
-        supported route, and this points at it rather than only saying no.
-        """
-        if is_registered_skill_translation(command):
-            return None
-        haystacks = [command, *cls._python_payloads(command)]
-        # Host signals first, for the same reason the tasks entries come
-        # last: the specific match has to win over the one built on a
-        # shared base URL. Read per call, so a container that is handed
-        # its addresses after import still gets them.
-        for signal, skill in (*_host_signals(), *_SKILL_OWNED_SIGNALS):
-            if any(signal in haystack for haystack in haystacks):
-                logger.warning(
-                    "exec: refused hand-written access to {} (owned by skill {})",
-                    signal, skill,
-                )
-                return (
-                    f"Error: this reaches {signal}, which the `{skill}` skill "
-                    f"already handles. Do not write the request yourself — the "
-                    f"skill holds the credential safely, returns the fields that "
-                    f"make files actually reach the chat, and one line of it "
-                    f"replaces this. Emit its invocation block as plain text "
-                    f"instead. If `{skill}` is genuinely broken, say so plainly "
-                    f"in your reply rather than working around it."
-                )
-        return None
-
-    @classmethod
-    def _skill_invocation_error(cls, command: str) -> str | None:
-        """Reject a command whose whole job is to emit a skill-invocation block.
-
-        Seen live as ``echo '{"skill":"file-share","action":"list_files"}'`` and
-        ``printf '{"skill":"camera-feed",...}'``. The model reaches for the
-        shell to "say" the block, which sends the JSON to stdout instead of to
-        the runtime — the skill never runs, and the text can surface to the
-        family as a tool result.
-
-        The plain case — one echoed block naming a skill that exists — no longer
-        reaches here: the runner reroutes it to that skill (see
-        _maybe_translate_skill_calls), because refusing it cost a round trip on
-        nearly every skill call. What is left for this to catch is what cannot
-        be rerouted: an unknown or misspelled skill, a block among other
-        arguments, a redirect. Those still have to be refused rather than run,
-        so the net stays wider than the reroute on purpose.
-
-        Matched on the echoed *argument*, not anywhere in the command, so a
-        script that legitimately handles JSON containing a "skill" key still
-        runs. ``shlex`` is what decides where the argument ends, the same
-        splitting the shell will do.
-        """
-        if "skill" not in command:            # cheap reject for the common case
-            return None
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            return None                        # unbalanced quotes; bash -n reports it
-        if not argv or os.path.basename(argv[0]) not in ECHO_LIKE:
-            return None
-        for token in argv[1:]:
-            if is_skill_invocation_json(token):
-                logger.warning("exec: refused a skill block echoed via {}", argv[0])
-                return emit_as_text_hint("running it through a shell")
-        return None
-
-    @staticmethod
-    async def _shell_syntax_error(command: str) -> str | None:
-        """``bash -n`` parses without executing — the same parser that will run it."""
-        bash = shutil.which("bash") or "/bin/bash"
-        try:
-            process = await asyncio.create_subprocess_exec(
-                bash, "-n", "-c", command,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=_PREFLIGHT_TIMEOUT
-            )
-        except Exception as exc:
-            logger.debug("Shell preflight unavailable ({}); running unchecked", exc)
-            return None
-        if process.returncode == 0:
-            return None
-        detail = stderr.decode("utf-8", errors="replace").strip()
-        # Reject only on a diagnosis we recognise. A non-zero exit with nothing
-        # to show for it means the probe itself went wrong — a shell that is not
-        # the one we assumed, a sandbox quirk — and blocking a command that
-        # would have run fine is far worse than missing a malformed one.
-        if not detail or not _SHELL_SYNTAX_ERROR_RE.search(detail):
-            logger.debug(
-                "Shell preflight inconclusive (rc={}, stderr={!r}); running unchecked",
-                process.returncode, detail[:160],
-            )
-            return None
-        logger.info("Rejected unparseable command: {}", detail.replace("\n", " ")[:160])
-        return (
-            "Error: this is not valid shell, so it was not run.\n"
-            f"{detail}\n\n"
-            "[Usually an unbalanced ' or \". If you are calling a skill, emit its "
-            "JSON invocation block instead of writing the command yourself — the "
-            "runtime builds the command for you and gets the quoting right.]"
-        )
-
-    @classmethod
-    def _python_syntax_error(cls, command: str) -> str | None:
-        for source in cls._python_payloads(command):
-            try:
-                compile(source, "<exec>", "exec")
-            except SyntaxError as exc:
-                logger.info("Rejected invalid Python payload: line {}: {}", exc.lineno, exc.msg)
-                offending = (exc.text or "").strip()
-                return (
-                    "Error: the Python in this command has a syntax error, so it "
-                    "was not run.\n"
-                    f"line {exc.lineno}: {exc.msg}\n"
-                    + (f"  {offending}\n" if offending else "")
-                    + "\n[Fix the snippet, or emit the skill's JSON invocation block "
-                    "instead of writing the Python yourself.]"
-                )
-            except (ValueError, MemoryError, RecursionError):
-                # Null bytes or something pathological — let the interpreter decide.
-                return None
-        return None
-
-    @staticmethod
-    def _python_payloads(command: str) -> list[str]:
-        """Python source embedded in *command*, base64-wrapped or inline."""
-        payloads: list[str] = []
-        for match in _B64_PAYLOAD_RE.finditer(command):
-            try:
-                payloads.append(base64.b64decode(match.group(1)).decode("utf-8"))
-            except Exception:
-                continue
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            return payloads  # unbalanced quotes; bash -n already reported it
-        for i, token in enumerate(argv[:-2]):
-            if os.path.basename(token) in _PY_EXE and argv[i + 1] == "-c":
-                payloads.append(argv[i + 2])
-        return payloads
-
-    @staticmethod
-    async def _spawn(
-        command: str, cwd: str, env: dict[str, str],
-    ) -> asyncio.subprocess.Process:
-        """Launch *command* in a platform-appropriate shell."""
-        if _IS_WINDOWS:
-            comspec = env.get("COMSPEC", os.environ.get("COMSPEC", "cmd.exe"))
-            return await asyncio.create_subprocess_exec(
-                comspec, "/c", command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
-        bash = shutil.which("bash") or "/bin/bash"
-        return await asyncio.create_subprocess_exec(
-            bash, "-l", "-c", command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        return _PreparedCommand(
+            command=command,
             cwd=cwd,
             env=env,
+            timeout=effective_timeout,
+            shell_program=shell_program,
+            login=False if login is None else login,
         )
 
+    def _compose_path(self, current_path: str) -> str:
+        parts: list[str] = []
+        if self.path_prepend:
+            parts.append(self.path_prepend)
+        if current_path:
+            parts.append(current_path)
+        if self.path_append:
+            parts.append(self.path_append)
+        return os.pathsep.join(parts)
+
+    def _wrap_path_export(self, command: str, env: dict[str, str]) -> str:
+        segments: list[str] = []
+        if self.path_prepend:
+            env["NANOBOT_PATH_PREPEND"] = self.path_prepend
+            segments.append("$NANOBOT_PATH_PREPEND")
+        segments.append("$PATH")
+        if self.path_append:
+            env["NANOBOT_PATH_APPEND"] = self.path_append
+            segments.append("$NANOBOT_PATH_APPEND")
+        path_expr = os.pathsep.join(segments)
+        return f'export PATH="{path_expr}"; {command}'
+
     @staticmethod
-    async def _kill_process(process: asyncio.subprocess.Process) -> None:
-        """Kill a subprocess and reap it to prevent zombies."""
-        process.kill()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            pass
-        finally:
-            if not _IS_WINDOWS:
-                try:
-                    os.waitpid(process.pid, os.WNOHANG)
-                except (ProcessLookupError, ChildProcessError) as e:
-                    logger.debug("Process already reaped or not found: {}", e)
+    def _resolve_shell(shell: str | None) -> tuple[str | None, str | None]:
+        if not shell:
+            return None, None
+        if "\0" in shell or "\n" in shell or "\r" in shell:
+            return None, ToolResult.error("Error: shell contains invalid characters")
+        if _IS_WINDOWS:
+            win_allowed = {"powershell", "powershell.exe", "pwsh", "pwsh.exe", "cmd", "cmd.exe"}
+            path = Path(shell).expanduser()
+            if path.is_absolute():
+                name = path.name.lower()
+                if name not in win_allowed:
+                    return None, ToolResult.error(
+                        f"Error: unsupported shell {shell!r}. "
+                        "Allowed: powershell, pwsh, cmd"
+                    )
+                if not path.is_file():
+                    return None, ToolResult.error(f"Error: shell is not found: {shell}")
+                return str(path), None
+            if "/" in shell or "\\" in shell:
+                return None, ToolResult.error("Error: shell must be a shell name or absolute path")
+            if shell.lower() not in win_allowed:
+                return None, ToolResult.error(
+                    f"Error: unsupported shell {shell!r}. "
+                    "Allowed: powershell, pwsh, cmd"
+                )
+            if shell.lower() in ("cmd", "cmd.exe"):
+                resolved = os.environ.get("COMSPEC") or shutil.which("cmd") or "cmd"
+                return resolved, None
+            resolved = shutil.which(shell) or shell
+            return resolved, None
+        allowed = {"sh", "bash", "zsh"}
+        path = Path(shell).expanduser()
+        if path.is_absolute():
+            if path.name not in allowed:
+                return None, ToolResult.error(f"Error: unsupported shell {shell!r}. Allowed: bash, sh, zsh")
+            if not path.is_file() or not os.access(path, os.X_OK):
+                return None, ToolResult.error(f"Error: shell is not executable: {shell}")
+            return str(path), None
+        if "/" in shell or "\\" in shell:
+            return None, ToolResult.error("Error: shell must be a shell name or absolute path")
+        if shell not in allowed:
+            return None, ToolResult.error(f"Error: unsupported shell {shell!r}. Allowed: bash, sh, zsh")
+        resolved = shutil.which(shell)
+        if not resolved:
+            return None, ToolResult.error(f"Error: shell not found: {shell}")
+        return resolved, None
 
     def _build_env(self) -> dict[str, str]:
-        """Build a minimal environment for subprocess execution.
+        """Use platform defaults plus explicitly allowed environment keys.
 
-        On Unix, only HOME/LANG/TERM are passed; ``bash -l`` sources the
-        user's profile which sets PATH and other essentials.
-
-        On Windows, ``cmd.exe`` has no login-profile mechanism, so a curated
-        set of system variables (including PATH) is forwarded.  API keys and
-        other secrets are still excluded.
+        Unix defaults include HOME, LANG, TERM and PYTHONUNBUFFERED; Windows
+        keeps a curated set of host variables. ``allowed_env_keys`` opts in to
+        forwarding additional values, including secrets. A requested login
+        shell may also load environment from the user's profile.
         """
         if _IS_WINDOWS:
             sr = os.environ.get("SYSTEMROOT", r"C:\Windows")
@@ -584,6 +559,7 @@ class ExecTool(Tool):
                 "TMP": os.environ.get("TMP", f"{sr}\\Temp"),
                 "PATHEXT": os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD"),
                 "PATH": os.environ.get("PATH", f"{sr}\\system32;{sr}"),
+                "PYTHONUNBUFFERED": "1",
                 "APPDATA": os.environ.get("APPDATA", ""),
                 "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", ""),
                 "ProgramData": os.environ.get("ProgramData", ""),
@@ -595,86 +571,392 @@ class ExecTool(Tool):
                 val = os.environ.get(key)
                 if val is not None:
                     env[key] = val
-            return with_session_key(env)
+            return env
         home = os.environ.get("HOME", "/tmp")
         env = {
             "HOME": home,
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "TERM": os.environ.get("TERM", "dumb"),
+            "PYTHONUNBUFFERED": "1",
         }
         for key in self.allowed_env_keys:
             val = os.environ.get(key)
             if val is not None:
                 env[key] = val
-        return with_session_key(env)
+        # household: which conversation the running turn belongs to, from the
+        # turn itself, never from the model (a fix request continues the
+        # Programmer session of the conversation it came from).
+        session_key = current_request_session_key()
+        if session_key:
+            env["NANOBOT_SESSION_KEY"] = session_key
+        return env
 
-    def _guard_command(self, command: str, cwd: str) -> str | None:
-        """Best-effort safety guard for potentially destructive commands."""
+    def _guard_command(
+        self,
+        command: str,
+        cwd: str,
+        *,
+        restrict_to_workspace: bool | None = None,
+        workspace_root: str | None = None,
+    ) -> str | None:
         cmd = command.strip()
         lower = cmd.lower()
 
-        for pattern in self.deny_patterns:
-            if re.search(pattern, lower):
-                return "Error: Command blocked by safety guard (dangerous pattern detected)"
+        # allow_patterns take priority over deny_patterns so that users can
+        # exempt specific commands (e.g. "rm -rf" inside a build directory)
+        # from the hardcoded deny list via configuration. A chained command is
+        # only explicitly allowed when every top-level shell segment matches.
+        segments = self._split_shell_segments(lower)
+        explicitly_allowed = bool(self.allow_patterns) and bool(segments) and all(
+            any(re.fullmatch(pattern, segment) for pattern in self.allow_patterns)
+            for segment in segments
+        )
+        if not explicitly_allowed:
+            for pattern in self.deny_patterns:
+                if re.search(pattern, lower):
+                    return ToolResult.error("Error: Command blocked by deny pattern filter")
 
-        if self.allow_patterns:
-            if not any(re.search(p, lower) for p in self.allow_patterns):
-                return "Error: Command blocked by safety guard (not in allowlist)"
+            if self.allow_patterns:
+                return ToolResult.error("Error: Command blocked by allowlist filter (not in allowlist)")
 
-        # There is deliberately no internal-URL check here, and there was one.
-        #
-        # It scanned this string for a private address and refused. On a tool
-        # whose whole job is running arbitrary code that cannot be a boundary:
-        # the same request inside a file the agent had just written went
-        # through untouched, and the skill layer base64-encodes its own
-        # generated code, so every skill passed too. What it actually selected
-        # on was the shape of the request, not its target — and it selected
-        # against the readable shape.
-        #
-        # Which is worse than nothing here, because this stack shows the
-        # command in the turn (the `$ …` hint line). Pushed into a file, the
-        # same call is still made and nobody watching the turn can see where
-        # to. Measured: asked whether a Home Assistant automation was wired
-        # right, the agent hit this refusal on a one-liner and went back to
-        # writing numbered probe scripts. Seventeen of them accumulated in one
-        # workspace that way.
-        #
-        # The SSRF boundary is real and it lives where the request is actually
-        # made — `validate_url_target` in agent/tools/web.py, in the channels'
-        # media fetch, and in the document skill. Those are the paths where
-        # nanobot itself opens the connection, so a check there cannot be
-        # walked around by writing a file. `contains_internal_url` stays in
-        # security/network.py for callers scanning text they will not execute.
+        from nanobot.security.network import contains_internal_url
+        if contains_internal_url(
+            cmd,
+            allow_loopback=current_scope_allows_loopback(
+                enabled=self.webui_allow_local_service_access,
+            ),
+        ):
+            # The runner turns this marker into a non-retryable security hint.
+            return ToolResult.error("Error: Command blocked by safety guard (internal/private URL detected)")
 
-        if self.restrict_to_workspace:
+        should_restrict = self.restrict_to_workspace if restrict_to_workspace is None else restrict_to_workspace
+        if should_restrict:
             if "..\\" in cmd or "../" in cmd:
-                return "Error: Command blocked by safety guard (path traversal detected)"
+                return ToolResult.error(
+                    "Error: Command blocked by safety guard (path traversal detected)"
+                    + _WORKSPACE_BOUNDARY_NOTE
+                )
 
             cwd_path = Path(cwd).resolve()
+            resolved_workspace = (
+                Path(workspace_root).expanduser().resolve()
+                if workspace_root
+                else None
+            )
+            sandbox_bind_roots = self._active_sandbox_bind_roots(
+                resolved_workspace or cwd_path
+            )
 
             for raw in self._extract_absolute_paths(cmd):
                 try:
                     expanded = os.path.expandvars(raw.strip())
-                    p = Path(expanded).expanduser().resolve()
+                    # Python's expanduser() intentionally does not implement
+                    # shell directory-stack forms. ``~+`` is the active cwd,
+                    # while ``~-`` and indexed forms can resolve outside it;
+                    # normalize the former and fail closed on the latter.
+                    if expanded == "~+":
+                        p = cwd_path
+                    elif expanded.startswith("~+/"):
+                        p = (cwd_path / expanded[3:]).resolve()
+                    elif re.match(r"^~(?:-|[+-]\d+)(?:/|$)", expanded):
+                        return ToolResult.error(
+                            "Error: Command blocked by safety guard "
+                            "(path outside working dir)"
+                            + _WORKSPACE_BOUNDARY_NOTE
+                        )
+                    else:
+                        try:
+                            home_path = Path(expanded).expanduser()
+                        except RuntimeError:
+                            return ToolResult.error(
+                                "Error: Command blocked by safety guard "
+                                "(path outside working dir)"
+                                + _WORKSPACE_BOUNDARY_NOTE
+                            )
+                        p = home_path.resolve()
+                    # Match against the un-resolved path first.  On Linux,
+                    # /dev/stderr is a symlink to /proc/self/fd/2 and
+                    # ``Path.resolve()`` would mask the device-file intent.
+                    if self._is_benign_device_path(expanded):
+                        continue
                 except Exception:
                     continue
 
+                if self._is_benign_device_path(str(p)):
+                    continue
+
                 media_path = get_media_dir().resolve()
-                if (p.is_absolute() 
-                    and cwd_path not in p.parents 
-                    and p != cwd_path
-                    and media_path not in p.parents
-                    and p != media_path
-                ):
-                    return "Error: Command blocked by safety guard (path outside working dir)"
+                allowed = (
+                    is_path_within(p, cwd_path)
+                    or is_path_within(p, media_path)
+                )
+                if not allowed and resolved_workspace is not None:
+                    allowed = is_path_within(p, resolved_workspace)
+                if not allowed and sandbox_bind_roots:
+                    allowed = any(is_path_within(p, root) for root in sandbox_bind_roots)
+                if p.is_absolute() and not allowed:
+                    return ToolResult.error(
+                        "Error: Command blocked by safety guard (path outside working dir)"
+                        + _WORKSPACE_BOUNDARY_NOTE
+                    )
 
         return None
 
     @staticmethod
+    def _split_shell_segments(command: str) -> list[str]:
+        """Split shell commands on top-level chaining operators."""
+        segments: list[str] = []
+        current: list[str] = []
+        quote: str | None = None
+        escaped = False
+        paren_depth = 0
+        i = 0
+
+        while i < len(command):
+            ch = command[i]
+
+            if escaped:
+                current.append(ch)
+                escaped = False
+                i += 1
+                continue
+
+            if ch == "\\" and quote != "'":
+                current.append(ch)
+                escaped = True
+                i += 1
+                continue
+
+            if quote is not None:
+                current.append(ch)
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+
+            if ch in {"'", '"', "`"}:
+                current.append(ch)
+                quote = ch
+                i += 1
+                continue
+
+            if ch == "(":
+                paren_depth += 1
+                current.append(ch)
+                i += 1
+                continue
+
+            if ch == ")" and paren_depth > 0:
+                paren_depth -= 1
+                current.append(ch)
+                i += 1
+                continue
+
+            operator_len = 0
+            if paren_depth == 0:
+                if command.startswith(("&&", "||"), i):
+                    operator_len = 2
+                elif ch == "&" and not (
+                    (i > 0 and command[i - 1] in "<>") or command.startswith("&>", i)
+                ):
+                    current.append(ch)
+                    operator_len = 1
+                # A newline separates commands just like ";" does, so a payload
+                # smuggled onto its own line must be checked on its own too.
+                elif ch in {";", "|", "\n", "\r"}:
+                    operator_len = 1
+
+            if operator_len:
+                segment = "".join(current).strip()
+                if segment:
+                    segments.append(segment)
+                current = []
+                i += operator_len
+                continue
+
+            current.append(ch)
+            i += 1
+
+        segment = "".join(current).strip()
+        if segment:
+            segments.append(segment)
+        return segments
+
+    @classmethod
+    def _is_benign_device_path(cls, path: str) -> bool:
+        """Return True for kernel device files that should never be workspace-blocked."""
+        if path in cls._BENIGN_DEVICE_PATHS:
+            return True
+        return path.startswith("/dev/fd/")
+
+    @staticmethod
     def _extract_absolute_paths(command: str) -> list[str]:
-        # Windows: match drive-root paths like `C:\` as well as `C:\path\to\file`
+        # Windows: match drive-root paths like `C:\` as well as `C:\path\to\file`, and UNC paths like `\\server\share`
         # NOTE: `*` is required so `C:\` (nothing after the slash) is still extracted.
-        win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]*", command)
-        posix_paths = re.findall(r"(?:^|[\s|>'\"])(/[^\s\"'>;|<]+)", command) # POSIX: /absolute only
-        home_paths = re.findall(r"(?:^|[\s|>'\"])(~[^\s\"'>;|<]*)", command) # POSIX/Windows home shortcut: ~
-        return win_paths + posix_paths + home_paths
+        win_paths = re.findall(
+            r"(?<![A-Za-z])(?:[A-Za-z]:[^\s\"'|><;]*|\\\\[^\s\"'|><;]+(?:\\[^\s\"'|><;]+)*)",
+            command
+        )
+        try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars="();<>|&")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
+        except ValueError:
+            # Keep malformed quoting fail-closed. The shell will normally reject
+            # it too, but a conservative raw scan must not turn it into a bypass.
+            tokens = [command]
+
+        paths = [*win_paths]
+        seen = set(win_paths)
+        for index, token in enumerate(tokens):
+            for path in ExecTool._extract_posix_paths_from_token(token):
+                if path not in seen:
+                    paths.append(path)
+                    seen.add(path)
+            if index > 0 and tokens[index - 1] in {"-c", "-lc", "--command"}:
+                for path in ExecTool._extract_absolute_paths(token):
+                    if path not in seen:
+                        paths.append(path)
+                        seen.add(path)
+        return paths
+
+    @staticmethod
+    def _extract_posix_paths_from_token(token: str) -> list[str]:
+        """Extract local POSIX/home paths from one shell-decoded token.
+
+        ``shlex`` separates real grouping/redirection operators while preserving
+        parentheses and spaces that were quoted or escaped as part of a path.
+        Embedded scripts (for example ``sh -c \"cat /tmp/x\"``) still need a
+        small boundary scan. Colons are not general boundaries: treating them
+        as such misclassifies URLs, ``host:/remote`` and ``C:/Windows``. They
+        are considered only inside a syntactically valid assignment, where
+        shells expand each colon-delimited tilde component.
+        """
+        paths: list[str] = []
+        for match in re.finditer(
+            r"file://(?:[^/\s\"']+)?(/[^\s\"'<>|;&]*)",
+            token,
+            flags=re.IGNORECASE,
+        ):
+            uri_prefix = token[: match.start()]
+            raw_path = match.group(1)
+            if uri_prefix.count("(") > uri_prefix.count(")"):
+                raw_path = raw_path.split(")", 1)[0]
+            if uri_prefix.count("{") > uri_prefix.count("}"):
+                raw_path = raw_path.split(",", 1)[0].split("}", 1)[0]
+            raw_path = raw_path.split("?", 1)[0].split("#", 1)[0]
+            if raw_path:
+                paths.append(unquote(raw_path))
+        boundary_chars = frozenset(" \t\r\n=({,<>|;&\"'")
+        i = 0
+        while i < len(token):
+            is_posix = token[i] == "/"
+            home_match = re.match(
+                r"~(?:[+-](?:\d+)?|[A-Za-z0-9_.@-]+)?(?=/|:|$)",
+                token[i:],
+            )
+            is_home = home_match is not None
+            if not is_posix and not is_home:
+                i += 1
+                continue
+
+            prefix = token[:i]
+            parameter_default = (
+                i >= 2 and token[i - 2] == ":" and token[i - 1] in "-+?="
+            )
+            word_start = max(
+                (prefix.rfind(char) for char in " \t\r\n<>|;&"),
+                default=-1,
+            ) + 1
+            word_prefix = prefix[word_start:]
+            assignment_component = bool(
+                re.fullmatch(
+                    r"(?:[A-Za-z_][A-Za-z0-9_]*|--?[A-Za-z0-9_.-]+)="
+                    r"(?:[^:=\s]*:)*",
+                    word_prefix,
+                )
+            )
+            at_boundary = i == 0 or token[i - 1] in boundary_chars
+            if is_home:
+                # A shell word beginning with ``~`` is a separate shlex token.
+                # Mid-token expansion is valid only after ``=`` or a colon in
+                # an assignment. This avoids PromQL/Loki ``=~`` and ``|~``
+                # match operators while covering PATH-like values.
+                at_boundary = i == 0 or assignment_component
+            if not at_boundary and not parameter_default:
+                i += 1
+                continue
+
+            if re.search(r"[A-Za-z][A-Za-z0-9+.-]*://", word_prefix) or re.match(
+                r"(?:[^/:=\s]+@)?[^/:=\s]+:$",
+                word_prefix,
+            ):
+                # HTTP-style URL path/query fragments and scp-style remote paths
+                # are not local filesystem references. ``file://`` paths were
+                # decoded above. Windows drive paths are already captured by the
+                # platform-specific expression above.
+                i += 1
+                continue
+
+            assignment_value = assignment_component
+            if i == 0 or assignment_value:
+                end = len(token)
+                if assignment_value:
+                    separator = token.find(":", i)
+                    if separator >= 0:
+                        end = separator
+            elif token[i - 1] in {"'", '"'}:
+                quote = token[i - 1]
+                closing = token.find(quote, i)
+                end = len(token) if closing < 0 else closing
+            else:
+                end_chars = set(" \t\r\n\"'<>|;&")
+                if prefix.count("(") > prefix.count(")"):
+                    end_chars.add(")")
+                if prefix.count("{") > prefix.count("}"):
+                    end_chars.update({",", "}"})
+                end = i
+                while end < len(token) and token[end] not in end_chars:
+                    end += 1
+
+            candidate = token[i:end]
+            if candidate:
+                paths.append(candidate)
+            i = max(end, i + 1)
+        return paths
+
+    @staticmethod
+    def _normalize_bind_roots(paths: list[str] | None) -> list[Path]:
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for raw in paths or []:
+            value = str(raw).strip()
+            if not value:
+                continue
+            path = Path(os.path.expandvars(value)).expanduser()
+            if not path.is_absolute():
+                continue
+            with suppress(OSError, RuntimeError, ValueError):
+                resolved = path.resolve(strict=False)
+                key = os.path.normcase(os.fspath(resolved))
+                if key in seen:
+                    continue
+                seen.add(key)
+                roots.append(resolved)
+        return roots
+
+    def _active_sandbox_bind_roots(
+        self,
+        workspace_root: Path | None = None,
+    ) -> list[Path]:
+        if self.sandbox not in ("bwrap", "seatbelt") or _IS_WINDOWS:
+            return []
+        roots = [*self.sandbox_ro_binds, *self.sandbox_rw_binds]
+        if workspace_root is None:
+            return roots
+        return [
+            root
+            for root in roots
+            if not is_path_within(workspace_root, root)
+        ]

@@ -1,14 +1,14 @@
-"""Tests for cache-friendly prompt construction."""
-
 from __future__ import annotations
 
-import re
+import datetime as datetime_module
 from datetime import datetime as real_datetime
 from importlib.resources import files as pkg_files
 from pathlib import Path
-import datetime as datetime_module
+
+import pytest
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.runtime_context import RuntimeContextBlock
 
 
 class _FakeDatetime(real_datetime):
@@ -33,7 +33,6 @@ def test_bootstrap_files_are_backed_by_templates() -> None:
 
 
 def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) -> None:
-    """System prompt should not change just because wall clock minute changes."""
     monkeypatch.setattr(datetime_module, "datetime", _FakeDatetime)
 
     workspace = _make_workspace(tmp_path)
@@ -48,197 +47,48 @@ def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) ->
     assert prompt1 == prompt2
 
 
-def test_system_prompt_reflects_current_dream_memory_contract(tmp_path) -> None:
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
+def test_selected_project_path_follows_shared_cache_prefix(tmp_path) -> None:
+    agent_home = tmp_path / "agent-home"
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    agent_home.mkdir()
+    project_a.mkdir()
+    project_b.mkdir()
+    builder = ContextBuilder(agent_home)
 
-    prompt = builder.build_system_prompt()
+    prompt_a = builder.build_system_prompt(workspace=project_a)
+    prompt_b = builder.build_system_prompt(workspace=project_b)
+    marker = "# Current Project"
+    prefix_a = prompt_a[: prompt_a.index(marker)]
+    prefix_b = prompt_b[: prompt_b.index(marker)]
 
-    assert "memory/history.jsonl" in prompt
-    assert "automatically managed by Dream" in prompt
-    assert "do not edit directly" in prompt
-    assert "memory/HISTORY.md" not in prompt
-    assert "write important facts here" not in prompt
+    assert prefix_a == prefix_b
+    assert "# Tool Usage Notes" in prefix_a
+    assert str(project_a.resolve()) not in prefix_a
+    assert str(project_b.resolve()) not in prefix_b
+    assert prompt_a == builder.build_system_prompt(workspace=project_a)
 
 
-def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
-    """Runtime metadata should be merged with the user message."""
+def test_provider_context_appended_after_user_content(tmp_path) -> None:
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
     messages = builder.build_messages(
         history=[],
-        current_message="Return exactly: OK",
+        current_message="hello world",
         channel="cli",
-        chat_id="direct",
+        runtime_context_blocks=[
+            RuntimeContextBlock(source="test", content="provider context"),
+        ],
     )
 
-    assert messages[0]["role"] == "system"
-    assert "## Current Session" not in messages[0]["content"]
-
-    # Runtime context is now merged with user message into a single message
-    assert messages[-1]["role"] == "user"
-    user_content = messages[-1]["content"]
-    assert isinstance(user_content, str)
-    assert ContextBuilder._RUNTIME_CONTEXT_TAG in user_content
-    assert "Current Time:" in user_content
-    assert "Channel: cli" in user_content
-    assert "Chat ID: direct" in user_content
-    assert "Return exactly: OK" in user_content
-
-
-# Recent History moved out of the system prompt on 2026-09-10 and into the
-# final message (`recent_history_block`, merged in by `build_messages`). It
-# gains an entry on most turns, and while it sat at the end of the system
-# prompt it changed the first message every turn -- so the prefix cache
-# matched nothing behind it and ~22k tokens of append-only conversation were
-# re-prefilled each time. These tests follow it to where it lives, and the
-# first one holds the placement itself.
-
-
-def test_unprocessed_history_rides_in_the_final_message(tmp_path) -> None:
-    """Entries in history.jsonl not yet consumed by Dream appear with timestamps
-    -- in the last message, never in the system prompt."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    builder.memory.append_history("User asked about weather in Tokyo")
-    builder.memory.append_history("Agent fetched forecast via web_search")
-
-    block = builder.recent_history_block()
-    assert block.startswith("# Recent History")
-    assert "User asked about weather in Tokyo" in block
-    assert "Agent fetched forecast via web_search" in block
-    assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]", block)
-
-    messages = builder.build_messages(history=[], current_message="hi",
-                                      channel="cli", chat_id="direct",
-                                      session_key=None)
-    assert "# Recent History" not in messages[0]["content"], \
-        "history is back in the system prompt -- every turn misses the prefix cache"
-
-
-def test_recent_history_capped_at_max(tmp_path) -> None:
-    """Only the most recent _MAX_RECENT_HISTORY entries are injected."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    for i in range(builder._MAX_RECENT_HISTORY + 20):
-        builder.memory.append_history(f"entry-{i}")
-
-    block = builder.recent_history_block()
-    assert "entry-0" not in block
-    assert "entry-19" not in block
-    assert f"entry-{builder._MAX_RECENT_HISTORY + 19}" in block
-
-
-def test_recent_history_truncated_at_max_chars(tmp_path) -> None:
-    """Recent History section must be truncated at _MAX_HISTORY_CHARS."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    big_entry = "x" * (builder._MAX_HISTORY_CHARS + 5_000)
-    builder.memory.append_history(big_entry)
-
-    history_section = builder.recent_history_block().split("# Recent History\n\n", 1)
-    assert len(history_section) == 2
-    assert len(history_section[1]) < builder._MAX_HISTORY_CHARS + 200
-
-
-def test_no_recent_history_when_dream_has_processed_all(tmp_path) -> None:
-    """If Dream has consumed everything, no Recent History section should appear."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    cursor = builder.memory.append_history("already processed entry")
-    builder.memory.set_last_dream_cursor(cursor)
-
-    assert builder.recent_history_block() == ""
-    messages = builder.build_messages(history=[], current_message="hi",
-                                      channel="cli", chat_id="direct", session_key=None)
-    assert "# Recent History" not in messages[-1]["content"]
-
-
-def test_partial_dream_processing_shows_only_remainder(tmp_path) -> None:
-    """When Dream has processed some entries, only the unprocessed ones appear."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    builder.memory.append_history("old conversation about Python")
-    c2 = builder.memory.append_history("old conversation about Rust")
-    builder.memory.append_history("recent question about Docker")
-    builder.memory.append_history("recent question about K8s")
-
-    builder.memory.set_last_dream_cursor(c2)
-
-    block = builder.recent_history_block()
-    assert "# Recent History" in block
-    assert "old conversation about Python" not in block
-    assert "old conversation about Rust" not in block
-    assert "recent question about Docker" in block
-    assert "recent question about K8s" in block
-
-
-def test_recent_history_scoped_to_session_key(tmp_path) -> None:
-    """With a session_key, only that session's own entries are injected."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    builder.memory.append_history("today's chat about dinner", session_key="websocket:homeweb:user1:2026-07-31:1000")
-    builder.memory.append_history("camera motion chatter", session_key="mqtt:homecameras")
-    builder.memory.append_history("untagged legacy entry")
-
-    block = builder.recent_history_block(session_key="websocket:homeweb:user1:2026-07-31:1000")
-    assert "today's chat about dinner" in block
-    assert "camera motion chatter" not in block
-    assert "untagged legacy entry" not in block
-
-
-def test_recent_history_unfiltered_without_session_key(tmp_path) -> None:
-    """No session_key (legacy callers) keeps the include-everything behavior."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    builder.memory.append_history("tagged entry", session_key="telegram:123")
-    builder.memory.append_history("untagged entry")
-
-    block = builder.recent_history_block()
-    assert "tagged entry" in block
-    assert "untagged entry" in block
-
-
-def test_recent_history_section_absent_when_all_foreign(tmp_path) -> None:
-    """If every unprocessed entry belongs to other sessions, the section is omitted."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    builder.memory.append_history("someone else's conversation", session_key="mqtt:homecameras")
-
-    assert builder.recent_history_block(
-        session_key="websocket:homeweb:user1:2026-07-31:1000") == ""
-
-
-def test_build_messages_derives_session_key_from_channel_chat_id(tmp_path) -> None:
-    """build_messages without an explicit session_key scopes by channel:chat_id,
-    and puts the result in the final message."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    builder.memory.append_history("this chat's summary", session_key="cli:direct")
-    builder.memory.append_history("other chat's summary", session_key="cli:other")
-
-    messages = builder.build_messages(
-        history=[], current_message="hi",
-        channel="cli", chat_id="direct",
-    )
-    final = messages[-1]["content"]
-    assert "this chat's summary" in final
-    assert "other chat's summary" not in final
-    assert "this chat's summary" not in messages[0]["content"]
+    content = messages[-1]["content"]
+    user_pos = content.find("hello world")
+    context_pos = content.find("provider context")
+    assert user_pos < context_pos, "user content must precede provider context"
 
 
 def test_execution_rules_in_system_prompt(tmp_path) -> None:
-    """Execution rules should appear in the system prompt via default SOUL.md."""
     from nanobot.utils.helpers import sync_workspace_templates
 
     workspace = _make_workspace(tmp_path)
@@ -246,33 +96,73 @@ def test_execution_rules_in_system_prompt(tmp_path) -> None:
     builder = ContextBuilder(workspace)
 
     prompt = builder.build_system_prompt()
-    assert "single-step tasks" in prompt
-    assert "multi-step tasks" in prompt
-    assert "Read before you write" in prompt
-    assert "verify the result" in prompt
+    assert "clear user request" in prompt
+    assert "execution and verification" in prompt
 
 
-def test_identity_has_no_behavioral_instructions(tmp_path) -> None:
-    """Identity template should not contain behavioral rules or hardcoded name."""
+def test_execution_rules_reach_existing_workspace_soul(tmp_path) -> None:
     workspace = _make_workspace(tmp_path)
+    legacy_soul = (
+        pkg_files("nanobot") / "templates" / "legacy" / "SOUL.md"
+    ).read_text(encoding="utf-8")
+    legacy_rule = "For multi-step tasks, outline the plan first and wait for user confirmation."
+    soul_path = workspace / "SOUL.md"
+    soul_path.write_text(legacy_soul, encoding="utf-8")
     builder = ContextBuilder(workspace)
 
-    identity = builder._get_identity(channel=None)
-    assert "You are nanobot" not in identity
-    assert "Act, don't narrate" not in identity
-    assert "Execution Rules" not in identity
+    prompt = builder.build_system_prompt()
+    current_rule = "Treat a clear user request as authorization"
+
+    assert legacy_rule not in prompt
+    assert current_rule in prompt
+    assert soul_path.read_text(encoding="utf-8") == legacy_soul
 
 
-def test_default_soul_template_contains_execution_rules() -> None:
-    """Default SOUL.md template must contain execution rules with act/plan layering."""
+@pytest.mark.parametrize("legacy_workspace", [False, True])
+def test_scheduling_contract_reaches_fresh_and_legacy_workspaces(tmp_path, legacy_workspace) -> None:
+    from nanobot.utils.helpers import sync_workspace_templates
+
+    workspace = _make_workspace(tmp_path)
+    agents_path = workspace / "AGENTS.md"
+    legacy_rule = (
+        "When the user asks for a recurring/periodic task, update HEARTBEAT.md "
+        "instead of creating a one-time cron reminder."
+    )
+    if legacy_workspace:
+        agents_path.write_text(f"# Workspace rules\nReply in Chinese.\n{legacy_rule}\n", encoding="utf-8")
+    sync_workspace_templates(workspace, silent=True)
+    original = agents_path.read_bytes()
+    builder = ContextBuilder(workspace)
+    messages = builder.build_messages(history=[], current_message="每天早上8点提醒我喝水")
+    system = messages[0]["content"]
+
+    assert "Use `cron` for a specified time or interval, even if it repeats" in system
+    assert "Use `HEARTBEAT.md` only for flexible checks" in system
+    if legacy_workspace:
+        assert "Reply in Chinese." in system
+        assert system.index(legacy_rule) < system.index("## Scheduling")
+        assert "Do not substitute heartbeat for an explicit schedule" in system
+    else:
+        assert "## AGENTS.md" not in system
+    assert "每天早上8点提醒我喝水" in messages[-1]["content"]
+    assert builder.build_messages(history=[], current_message="Check issues when convenient")[0] == messages[0]
+    assert agents_path.read_bytes() == original
+
+
+def test_default_soul_template_keeps_execution_policy_in_tool_contract() -> None:
     soul = (pkg_files("nanobot") / "templates" / "SOUL.md").read_text(encoding="utf-8")
-    assert "## Execution Rules" in soul
-    assert "single-step tasks" in soul
-    assert "multi-step tasks" in soul
+    contract = (
+        pkg_files("nanobot") / "templates" / "agent" / "tool_contract.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Execution Rules" not in soul
+    assert "clear user request" not in soul
+    assert "clear user request" in contract
+    assert "execution and verification" in contract
+    assert "Ask for confirmation when an irreversible action requires it" in contract
 
 
 def test_channel_format_hint_telegram(tmp_path) -> None:
-    """Telegram channel should get messaging-app format hint."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
@@ -282,7 +172,6 @@ def test_channel_format_hint_telegram(tmp_path) -> None:
 
 
 def test_channel_format_hint_whatsapp(tmp_path) -> None:
-    """WhatsApp should get plain-text format hint."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
@@ -292,7 +181,6 @@ def test_channel_format_hint_whatsapp(tmp_path) -> None:
 
 
 def test_channel_format_hint_absent_for_unknown(tmp_path) -> None:
-    """Unknown or None channel should not inject a format hint."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
@@ -304,55 +192,44 @@ def test_channel_format_hint_absent_for_unknown(tmp_path) -> None:
 
 
 def test_build_messages_passes_channel_to_system_prompt(tmp_path) -> None:
-    """build_messages should pass channel through to build_system_prompt."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
     messages = builder.build_messages(
         history=[], current_message="hi",
-        channel="telegram", chat_id="123",
+        channel="telegram",
     )
     system = messages[0]["content"]
     assert "Format Hint" in system
     assert "messaging app" in system
 
 
-def test_subagent_result_does_not_create_consecutive_assistant_messages(tmp_path) -> None:
+@pytest.mark.parametrize("disabled", [False, True])
+def test_memory_skill_is_discoverable_and_lazy_only_when_enabled(tmp_path, disabled) -> None:
+    builder = ContextBuilder(_make_workspace(tmp_path), disabled_skills=["memory"] if disabled else None)
+    system, user = builder.build_messages(history=[], current_message="$memory Find the decision")
+
+    assert "memory/wiki/index.md" in system["content"]
+    assert ("**memory**" in system["content"]) is not disabled
+    assert "Search Past Events" not in system["content"]
+    assert ("Search Past Events" in user["content"]) is not disabled
+
+
+def test_fresh_workspace_omits_default_prompt_scaffolding(tmp_path) -> None:
+    from nanobot.utils.helpers import sync_workspace_templates
+
     workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
+    sync_workspace_templates(workspace, silent=True)
 
-    messages = builder.build_messages(
-        history=[{"role": "assistant", "content": "previous result"}],
-        current_message="subagent result",
-        channel="cli",
-        chat_id="direct",
-        current_role="assistant",
-    )
+    prompt = ContextBuilder(workspace).build_system_prompt()
 
-    for left, right in zip(messages, messages[1:]):
-        assert not (left.get("role") == right.get("role") == "assistant")
-
-
-def test_always_skills_excluded_from_skills_index(tmp_path) -> None:
-    """Always skills should appear in Active Skills but NOT in the skills index."""
-    workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
-
-    prompt = builder.build_system_prompt()
-
-    # memory skill should be in Active Skills section
-    assert "# Active Skills" in prompt
-    assert "### Skill: memory" in prompt
-
-    # memory skill should NOT appear in the skills index
-    skills_section = prompt.split("# Skills\n", 1)
-    if len(skills_section) > 1:
-        index_text = skills_section[1].split("\n\n---")[0]
-        assert "**memory**" not in index_text
+    assert "## AGENTS.md" not in prompt
+    assert "## USER.md" not in prompt
+    assert "8281248569" not in prompt
+    assert "(your name)" not in prompt
 
 
 def test_template_memory_md_is_skipped(tmp_path) -> None:
-    """MEMORY.md matching the bundled template should not inject the Memory section."""
     workspace = _make_workspace(tmp_path)
     from nanobot.utils.helpers import sync_workspace_templates
     sync_workspace_templates(workspace, silent=True)
@@ -360,16 +237,11 @@ def test_template_memory_md_is_skipped(tmp_path) -> None:
     builder = ContextBuilder(workspace)
     prompt = builder.build_system_prompt()
 
-    # The "# Memory\n\n## Long-term Memory" block is produced only by
-    # build_system_prompt() when MEMORY.md is injected.  The memory skill
-    # also contains "# Memory" but is followed by "## Structure", not
-    # "## Long-term Memory".
-    assert "# Memory\n\n## Long-term Memory" not in prompt
+    assert "# Long-term Memory" not in prompt
     assert "This file is automatically updated by nanobot" not in prompt
 
 
-def test_customized_memory_md_is_injected(tmp_path) -> None:
-    """A Dream-populated MEMORY.md should be injected normally."""
+def test_customized_memory_md_is_injected(tmp_path, monkeypatch) -> None:
     workspace = _make_workspace(tmp_path)
     from nanobot.utils.helpers import sync_workspace_templates
     sync_workspace_templates(workspace, silent=True)
@@ -379,7 +251,17 @@ def test_customized_memory_md_is_injected(tmp_path) -> None:
     )
 
     builder = ContextBuilder(workspace)
+    read_memory = builder.memory.read_memory
+    calls = 0
+
+    def tracked_read_memory() -> str:
+        nonlocal calls
+        calls += 1
+        return read_memory()
+
+    monkeypatch.setattr(builder.memory, "read_memory", tracked_read_memory)
     prompt = builder.build_system_prompt()
 
-    assert "# Memory\n\n## Long-term Memory" in prompt
+    assert prompt.count("# Long-term Memory") == 1
     assert "User prefers dark mode" in prompt
+    assert calls == 1

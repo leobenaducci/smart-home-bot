@@ -6,9 +6,9 @@ to them. Their license texts sit next to them.
 
 | Component | Where | License | Notes |
 |---|---|---|---|
-| [nanobot](https://github.com/HKUDS/nanobot) | `services/nanobot/` | MIT | Forked and modified; see `services/nanobot/LICENSE`, its own `THIRD_PARTY_NOTICES.md`, and `services/nanobot/AGENTS.md` for what changed. Its media (`case/`, `images/`, `webui/public/brand/`) comes with it. |
+| [nanobot](https://github.com/HKUDS/nanobot) | `services/nanobot/` | MIT | Upstream 0.4.x with the household's code in `nanobot/household/` and marked seams; see `services/nanobot/LICENSE`, its own `THIRD_PARTY_NOTICES.md`, and `services/nanobot/AGENTS.md`. Its media (`images/`) comes with it. |
 | Skill format and upstream skills adapted from [OpenClaw](https://github.com/openclaw/openclaw), via nanobot | `services/nanobot/nanobot/skills/` | MIT | Credited in `services/nanobot/nanobot/skills/README.md`. |
-| canvas-design skill, from [anthropics/skills](https://github.com/anthropics/skills) | `services/nanobot/nanobot/skills/canvas-design/` | Apache-2.0 | Modified for this stack; `LICENSE.txt` beside it. |
+| canvas-design skill, from [anthropics/skills](https://github.com/anthropics/skills) | `services/nanobot/nanobot/household/skills_data/canvas-design/` | Apache-2.0 | Modified for this stack; `LICENSE.txt` beside it. |
 | [KaTeX](https://github.com/KaTeX/KaTeX) 0.17 | `services/home-core/local/static/vendor/katex/` | MIT; fonts SIL OFL 1.1 | Unmodified; `LICENSE` beside it. |
 | [IBM Plex](https://github.com/IBM/plex) Sans and Mono, [Fraunces](https://github.com/undercasetype/Fraunces) | `services/home-core/local/static/vendor/fonts/`, `services/home-cameras/web_server/static/fonts/`, `services/mqtt-dashboard/dashboard/public/fonts/` | SIL OFL 1.1 | Unmodified Google Fonts subsets; `OFL.txt` beside each copy. |
 | [Socket.IO](https://github.com/socketio/socket.io) client 4.0.1 | `services/home-cameras/web_server/static/js/socket.io.js` | MIT | Unmodified; the copyright banner is kept in the file. |

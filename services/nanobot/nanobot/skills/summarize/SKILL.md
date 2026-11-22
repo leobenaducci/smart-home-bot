@@ -1,6 +1,6 @@
 ---
 name: summarize
-description: Summarize or extract text/transcripts from URLs, podcasts, and local files (great fallback for “transcribe this YouTube/video”). Use when asked what a link, a video or a recording says.
+description: Summarize or extract text and transcripts from URLs, YouTube videos, podcasts, and local files.
 homepage: https://summarize.sh
 metadata: {"nanobot":{"emoji":"🧾","requires":{"bins":["summarize"]},"install":[{"id":"brew","kind":"brew","formula":"steipete/tap/summarize","bins":["summarize"],"label":"Install summarize (brew)"}]}}
 ---
@@ -63,8 +63,5 @@ Optional config file: `~/.summarize/config.json`
 ```
 
 Optional services:
-- `FIRECRAWL_API_KEY` for blocked sites — **this stack does not supply one**.
-  Firecrawl was removed; a page that needs fetching properly goes through the
-  house's own `crawl4ai`, which the assistant reaches as an MCP tool rather
-  than through this flag. Set the key yourself if you want the fallback.
+- `FIRECRAWL_API_KEY` for blocked sites
 - `APIFY_API_TOKEN` for YouTube fallback

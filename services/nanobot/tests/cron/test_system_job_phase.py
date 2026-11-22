@@ -118,6 +118,10 @@ def test_a_reminder_somebody_typed_is_not_shifted(tmp_path, monkeypatch):
         name="sacar la basura",
         schedule=CronSchedule(kind="at", at_ms=at),
         message="sacar la basura",
+        # v0.4.1: an agent job must be session-bound or it is disabled on add
+        session_key="websocket:homeweb:999000111:2026-08-04:1785900000000",
+        origin_channel="websocket",
+        origin_chat_id="homeweb:999000111:2026-08-04:1785900000000",
     )
 
     assert job.state.next_run_at_ms == at

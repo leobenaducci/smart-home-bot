@@ -10,91 +10,45 @@ See: https://github.com/HKUDS/nanobot/issues/2966
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.session_helpers import mock_session_manager, run_session
 from nanobot.agent.loop import AgentLoop
+from nanobot.bus.queue import MessageBus
+from nanobot.session.recovery import RUNTIME_CHECKPOINT_KEY
 
 
-@pytest.fixture
-def mock_loop():
-    """Create a minimal AgentLoop with mocked dependencies."""
-    with patch.object(AgentLoop, "__init__", lambda self: None):
-        loop = AgentLoop()
-        loop.sessions = MagicMock()
-        loop._pending_queues = {}
-        loop._session_locks = {}
-        loop._active_tasks = {}
-        loop._concurrency_gate = None
-        loop._RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
-        loop._PENDING_USER_TURN_KEY = "pending_user_turn"
-        loop.bus = MagicMock()
-        loop.bus.publish_outbound = AsyncMock()
-        loop.bus.publish_inbound = AsyncMock()
-        loop.commands = MagicMock()
-        loop.commands.dispatch_priority = AsyncMock(return_value=None)
-        return loop
+def _make_provider():
+    """Create an LLM provider mock with required attributes."""
+    from types import SimpleNamespace
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.generation = SimpleNamespace(max_tokens=4096, temperature=0.1, reasoning_effort=None)
+    provider.estimate_prompt_tokens.return_value = (10_000, "test")
+    return provider
 
 
-class TestStopPreservesContext:
-    """Verify that /stop restores partial context via checkpoint."""
-
-    def test_restore_checkpoint_method_exists(self, mock_loop):
-        """AgentLoop should have _restore_runtime_checkpoint."""
-        assert hasattr(mock_loop, "_restore_runtime_checkpoint")
-
-    def test_checkpoint_key_constant(self, mock_loop):
-        """The runtime checkpoint key should be defined."""
-        assert mock_loop._RUNTIME_CHECKPOINT_KEY == "runtime_checkpoint"
-
-    def test_cancel_dispatch_restores_checkpoint(self, mock_loop):
-        """When a task is cancelled, the checkpoint should be restored."""
-        # Create a mock session with a checkpoint
-        session = MagicMock()
-        session.metadata = {
-            "runtime_checkpoint": {
-                "phase": "awaiting_tools",
-                "iteration": 0,
-                "assistant_message": {
-                    "role": "assistant",
-                    "content": "Let me search for that.",
-                    "tool_calls": [{"id": "tc_1", "type": "function",
-                                    "function": {"name": "web_search", "arguments": "{}"}}],
-                },
-                "completed_tool_results": [
-                    {"role": "tool", "tool_call_id": "tc_1",
-                     "content": "Search results: ..."},
-                ],
-                "pending_tool_calls": [],
-            }
-        }
-        session.messages = [
-            {"role": "user", "content": "Search for something"},
-        ]
-        mock_loop.sessions.get_or_create.return_value = session
-
-        # The restore method should add checkpoint messages to session history
-        restored = mock_loop._restore_runtime_checkpoint(session)
-        assert restored is True
-        # After restore, session should have more messages
-        assert len(session.messages) > 1
-        # The checkpoint should be cleared
-        assert "runtime_checkpoint" not in session.metadata
+def _make_loop(tmp_path: Path) -> AgentLoop:
+    """Create a real AgentLoop with mocked provider — avoids patching __init__."""
+    bus = MessageBus()
+    provider = _make_provider()
+    with patch("nanobot.agent.loop.ContextBuilder"), \
+         patch("nanobot.agent.loop.SessionManager", side_effect=mock_session_manager), \
+         patch("nanobot.agent.loop.SubagentManager") as mock_subagent_manager:
+        mock_subagent_manager.return_value.cancel_by_session = AsyncMock(return_value=0)
+        return AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
 
 
 @pytest.mark.asyncio
 async def test_dispatch_cancellation_restores_checkpoint():
-    """Regression for #2966: /stop interrupting _dispatch must materialize the
+    """Regression for #2966: /stop interrupting a session worker must materialize the
     in-flight runtime checkpoint into session.messages before the cancellation
     unwinds, so the next turn can see the partial work.
 
-    This exercises the real _dispatch path (locks, pending queues, the
-    CancelledError handler) rather than poking _restore_runtime_checkpoint in
-    isolation, so a future refactor that drops the cancel-time restore is
-    caught by CI instead of silently regressing.
     """
     from nanobot.bus.events import InboundMessage
     from nanobot.bus.queue import MessageBus
@@ -106,12 +60,12 @@ async def test_dispatch_cancellation_restores_checkpoint():
     workspace.__truediv__ = MagicMock(return_value=MagicMock())
 
     with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
-        MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
+         patch("nanobot.agent.loop.SessionManager", side_effect=mock_session_manager), \
+         patch("nanobot.agent.loop.SubagentManager") as mock_subagent_manager:
+        mock_subagent_manager.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
 
-    checkpoint_key = loop._RUNTIME_CHECKPOINT_KEY
+    checkpoint_key = RUNTIME_CHECKPOINT_KEY
     session = SimpleNamespace(
         key="test:c1",
         metadata={
@@ -139,6 +93,7 @@ async def test_dispatch_cancellation_restores_checkpoint():
     )
 
     loop.sessions.get_or_create = MagicMock(return_value=session)
+    loop.sessions.state.read = AsyncMock(return_value=session)
     loop.sessions.save = MagicMock()
 
     async def _cancel(*_args, **_kwargs):
@@ -149,7 +104,7 @@ async def test_dispatch_cancellation_restores_checkpoint():
     msg = InboundMessage(channel="test", sender_id="u1", chat_id="c1", content="work")
 
     with pytest.raises(asyncio.CancelledError):
-        await loop._dispatch(msg)
+        await run_session(loop, msg)
 
     roles = [m.get("role") for m in session.messages]
     assert roles == ["user", "assistant", "tool"], (
@@ -158,5 +113,39 @@ async def test_dispatch_cancellation_restores_checkpoint():
     )
     assert checkpoint_key not in session.metadata, \
         "Checkpoint metadata should be cleared after restore"
-    assert loop.sessions.save.called, \
+    assert loop.sessions.state.finish_turn.await_count == 1, \
         "Session should be persisted so the restored state survives process restart"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cancellation_keeps_checkpoint_for_gateway_shutdown(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path)
+    loop.preserve_inflight_turns_on_shutdown()
+    checkpoint_key = RUNTIME_CHECKPOINT_KEY
+    checkpoint = {
+        "phase": "final_response",
+        "assistant_message": {"role": "assistant", "content": "finished"},
+        "completed_tool_results": [],
+        "pending_tool_calls": [],
+    }
+    session = SimpleNamespace(
+        metadata={checkpoint_key: checkpoint},
+        messages=[],
+        provider_state=None,
+    )
+    loop.sessions.get_or_create.return_value = session
+
+    async def _cancel(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError()
+
+    loop._process_message = _cancel  # type: ignore[method-assign]
+
+    from nanobot.bus.events import InboundMessage
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_session(loop,
+            InboundMessage(channel="test", sender_id="u1", chat_id="c1", content="work")
+        )
+
+    assert session.metadata[checkpoint_key] == checkpoint
+    assert session.messages == []

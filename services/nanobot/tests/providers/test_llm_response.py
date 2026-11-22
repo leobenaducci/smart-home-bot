@@ -25,13 +25,11 @@ def _response(finish_reason: str, *, with_tool_call: bool = True) -> LLMResponse
 
 class TestShouldExecuteTools:
     def test_no_tool_calls_never_executes(self) -> None:
-        # No tool calls present -> guard must reject regardless of finish_reason.
         for reason in ("tool_calls", "stop", "length", "error", "refusal", "content_filter"):
             resp = _response(reason, with_tool_call=False)
             assert resp.should_execute_tools is False, f"rejected for finish_reason={reason!r}"
 
     def test_tool_calls_with_tool_calls_reason_executes(self) -> None:
-        # The canonical case: provider explicitly signals tool intent.
         resp = _response("tool_calls")
         assert resp.has_tool_calls is True
         assert resp.should_execute_tools is True
@@ -44,9 +42,15 @@ class TestShouldExecuteTools:
         resp = _response("stop")
         assert resp.should_execute_tools is True
 
+    def test_legacy_function_call_reason_executes(self) -> None:
+        # Older OpenAI-compatible streaming APIs can still use the singular
+        # function_call finish reason while carrying a tool-call-shaped payload.
+        resp = _response("function_call")
+        assert resp.should_execute_tools is True
+
     @pytest.mark.parametrize(
         "anomalous_reason",
-        ["refusal", "content_filter", "error", "length", "function_call", ""],
+        ["refusal", "content_filter", "error", "length", ""],
     )
     def test_tool_calls_under_anomalous_reason_blocked(self, anomalous_reason: str) -> None:
         # This is the #3220 bug: gateways injecting tool_calls under any of these

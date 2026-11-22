@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from unittest.mock import MagicMock
 
 import pytest
 
+from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.message import MessageTool
-from nanobot.agent.tools.spawn import SpawnTool
+from nanobot.agent.tools.subagent import SubagentTool
 from nanobot.cron.service import CronService
+from nanobot.providers.base import GenerationSettings, LLMProvider
+from nanobot.runtime_context import RUNTIME_CONTEXT_INPUT_META, RuntimeContextBlock
+from nanobot.utils.llm_runtime import LLMRuntime
+
+
+def _runtime(model: str = "test-model") -> LLMRuntime:
+    provider = MagicMock(spec=LLMProvider)
+    provider.generation = GenerationSettings()
+    return LLMRuntime.capture(provider, model, context_window_tokens=128_000)
 
 
 @pytest.mark.asyncio
@@ -23,16 +35,16 @@ async def test_message_tool_keeps_task_local_context() -> None:
     tool = MessageTool(send_callback=send_callback)
 
     async def task_one() -> str:
-        tool.set_context("feishu", "chat-a")
-        entered.set()
-        await release.wait()
-        return await tool.execute(content="one")
+        with request_context(RequestContext(channel="feishu", chat_id="chat-a")):
+            entered.set()
+            await release.wait()
+            return await tool.execute(content="one")
 
     async def task_two() -> str:
         await entered.wait()
-        tool.set_context("email", "chat-b")
-        release.set()
-        return await tool.execute(content="two")
+        with request_context(RequestContext(channel="email", chat_id="chat-b")):
+            release.set()
+            return await tool.execute(content="two")
 
     result_one, result_two = await asyncio.gather(task_one(), task_two())
 
@@ -43,37 +55,67 @@ async def test_message_tool_keeps_task_local_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_tool_keeps_task_local_context() -> None:
-    seen: list[tuple[str, str, str]] = []
+async def test_subagent_tool_keeps_task_local_context() -> None:
+    seen: list[tuple[str, str, str, str | None, str | None]] = []
     entered = asyncio.Event()
     release = asyncio.Event()
 
     class _Manager:
-        async def spawn(self, *, task: str, origin_channel: str, origin_chat_id: str,
-                        session_key: str, **kwargs) -> str:
-            seen.append((origin_channel, origin_chat_id, session_key))
+        max_concurrent_subagents = 1
+
+        def get_running_count(self) -> int:
+            return 0
+
+        async def spawn(
+            self,
+            *,
+            task: str,
+            runtime: LLMRuntime,
+            label: str | None,
+            origin_channel: str,
+            origin_chat_id: str,
+            session_key: str,
+            origin_message_id: str | None = None,
+            origin_turn_id: str | None = None,
+            temperature: float | None = None,
+            workspace_scope=None,
+            session_policy=None,
+        ) -> str:
+            seen.append((origin_channel, origin_chat_id, session_key, origin_message_id, origin_turn_id))
             return f"{origin_channel}:{origin_chat_id}:{task}"
 
-    tool = SpawnTool(_Manager())
+    tool = SubagentTool(_Manager())
 
     async def task_one() -> str:
-        tool.set_context("whatsapp", "chat-a")
-        entered.set()
-        await release.wait()
-        return await tool.execute(task="one")
+        with request_context(RequestContext(
+            channel="whatsapp",
+            chat_id="chat-a",
+            message_id="msg-a",
+            turn_id="turn-a",
+            runtime=_runtime("model-a"),
+        )):
+            entered.set()
+            await release.wait()
+            return await tool.execute(action="create", task="one")
 
     async def task_two() -> str:
         await entered.wait()
-        tool.set_context("telegram", "chat-b")
-        release.set()
-        return await tool.execute(task="two")
+        with request_context(RequestContext(
+            channel="telegram",
+            chat_id="chat-b",
+            message_id="msg-b",
+            turn_id="turn-b",
+            runtime=_runtime("model-b"),
+        )):
+            release.set()
+            return await tool.execute(action="create", task="two")
 
     result_one, result_two = await asyncio.gather(task_one(), task_two())
 
     assert result_one == "whatsapp:chat-a:one"
     assert result_two == "telegram:chat-b:two"
-    assert ("whatsapp", "chat-a", "whatsapp:chat-a") in seen
-    assert ("telegram", "chat-b", "telegram:chat-b") in seen
+    assert ("whatsapp", "chat-a", "whatsapp:chat-a", "msg-a", "turn-a") in seen
+    assert ("telegram", "chat-b", "telegram:chat-b", "msg-b", "turn-b") in seen
 
 
 @pytest.mark.asyncio
@@ -83,16 +125,20 @@ async def test_cron_tool_keeps_task_local_context(tmp_path) -> None:
     release = asyncio.Event()
 
     async def task_one() -> str:
-        tool.set_context("feishu", "chat-a")
-        entered.set()
-        await release.wait()
-        return await tool.execute(action="add", message="first", every_seconds=60)
+        with request_context(
+            RequestContext(channel="feishu", chat_id="chat-a", session_key="feishu:chat-a")
+        ):
+            entered.set()
+            await release.wait()
+            return await tool.execute(action="add", message="first", every_seconds=60)
 
     async def task_two() -> str:
         await entered.wait()
-        tool.set_context("email", "chat-b")
-        release.set()
-        return await tool.execute(action="add", message="second", every_seconds=60)
+        with request_context(
+            RequestContext(channel="email", chat_id="chat-b", session_key="email:chat-b")
+        ):
+            release.set()
+            return await tool.execute(action="add", message="second", every_seconds=60)
 
     result_one, result_two = await asyncio.gather(task_one(), task_two())
 
@@ -100,32 +146,31 @@ async def test_cron_tool_keeps_task_local_context(tmp_path) -> None:
     assert result_two.startswith("Created job")
 
     jobs = tool._cron.list_jobs()
-    assert {job.payload.channel for job in jobs} == {"feishu", "email"}
-    assert {job.payload.to for job in jobs} == {"chat-a", "chat-b"}
-
-
-# --- Basic single-task regression tests ---
+    assert {job.payload.session_key for job in jobs} == {"feishu:chat-a", "email:chat-b"}
+    assert {(job.payload.origin_channel, job.payload.origin_chat_id) for job in jobs} == {
+        ("feishu", "chat-a"),
+        ("email", "chat-b"),
+    }
 
 
 @pytest.mark.asyncio
-async def test_message_tool_basic_set_context_and_execute() -> None:
-    """Single task: set_context then execute should route correctly."""
+async def test_message_tool_basic_request_context_and_execute() -> None:
     seen: list[tuple[str, str, str]] = []
 
     async def send_callback(msg):
         seen.append((msg.channel, msg.chat_id, msg.content))
 
     tool = MessageTool(send_callback=send_callback)
-    tool.set_context("telegram", "chat-123", "msg-456")
-
-    result = await tool.execute(content="hello")
+    with request_context(
+        RequestContext(channel="telegram", chat_id="chat-123", message_id="msg-456")
+    ):
+        result = await tool.execute(content="hello")
     assert result == "Message sent to telegram:chat-123"
     assert seen == [("telegram", "chat-123", "hello")]
 
 
 @pytest.mark.asyncio
-async def test_message_tool_default_values_without_set_context() -> None:
-    """Without set_context, constructor defaults should be used."""
+async def test_message_tool_default_values_without_request_context() -> None:
     seen: list[tuple[str, str, str]] = []
 
     async def send_callback(msg):
@@ -143,58 +188,179 @@ async def test_message_tool_default_values_without_set_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_tool_basic_set_context_and_execute() -> None:
-    """Single task: set_context then execute should pass correct origin."""
-    seen: list[tuple[str, str, str]] = []
+async def test_subagent_tool_basic_request_context_and_execute() -> None:
+    seen: list[tuple[str, str, str, str | None, str | None]] = []
 
     class _Manager:
-        async def spawn(self, *, task, origin_channel, origin_chat_id, session_key, **kwargs):
-            seen.append((origin_channel, origin_chat_id, session_key))
+        max_concurrent_subagents = 1
+
+        def get_running_count(self) -> int:
+            return 0
+
+        async def spawn(
+            self,
+            *,
+            task,
+            runtime,
+            label,
+            origin_channel,
+            origin_chat_id,
+            session_key,
+            origin_message_id=None,
+            origin_turn_id=None,
+            temperature=None,
+            workspace_scope=None,
+            session_policy=None,
+        ):
+            seen.append((origin_channel, origin_chat_id, session_key, origin_message_id, origin_turn_id))
             return f"ok: {task}"
 
-    tool = SpawnTool(_Manager())
-    tool.set_context("feishu", "chat-abc")
-
-    result = await tool.execute(task="do something")
+    tool = SubagentTool(_Manager())
+    with request_context(RequestContext(
+        channel="feishu",
+        chat_id="chat-abc",
+        message_id="msg-123",
+        turn_id="turn-123",
+        runtime=_runtime(),
+    )):
+        result = await tool.execute(action="create", task="do something")
     assert result == "ok: do something"
-    assert seen == [("feishu", "chat-abc", "feishu:chat-abc")]
+    assert seen == [("feishu", "chat-abc", "feishu:chat-abc", "msg-123", "turn-123")]
 
 
 @pytest.mark.asyncio
-async def test_spawn_tool_default_values_without_set_context() -> None:
-    """Without set_context, default cli:direct should be used."""
+async def test_subagent_tool_rejects_missing_request_runtime() -> None:
     seen: list[tuple[str, str, str]] = []
 
     class _Manager:
-        async def spawn(self, *, task, origin_channel, origin_chat_id, session_key, **kwargs):
+        max_concurrent_subagents = 1
+
+        def get_running_count(self) -> int:
+            return 0
+
+        async def spawn(
+            self,
+            *,
+            task,
+            runtime,
+            label,
+            origin_channel,
+            origin_chat_id,
+            session_key,
+            origin_message_id=None,
+            temperature=None,
+            workspace_scope=None,
+            session_policy=None,
+        ):
             seen.append((origin_channel, origin_chat_id, session_key))
             return "ok"
 
-    tool = SpawnTool(_Manager())
+    tool = SubagentTool(_Manager())
 
-    await tool.execute(task="test")
-    assert seen == [("cli", "direct", "cli:direct")]
+    result = await tool.execute(action="create", task="test")
+    assert result == "Error: create requires an active model runtime"
+    assert result.is_error
+    assert seen == []
 
 
 @pytest.mark.asyncio
-async def test_cron_tool_basic_set_context_and_execute(tmp_path) -> None:
-    """Single task: set_context then add job should use correct target."""
+async def test_cron_tool_basic_request_context_and_execute(tmp_path) -> None:
     tool = CronTool(CronService(tmp_path / "jobs.json"))
-    tool.set_context("wechat", "user-789")
-
-    result = await tool.execute(action="add", message="standup", every_seconds=300)
+    with request_context(
+        RequestContext(channel="wechat", chat_id="user-789", session_key="wechat:user-789")
+    ):
+        result = await tool.execute(action="add", message="standup", every_seconds=300)
     assert result.startswith("Created job")
 
     jobs = tool._cron.list_jobs()
     assert len(jobs) == 1
-    assert jobs[0].payload.channel == "wechat"
-    assert jobs[0].payload.to == "user-789"
+    assert jobs[0].payload.session_key == "wechat:user-789"
+    assert jobs[0].payload.origin_channel == "wechat"
+    assert jobs[0].payload.origin_chat_id == "user-789"
+
+
+@pytest.mark.asyncio
+async def test_webui_cron_tool_binds_origin_chat(tmp_path) -> None:
+    tool = CronTool(CronService(tmp_path / "jobs.json"))
+
+    with request_context(
+        RequestContext(
+            channel="websocket",
+            chat_id="chat-123",
+            metadata={"webui": True},
+            session_key="websocket:chat-123",
+        )
+    ):
+        result = await tool.execute(action="add", message="standup", every_seconds=300)
+    assert result.startswith("Created job")
+
+    jobs = tool._cron.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].payload.session_key == "websocket:chat-123"
+    assert jobs[0].payload.origin_channel == "websocket"
+    assert jobs[0].payload.origin_chat_id == "chat-123"
+    assert jobs[0].payload.origin_metadata == {"webui": True}
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_snapshots_only_persistable_request_metadata(tmp_path) -> None:
+    store_path = tmp_path / "jobs.json"
+    service = CronService(store_path)
+    tool = CronTool(service)
+    await service.start()
+    try:
+        with request_context(
+            RequestContext(
+                channel="websocket",
+                chat_id="chat-123",
+                metadata={
+                    "webui": True,
+                    RUNTIME_CONTEXT_INPUT_META: [
+                        RuntimeContextBlock(source="webui_quote", content="quoted reply")
+                    ],
+                    "opaque": object(),
+                },
+                session_key="websocket:chat-123",
+            )
+        ):
+            result = await tool.execute(action="add", message="standup", every_seconds=300)
+
+        assert result.startswith("Created job")
+        jobs = service.list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].payload.origin_metadata == {"webui": True}
+
+        raw = json.loads(store_path.read_text(encoding="utf-8"))
+        assert raw["jobs"][0]["payload"]["originMetadata"] == {"webui": True}
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_preserves_thread_scoped_session_key(tmp_path) -> None:
+    tool = CronTool(CronService(tmp_path / "jobs.json"))
+    with request_context(
+        RequestContext(
+            channel="slack",
+            chat_id="C123",
+            metadata={"slack": {"thread_ts": "1700.42"}},
+            session_key="slack:C123:1700.42",
+        )
+    ):
+        result = await tool.execute(action="add", message="check thread", every_seconds=300)
+    assert result.startswith("Created job")
+
+    jobs = tool._cron.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].payload.session_key == "slack:C123:1700.42"
+    assert jobs[0].payload.origin_channel == "slack"
+    assert jobs[0].payload.origin_chat_id == "C123"
+    assert jobs[0].payload.origin_metadata == {"slack": {"thread_ts": "1700.42"}}
 
 
 @pytest.mark.asyncio
 async def test_cron_tool_no_context_returns_error(tmp_path) -> None:
-    """Without set_context, add should fail with a clear error."""
     tool = CronTool(CronService(tmp_path / "jobs.json"))
 
     result = await tool.execute(action="add", message="test", every_seconds=60)
-    assert result == "Error: no session context (channel/chat_id)"
+    assert result == "Error: scheduled cron jobs must be created from a chat session"

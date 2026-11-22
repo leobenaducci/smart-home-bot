@@ -1,38 +1,66 @@
 ---
 name: weather
-description: "Invoke with JSON: {\"skill\":\"weather\",\"action\":\"...\"}. Current weather and forecasts. Actions: get_weather([location],[units]) | get_forecast([location],[days],[units]). Leave location out for the household's own weather; never ask which city. Use when a message is about the weather, rain, temperature or the forecast."
+description: Get current weather and forecasts.
 homepage: https://wttr.in/:help
-# `always: true`: the body below is in every prompt, so this description
-# carries triggers rather than the API -- the body and the skill's own code
-# already hold that. Measured 2026-09-10: every model that fumbled this
-# skill called it as a function (`unknown:<name>`) because the invocation
-# convention was in a file it never read. If demoted to on-demand, the
-# description has to grow back.
-#
-# The body used to end with a "By hand" section of `curl wttr.in` commands,
-# which put two ways of getting the weather into every prompt -- and the
-# description said "always include location or ask" while the body said
-# never ask. Measured 2026-09-11: DeepSeek V4 Flash took the curl route and
-# spent its whole turn adjusting wttr.in format strings, four calls, no answer.
-# The skill's own code already works out the place and asks wttr.in itself;
-# the model only needs the one route.
-metadata: {"nanobot":{"emoji":"🌤️","translatable":true,"requires":{"bins":["curl"]},"always":true}}
+metadata: {"nanobot":{"emoji":"🌤️","requires":{"bins":["curl"]}}}
 ---
 
 # Weather
 
-`location` is optional. Left out, you get the household's own weather -- the
-skill works that out itself and never wakes a phone. Pass `location` only when
-the person names somewhere else, and never ask them which city.
+Two free services, no API keys needed.
 
-```json
-{"skill": "weather", "action": "get_weather"}
-{"skill": "weather", "action": "get_forecast", "days": 3}
-{"skill": "weather", "action": "get_forecast", "location": "Madrid"}
+## wttr.in (primary)
+
+Choose one request that matches the user's scope. Do not fetch current
+conditions separately when a today or forecast request already includes them.
+
+Platform notes:
+- On Windows PowerShell, use `curl.exe`; bare `curl` may resolve to
+  `Invoke-WebRequest`.
+- On macOS and Linux, use `curl`.
+
+Current conditions only:
+```bash
+curl -s "https://wttr.in/London?format=3"
+# Output: London: ⛅️ +8°C
 ```
 
-`get_conditions` and `get_current_weather` are the same as `get_weather`.
+Custom current conditions format:
+```bash
+curl -s "https://wttr.in/London?format=%l:+%c+%t+%h+%w"
+# Output: London: ⛅️ +8°C 71% ↙5km/h
+```
 
-Call it through the block above, never with curl or exec: the skill already
-knows where the household is. Answer in the language the person wrote in,
-whatever language the forecast comes back in.
+Today's weather, including current conditions (use this single request for
+questions about today's weather):
+```bash
+curl -s "https://wttr.in/London?1&m"
+```
+
+Full forecast:
+```bash
+curl -s "https://wttr.in/London?T&m"
+```
+
+On Windows PowerShell, replace `curl` with `curl.exe` in the commands above.
+
+Format codes: `%c` condition · `%t` temp · `%h` humidity · `%w` wind · `%l` location · `%m` moon
+
+Tips:
+- URL-encode spaces: `wttr.in/New+York`
+- Airport codes: `wttr.in/JFK`
+- Units: `?m` (metric) `?u` (USCS)
+- Today only: `?1` · Current only: `?0`
+- PNG (macOS/Linux): `curl -s "https://wttr.in/Berlin.png" -o weather.png`
+- PNG (Windows PowerShell): `curl.exe -s "https://wttr.in/Berlin.png" -o weather.png`
+
+## Open-Meteo (fallback, JSON)
+
+Free, no key, good for programmatic use:
+```bash
+curl -s "https://api.open-meteo.com/v1/forecast?latitude=51.5&longitude=-0.12&current_weather=true"
+```
+
+Find coordinates for a city, then query. Returns JSON with temp, windspeed, weathercode.
+
+Docs: https://open-meteo.com/en/docs

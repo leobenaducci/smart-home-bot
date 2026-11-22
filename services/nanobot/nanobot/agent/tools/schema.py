@@ -52,11 +52,10 @@ class StringSchema(Schema):
 
 
 class IntegerSchema(Schema):
-    """Integer parameter: optional placeholder int (legacy ctor signature), description, and bounds."""
+    """Integer parameter with a description and optional bounds."""
 
     def __init__(
         self,
-        value: int = 0,
         *,
         description: str = "",
         minimum: int | None = None,
@@ -64,7 +63,6 @@ class IntegerSchema(Schema):
         enum: tuple[int, ...] | list[int] | None = None,
         nullable: bool = False,
     ) -> None:
-        self._value = value
         self._description = description
         self._minimum = minimum
         self._maximum = maximum
@@ -92,7 +90,6 @@ class NumberSchema(Schema):
 
     def __init__(
         self,
-        value: float = 0.0,
         *,
         description: str = "",
         minimum: float | None = None,
@@ -100,7 +97,6 @@ class NumberSchema(Schema):
         enum: tuple[float, ...] | list[float] | None = None,
         nullable: bool = False,
     ) -> None:
-        self._value = value
         self._description = description
         self._minimum = minimum
         self._maximum = maximum
@@ -128,8 +124,8 @@ class BooleanSchema(Schema):
 
     def __init__(
         self,
-        description: str = "",
         *,
+        description: str = "",
         default: bool | None = None,
         nullable: bool = False,
     ) -> None:
@@ -222,11 +218,18 @@ def tool_parameters_schema(
     *,
     required: list[str] | None = None,
     description: str = "",
+    additional_properties: bool | dict[str, Any] | None = False,
     **properties: Any,
 ) -> dict[str, Any]:
-    """Build root tool parameters ``{"type": "object", "properties": ...}`` for :meth:`Tool.parameters`."""
+    """Build root tool parameters ``{"type": "object", "properties": ...}`` for :meth:`Tool.parameters`.
+
+    Built-in tools default to strict parameter objects so misspelled tool-call
+    arguments are reported before execution instead of being silently ignored.
+    Pass ``additional_properties=None`` to omit the JSON Schema keyword.
+    """
     return ObjectSchema(
         required=required,
         description=description,
+        additional_properties=additional_properties,
         **properties,
     ).to_json_schema()

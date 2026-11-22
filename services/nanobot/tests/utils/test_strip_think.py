@@ -1,8 +1,12 @@
-from nanobot.utils.helpers import strip_think
+from nanobot.utils.helpers import (
+    extract_reasoning,
+    extract_think,
+    strip_reasoning_tags,
+    strip_think,
+)
 
 
 class TestStripThinkTag:
-    """Test <thought>...</thought> block stripping (Gemma 4 and similar models)."""
 
     def test_closed_tag(self):
         assert strip_think("Hello <thought>reasoning</thought> World") == "Hello  World"
@@ -26,6 +30,15 @@ class TestStripThinkTag:
 
     def test_self_closing_tag_not_matched(self):
         assert strip_think("<thought/>some text") == "<thought/>some text"
+
+    def test_thinking_alias_closed_tag(self):
+        assert strip_think("Hello <thinking>reasoning</thinking> World") == "Hello  World"
+
+    def test_thinking_alias_unclosed_trailing_tag(self):
+        assert strip_think("<thinking>ongoing...") == ""
+
+    def test_self_closing_thinking_marker_at_start_stripped(self):
+        assert strip_think("<thinking/>some text") == "some text"
 
     def test_normal_text_unchanged(self):
         assert strip_think("Just normal text") == "Just normal text"
@@ -75,14 +88,12 @@ class TestStripThinkMalformedLeaks:
         )
 
     def test_malformed_think_no_gt_english_with_space(self):
-        # English leak with a space after the tag name (common streaming form).
         assert strip_think("<think The fountain opens at 09:00") == ("The fountain opens at 09:00")
 
     def test_malformed_thought_no_gt(self):
         assert strip_think("<thought广场照明灯") == "广场照明灯"
 
     def test_thinker_word_preserved(self):
-        # `<thinker>` is a valid tag name variant; must not match.
         assert strip_think("<thinker>content</thinker>") == "<thinker>content</thinker>"
 
     def test_self_closing_preserved(self):
@@ -90,17 +101,24 @@ class TestStripThinkMalformedLeaks:
         assert strip_think("<thought/>ok") == "<thought/>ok"
 
     def test_orphan_closing_think_at_end_stripped(self):
-        # Typical leak: model opens `<think>` without closing; we strip the
-        # opener from the start, leaving an orphan `</think>` at the end.
         assert strip_think("answer</think>") == "answer"
 
     def test_orphan_closing_think_at_start_stripped(self):
         assert strip_think("</think>answer") == "answer"
 
     def test_channel_marker_at_start_stripped(self):
-        # Harmony / Gemma 4 channel markers leak at the start of a response.
         assert strip_think("<channel|>喷泉策略：09:00 开启") == ("喷泉策略：09:00 开启")
         assert strip_think("<|channel|>answer") == "answer"
+
+    def test_partial_trailing_think_tag_after_visible_text(self):
+        assert strip_think("喷泉策略说明 <thin") == "喷泉策略说明"
+        assert strip_think("answer <thought") == "answer"
+        assert strip_think("answer <think>") == "answer"
+
+    def test_partial_trailing_channel_marker_after_visible_text(self):
+        assert strip_think("喷泉策略说明 <|chan") == "喷泉策略说明"
+        assert strip_think("answer <channel") == "answer"
+        assert strip_think("answer <|channel|>") == "answer"
 
 
 class TestStripThinkConservativePreserve:
@@ -122,8 +140,6 @@ class TestStripThinkConservativePreserve:
         assert strip_think("<think:foo>bar</think:foo>") == "<think:foo>bar</think:foo>"
 
     def test_literal_close_think_in_prose_preserved(self):
-        # Mid-prose references to `</think>` in backticks or plain text must
-        # not be stripped; edge-only regex protects this.
         text = "Use `</think>` to close a thinking block."
         assert strip_think(text) == text
 
@@ -134,3 +150,171 @@ class TestStripThinkConservativePreserve:
     def test_literal_channel_marker_in_code_block_preserved(self):
         text = "Example:\n```\nif line.startswith('<channel|>'):\n    skip()\n```"
         assert strip_think(text) == text
+
+
+class TestExtractThink:
+
+    def test_no_think_tags(self):
+        thinking, clean = extract_think("Hello World")
+        assert thinking is None
+        assert clean == "Hello World"
+
+    def test_single_think_block(self):
+        text = "Hello <think>reasoning content\nhere</think> World"
+        thinking, clean = extract_think(text)
+        assert thinking == "reasoning content\nhere"
+        assert clean == "Hello  World"
+
+    def test_single_thought_block(self):
+        text = "Hello <thought>reasoning content</thought> World"
+        thinking, clean = extract_think(text)
+        assert thinking == "reasoning content"
+        assert clean == "Hello  World"
+
+    def test_single_thinking_block(self):
+        text = "Hello <thinking>reasoning content</thinking> World"
+        thinking, clean = extract_think(text)
+        assert thinking == "reasoning content"
+        assert clean == "Hello  World"
+
+    def test_multiple_think_blocks(self):
+        text = "A<think>first</think>B<thought>second</thought>C"
+        thinking, clean = extract_think(text)
+        assert thinking == "first\n\nsecond"
+        assert clean == "ABC"
+
+    def test_think_only_no_content(self):
+        text = "<think>just thinking</think>"
+        thinking, clean = extract_think(text)
+        assert thinking == "just thinking"
+        assert clean == ""
+
+    def test_unclosed_think_not_extracted(self):
+        text = "<think>unclosed thinking..."
+        thinking, clean = extract_think(text)
+        assert thinking is None
+        assert clean == ""
+
+    def test_empty_think_block(self):
+        text = "Hello <think></think> World"
+        thinking, clean = extract_think(text)
+        assert thinking == ""
+        assert clean == "Hello  World"
+
+    def test_think_with_whitespace_only(self):
+        text = "Hello <think>   \n World"
+        thinking, clean = extract_think(text)
+        assert thinking is None
+        assert clean == "Hello <think>   \n World"
+
+    def test_mixed_think_and_thought(self):
+        text = "Start<think>first reasoning</think>middle<thought>second reasoning</thought>End"
+        thinking, clean = extract_think(text)
+        assert thinking == "first reasoning\n\nsecond reasoning"
+        assert clean == "StartmiddleEnd"
+
+    def test_real_world_ollama_response(self):
+        text = """<think>
+The user is asking about Python list comprehensions.
+Let me explain the syntax and give examples.
+</think>
+
+List comprehensions in Python provide a concise way to create lists. Here's the syntax:
+
+```python
+[expression for item in iterable if condition]
+```
+
+For example:
+```python
+squares = [x**2 for x in range(10)]
+```"""
+        thinking, clean = extract_think(text)
+        assert "list comprehensions" in thinking.lower()
+        assert "Let me explain" in thinking
+        assert "List comprehensions in Python" in clean
+        assert "<think>" not in clean
+        assert "</think>" not in clean
+
+
+class TestExtractReasoning:
+
+    def test_strips_tags_from_dedicated_reasoning_content(self):
+        reasoning, content = extract_reasoning(
+            "<thinking>Preparing final response",
+            None,
+            "visible answer",
+        )
+        assert reasoning == "Preparing final response"
+        assert content == "visible answer"
+
+    def test_self_closing_thinking_marker_in_reasoning_content(self):
+        reasoning, content = extract_reasoning(
+            "<thinking/>Preparing final response",
+            None,
+            "visible answer",
+        )
+        assert reasoning == "Preparing final response"
+        assert content == "visible answer"
+
+    def test_prefers_reasoning_content_and_strips_inline_think(self):
+        reasoning, content = extract_reasoning(
+            "dedicated",
+            None,
+            "<think>inline</think>visible answer",
+        )
+        assert reasoning == "dedicated"
+        assert content == "visible answer"
+
+    def test_falls_back_to_thinking_blocks(self):
+        reasoning, content = extract_reasoning(
+            None,
+            [
+                {"type": "thinking", "thinking": "step 1"},
+                {"type": "thinking", "thinking": "step 2"},
+                {"type": "redacted_thinking"},
+            ],
+            "hello",
+        )
+        assert reasoning == "step 1\n\nstep 2"
+        assert content == "hello"
+
+    def test_falls_back_to_inline_think_tags(self):
+        reasoning, content = extract_reasoning(
+            None, None, "<think>plan</think>answer"
+        )
+        assert reasoning == "plan"
+        assert content == "answer"
+
+    def test_no_reasoning_returns_none(self):
+        reasoning, content = extract_reasoning(None, None, "plain answer")
+        assert reasoning is None
+        assert content == "plain answer"
+
+    def test_empty_thinking_blocks_falls_through_to_inline(self):
+        reasoning, content = extract_reasoning(
+            None, [], "<think>plan</think>answer"
+        )
+        assert reasoning == "plan"
+        assert content == "answer"
+
+
+class TestStripReasoningTags:
+
+    def test_unclosed_thinking_wrapper_keeps_reasoning_body(self):
+        assert strip_reasoning_tags("<thinking>Preparing final response") == (
+            "Preparing final response"
+        )
+
+    def test_self_closing_thinking_marker_keeps_reasoning_body(self):
+        assert strip_reasoning_tags("<thinking/>Preparing final response") == (
+            "Preparing final response"
+        )
+
+    def test_closing_thinking_wrapper_removed(self):
+        assert strip_reasoning_tags("Preparing final response</thinking>") == (
+            "Preparing final response"
+        )
+
+    def test_non_string_reasoning_ignored(self):
+        assert strip_reasoning_tags(object()) == ""

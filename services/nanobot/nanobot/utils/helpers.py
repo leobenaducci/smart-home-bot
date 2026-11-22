@@ -1,96 +1,169 @@
-"""Utility functions for nanobot."""
+from __future__ import annotations
 
 import base64
 import json
 import re
 import shutil
 import time
-import uuid
-from datetime import datetime
+from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
-import tiktoken
 from loguru import logger
 
+from nanobot.utils.atomic_file import atomic_write_lines as atomic_write_lines
+from nanobot.utils.atomic_file import atomic_write_text as atomic_write_text
+from nanobot.utils.file_io import ensure_dir as ensure_dir
+from nanobot.utils.file_io import write_text_atomic as _write_text_atomic
+from nanobot.utils.token_encoding import get_token_encoding as _get_token_encoding
 
-# Harmony, the format gpt-oss models speak:
-#
-#   <|channel|>analysis<|message|>...reasoning...<|end|>
-#   <|channel|>final<|message|>...the answer...<|return|>
-#
-# Some gateways parse that and hand back only the answer. Together does not:
-# openai/gpt-oss-20b returns the whole thing in `content`, markers included.
-# The edge-only stripping below took off the leading `<|channel|>` and left
-# the channel *name* welded to the text, so the household was sent
-# "finalJuana salió de casa." and, on a turn the model never finished,
-# "final<|message|>[Assistant reply unavailable due to model error.]".
-_HARMONY_MARKER = re.compile(r"<\|?channel\|?>\s*([A-Za-z_][A-Za-z0-9_]*)\s*<\|?message\|?>")
-_HARMONY_END = re.compile(r"<\|?(?:end|return|start|channel)\|?>")
+if TYPE_CHECKING:
+    from tiktoken import Encoding
 
-# The same reply with every `<|...|>` already eaten, which is how it arrives
-# from some gateways and is what the household was actually sent:
-#
-#   analysisWe need to interpret the request... I will respond
-#   "Hecho."assistantfinalHecho.
-#
-# Nothing is left to parse -- only the channel names, run into the words on
-# both sides. The signature is the name immediately followed by a capital or a
-# bracket, with no space: real prose starting with "Final" has a space after
-# it, and the reply is `final`'s (or `assistantfinal`'s) tail.
-#
-# `final` is in the opening set as well as `analysis`/`commentary`, and it has
-# to be: the shape the family was actually sent -- "finalJuana salió de casa."
-# -- opens on the *answer's* channel with the reasoning already dropped by the
-# gateway, so a rule that only recognises a reasoning channel leaves the exact
-# reported symptom untouched. `admin/models.py`'s detector has always spelled
-# all three; this is the stripping half catching up with it.
-_BARE_HARMONY_START = re.compile(
-    r'^(?:analysis|commentary|(?:assistant)?final)(?=[A-Z\[<(\x22\x27])')
-_BARE_HARMONY_FINAL = re.compile(r'(?:assistant)?final(?=[A-Z\[<(\x22\x27])')
-# What a half-eaten reply leaves behind once the channel name is taken off:
-# "final<|message|>[Assistant reply unavailable…]" arrived with the opening
-# `<|channel|>` gone and this one still in place, which is why the full-marker
-# parser above could not see it either.
-_HARMONY_RESIDUE = re.compile(
-    r'^\s*(?:<\|?(?:message|start|end|return|channel)\|?>\s*)+')
+    from nanobot.providers.base import LLMUsage
+
+_TOOLS_TOKEN_CACHE_MAX_ENTRIES = 64
+_TOOLS_TOKEN_CACHE: dict[int, tuple[tuple[int, ...], dict[bool, int]]] = {}
+_TOOLS_TOKEN_CACHE_LOCK = Lock()
+_T = TypeVar("_T")
 
 
-def strip_harmony(text: str) -> str:
-    """Keep the `final` channel of a harmony reply and drop the rest.
+@overload
+def sanitize_surrogates(text: str) -> str: ...
 
-    Returns "" when the model emitted only its reasoning and never reached a
-    final channel -- which is the honest answer, because it did not produce
-    one. An empty reply is already handled downstream (the answerless guard
-    swaps in the fallback); half a reasoning trace delivered to the family is
-    not handled anywhere, because it looks like an answer.
 
-    Untouched unless the full `<|channel|>NAME<|message|>` sequence is present,
-    so prose that merely mentions these tokens is left alone -- the same
-    conservatism `strip_think` documents, applied to a longer pattern.
+@overload
+def sanitize_surrogates(text: _T) -> _T: ...
+
+
+def sanitize_surrogates(text: Any) -> Any:
+    """Reconstruct surrogate pairs and replace unpaired surrogates.
+
+    Lone UTF-16 surrogate code points (``U+D800``..``U+DFFF``) cannot be
+    encoded as UTF-8 and cause ``UnicodeEncodeError`` when the message is
+    serialized for an HTTP request body. This helper round-trips through
+    UTF-16 to reconstruct genuine surrogate pairs (produced e.g. by Windows
+    console input for emoji) and substitutes lone surrogates with
+    ``U+FFFD``.
+
+    Non-string inputs are returned unchanged so this helper is safe to call
+    on arbitrary message payload leaves.
     """
-    if not text:
+    if not isinstance(text, str):
         return text
-    if not _HARMONY_MARKER.search(text):
-        # No markers at all. Only engaged when the text *opens* on a channel
-        # name welded to the next word, which is narrow enough that ordinary
-        # prose cannot trip it.
-        if not _BARE_HARMONY_START.match(text):
-            return text
-        finals = list(_BARE_HARMONY_FINAL.finditer(text))
-        # The last one: the reasoning quotes its own intended answer along the
-        # way ('I will respond "Hecho."'), so an earlier match is inside the
-        # analysis rather than the start of the reply.
-        if not finals:
-            return ""
-        return _HARMONY_RESIDUE.sub("", text[finals[-1].end():]).strip()
-    finals = []
-    for match in _HARMONY_MARKER.finditer(text):
-        channel, start = match.group(1).lower(), match.end()
-        stop = _HARMONY_END.search(text, start)
-        if channel == "final":
-            finals.append(text[start:stop.start() if stop else len(text)])
-    return "".join(finals).strip()
+    # Fast path: no surrogate code points → return the original object so
+    # callers can rely on identity to detect an actual mutation.
+    for ch in text:
+        cp = ord(ch)
+        if 0xD800 <= cp <= 0xDFFF:
+            break
+    else:
+        return text
+    return text.encode("utf-16-le", errors="surrogatepass").decode(
+        "utf-16-le", errors="replace"
+    )
+
+
+def sanitize_surrogates_deep(value: Any) -> Any:
+    """Recursively apply :func:`sanitize_surrogates` to every string leaf.
+
+    Lists and dicts are rebuilt only when a nested string actually changes,
+    so the common case (no surrogates present) returns the original object
+    without allocations.
+    """
+    if isinstance(value, str):
+        cleaned = sanitize_surrogates(value)
+        return cleaned
+    if isinstance(value, list):
+        result_list: list[Any] = []
+        mutated = False
+        for item in cast(list[Any], value):
+            new_item = sanitize_surrogates_deep(item)
+            if new_item is not item:
+                mutated = True
+            result_list.append(new_item)
+        return result_list if mutated else cast(Any, value)
+    if isinstance(value, dict):
+        result_dict: dict[Any, Any] = {}
+        mutated = False
+        for key, item in cast(dict[Any, Any], value).items():
+            new_item = sanitize_surrogates_deep(item)
+            if new_item is not item:
+                mutated = True
+            result_dict[key] = new_item
+        return result_dict if mutated else cast(Any, value)
+    if isinstance(value, tuple):
+        tuple_value = cast(tuple[Any, ...], value)
+        result_tuple = tuple(sanitize_surrogates_deep(item) for item in tuple_value)
+        return (
+            result_tuple
+            if any(a is not b for a, b in zip(result_tuple, tuple_value))
+            else cast(Any, value)
+        )
+    return value
+
+
+def _cache_tools_token_count(
+    tools_id: int,
+    fingerprint: tuple[int, ...],
+    counts: dict[bool, int],
+) -> None:
+    with _TOOLS_TOKEN_CACHE_LOCK:
+        cached = _TOOLS_TOKEN_CACHE.get(tools_id)
+        if cached is not None and cached[0] == fingerprint:
+            counts = {**cached[1], **counts}
+        if (
+            tools_id not in _TOOLS_TOKEN_CACHE
+            and len(_TOOLS_TOKEN_CACHE) >= _TOOLS_TOKEN_CACHE_MAX_ENTRIES
+        ):
+            _TOOLS_TOKEN_CACHE.pop(next(iter(_TOOLS_TOKEN_CACHE)))
+        _TOOLS_TOKEN_CACHE[tools_id] = (fingerprint, counts)
+
+
+def _estimate_tools_tokens(
+    enc: Encoding,
+    tools: list[dict[str, Any]],
+    *,
+    leading_separator: bool,
+) -> int:
+    # ToolRegistry keeps the returned definitions list alive until the registry changes.
+    tools_id = id(tools)
+    fingerprint = tuple(id(tool) for tool in tools)
+    with _TOOLS_TOKEN_CACHE_LOCK:
+        cached = _TOOLS_TOKEN_CACHE.get(tools_id)
+        if cached and cached[0] == fingerprint:
+            token_count = cached[1].get(leading_separator)
+            if token_count is not None:
+                return token_count
+            counts = dict(cached[1])
+        else:
+            counts = {}
+
+    rendered = json.dumps(tools, ensure_ascii=False)
+    if leading_separator:
+        rendered = "\n" + rendered
+    token_count = len(enc.encode_ordinary(rendered))
+    counts[leading_separator] = token_count
+    _cache_tools_token_count(tools_id, fingerprint, counts)
+    return token_count
+
+
+def _tag_regex(tags: tuple[str, ...]) -> str:
+    return rf"(?:{'|'.join(re.escape(tag) for tag in tags)})"
+
+
+_THINKING_TAGS = ("think", "thinking", "thought")
+_THINKING_TAG = _tag_regex(_THINKING_TAGS)
+_INLINE_SELF_CLOSING_THINKING_TAG = r"(?:thinking)"
+_THINKING_TAG_PREFIX = "|".join(
+    sorted(
+        {re.escape(tag[:i]) for tag in _THINKING_TAGS for i in range(1, len(tag) + 1)},
+        key=len,
+        reverse=True,
+    )
+)
+_PARTIAL_THINKING_TAG = rf"</?(?:{_THINKING_TAG_PREFIX})>?"
 
 
 def strip_think(text: str) -> str:
@@ -99,7 +172,8 @@ def strip_think(text: str) -> str:
     Ollama renderer).
 
     Covers:
-      1. Well-formed `<think>...</think>` and `<thought>...</thought>` blocks.
+      1. Well-formed `<think>...</think>`, `<thinking>...</thinking>`,
+         and `<thought>...</thought>` blocks.
       2. Streaming prefixes where the block is never closed.
       3. *Malformed* opening tags missing the `>` — e.g. `<think广场…`. The
          model sometimes emits the tag name directly followed by user-facing
@@ -108,39 +182,144 @@ def strip_think(text: str) -> str:
       4. Harmony-style channel markers like `<channel|>` / `<|channel|>`
          **at the start of the text** — conservative to avoid eating
          explanatory prose that mentions these tokens.
-      5. Orphan closing tags `</think>` / `</thought>` **at the very start
-         or end of the text** only, for the same reason.
+      5. Orphan closing tags `</think>` / `</thinking>` / `</thought>`
+         **at the very start or end of the text** only, for the same reason.
+      6. Trailing partial control tags split across stream chunks, such as
+         `<thi`, `<thin`, or `<tho`.
 
     Since this is also applied before persisting to history (memory.py),
     the edge-only stripping of (4) and (5) is deliberate: stripping those
     tokens mid-text would silently rewrite any message where a user or the
     assistant discusses the tokens themselves.
     """
-    # Well-formed blocks first.
-    text = re.sub(r"<think>[\s\S]*?</think>", "", text)
-    text = re.sub(r"^\s*<think>[\s\S]*$", "", text)
-    text = re.sub(r"<thought>[\s\S]*?</thought>", "", text)
-    text = re.sub(r"^\s*<thought>[\s\S]*$", "", text)
-    # Malformed opening tags: `<think` / `<thought` where the next char is
+    if "<" not in text:
+        return text.strip()
+    text = re.sub(rf"<(?P<tag>{_THINKING_TAG})>[\s\S]*?</(?P=tag)>", "", text)
+    text = re.sub(rf"^\s*<{_THINKING_TAG}>[\s\S]*$", "", text)
+    # Self-closing `<thinking/>` is an empty marker, not user-visible text.
+    text = re.sub(rf"^\s*<{_INLINE_SELF_CLOSING_THINKING_TAG}/>\s*", "", text)
+    text = re.sub(rf"\s*<{_INLINE_SELF_CLOSING_THINKING_TAG}/>\s*$", "", text)
+    # Malformed opening tags: `<think` / `<thinking` / `<thought` where the next char is
     # NOT one that could continue a valid tag / identifier name. Explicitly
     # listing ASCII tag-name chars (letters, digits, `_`, `-`, `:`) plus
     # `>` / `/` — we can't use `\w` here because in Python's default
     # Unicode regex mode it matches CJK characters too, which would defeat
     # the primary fix for `<think广场…` leaks.
-    text = re.sub(r"<think(?![A-Za-z0-9_\-:>/])", "", text)
-    text = re.sub(r"<thought(?![A-Za-z0-9_\-:>/])", "", text)
-    # Edge-only orphan closing tags (start or end of text).
-    text = re.sub(r"^\s*</think>\s*", "", text)
-    text = re.sub(r"\s*</think>\s*$", "", text)
-    text = re.sub(r"^\s*</thought>\s*", "", text)
-    text = re.sub(r"\s*</thought>\s*$", "", text)
-    # Harmony first: a real `<|channel|>NAME<|message|>` sequence is parsed
-    # rather than nibbled at, so the channel name cannot survive as text.
-    text = strip_harmony(text)
-    # Edge-only channel markers, for the leaks that are not full harmony
-    # (the Gemma 4 renderer emits a bare one).
+    text = re.sub(rf"<{_THINKING_TAG}(?![A-Za-z0-9_\-:>/])", "", text)
+    text = re.sub(rf"^\s*</{_THINKING_TAG}>\s*", "", text)
+    text = re.sub(rf"\s*</{_THINKING_TAG}>\s*$", "", text)
+    # Edge-only channel markers (harmony / Gemma 4 variant leaks).
     text = re.sub(r"^\s*<\|?channel\|?>\s*", "", text)
+    # Stream chunks may end in the middle of a control tag. Strip only known
+    # control-token prefixes at the very end.
+    partial_control_tag = (
+        rf"{_PARTIAL_THINKING_TAG}|"
+        r"<\|?(?:c|ch|cha|chan|chann|channe|channel)(?:\|?>?)?"
+    )
+    text = re.sub(rf"(?:{partial_control_tag})$", "", text)
+    text = re.sub(r"^\s*<\|?$", "", text)
     return text.strip()
+
+
+def strip_reasoning_tags(text: object) -> str:
+    """Remove wrapper tags from text that is already known to be reasoning."""
+    if not isinstance(text, str):
+        return ""
+    if "<" not in text:
+        return text.strip()
+    text = re.sub(rf"^\s*<{_THINKING_TAG}/>\s*", "", text)
+    text = re.sub(rf"\s*<{_THINKING_TAG}/>\s*$", "", text)
+    text = re.sub(rf"^\s*<{_THINKING_TAG}>\s*", "", text)
+    text = re.sub(rf"\s*</{_THINKING_TAG}>\s*$", "", text)
+    text = re.sub(rf"\s*(?:{_PARTIAL_THINKING_TAG})$", "", text)
+    return text.strip()
+
+
+def extract_think(text: str) -> tuple[str | None, str]:
+    """Extract thinking content from inline thinking tags.
+
+    Returns ``(thinking_text, cleaned_text)``. Only closed blocks are
+    extracted; unclosed streaming prefixes are stripped from the cleaned
+    text but not surfaced — :func:`strip_think` handles that case.
+    """
+    if "<" not in text:
+        return None, text.strip()
+    parts: list[str] = []
+    for m in re.finditer(rf"<(?P<tag>{_THINKING_TAG})>([\s\S]*?)</(?P=tag)>", text):
+        parts.append(m.group(2).strip())
+    thinking = "\n\n".join(parts) if parts else None
+    return thinking, strip_think(text)
+
+
+class IncrementalThinkExtractor:
+    """Stateful inline ``<think>`` extractor for streaming buffers.
+
+    Streaming providers expose only a single content delta channel. When a
+    model embeds reasoning in ``<think>...</think>`` blocks inside that
+    channel, callers need to surface the reasoning incrementally as it
+    arrives without re-emitting earlier text. This holds the "already
+    emitted" cursor so the runner and the loop hook share one shape.
+    """
+
+    __slots__ = ("_emitted",)
+
+    def __init__(self) -> None:
+        self._emitted = ""
+
+    def reset(self) -> None:
+        self._emitted = ""
+
+    async def feed(self, buf: str, emit: Any) -> bool:
+        """Emit any new thinking text found in ``buf``.
+
+        Returns True if anything was emitted this call. ``emit`` is an
+        async callable taking a single string (typically
+        ``hook.emit_reasoning``).
+        """
+        thinking, _ = extract_think(buf)
+        if not thinking or thinking == self._emitted:
+            return False
+        new = thinking[len(self._emitted) :]
+        if not new.strip():
+            return False
+        self._emitted = thinking
+        await emit(new)
+        return True
+
+
+def extract_reasoning(
+    reasoning_content: str | None,
+    thinking_blocks: list[dict[str, Any]] | None,
+    content: str | None,
+) -> tuple[str | None, str | None]:
+    """Return ``(reasoning_text, cleaned_content)`` from one model response.
+
+    Single source of truth for "what reasoning did this response carry, and
+    what answer text remains after we peel it out". Fallback order:
+
+    1. Dedicated ``reasoning_content`` (DeepSeek-R1, Kimi, MiMo, OpenAI
+       reasoning models, Bedrock).
+    2. Anthropic ``thinking_blocks``.
+    3. Inline ``<think>`` / ``<thought>`` blocks in ``content``.
+
+    Only one source contributes per response; lower-priority sources are
+    ignored if a higher-priority one is present, but inline ``<think>``
+    tags are still stripped from ``content`` so they never leak into the
+    final answer.
+    """
+    if reasoning_content:
+        return strip_reasoning_tags(reasoning_content), strip_think(content) if content else content
+    if thinking_blocks:
+        parts = [
+            strip_reasoning_tags(tb.get("thinking", ""))
+            for tb in thinking_blocks
+            if tb.get("type") == "thinking"
+        ]
+        joined = "\n\n".join(p for p in parts if p)
+        return (joined or None), strip_think(content) if content else content
+    if content:
+        return extract_think(content)
+    return None, content
 
 
 def detect_image_mime(data: bytes) -> str | None:
@@ -171,38 +350,11 @@ def build_image_content_blocks(
     ]
 
 
-def ensure_dir(path: Path) -> Path:
-    """Ensure directory exists, return it."""
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def timestamp() -> str:
-    """Current ISO timestamp."""
-    return datetime.now().isoformat()
-
-
-def current_time_str(timezone: str | None = None) -> str:
-    """Return the current time string."""
-    from zoneinfo import ZoneInfo
-
-    try:
-        tz = ZoneInfo(timezone) if timezone else None
-    except (KeyError, Exception):
-        tz = None
-
-    now = datetime.now(tz=tz) if tz else datetime.now().astimezone()
-    offset = now.strftime("%z")
-    offset_fmt = f"{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
-    tz_name = timezone or (time.strftime("%Z") or "UTC")
-    return f"{now.strftime('%Y-%m-%d %H:%M (%A)')} ({tz_name}, UTC{offset_fmt})"
-
-
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*]')
-_TOOL_RESULT_PREVIEW_CHARS = 1200
 _TOOL_RESULTS_DIR = ".nanobot/tool-results"
 _TOOL_RESULT_RETENTION_SECS = 7 * 24 * 60 * 60
 _TOOL_RESULT_MAX_BUCKETS = 32
+_TRUNCATED_SUFFIX = "\n... (truncated)"
 
 
 def safe_filename(name: str) -> str:
@@ -219,7 +371,76 @@ def truncate_text(text: str, max_chars: int) -> str:
     """Truncate text with a stable suffix."""
     if max_chars <= 0 or len(text) <= max_chars:
         return text
-    return text[:max_chars] + "\n... (truncated)"
+    return text[:max_chars] + _TRUNCATED_SUFFIX
+
+
+def truncate_text_to_tokens(text: str, max_tokens: int) -> str:
+    """Truncate text to a token budget with a stable suffix.
+
+    Uses cl100k_base when ready, which may differ from the model's tokenizer.
+    Falls back to a UTF-8 byte budget while loading or if initialization failed.
+    """
+    if max_tokens <= 0:
+        return text
+    try:
+        enc = _get_token_encoding()
+        if enc is not None:
+            tokens = enc.encode_ordinary(text)
+            if len(tokens) <= max_tokens:
+                return text
+            suffix_tokens = enc.encode_ordinary(_TRUNCATED_SUFFIX)
+            body_budget = max_tokens - len(suffix_tokens)
+            if body_budget <= 0:
+                return enc.decode(tokens[:max_tokens])
+            for candidate_budget in range(body_budget, -1, -1):
+                result = enc.decode(tokens[:candidate_budget]) + _TRUNCATED_SUFFIX
+                if len(enc.encode_ordinary(result)) <= max_tokens:
+                    return result
+            return enc.decode(tokens[:max_tokens])
+    except Exception:
+        pass
+    if len(text.encode("utf-8")) <= max_tokens:
+        return text
+    suffix_bytes = len(_TRUNCATED_SUFFIX.encode("utf-8"))
+    if max_tokens <= suffix_bytes:
+        return _truncate_text_to_utf8_bytes(text, max_tokens)
+    body = _truncate_text_to_utf8_bytes(text, max_tokens - suffix_bytes)
+    return body + _TRUNCATED_SUFFIX
+
+
+def _truncate_text_to_utf8_bytes(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def recent_message_start_index(
+    messages: list[dict[str, Any]],
+    max_messages: int,
+    *,
+    extend_to_user: bool = False,
+) -> int:
+    """Return the start index for a recent replay window."""
+    if max_messages <= 0:
+        return len(messages)
+    start_idx = max(0, len(messages) - max_messages)
+    if not extend_to_user or len(messages) <= max_messages:
+        return start_idx
+    if any(messages[i].get("role") == "user" for i in range(start_idx, len(messages))):
+        return start_idx
+
+    recovered_user = next(
+        (i for i in range(start_idx - 1, -1, -1) if messages[i].get("role") == "user"),
+        None,
+    )
+    if recovered_user is None:
+        return start_idx
+    if recovered_user > 0 and messages[recovered_user - 1].get("_channel_delivery"):
+        return recovered_user - 1
+    return recovered_user
 
 
 def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
@@ -229,65 +450,24 @@ def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
     for i, msg in enumerate(messages):
         role = msg.get("role")
         if role == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict) and tc.get("id"):
-                    declared.add(str(tc["id"]))
+            for raw_call in cast(list[object], msg.get("tool_calls") or []):
+                tool_call = cast(dict[str, Any], raw_call) if isinstance(raw_call, dict) else None
+                if tool_call is not None and tool_call.get("id"):
+                    declared.add(str(tool_call["id"]))
         elif role == "tool":
             tid = msg.get("tool_call_id")
             if tid and str(tid) not in declared:
                 start = i + 1
                 declared.clear()
-                for prev in messages[start : i + 1]:
-                    if prev.get("role") == "assistant":
-                        for tc in prev.get("tool_calls") or []:
-                            if isinstance(tc, dict) and tc.get("id"):
-                                declared.add(str(tc["id"]))
     return start
 
 
-def find_legal_message_end(messages: list[dict[str, Any]], upto: int) -> int:
-    """Trim `upto` back until no assistant tool call is left without its result.
-
-    The mirror of `find_legal_message_start`, and needed for the same reason at
-    the other end: a cut through the middle of a turn leaves an assistant
-    message that announced tool calls and no `tool` messages answering them.
-    Every provider rejects that outright — it is not a soft inconsistency, it is
-    a 400 — so a fork that copies a prefix has to land on a boundary rather than
-    wherever the anchor happened to be.
-
-    Walks backwards, because dropping the offending assistant message can expose
-    another one behind it: a turn that called a tool, read the result and called
-    another is two assistant messages deep, and cutting between them is illegal
-    twice.
-    """
-    end = max(0, min(int(upto), len(messages)))
-    while end:
-        declared: dict[str, int] = {}
-        answered: set[str] = set()
-        for i, msg in enumerate(messages[:end]):
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict) and tc.get("id"):
-                        declared[str(tc["id"])] = i
-            elif msg.get("role") == "tool":
-                tid = msg.get("tool_call_id")
-                if tid:
-                    answered.add(str(tid))
-        orphans = [i for tid, i in declared.items() if tid not in answered]
-        if not orphans:
-            return end
-        # Cut to just before the earliest assistant left holding an unanswered
-        # call. Not `end - 1`: that would walk back one message at a time
-        # through a long tool turn, re-scanning the whole prefix each step.
-        end = min(orphans)
-    return 0
-
-
-def stringify_text_blocks(content: list[dict[str, Any]]) -> str | None:
+def stringify_text_blocks(content: list[object]) -> str | None:
     parts: list[str] = []
-    for block in content:
-        if not isinstance(block, dict):
+    for raw_block in content:
+        if not isinstance(raw_block, dict):
             return None
+        block = cast(dict[str, Any], raw_block)
         if block.get("type") != "text":
             return None
         text = block.get("text")
@@ -298,20 +478,24 @@ def stringify_text_blocks(content: list[dict[str, Any]]) -> str | None:
 
 
 def _render_tool_result_reference(
-    filepath: Path,
+    reference_path: str,
     *,
     original_size: int,
     preview: str,
     truncated_preview: bool,
+    max_chars: int | None = None,
 ) -> str:
     result = (
         f"[tool output persisted]\n"
-        f"Full output saved to: {filepath}\n"
+        f"Full output saved to workspace path: {reference_path}\n"
         f"Original size: {original_size} chars\n"
         f"Preview:\n{preview}"
     )
     if truncated_preview:
-        result += "\n...\n(Read the saved file if you need the full output.)"
+        result += "\n...\nPreview is also truncated."
+    result += "\nResult truncated. Read the saved file if you need the complete output."
+    if max_chars and len(result) > max_chars:
+        result = f"[truncated: {reference_path}]"
     return result
 
 
@@ -337,62 +521,49 @@ def _cleanup_tool_result_buckets(root: Path, current_bucket: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _write_text_atomic(path: Path, content: str) -> None:
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(path)
-    finally:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-
-
 def maybe_persist_tool_result(
     workspace: Path | None,
     session_key: str | None,
     tool_call_id: str,
-    content: Any,
+    content: str,
     *,
     max_chars: int,
-) -> Any:
-    """Persist oversized tool output and replace it with a stable reference string."""
-    if workspace is None or max_chars <= 0:
-        return content
+) -> str:
+    """Offload oversized text.
 
-    text_payload: str | None = None
-    suffix = "txt"
-    if isinstance(content, str):
-        text_payload = content
-    elif isinstance(content, list):
-        text_payload = stringify_text_blocks(content)
-        if text_payload is None:
-            return content
-        suffix = "json"
-    else:
-        return content
-
-    if len(text_payload) <= max_chars:
+    Complete references may exceed the per-block ``max_chars`` budget.
+    """
+    if workspace is None or max_chars <= 0 or len(content) <= max_chars:
         return content
 
     root = ensure_dir(workspace / _TOOL_RESULTS_DIR)
     bucket = ensure_dir(root / safe_filename(session_key or "default"))
     try:
         _cleanup_tool_result_buckets(root, bucket)
-    except Exception as exc:
-        logger.warning("Failed to clean stale tool result buckets in {}: {}", root, exc)
-    path = bucket / f"{safe_filename(tool_call_id)}.{suffix}"
+    except Exception:
+        logger.exception("Failed to clean stale tool result buckets in {}", root)
+    path = bucket / f"{safe_filename(tool_call_id)}.txt"
     if not path.exists():
-        if suffix == "json" and isinstance(content, list):
-            _write_text_atomic(path, json.dumps(content, ensure_ascii=False, indent=2))
-        else:
-            _write_text_atomic(path, text_payload)
+        _write_text_atomic(path, content)
 
-    preview = text_payload[:_TOOL_RESULT_PREVIEW_CHARS]
+    reference_path = str(path.resolve())
+    overhead = len(_render_tool_result_reference(
+        reference_path, original_size=len(content), preview="", truncated_preview=True,
+    ))
+    available = max(0, max_chars - overhead)
+    separator = "\n...\n"
+    tail_chars = min(1200, max(0, (available - len(separator)) // 4))
+    if tail_chars:
+        head_chars = available - tail_chars - len(separator)
+        preview = content[:head_chars] + separator + content[-tail_chars:]
+    else:
+        preview = content[:available]
     return _render_tool_result_reference(
-        path,
-        original_size=len(text_payload),
+        reference_path,
+        original_size=len(content),
         preview=preview,
-        truncated_preview=len(text_payload) > _TOOL_RESULT_PREVIEW_CHARS,
+        truncated_preview=True,
+        max_chars=max_chars,
     )
 
 
@@ -409,98 +580,156 @@ def split_message(content: str, max_len: int = 2000) -> list[str]:
     """
     if not content:
         return []
+    # Non-positive max_len cannot advance the cut pointer; return unsplit.
+    if max_len <= 0:
+        return [content]
     if len(content) <= max_len:
         return [content]
+    original_content = content
     chunks: list[str] = []
     while content:
         if len(content) <= max_len:
-            chunks.append(content)
+            if content.strip():
+                chunks.append(content)
             break
         cut = content[:max_len]
-        # Try to break at newline first, then space, then hard break
-        pos = cut.rfind("\n")
-        if pos <= 0:
-            pos = cut.rfind(" ")
-        if pos <= 0:
-            pos = max_len
-        chunks.append(content[:pos])
-        content = content[pos:].lstrip()
-    return chunks
+        # Consume only the newline itself so indentation starts the next chunk.
+        newline_pos = cut.rfind("\n")
+        if newline_pos >= 0:
+            # Exclude both bytes of a CRLF boundary from the emitted chunk.
+            line_end = newline_pos
+            if line_end > 0 and content[line_end - 1] == "\r":
+                line_end -= 1
+            chunk = content[:line_end]
+            if chunk.strip():
+                chunks.append(chunk)
+            content = content[newline_pos + 1 :]
+            continue
+
+        # Keep the existing word-boundary behavior, but avoid emitting a
+        # whitespace-only chunk when an indented line exceeds max_len.
+        space_pos = cut.rfind(" ")
+        if space_pos > 0 and cut[:space_pos].strip():
+            chunks.append(content[:space_pos])
+            content = content[space_pos:].lstrip(" \t")
+            # A space boundary may sit immediately before a line break. Drop
+            # that delimiter too, without stripping the next line's indent.
+            if content.startswith("\r\n"):
+                content = content[2:]
+            elif content.startswith("\n"):
+                content = content[1:]
+            continue
+
+        # Do not split between the two code points of a CRLF delimiter.
+        if cut.endswith("\r") and content[max_len : max_len + 1] == "\n":
+            chunk = cut[:-1]
+            if chunk.strip():
+                chunks.append(chunk)
+            content = content[max_len + 1 :]
+            continue
+
+        chunk = content[:max_len]
+        if chunk.strip():
+            chunks.append(chunk)
+        content = content[max_len:]
+        if not chunk.strip():
+            # Keep any remaining indentation so the final non-blank chunk can
+            # retain as much of it as the channel limit permits.
+            continue
+        # A delimiter can sit immediately after the hard-break boundary. Keep
+        # ordinary space trimming, but consume only the newline so indentation
+        # on the following line is preserved.
+        content = content.lstrip(" \t")
+        if content.startswith("\r\n"):
+            content = content[2:]
+        elif content.startswith("\n"):
+            content = content[1:]
+    # Preserve the historical non-empty-input contract for callers that take
+    # the first chunk directly. This fallback is only reachable for content
+    # made entirely of whitespace.
+    return chunks or [original_content[:max_len]]
 
 
 def build_assistant_message(
     content: str | None,
     tool_calls: list[dict[str, Any]] | None = None,
     reasoning_content: str | None = None,
-    thinking_blocks: list[dict] | None = None,
+    thinking_blocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a provider-safe assistant message with optional reasoning fields."""
     msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
     if tool_calls:
         msg["tool_calls"] = tool_calls
     if reasoning_content is not None or thinking_blocks:
-        msg["reasoning_content"] = reasoning_content if reasoning_content is not None else ""
-    elif tool_calls:
-        # A thinking model rejects the *next* request outright when the
-        # assistant message that asked for the tool has no `reasoning_content`
-        # at all: "The `reasoning_content` in the thinking mode must be passed
-        # back to the API" (400, invalid_request_error). It happens whenever a
-        # step produces tool calls and no thinking — a short follow-up call, or
-        # one the text parser lifted out of plain prose, which carries no
-        # reasoning by construction. The turn then dies mid-tool-loop and the
-        # raw provider error is what the person reads.
-        #
-        # An empty string satisfies it and costs nothing: only the last such
-        # message is checked, so stripping older ones stays safe.
-        msg["reasoning_content"] = ""
+        msg["reasoning_content"] = (
+            strip_reasoning_tags(reasoning_content)
+            if reasoning_content is not None
+            else ""
+        )
     if thinking_blocks:
         msg["thinking_blocks"] = thinking_blocks
     return msg
+
+
+def _estimate_prompt_tokens_with_source(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> tuple[int, str]:
+    parts: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for raw_part in cast(list[object], content):
+                part = cast(dict[str, Any], raw_part) if isinstance(raw_part, dict) else None
+                if part is not None and part.get("type") == "text":
+                    text = part.get("text", "")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+
+        tc = msg.get("tool_calls")
+        if tc:
+            parts.append(json.dumps(tc, ensure_ascii=False))
+
+        rc = msg.get("reasoning_content")
+        if isinstance(rc, str) and rc:
+            parts.append(rc)
+
+        for key in ("name", "tool_call_id"):
+            value = msg.get(key)
+            if isinstance(value, str) and value:
+                parts.append(value)
+
+    message_payload = "\n".join(parts)
+    per_message_overhead = len(messages) * 4
+    try:
+        enc = _get_token_encoding()
+        if enc is not None:
+            tool_tokens = (
+                _estimate_tools_tokens(enc, tools, leading_separator=bool(parts)) if tools else 0
+            )
+            message_tokens = len(enc.encode_ordinary(message_payload)) if message_payload else 0
+            return message_tokens + tool_tokens + per_message_overhead, "tiktoken"
+    except Exception:
+        pass
+    tool_payload = (
+        ("\n" if message_payload else "") + json.dumps(tools, ensure_ascii=False)
+        if tools
+        else ""
+    )
+    payload = message_payload + tool_payload
+    estimated = len(payload.encode("utf-8"))
+    return estimated + per_message_overhead, "heuristic"
 
 
 def estimate_prompt_tokens(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Estimate prompt tokens with tiktoken.
-
-    Counts all fields that providers send to the LLM: content, tool_calls,
-    reasoning_content, tool_call_id, name, plus per-message framing overhead.
-    """
-    try:
-        enc = tiktoken.get_encoding("cl100k_base")
-        parts: list[str] = []
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, str):
-                parts.append(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        txt = part.get("text", "")
-                        if txt:
-                            parts.append(txt)
-
-            tc = msg.get("tool_calls")
-            if tc:
-                parts.append(json.dumps(tc, ensure_ascii=False))
-
-            rc = msg.get("reasoning_content")
-            if isinstance(rc, str) and rc:
-                parts.append(rc)
-
-            for key in ("name", "tool_call_id"):
-                value = msg.get(key)
-                if isinstance(value, str) and value:
-                    parts.append(value)
-
-        if tools:
-            parts.append(json.dumps(tools, ensure_ascii=False))
-
-        per_message_overhead = len(messages) * 4
-        return len(enc.encode("\n".join(parts))) + per_message_overhead
-    except Exception:
-        return 0
+    """Estimate prompt tokens with tiktoken and a conservative byte fallback."""
+    estimated, _ = _estimate_prompt_tokens_with_source(messages, tools)
+    return estimated
 
 
 def estimate_message_tokens(message: dict[str, Any]) -> int:
@@ -510,13 +739,14 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
     if isinstance(content, str):
         parts.append(content)
     elif isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
+        for raw_part in cast(list[object], content):
+            part = cast(dict[str, Any], raw_part) if isinstance(raw_part, dict) else None
+            if part is not None and part.get("type") == "text":
                 text = part.get("text", "")
-                if text:
+                if isinstance(text, str) and text:
                     parts.append(text)
             else:
-                parts.append(json.dumps(part, ensure_ascii=False))
+                parts.append(json.dumps(raw_part, ensure_ascii=False))
     elif content is not None:
         parts.append(json.dumps(content, ensure_ascii=False))
 
@@ -535,31 +765,30 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
     if not payload:
         return 4
     try:
-        enc = tiktoken.get_encoding("cl100k_base")
-        return max(4, len(enc.encode(payload)) + 4)
+        enc = _get_token_encoding()
+        if enc is not None:
+            return max(4, len(enc.encode_ordinary(payload)) + 4)
     except Exception:
-        return max(4, len(payload) // 4 + 4)
+        pass
+    return max(4, len(payload.encode("utf-8")) + 4)
 
 
 def estimate_prompt_tokens_chain(
-    provider: Any,
+    provider: object,
     model: str | None,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
 ) -> tuple[int, str]:
-    """Estimate prompt tokens via provider counter first, then tiktoken fallback."""
+    """Estimate prompt tokens via provider, tiktoken, then a byte heuristic."""
     provider_counter = getattr(provider, "estimate_prompt_tokens", None)
     if callable(provider_counter):
-        try:
-            tokens, source = provider_counter(messages, tools, model)
+        with suppress(Exception):
+            tokens, source = cast(tuple[object, object], provider_counter(messages, tools, model))
             if isinstance(tokens, (int, float)) and tokens > 0:
                 return int(tokens), str(source or "provider_counter")
-        except Exception:
-            pass
-
-    estimated = estimate_prompt_tokens(messages, tools)
+    estimated, source = _estimate_prompt_tokens_with_source(messages, tools)
     if estimated > 0:
-        return int(estimated), "tiktoken"
+        return int(estimated), source
     return 0, "none"
 
 
@@ -568,7 +797,7 @@ def build_status_content(
     version: str,
     model: str,
     start_time: float,
-    last_usage: dict[str, int],
+    last_usage: LLMUsage | None,
     context_window_tokens: int,
     session_msg_count: int,
     context_tokens_estimate: int,
@@ -589,9 +818,9 @@ def build_status_content(
         if uptime_s >= 3600
         else f"{uptime_s // 60}m {uptime_s % 60}s"
     )
-    last_in = last_usage.get("prompt_tokens", 0)
-    last_out = last_usage.get("completion_tokens", 0)
-    cached = last_usage.get("cached_tokens", 0)
+    last_in = last_usage.input_tokens if last_usage else 0
+    last_out = last_usage.output_tokens if last_usage else 0
+    cached = last_usage.cache_read_tokens if last_usage else None
     ctx_total = max(context_window_tokens, 0)
     # Budget mirrors Consolidator formula: ctx_window - max_completion - _SAFETY_BUFFER
     ctx_budget = max(ctx_total - int(max_completion_tokens) - 1024, 1)
@@ -620,7 +849,7 @@ def build_status_content(
 
 
 def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]:
-    """Sync bundled templates to workspace. Only creates missing files."""
+    """Sync bundled templates to workspace. Creates missing files without overwriting user files."""
     from importlib.resources import files as pkg_files
 
     try:
@@ -632,17 +861,22 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
 
     added: list[str] = []
 
-    def _write(src, dest: Path):
+    def _write(src: Any, dest: Path) -> None:
+        content = src.read_text(encoding="utf-8") if src else ""
         if dest.exists():
             return
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(src.read_text(encoding="utf-8") if src else "", encoding="utf-8")
+        dest.write_text(content, encoding="utf-8")
         added.append(str(dest.relative_to(workspace)))
 
+    # household: FAMILY.md/TOOLS.md exist as templates only so the context
+    # builder can recognise an unfilled one; the entrypoint links the real ones.
+    _not_synced = {"FAMILY.md", "TOOLS.md"}
     for item in tpl.iterdir():
-        if item.name.endswith(".md") and not item.name.startswith("."):
+        if item.name.endswith(".md") and not item.name.startswith(".") and item.name not in _not_synced:
             _write(item, workspace / item.name)
     _write(tpl / "memory" / "MEMORY.md", workspace / "memory" / "MEMORY.md")
+    _write(tpl / "prompts" / "README.md", workspace / "prompts" / "README.md")
     _write(None, workspace / "memory" / "history.jsonl")
     (workspace / "skills").mkdir(exist_ok=True)
 
@@ -652,20 +886,22 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         for name in added:
             Console().print(f"  [dim]Created {name}[/dim]")
 
-    # Initialize git for memory version control
     try:
         from nanobot.utils.gitstore import GitStore
 
-        gs = GitStore(
-            workspace,
-            tracked_files=[
-                "SOUL.md",
-                "USER.md",
-                "memory/MEMORY.md",
-            ],
-        )
-        gs.init()
+        GitStore.for_memory(workspace).init()
     except Exception:
-        logger.warning("Failed to initialize git store for {}", workspace)
+        logger.exception("Failed to initialize git store for {}", workspace)
 
     return added
+
+
+def load_bundled_template(template_name: str) -> str | None:
+    """Read a bundled template file from the nanobot package."""
+    from importlib.resources import files as pkg_files
+
+    with suppress(Exception):
+        tpl = pkg_files("nanobot") / "templates" / template_name
+        if tpl.is_file():
+            return tpl.read_text(encoding="utf-8")
+    return None

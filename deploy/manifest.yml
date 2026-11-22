@@ -560,20 +560,13 @@ services:
         # at the end of the Dockerfile without this would have quietly made the
         # coding binary part of every assistant's image -- the one thing the
         # separate image exists to prevent, undone by a default.
+        # The household's Dockerfile, not the tree's root one: services/nanobot is
+        # upstream nanobot with nanobot/household in it, and the root Dockerfile
+        # is upstream's. No suite runs against the image here before it rolls;
+        # the tree's suite runs in the rebase tree it is vendored from.
         image_build:
-          - {tag: alfred-nanobot:latest, context: ., target: runtime}
-          # The rebased assistant (upstream nanobot 0.4.x + nanobot/household),
-          # for the members whose `nanobot_image` names it. Its own tree and
-          # Dockerfile, never this tag; built only while somebody runs it.
-          # No suite runs against it here before it rolls: the unit's `test`
-          # stage is the fork image's. Its own suite runs in the rebase tree
-          # before a tree is vendored into services/nanobot-v04.
-          - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
-             source: services/nanobot-v04,
-             dockerfile: docker/household/Dockerfile, only_if_used: true,
-             skill_floors: nanobot/skills,
-             assistant_name_in: ["nanobot/skills/*/SKILL.md",
-                                 "nanobot/household/skills_data/*/SKILL.md"]}
+          - {tag: alfred-nanobot:latest, context: ., target: runtime,
+             dockerfile: docker/household/Dockerfile}
         # Shared with the `broker` unit below, which is a separate compose
         # project and so has a default network of its own. The assistants dial
         # `http://code-broker:8910` by name, so both join this one instead.
@@ -654,6 +647,7 @@ services:
           - "config/*.md"
           - "config/instances/*/*.md"
           - "nanobot/skills/*/SKILL.md"
+          - "nanobot/household/skills_data/*/SKILL.md"
         env:
           # Where Home Assistant is, for the assistants' MCP entry. That
           # config carried the literal `homeassistant.home`, which the
@@ -839,7 +833,8 @@ services:
       - name: broker
         dir: services/nanobot
         compose: docker-compose.broker.yml
-        image_build: {tag: alfred-nanobot:latest, context: ., target: runtime}
+        image_build: {tag: alfred-nanobot:latest, context: ., target: runtime,
+                      dockerfile: docker/household/Dockerfile}
         # Both projects join it and neither creates it. See the assistants' unit.
         pre_create_networks: [nanobot-net]
         # CODE_BROKER_USERS -- the instance -> portal username map this service
@@ -924,16 +919,8 @@ services:
         # cannot come from `build: true`. Docker's layer cache makes building
         # it here cheap when the other unit already did.
         image_build:
-          - {tag: alfred-nanobot:latest, context: ., target: runtime}
-          # The rebased assistant, while `services.nanobot-house.nanobot_image`
-          # (or a member) names it; see the multiuser unit (and its note that
-          # no suite runs against it here).
-          - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
-             source: services/nanobot-v04,
-             dockerfile: docker/household/Dockerfile, only_if_used: true,
-             skill_floors: nanobot/skills,
-             assistant_name_in: ["nanobot/skills/*/SKILL.md",
-                                 "nanobot/household/skills_data/*/SKILL.md"]}
+          - {tag: alfred-nanobot:latest, context: ., target: runtime,
+             dockerfile: docker/household/Dockerfile}
         # Where a plugin's `floor:` skill is staged. Builtin, not workspace:
         # SkillsLoader checks workspace, then remote, then builtin, so a floor
         # copy in the workspace would permanently beat the live one the service
@@ -1001,6 +988,7 @@ services:
           - "config/*.md"
           - "config/instances/house/*.md"
           - "nanobot/skills/*/SKILL.md"
+          - "nanobot/household/skills_data/*/SKILL.md"
         env:
           # Same as the per-member unit above, and for the same reason: the
           # MCP entry pointed at `homeassistant.home`, which is NXDOMAIN

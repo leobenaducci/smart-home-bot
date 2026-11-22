@@ -629,17 +629,16 @@ hidden, read-only is the default and the runtime enforces it).
   instance's. `validate-settings.py` runs as the `pre:` hook, before anything is
   replaced, because the stack this came from validated *after* installing and
   destroyed a working config proving it.
-- **`services/nanobot/` contains upstream code and docs.** Its `README.md`,
-  `docs/`, `SECURITY.md` and `CONTRIBUTING.md` describe stock nanobot, not this
-  deployment, and carry the upstream maintainer's contact details. Read
-  `services/nanobot/AGENTS.md` for what this stack actually does with it.
-  `services/nanobot-v04/` is the same assistant rebased on upstream nanobot
-  0.4.x (household code in `nanobot/household/`, short `# household` seams in
-  upstream files); it builds `alfred-nanobot-v04:latest` only for a member or
-  the house whose `nanobot_image` names it, and carries upstream's docs and
-  contacts the same way. It is vendored from the rebase tree without upstream's
-  `webui/` frontend, which this stack never serves; edit it there, not here
-  (`sanitize.py --apply` leaves it alone).
+- **`services/nanobot/` is upstream nanobot with the household's code in it.**
+  The code is upstream nanobot 0.4.x plus `nanobot/household/` and short
+  `# household` seams in upstream files, vendored from the rebase tree (without
+  upstream's `webui/` frontend, which this stack never serves): change the code
+  there and vendor it again, not here (`sanitize.py --apply` leaves it alone).
+  Its `README.md`, `docs/`, `SECURITY.md` and `CONTRIBUTING.md` describe stock
+  nanobot and carry the upstream maintainer's contact details. What belongs to
+  this repository is beside it: `config/`, the compose files, `bench/`,
+  `user-profiles/` and `AGENTS.md`, the household's notes on the assistant.
+  The image builds from `docker/household/Dockerfile`, not the root one.
 - **One assistant config, one entrypoint.** `services/nanobot/config/` holds the
   base — `config.json` plus the prompt files nanobot itself names (`SOUL.md`,
   `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`, `MORNING.md`). `NANOBOT_INSTANCE`
