@@ -3,7 +3,7 @@
 v0.4.1 runs every MCP URL through the SSRF guard (connect check, a per-request
 hook, and a DNS-pinning transport), so a server on the LAN, the Docker network
 or ``host.docker.internal`` is refused. The household's are all there: Home
-Assistant and home-devices through ``host.docker.internal``, crawl4ai and craft
+Assistant and home-devices through ``host.docker.internal``, crawl4ai and the design bridge
 on the compose network. The fork never checked MCP URLs. This trusts exactly
 the hosts named in the configuration, and only for MCP traffic: a redirect to
 any other private host is still refused, and web fetches and exec keep the

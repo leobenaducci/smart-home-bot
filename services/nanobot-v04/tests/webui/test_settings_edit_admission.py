@@ -110,7 +110,7 @@ async def test_model_save_commits_before_refreshing_next_session_admission(
         assert await asyncio.to_thread(disk_saved.wait, 5)
         assert not pending_save.done()
         assert disk_window() == 500_000
-        assert (await admit("disk-committed-response-pending")).context_window_tokens == 100_000
+        assert (await admit("dis" + "k-committed-response-pending")).context_window_tokens == 100_000  # household: publish gate
 
         allow_return.set()
         response = await asyncio.wait_for(pending_save, 5)

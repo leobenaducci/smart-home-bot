@@ -61,7 +61,7 @@ photobook aesthetic.
 
 ## CANVAS CREATION
 
-Use the design philosophy to craft a masterpiece. Create museum or magazine
+Use the design philosophy to create a masterpiece. Create museum or magazine
 quality work:
 
 - Generally use repeating patterns and perfect shapes

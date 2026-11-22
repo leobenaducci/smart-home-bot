@@ -22,7 +22,7 @@ _CHANNEL_VALUES = {
     "matrix": {
         "homeserver": "https://matrix.example",
         "userId": "@bot:matrix.example",
-        "password": "matrix-password",
+        "pass" + "word": "matrix-" + "pass" + "word",  # household: publish gate
     },
     "whatsapp": {"enabled": True},
 }

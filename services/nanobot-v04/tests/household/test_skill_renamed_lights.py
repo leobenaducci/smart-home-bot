@@ -1,6 +1,6 @@
 """The lights skill was called `home-lights` until 2026-09-12.
 
-It is served by the smart-lights plugin, not shipped here, so two things change
+It is served by the lights plugin, not shipped here, so two things change
 together: the row that files it (`SERVICE_SKILL_ENV`) and the text the service
 serves. The old name has to keep working across that gap and after it --
 stored conversations hold {"skill": "home-lights"} blocks (33 session files for

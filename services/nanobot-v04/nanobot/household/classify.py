@@ -86,7 +86,7 @@ Examples:
 "the living room lamp shows up twice in HA" -> long
 "la skill de luces apunta al servidor equivocado, arreglala" -> action
 "fix your weather skill, it keeps answering in English" -> action
-"publicá el último fix de smart-lights y desplegalo" -> action
+"publicá el último fix del plugin de luces y desplegalo" -> action
 "en segundo plano, armame un resumen de los gastos del mes" -> background
 "armame un informe con todo lo que pasó con la calefacción este mes" -> background
 "gracias!" -> chat

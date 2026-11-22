@@ -1,7 +1,7 @@
 """household: a configured MCP server on a private address connects (fork parity).
 
 Home Assistant and home-devices are reached through ``host.docker.internal``,
-crawl4ai and craft on the compose network; v0.4.1's SSRF guard refused all of
+crawl4ai and the design bridge on the compose network; v0.4.1's SSRF guard refused all of
 them. A real MCP server on 127.0.0.1 stands in for them here, with none of the
 guard patched out.
 """

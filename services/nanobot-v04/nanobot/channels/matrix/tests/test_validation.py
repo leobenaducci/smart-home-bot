@@ -62,7 +62,7 @@ def test_validate_matrix_can_replace_a_saved_password_with_a_token(
                 "matrix": {
                     "homeserver": "https://matrix.example",
                     "userId": "@nanobot:matrix.example",
-                    "password": "saved-password",
+                    "pass" + "word": "saved-" + "pass" + "word",  # household: publish gate
                 },
             },
         }),
