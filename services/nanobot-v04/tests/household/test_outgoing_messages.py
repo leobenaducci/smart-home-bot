@@ -7,6 +7,8 @@ where upstream adds neither rule.
 
 from __future__ import annotations
 
+import pytest
+
 from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 from nanobot.providers.registry import find_by_name
 
@@ -56,3 +58,22 @@ def test_earlier_turns_reasoning_is_emptied_and_the_current_turn_keeps_its(monke
     earlier, _, now = sent
     assert earlier["reasoning_content"] == ""             # key kept, text gone
     assert now["reasoning_content"] == "which bulb?"
+
+
+@pytest.mark.parametrize("spec_name,sent", [("ollama_text", "none"), ("ollama_cloud", "none"), ("nanogpt", None)])
+def test_effort_none_reaches_ollama_and_only_ollama(monkeypatch, spec_name, sent):
+    """The classifier, heartbeat and event profiles run gemma on Ollama with
+    effort "none"; dropped, the model thinks through its whole 80-token budget
+    and the classifier reads an empty answer."""
+    monkeypatch.setenv("NANOBOT_HOUSEHOLD", "1")
+    from types import SimpleNamespace
+
+    from nanobot.household.provider_specs import household_dynamic_spec
+
+    cfg = SimpleNamespace(api_base="http://host.docker.internal:11437/v1")
+    spec = find_by_name(spec_name) or household_dynamic_spec(spec_name, cfg)
+    provider = OpenAICompatProvider(api_key="k", api_base=cfg.api_base,
+                                    default_model="gemma4:e4b", spec=spec)
+    kwargs = provider._build_kwargs(messages=[{"role": "user", "content": "hi"}], tools=None, model=None,
+                                    max_tokens=80, temperature=0.0, reasoning_effort="none", tool_choice=None)
+    assert kwargs.get("reasoning_effort") == sent

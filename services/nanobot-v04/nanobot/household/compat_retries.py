@@ -156,3 +156,9 @@ def household_on() -> bool:
     from nanobot.household.skill_roots import household_enabled
 
     return household_enabled()
+
+
+def sends_effort_none(spec: Any) -> bool:
+    """An Ollama server (local or ollama.com) given reasoning_effort "none"."""
+    name = getattr(spec, "name", "") or ""
+    return household_on() and (name == "ollama" or name.startswith("ollama_"))

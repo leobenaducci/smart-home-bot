@@ -15,10 +15,13 @@ The fork learned an outage once for the whole house:
 candidate inside a window answers a synthetic transient error at once, which
 upstream's own rules treat as "try the next one". A candidate that failed
 with an outage-shaped error opens its window as soon as another candidate
-answers in its place (the fork's rule: a rescue is what tells a broken model
-from everything being down), or after ``FAILURE_THRESHOLD`` such failures in a
-row when nothing rescues it. When every candidate is inside a window the windows are ignored for
-that request -- a slow answer beats none.
+answers in its place -- the fork's rule, and only that: a rescue is what tells
+a broken model from everything being down. When nothing rescues it, no window
+opens (an earlier version opened one after three failures in a row; in a
+mixed fleet that marked a model down in the file the fork's members read, on
+evidence the fork treats as "the gateway is down"). When every candidate is
+inside a window the windows are ignored for that request -- a slow answer
+beats none.
 
 Detours (A11, fork ``_serving_route``): while the admin page lends a server's
 card to a benchmark it writes ``model-detours.json`` (``DetourStore``), and a
@@ -108,10 +111,8 @@ def record(gateway: str, model: str, response: LLMResponse) -> None:
         "authentication", "oauth_auth_required",
     ):
         return  # request-shaped or credential problems are not an outage of the model
+    # Counted for /status-style diagnostics only; a window opens on a rescue.
     _FAILURES[key] = _FAILURES.get(key, 0) + 1
-    if _FAILURES[key] >= FAILURE_THRESHOLD:
-        _FAILURES.pop(key, None)
-        mark_down(gateway, model)
 
 
 # Fork providers/base.py, measured 2026-09-02: a retired model, a parameter one

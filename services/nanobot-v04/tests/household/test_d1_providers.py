@@ -282,3 +282,18 @@ async def test_an_ordinary_bad_request_is_still_the_callers():
                                                 [ModelPresetConfig(model="qwen")],
                                                 lambda _: _Down("x", "http://x", fail=False))
     assert (await wrapper.chat(messages=[])).finish_reason == "error"
+
+
+@pytest.mark.asyncio
+async def test_when_nothing_rescues_no_window_opens():
+    """Fork rule: if every candidate errors, the gateway is down, which says
+    nothing about which model is broken; marking one down would also reach the
+    fork's members through the shared file."""
+    primary = _Down("ollama_text", "http://host.docker.internal:11437/v1", fail=True)
+    backup = _Down("ollama_cloud", "https://ollama.com/v1", fail=True)
+    wrapper = outages.HouseholdFallbackProvider(primary, [ModelPresetConfig(model="qwen", provider="ollama_cloud")],
+                                                lambda _: backup)
+    for _ in range(5):
+        assert (await wrapper.chat(messages=[])).finish_reason == "error"
+    assert outages.remaining("http://host.docker.internal:11437/v1", "main-model") == 0
+    assert outages.remaining("https://ollama.com/v1", "qwen") == 0

@@ -973,6 +973,14 @@ class OpenAICompatProvider(LLMProvider):
             wire_effort = None
         elif wire_effort and semantic_effort != "none":
             kwargs["reasoning_effort"] = wire_effort
+        # household: Ollama honours reasoning_effort "none" by not thinking at
+        # all (measured: 433 ms and an answer, against 1.3 s of thinking and an
+        # empty reply in 80 tokens). Upstream drops "none", so the classifier,
+        # the heartbeat and the event profiles thought anyway; the fork sent it.
+        from nanobot.household.compat_retries import sends_effort_none
+
+        if not strip_effort and semantic_effort == "none" and sends_effort_none(spec):
+            kwargs["reasoning_effort"] = "none"
 
         # Only send thinking controls when reasoning_effort is explicit so
         # omitting the config preserves each provider's default.
