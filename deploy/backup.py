@@ -370,6 +370,9 @@ def entries(cfg: dict, include_bulk: bool = False) -> list[dict]:
             # both false and pointless.
             "skip_dirs": list(st.get("skip_dirs") or []),
             "skip_globs": list(st.get("skip_globs") or []),
+            # SQLite databases under this path are copied with the backup API
+            # rather than as files (_sqlite_snapshots).
+            "sqlite_backup": bool(st.get("sqlite_backup")),
             "stored_as": names[(service, st["path"])],
             "db_container": st.get("db_container"),
             "db_user": st.get("db_user"), "db_name": st.get("db_name"),
@@ -417,6 +420,58 @@ def _unreadable(exc: Exception) -> list[str]:
         return out
     name = getattr(exc, "filename", None)
     return [str(name)] if name else []
+
+
+def _sqlite_snapshots(src: Path, dest: Path) -> int:
+    """Replace every copied SQLite database under *dest* with an online backup.
+
+    A file copy of a live SQLite database is not a backup of it. The rebased
+    assistant keeps its sessions in one (WAL mode): recent commits sit in the
+    `-wal` file until a checkpoint, and three files copied one after another
+    can be torn. `sqlite3`'s backup API reads a consistent snapshot through the
+    database's own locking while the assistant keeps writing; the `-wal` and
+    `-shm` copies are then dropped, since the snapshot already contains them.
+
+    Opt-in per state entry (`sqlite_backup: true`) and local only: a remote
+    role has no Python on the far side to run it, and keeps the file copy.
+    Returns how many databases were snapshotted.
+    """
+    import sqlite3
+
+    if not src.is_dir() or not dest.is_dir():
+        return 0
+    done = 0
+    for copied in list(dest.rglob("*")):
+        if not copied.is_file() or copied.name.endswith(("-wal", "-shm", "-journal")):
+            continue
+        try:
+            with open(copied, "rb") as fh:
+                if fh.read(16) != b"SQLite format 3\x00":
+                    continue
+        except OSError:
+            continue
+        live = src / copied.relative_to(dest)
+        if not live.is_file():
+            continue
+        tmp = copied.with_name(copied.name + ".snapshot")
+        source = sqlite3.connect(f"file:{live}?mode=ro", uri=True, timeout=30)
+        try:
+            target = sqlite3.connect(tmp)
+            try:
+                source.backup(target)
+                # One self-contained file in the archive: a WAL-mode copy
+                # would grow `-wal`/`-shm` beside it the first time anything
+                # opened it. The live database keeps its own mode.
+                target.execute("PRAGMA journal_mode = DELETE")
+            finally:
+                target.close()
+        finally:
+            source.close()
+        os.replace(tmp, copied)
+        for side in ("-wal", "-shm"):
+            copied.with_name(copied.name + side).unlink(missing_ok=True)
+        done += 1
+    return done
 
 
 def _copy_entry(entry: dict, into: Path, targets: dict) -> dict:
@@ -513,6 +568,8 @@ def _copy_entry(entry: dict, into: Path, targets: dict) -> dict:
     # Measured on what actually arrived, not on the source: for a remote role
     # the source is not on this filesystem to stat, and the size that matters
     # to `verify` is the size of the copy in the archive.
+    if entry.get("sqlite_backup") and target.is_local:
+        _sqlite_snapshots(src, dest)
     total = (dest.stat().st_size if dest.is_file()
              else sum(f.stat().st_size for f in dest.rglob("*") if f.is_file()))
     return {"path": entry["path"], "stored": entry["stored_as"],
@@ -876,6 +933,8 @@ def _mirror_entry(entry: dict, into: Path, targets: dict) -> dict:
         return {"path": entry["path"], "status": "failed",
                 "detail": (detail[-1] if detail else "rsync failed")[:200]}
 
+    if entry.get("sqlite_backup") and target.is_local:
+        _sqlite_snapshots(src, dest)
     total = (dest.stat().st_size if dest.is_file()
              else sum(f.stat().st_size for f in dest.rglob("*") if f.is_file()))
     return {"path": entry["path"], "stored": entry["stored_as"],

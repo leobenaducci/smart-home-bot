@@ -2782,6 +2782,18 @@ def derive_service_token(shared_secret: str, service: str) -> str:
         f"{shared_secret}:svc:{service}".encode()).hexdigest()
 
 
+def house_image(cfg: dict) -> str:
+    """`services.nanobot-house.nanobot_image`, checked like a member's."""
+    members = _generator("compose_members")
+    DEFAULT_NANOBOT_IMAGE, NANOBOT_IMAGES = members.DEFAULT_NANOBOT_IMAGE, members.NANOBOT_IMAGES
+    house = ((cfg.get("services") or {}).get("nanobot-house") or {})
+    image = str(house.get("nanobot_image") or "").strip() or DEFAULT_NANOBOT_IMAGE
+    if image not in NANOBOT_IMAGES:
+        raise ValueError(f"services.nanobot-house.nanobot_image must be one of "
+                         f"{', '.join(NANOBOT_IMAGES)}, not {image!r}")
+    return image
+
+
 def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
                 contributions: dict | None = None) -> dict[str, str]:
     """Build the complete environment one unit's compose file will interpolate.
@@ -3015,6 +3027,10 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
     # than root, or the next deploy cannot read what they wrote.
     env.setdefault("UID", str(os.getuid()))
     env.setdefault("GID", str(os.getgid()))
+    # The house assistant's image, read by docker-compose.house.yml: the
+    # fork's unless `services.nanobot-house.nanobot_image` names the rebased
+    # one (the house switches last, after every member).
+    env["NANOBOT_HOUSE_IMAGE"] = house_image(cfg)
 
     # HOST_HUB / HOST_COMPUTE / HOST_STORAGE used to be exported here, under
     # the comment "so a compose file can pin extra_hosts without a literal".
@@ -6650,7 +6666,27 @@ def restore_image_tags(target, before: dict[str, str | None], remote_dir: str, o
             out.warn(f"could not put {tag} back: {((r.stderr or r.stdout) or '').strip()[:200]}")
 
 
-def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out) -> None:
+def _image_build_options(unit: dict, tag: str) -> dict:
+    """The `image_build` entry for *tag*, when it is a dict: `dockerfile`,
+    `only_if_used`. Kept beside `unit_image_specs` rather than widening its
+    tuple, which the tag-restore path also reads."""
+    builds = unit.get("image_build")
+    for b in (builds if isinstance(builds, list) else ([builds] if builds else [])):
+        if isinstance(b, dict) and b.get("tag") == tag:
+            return b
+    return {}
+
+
+def nanobot_images_in_use(cfg: dict) -> set[str]:
+    """Every assistant image a member or the house is set to run."""
+    members = _generator("compose_members")
+    used = {members.member_image(cfg, mid) for mid in member_ids(cfg)}
+    used.add(house_image(cfg))
+    return used
+
+
+def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out,
+                      cfg: dict | None = None) -> None:
     # One image, built by name, before compose runs. Not the same thing as
     # `build: true`: that maps to `docker compose build`, which builds what
     # a *service* declares. These compose files deliberately declare no
@@ -6664,13 +6700,23 @@ def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out) -> No
     # a runtime image and the test stage beside it. One entry stays one
     # entry; nothing that declared a single image has to change.
     for tag, context, stage in unit_image_specs(unit):
+        options = _image_build_options(unit, tag)
+        # An image only some members run (the rebased assistant while it is
+        # being rolled out) is built only while somebody is set to run it:
+        # minutes of build on every deploy for an image nobody starts is the
+        # cost the one-image rule above exists to avoid.
+        if options.get("only_if_used") and cfg is not None and tag not in nanobot_images_in_use(cfg):
+            out.sub(f"image {tag}: no member or house runs it, not built")
+            continue
         # A named stage, for a Dockerfile that keeps its test tooling out
         # of the runtime image. Without it the only way to run a service's
         # own suite against the thing being deployed is to ship pytest to
         # the house.
         staged = f"--target {shlex.quote(stage)} " if stage else ""
+        dockerfile = (f"-f {shlex.quote(context.rstrip('/') + '/' + options['dockerfile'])} "
+                      if options.get("dockerfile") else "")
         target.run(
-            f"docker build {staged}-t {shlex.quote(tag)} {shlex.quote(context)}",
+            f"docker build {staged}{dockerfile}-t {shlex.quote(tag)} {shlex.quote(context)}",
             cwd=remote_dir, env=env)
         out.ok(f"image {tag} built")
 
@@ -7442,7 +7488,7 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
         # a red suite, a second image failing to build, `compose build`
         # failing, the test run itself raising -- puts the tags back.
         try:
-            build_unit_images(unit, target, remote_dir, env, out)
+            build_unit_images(unit, target, remote_dir, env, out, cfg=cfg)
 
             # Tests run against the built image before it replaces the running
             # one, so a red run stops the house getting the change rather than

@@ -731,6 +731,38 @@ except _bk.D.DeployError as _exc:
     check("  and the refusal names the live path it would have eaten",
           "paths.state" in str(_exc) and "/mnt/d/state" in str(_exc), str(_exc))
 
+print("\na live SQLite database is snapshotted, not copied as files")
+# The rebased assistant keeps its sessions in SQLite with a write-ahead log.
+# Rows committed since the last checkpoint live only in the `-wal` file, so a
+# copy of the main file alone loses them.
+import sqlite3 as _sq  # noqa: E402
+
+_live = tmp / "sqlite-live/user1/sessions"
+_live.mkdir(parents=True)
+_db = _sq.connect(_live / "sessions.db")
+_db.execute("PRAGMA journal_mode = WAL")
+_db.execute("PRAGMA wal_autocheckpoint = 0")
+_db.execute("CREATE TABLE turns (text TEXT)")
+_db.executemany("INSERT INTO turns VALUES (?)", [("Turn on Oficina Tomi",), ("Luz Paula off",)])
+_db.commit()                      # committed, still in the -wal, connection kept open
+_copy = tmp / "sqlite-copy/user1/sessions"
+_copy.mkdir(parents=True)
+shutil.copy2(_live / "sessions.db", _copy / "sessions.db")   # what a file copy that misses the WAL gets
+(_copy / "notes.txt").write_text("not a database", encoding="utf-8")
+_n = _bk._sqlite_snapshots(tmp / "sqlite-live", tmp / "sqlite-copy")
+_rows = _sq.connect(_copy / "sessions.db").execute("SELECT count(*) FROM turns").fetchone()[0]
+check("  the snapshot holds the rows still in the write-ahead log", _rows == 2, _rows)
+check("  one database snapshotted, the text file left alone",
+      _n == 1 and (_copy / "notes.txt").read_text() == "not a database", _n)
+check("  and no stale -wal or -shm rides along",
+      not (_copy / "sessions.db-wal").exists() and not (_copy / "sessions.db-shm").exists())
+_db.close()
+_man = _bk.D.load_yaml(_bk.D.MANIFEST)
+_nb_state = [st for u in _man["services"]["nanobot"]["units"] for st in (u.get("state") or [])
+             if "{paths.state}/nanobot" == st.get("path")]
+check("  the assistants' state asks for it",
+      bool(_nb_state) and all(st.get("sqlite_backup") for st in _nb_state), _nb_state)
+
 shutil.rmtree(tmp, ignore_errors=True)
 
 print()

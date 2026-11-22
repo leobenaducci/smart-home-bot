@@ -560,7 +560,13 @@ services:
         # at the end of the Dockerfile without this would have quietly made the
         # coding binary part of every assistant's image -- the one thing the
         # separate image exists to prevent, undone by a default.
-        image_build: {tag: alfred-nanobot:latest, context: ., target: runtime}
+        image_build:
+          - {tag: alfred-nanobot:latest, context: ., target: runtime}
+          # The rebased assistant (upstream nanobot 0.4.x + nanobot/household),
+          # for the members whose `nanobot_image` names it. Its own tree and
+          # Dockerfile, never this tag; built only while somebody runs it.
+          - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
+             dockerfile: docker/household/Dockerfile, only_if_used: true}
         # Shared with the `broker` unit below, which is a separate compose
         # project and so has a default network of its own. The assistants dial
         # `http://code-broker:8910` by name, so both join this one instead.
@@ -771,8 +777,10 @@ services:
           # It is named in each archive's `not_archived` meta as something
           # the archive is not, exactly as the camera recordings and the
           # scanned documents are.
+          # `sqlite_backup`: the rebased assistant keeps sessions in SQLite
+          # (WAL), which a file copy can tear; the backup snapshots it instead.
           - { path: "{paths.state}/nanobot", mount: "/home/nanobot/.nanobot (one subdirectory per member)", env: NANOBOT_STATE_DIR,
-              bulk_dirs: [media] }
+              bulk_dirs: [media], sqlite_backup: true }
           - { path: "{paths.config}/nanobot", mount: /nanobot-config-rw, env: NANOBOT_CONFIG_DIR }
           # Where the code broker checks projects out, one subdirectory per
           # member. Under paths.state and never inside the deploy tree: the
@@ -908,7 +916,12 @@ services:
         # The same image as the per-member instances, and the same reason it
         # cannot come from `build: true`. Docker's layer cache makes building
         # it here cheap when the other unit already did.
-        image_build: {tag: alfred-nanobot:latest, context: ., target: runtime}
+        image_build:
+          - {tag: alfred-nanobot:latest, context: ., target: runtime}
+          # The rebased assistant, while `services.nanobot-house.nanobot_image`
+          # (or a member) names it; see the multiuser unit.
+          - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
+             dockerfile: docker/household/Dockerfile, only_if_used: true}
         # Where a plugin's `floor:` skill is staged. Builtin, not workspace:
         # SkillsLoader checks workspace, then remote, then builtin, so a floor
         # copy in the workspace would permanently beat the live one the service
@@ -1038,7 +1051,8 @@ services:
           OLLAMA_VISION_URL: "{derived.ollama_vision_url}"
           OLLAMA_CONTEXT_LENGTH: "{derived.ollama_local_context}"
         state:
-          - { path: "{paths.state}/nanobot-house", mount: /home/nanobot/.nanobot, env: NANOBOT_STATE_DIR }
+          - { path: "{paths.state}/nanobot-house", mount: /home/nanobot/.nanobot, env: NANOBOT_STATE_DIR,
+              sqlite_backup: true }
           # One JSON file of model-outage deadlines, read and written by every
           # assistant process on the box -- this one and the five members, whose
           # unit declares the same path. The
