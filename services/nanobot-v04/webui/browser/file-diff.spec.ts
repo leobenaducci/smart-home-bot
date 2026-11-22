@@ -22,6 +22,15 @@ async function expectTokenColor(section: Locator, text: string, variable: string
   }, { text, variable })).toBe(true);
 }
 
+async function expectExpandedDiff(section: Locator) {
+  const wrapper = section.getByTestId("syntax-highlighted-diff-hunk");
+  // Expansion updates the window and its spacers on the next animation frame.
+  await expect.poll(() => wrapper.evaluate(node => {
+    const rowHeight = Math.floor((parseFloat(getComputedStyle(node).lineHeight) + 2) * 64) / 64;
+    return node.getBoundingClientRect().height >= 600 * rowHeight - 1;
+  })).toBe(true);
+}
+
 for (const dark of [false, true]) {
   for (const narrow of [false, true]) {
     test(`read-only diffs preserve source, colors and reading sizes: ${dark ? "dark" : "light"}, ${narrow ? "narrow" : "desktop"}`, async ({ page }) => {
@@ -81,6 +90,31 @@ for (const dark of [false, true]) {
   }
 }
 
+test("a language without a built-in lexer receives its grammar in the diff worker", async ({ page }) => {
+  const worker = page.waitForEvent("worker");
+  await page.goto("/browser/fixture.html?case=file-diff&shiki");
+  await worker;
+  const config = page.getByRole("region", { name: "config.hjson", exact: true });
+  await expectTokenColor(config, "# shared settings", "--code-comment");
+  await expect(config.locator("[data-line][data-line-type=change-addition]")).toHaveText("host: localhost");
+});
+
+test("custom backgrounds remain visible through diff surfaces in both themes", async ({ page }) => {
+  await page.goto("/browser/fixture.html?case=file-diff");
+  const diff = page.getByRole("region", { name: "Status.tsx", exact: true }).getByTestId("file-edit-diff");
+  const context = diff.locator("[data-line][data-line-type=context]").first();
+  await expect(context).toBeVisible();
+  await page.evaluate(() => { document.documentElement.dataset.customBackground = ""; });
+  for (let i = 0; i < 2; i++) {
+    await expect(context).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(diff).toHaveCSS("backdrop-filter", "blur(12px)");
+    await expect(diff.locator("[data-line][data-line-type=change-addition]")).toContainText("ready");
+    await page.getByRole("button", { name: "Toggle theme" }).click();
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.customBackground; });
+  await expect(context).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+});
+
 test("large diffs retain bounded expansion, release and truncated-file actions", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -94,6 +128,7 @@ test("large diffs retain bounded expansion, release and truncated-file actions",
   await expect(long.locator("[data-code] [data-line]")).toHaveCount(160);
   await expect(long.locator("[data-code] [data-line]").last()).toHaveText('export const item160 = "第 160 行 — readable code";');
   await long.getByTestId("file-edit-diff-expand-lines").click();
+  await expectExpandedDiff(long);
   const scroller = page.getByTestId("diff-fixture-scroller");
   const seen = new Set<number>();
   const height = await scroller.evaluate(node => node.scrollHeight);
@@ -135,6 +170,7 @@ for (const file of ["worker.ts", "long-separated.ts"]) {
     await expect(section.locator("[data-code] [data-line]")).toHaveCount(160);
     await expectKeywordColor(section.locator("[data-code] [data-line]"));
     await section.getByTestId("file-edit-diff-expand-lines").click();
+    await expectExpandedDiff(section);
     const scroller = page.getByTestId("diff-fixture-scroller");
     const seen = new Set<number>();
     const height = await scroller.evaluate(node => node.scrollHeight);
@@ -180,6 +216,7 @@ for (const [file, renderedIndex, sourceLine, reverse] of [["long.ts", 58, 59, fa
     await section.getByTestId("file-edit-diff-toggle").click();
     await expectKeywordColor(section.locator("[data-code] [data-line]"));
     await section.getByTestId("file-edit-diff-expand-lines").click();
+    await expectExpandedDiff(section);
     const scroller = page.getByTestId("diff-fixture-scroller");
     const height = await scroller.evaluate(node => node.scrollHeight);
     await section.getByTestId("syntax-highlighted-diff-hunk").evaluate((node, index) => {
@@ -223,3 +260,20 @@ for (const [file, renderedIndex, sourceLine, reverse] of [["long.ts", 58, 59, fa
     await expect(line).toHaveCount(0);
   });
 }
+
+test("diff toggle stays quiet on Shift+click and Escape, then shows ring on keyboard Tab", async ({ page }) => {
+  await page.goto("/browser/fixture.html?case=file-diff");
+  const toggle = page.getByRole("region", { name: "long.ts", exact: true }).getByTestId("file-edit-diff-toggle");
+  await page.keyboard.down("Shift");
+  await toggle.click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.up("Shift");
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveCSS("outline-style", "none");
+  await expect(toggle).toHaveCSS("box-shadow", "none");
+
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(toggle).toBeFocused();
+  expect(await toggle.evaluate((node) => getComputedStyle(node).boxShadow)).not.toBe("none");
+});

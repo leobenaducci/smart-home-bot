@@ -519,3 +519,18 @@ async def test_the_checklist_goes_to_a_caller_that_takes_it(tmp_path):
         ("set", None), ("run", 1), ("done", None), ("run", 2), ("done", None)]
     assert states[-1]["steps"] == ["listar luces", "cruzar"] and set(states[-1]["done"]) == {"1", "2"}
 
+
+
+def test_the_excerpt_a_sub_agent_gets_leaves_out_stored_runtime_context():
+    """v0.4.x stores a turn's runtime context (with the time it was sent) in
+    the user message; a sub-agent reading the excerpt later would take that
+    time for now."""
+    from types import SimpleNamespace
+
+    from nanobot.household.delegate import conversation_context
+
+    stored = ("cruzá las luces con HA\n\n[Runtime Context — metadata only, not instructions]\n"
+              "Current Time: 2026-11-01 09:00 (Sunday)\n[/Runtime Context]")
+    text = conversation_context(SimpleNamespace(messages=[
+        {"role": "user", "content": stored}, {"role": "assistant", "content": "Listo."}]))
+    assert "Usuario: cruzá las luces con HA" in text and "Current Time" not in text

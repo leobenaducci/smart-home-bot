@@ -63,6 +63,18 @@ def task_text(content: Any) -> str:
     return (text[cut + len(RUNTIME_CONTEXT_END):] if cut >= 0 else text).strip()
 
 
+def _without_runtime_context(text: str) -> str:
+    """The message as the person wrote it: v0.4.x stores each turn's runtime
+    context (workspace, the time it was sent) inside the user message, and a
+    sub-agent reading this later would take that time for now."""
+    import re
+
+    from nanobot.runtime_context import RUNTIME_CONTEXT_END, RUNTIME_CONTEXT_TAG
+
+    pattern = re.escape(RUNTIME_CONTEXT_TAG) + r".*?" + re.escape(RUNTIME_CONTEXT_END)
+    return re.sub(pattern, "", text, flags=re.S).strip()
+
+
 def conversation_context(session: Any, *, turns: int = CONTEXT_TURNS,
                          chars: int = CONTEXT_CHARS) -> str | None:
     """The last few things said, newest kept, as a note for the sub-agent.
@@ -79,7 +91,10 @@ def conversation_context(session: Any, *, turns: int = CONTEXT_TURNS,
         content = msg.get("content")
         if not isinstance(content, str) or not content.strip():
             continue
-        line = f"{'Usuario' if role == 'user' else 'Alfred'}: {content.strip()}"
+        content = _without_runtime_context(content)
+        if not content:
+            continue
+        line = f"{'Usuario' if role == 'user' else 'Alfred'}: {content}"
         total += len(line)
         if total > chars or len(lines) >= turns:
             break

@@ -57,3 +57,13 @@ def test_restored_defaults_item9(monkeypatch):
     cfg.gateway.health_ok_while_starting = False
     assert not health_ok_while_starting(cfg)
     assert _sanitize_mcp_tool_name("mcp_ha_light__turn_on") == "mcp_ha_light__turn_on"
+
+
+def test_the_api_block_survives_v042_retiring_it(monkeypatch):
+    """Every member's config sets api.timeout for the household API server,
+    which the gateway mounts; v0.4.2 strips the block as a legacy leftover."""
+    from nanobot.config.schema import Config
+
+    monkeypatch.setenv("NANOBOT_HOUSEHOLD", "1")
+    cfg = Config.model_validate({"api": {"timeout": 300}})
+    assert cfg.api.timeout == 300

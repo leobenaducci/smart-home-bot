@@ -74,8 +74,9 @@ class AgentProgressHook(AgentHook):
                 resuming=resuming, merge_next=context.stream_continues_current_message,
                 trim_to=trim_to(context.response),
             ))
-        self._stream_buf = ""
-        self._think_extractor.reset()
+        if not context.stream_continues_current_message:
+            self._stream_buf = ""
+            self._think_extractor.reset()
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         logger.debug(

@@ -14,7 +14,7 @@ Stable is the default feed; Preview is opt-in. Both use one update flow and requ
 
 These are three publication lines, not three build systems. Feature and patch releases both use `channel=stable`; dev uses the existing `preview` channel. A patch does not require a Preview first or a complete wiki and promotional refresh. Preserve necessary tests and release checks, and reuse unaffected evidence under the [verification guidance](../.agent/workflow.md).
 
-Implementation status: **Verify Release Candidate** supports manual preparation and opt-in daily Preview preparation. It generates draft notes and reuses the same five-platform build and acceptance jobs. It does not publish. Automatic prerelease upload, signing handoff and catalogue advancement are not connected yet; PyPI publication remains manual. Daily preparation is disabled by default. Do not describe this first step as an available daily public release channel.
+Implementation status: **Verify Release Candidate** supports manual preparation and opt-in daily Preview preparation. It generates draft notes and reuses the same five-platform build and acceptance jobs. It does not publish. Automatic prerelease upload, signing handoff and catalogue advancement are not connected yet; PyPI publication requires a separate manual workflow after its trusted publisher is configured. Daily preparation is disabled by default. Do not describe this first step as an available daily public release channel.
 
 Record the requested channel, exact source and candidate identity. Unchanged source, failed checks, missing assets, incomplete acceptance or absent approval leaves the last verified release in place. Scheduled execution can be delayed; there is no promise of a new release every day. Acceptance must cover the supported stable baseline and an earlier Preview, including skipped previews, not just the previous build.
 
@@ -82,9 +82,7 @@ Retain legacy model JSONL, WebUI JSONL / segments and per-feature proxy migratio
 
 ### OpenAI API selector compatibility window
 
-The temporary `providers.openai.apiType` / `api_type` conversion lasts exactly two consecutive releases: the first containing `nanobot/config/provider_api_migration.py` and the next. Record the first and final supported tags in release notes. Config saves write `api`; there is no legacy runtime selector.
-
-Before the third release, remove `provider_api_migration.py`, its import, `ProvidersConfig._migrate_legacy_api_type`, the legacy settings query conversion in `nanobot/webui/settings_models.py` and migration-specific tests. Update configuration docs and release notes to require the current format. Keep current-format routing, settings and persistence regressions.
+v0.4.0 and v0.4.1 included automatic conversion of `providers.openai.apiType` / `api_type`. The first release without conversion must note in its release notes that users can save old configuration with v0.4.1 and must update launcher environment variables separately.
 
 ### TUI preflight without a release tag
 
@@ -129,7 +127,20 @@ Final releases also require `release-manifest.json` for `stable`. Run `scripts.r
 
 For same-build candidate acceptance on all five native targets, run **Verify Release Candidate** at the exact final-version ref with `channel=stable`, `next_stable` equal to that declared version and `retain_installable=true`. Stable preparation copies the exact commit without changing version declarations or creating a Preview commit; it rejects mismatched versions and existing stable tags. The default `channel=preview` retains the version-only Preview preparation. Both modes are read-only preparation, require **Candidate required** and retain accepted files for one day; neither publishes a tag, release, PyPI package or feed. Download and independently preserve the accepted handoff before expiry, then complete remaining interactive and real historical-owner acceptance against that same manifest.
 
-## Publish, with maintainer approval
+## Publish a stable package
+
+One maintainer publishes the GitHub Release. GitHub Actions verifies and uploads the accepted distributions to PyPI via Trusted Publishing. Publishing installable packages does not enable application-managed updates.
+
+1. Complete candidate acceptance on `main`. Preserve the original files and their manifest, and use the accepted commit for `vX.Y.Z`. Never move or reuse a published tag.
+2. Create a draft with the five platform wheels, sdist, five TUI archives, their checksums and the original `release-manifest.json`. Use the artifact set that passed acceptance, without rebuilding any files under that release identity. If using **Publish Terminal UI** to rebuild, assemble new matching wheels and manifests and repeat candidate acceptance before publishing.
+3. Click **Publish release**. A stable publication starts **Validate published release for PyPI**, which starts **Publish accepted release to PyPI** on `main`. The publisher requires a matching CI manifest from a successful **Verify Release Candidate** run and a successful **Candidate required** job for that same attempt. It checks the tag, all public artifacts and the package index, then uploads only the five wheels and sdist. Prereleases and tag pushes alone do not publish Python packages.
+4. Verify clean installation from public PyPI, bundled WebUI and download-free TUI startup. Add the dated [Release Archive](./release-archive.md) entry and record the publication result. Only after GitHub and PyPI assets are public and verified should the wiki PR be merged; check affected localized routes. An update catalogue change is separate and requires the signature described below.
+
+### Configure Trusted Publishing
+
+Protect `main` and the publication workflows. In the `nanobot-ai` PyPI project's **Publishing** settings, bind `HKUDS/nanobot`, `publish-pypi.yml` and the `pypi` environment. Keep that GitHub environment restricted to `main`; the single-click path does not require an environment reviewer. During rollout, verify the publishing path with a separately configured TestPyPI trusted publisher (the same repository and workflow, environment `testpypi`) before removing a production reviewer requirement. Production does not use a long-lived token. The separate `release-approval` environment retains independent review.
+
+To rehearse or resume, use **Run workflow** on `main` with the already-published version and destination `testpypi` or `pypi`. If the human GitHub publication did not dispatch the upload, use the same manual workflow entry point. Use a new run, not **Re-run jobs**: a new run checks the index and uploads only missing files. If the original CI report has expired, automatic publication stops. Preserve the accepted bytes and their verification record; use the existing manual upload route for those same verified files when necessary. Never replace a published file or move its tag.
 
 ### Release approval proof
 
@@ -151,14 +162,7 @@ Review resolved dependencies; hashes are not malware review. Before the first re
 
 The proof authenticates release approval, not reproducible builds or harmless code. Compromised authorized workflows/reviewers, malicious source that passes review and compromised runtime dependencies remain risks. The signing lock does not lock runtime resolution, which retains the installation owner's policy. A reviewed runtime dependency inventory, public signed upgrade continuity and verified repository protection settings remain security-release gates; do not claim comprehensive supply-chain protection without them. The first installer and checksum source also need a trusted distribution channel.
 
-1. Complete pre-tag gates, then create and push exactly `vX.Y.Z`; never move or reuse a published tag.
-2. Create the matching GitHub Release. A tag push alone runs neither **Publish Terminal UI** nor PyPI publication.
-3. Attach five platform wheels, sdist, five TUI archives, their `.sha256` files and `release-manifest.json`. Confirm tag sources match the manifest and uploaded hashes match preflight. Complete approval proof before offering automatic updates; never upload a naked executable.
-4. If rebuilding via **Publish Terminal UI**, use `tag=vX.Y.Z` with compliance review confirmed. Wait for all five targets, recheck outputs, and assemble/recheck wheels and manifest from those exact archives. Never mix rebuilt archives with old wheel bytes/hashes; replacing public assets requires a new version.
-5. Make the release and complete artifact set public. Verify every file against the accepted manifest, including native fallback/source-install archives. Platform-wheel TUI startup must not need downloads.
-6. Upload only the checked `nanobot_ai-X.Y.Z.tar.gz` and five final wheels to PyPI, not the universal intermediate or stale shared `dist/` files. There is no automatic PyPI publication workflow.
-7. Verify clean PyPI installation, bundled WebUI and download-free TUI startup. After all public GitHub/PyPI files pass, advance `stable`, preserving Preview and withdrawals; check discovery for both subscriptions. Only then merge the wiki PR: its `main` deploys automatically. Confirm all localized `/docs/latest/` routes select the new version and old-version links still work.
-8. Add the dated [Release Archive](./release-archive.md) entry and record publication links/status. Feature releases can include a separate announcement; ordinary patches can use the generated notes with necessary additions. Complete any coordinated advisory and reporter notifications separately.
+Only after the signature, matching public release files and applicable public update checks are verified may the maintainer advance `stable` or `preview`. Preserve the other channel and withdrawals, and check discovery for both subscriptions. A package published without this proof remains available for manual installation, not application-managed updates.
 
 ## If a gate fails
 

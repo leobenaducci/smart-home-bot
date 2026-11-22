@@ -32,8 +32,8 @@ from nanobot.household import delegate
 from nanobot.config.paths import get_media_dir
 from nanobot.utils.helpers import safe_filename
 from nanobot.utils.media_decode import (
-    FileSizeExceeded as _FileSizeExceeded,
-    MAX_FILE_SIZE,
+    FileSizeExceededError as _FileSizeExceeded,
+    DEFAULT_MAX_BYTES as MAX_FILE_SIZE,
     save_base64_data_url as _save_base64_data_url,
 )
 from nanobot.household.debug_log import clear_errors, get_errors, log_error
@@ -198,6 +198,8 @@ _PACE_TICK_S = 0.05
 _STALL_PREAMBLE_CHARS = 200
 # Reasoning ticks reach the stall timer at most this often (fork loop.py).
 _ALIVE_INTERVAL_S = 3.0
+# Turns whose answer has been streamed and that are still saving it.
+_SETTLING: set[asyncio.Task] = set()
 # How long the end of a streamed answer waits for its final usage report. The
 # runner closes the stream and then reports that iteration's usage, normally in
 # the same millisecond; this only bounds a provider that never reports any.
@@ -959,6 +961,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         # So the getter outlives the tick, and only the lap that actually takes
         # an item clears it.
         getter: asyncio.Future | None = None
+        ended_normally = False
         try:
             while True:
                 now = time.monotonic()
@@ -1044,6 +1047,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                 # item that arrives while a model is thinking in silence.
                 last_activity = time.monotonic()
                 if item is None:
+                    ended_normally = True
                     break
                 if isinstance(item, tuple):
                     kind, value = item
@@ -1080,7 +1084,15 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
             # pending future nobody will await.
             if getter is not None:
                 getter.cancel()
-            task.cancel()
+            if ended_normally and not task.done():
+                # The answer has been read, but the turn has not saved it yet:
+                # the loop persists the turn after the runner returns, which is
+                # after the stream ends. Cancelling here lost the reply from the
+                # session history. Let it finish on its own.
+                _SETTLING.add(task)
+                task.add_done_callback(_SETTLING.discard)
+            else:
+                task.cancel()
             # Every exit from the loop above passes through here, including the
             # escalation branch's `return` — so the registry cannot accumulate
             # tasks that ended, and a later stop cannot aim at one of them.

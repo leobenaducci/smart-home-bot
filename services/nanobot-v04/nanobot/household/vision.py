@@ -155,6 +155,11 @@ def _ollama_native_chat_url(api_base: str | None) -> str | None:
 class DescribeImageTool(_FsTool):
     """Send an image to the vision model and return what it reports seeing."""
 
+    def _resolve(self, path: str) -> Path:
+        """A readable path under the request's workspace rules. v0.4.1 had this
+        on _FsTool; v0.4.2 moved it into WorkspaceFiles."""
+        return self._files._read_path(path)
+
     def __init__(
         self,
         provider: LLMProvider,

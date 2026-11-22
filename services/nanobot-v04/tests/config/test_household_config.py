@@ -39,7 +39,8 @@ def raw() -> dict:
     return json.loads(FIXTURE.read_text())
 
 
-def test_household_config_validates_and_keeps_every_key(raw: dict) -> None:
+def test_household_config_validates_and_keeps_every_key(raw: dict, monkeypatch) -> None:
+    monkeypatch.setenv("NANOBOT_HOUSEHOLD", "1")  # the image sets it; the api block depends on it
     cfg = Config.model_validate(raw)
     dumped = cfg.model_dump(by_alias=True, mode="json")
     have = {_norm(p) for p in _flat(dumped)}
