@@ -1,0 +1,351 @@
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+from openai.types.chat import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
+
+from nanobot.config.schema import ProvidersConfig
+from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+from nanobot.providers.registry import PROVIDERS, find_by_name
+
+
+def _mistral_provider(default_model: str = "mistral-medium-3-5") -> OpenAICompatProvider:
+    spec = find_by_name("mistral")
+    assert spec is not None
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        return OpenAICompatProvider(
+            api_key="test-key",
+            default_model=default_model,
+            spec=spec,
+        )
+
+
+def test_mistral_config_field_exists() -> None:
+    config = ProvidersConfig()
+    assert hasattr(config, "mistral")
+
+
+def test_mistral_provider_in_registry() -> None:
+    specs = {s.name: s for s in PROVIDERS}
+    assert "mistral" in specs
+
+    mistral = specs["mistral"]
+    assert mistral.env_key == "MISTRAL_API_KEY"
+    assert mistral.default_api_base == "https://api.mistral.ai/v1"
+
+
+def test_mistral_keyword_match_covers_model_families() -> None:
+    from nanobot.config.schema import Config
+
+    for model in (
+        "mistral-large-latest",
+        "magistral-medium-latest",
+        "ministral-8b-latest",
+        "codestral-latest",
+        "devstral-medium-latest",
+    ):
+        config = Config.model_validate({
+            "providers": {"mistral": {"apiKey": "test-key"}},
+            "agents": {"defaults": {"model": model}},
+        })
+        assert config.get_provider_name(model) == "mistral", model
+
+
+@pytest.mark.parametrize(
+    "model, effort",
+    [
+        pytest.param("mistral-medium-3-5", "low", id="low_remaps_to_none_omitted"),
+        pytest.param("mistral-vibe-cli-latest", "minimal", id="minimal_remaps_to_none_omitted"),
+    ],
+)
+def test_mistral_omits_low_reasoning_effort(model, effort) -> None:
+    p = _mistral_provider()
+    kwargs = p._build_kwargs(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        model=model,
+        max_tokens=64,
+        temperature=0.5,
+        reasoning_effort=effort,
+        tool_choice=None,
+    )
+    assert "reasoning_effort" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "effort",
+    [
+        pytest.param("medium", id="medium_remaps_to_high"),
+        pytest.param("high", id="high_passes_through"),
+    ],
+)
+def test_mistral_uses_high_reasoning_effort(effort) -> None:
+    p = _mistral_provider()
+    kwargs = p._build_kwargs(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        model="mistral-medium-3-5",
+        max_tokens=64,
+        temperature=0.5,
+        reasoning_effort=effort,
+        tool_choice=None,
+    )
+    assert kwargs["reasoning_effort"] == "high"
+
+
+def test_magistral_strips_reasoning_effort() -> None:
+    p = _mistral_provider()
+    for effort in ("low", "medium", "high", "minimal"):
+        kwargs = p._build_kwargs(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            model="magistral-medium-latest",
+            max_tokens=64,
+            temperature=0.5,
+            reasoning_effort=effort,
+            tool_choice=None,
+        )
+        assert "reasoning_effort" not in kwargs, effort
+
+
+def test_extract_thinking_content_from_mistral_response() -> None:
+    p = _mistral_provider()
+    response = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": [
+                                {"type": "text", "text": "Let me think..."}
+                            ],
+                            "closed": True,
+                        },
+                        {"type": "text", "text": "Final answer is 35."},
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    }
+    parsed = p._parse(response)
+    assert parsed.content == "Final answer is 35."
+    assert parsed.reasoning_content == "Let me think..."
+
+
+def test_extract_thinking_content_with_tool_calls() -> None:
+    p = _mistral_provider()
+    response = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "abc123def",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "Paris"}',
+                            },
+                        }
+                    ],
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": [
+                                {"type": "text", "text": "I should call get_weather."}
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    parsed = p._parse(response)
+    assert parsed.content in (None, "")
+    assert parsed.reasoning_content == "I should call get_weather."
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+    assert parsed.tool_calls[0].arguments == {"city": "Paris"}
+
+
+def test_thinking_content_only_for_mistral_spec() -> None:
+    other_spec = find_by_name("openai")
+    assert other_spec is not None
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        p = OpenAICompatProvider(
+            api_key="test-key",
+            default_model="gpt-4o",
+            spec=other_spec,
+        )
+
+    response = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": [{"type": "text", "text": "secret"}],
+                        },
+                        {"type": "text", "text": "hi"},
+                    ],
+                },
+            }
+        ],
+    }
+    parsed = p._parse(response)
+    assert parsed.content == "hi"
+    assert parsed.reasoning_content is None
+
+
+def test_streaming_thinking_chunks_become_reasoning() -> None:
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "content": [
+                            {
+                                "type": "thinking",
+                                "thinking": [{"type": "text", "text": "step 1 "}],
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "content": [
+                            {
+                                "type": "thinking",
+                                "thinking": [{"type": "text", "text": "step 2"}],
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {"content": "final"},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    ]
+    parsed = OpenAICompatProvider._parse_chunks(chunks)
+    assert parsed.content == "final"
+    assert parsed.reasoning_content == "step 1 step 2"
+
+
+def test_streaming_thinking_chunks_via_sdk_path() -> None:
+    """SDK chunks with list-shaped delta.content keep text and thinking separate.
+
+    Mistral's vibe-cli/medium-3-5 streams content as a list. The SDK accepts
+    it through non-strict construction even though its schema declares str.
+    """
+
+    def chunk(content, finish=None) -> ChatCompletionChunk:
+        return ChatCompletionChunk(
+            id="chatcmpl-mistral",
+            object="chat.completion.chunk",
+            created=0,
+            model="mistral-medium-3-5",
+            choices=[Choice(
+                index=0,
+                delta=ChoiceDelta.model_construct(content=content),
+                finish_reason=finish,
+            )],
+        )
+
+    chunks = [
+        chunk([{"type": "thinking", "thinking": [{"type": "text", "text": "ponder"}]}]),
+        chunk([{"type": "text", "text": "Hello "}]),
+        chunk("world.", finish="stop"),
+    ]
+    parsed = OpenAICompatProvider._parse_chunks(chunks)
+    assert parsed.content == "Hello world."
+    assert parsed.reasoning_content == "ponder"
+
+
+def test_mistral_strips_reasoning_content_from_history() -> None:
+    p = _mistral_provider()
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "Hello!",
+            "reasoning_content": "internal thoughts",
+        },
+        {"role": "user", "content": "follow up"},
+    ]
+    sanitized = p._sanitize_messages(messages)
+    assert all("reasoning_content" not in msg for msg in sanitized)
+    assert sanitized[1]["content"] == "Hello!"
+
+
+def test_mistral_tool_call_ids_get_normalized() -> None:
+    p = _mistral_provider()
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_abc_xyz_too_long_for_mistral",
+                    "type": "function",
+                    "function": {"name": "x", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_abc_xyz_too_long_for_mistral",
+            "content": "ok",
+        },
+    ]
+    sanitized = p._sanitize_messages(messages)
+    assistant_id = sanitized[1]["tool_calls"][0]["id"]
+    tool_id = sanitized[2]["tool_call_id"]
+    assert len(assistant_id) == 9
+    assert assistant_id.isalnum()
+    assert assistant_id == tool_id
+
+
+def test_mistral_preserves_text_with_tool_call_history() -> None:
+    p = _mistral_provider()
+    messages = [
+        {"role": "user", "content": "check"},
+        {
+            "role": "assistant",
+            "content": "I will inspect it.",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+    ]
+
+    sanitized = p._sanitize_messages(messages)
+
+    assert sanitized[1]["content"] == "I will inspect it."

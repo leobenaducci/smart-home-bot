@@ -1,0 +1,124 @@
+import {
+  Component,
+  Suspense,
+  lazy,
+  memo,
+  useEffect,
+  type ReactNode,
+} from "react";
+
+import { cn } from "@/lib/utils";
+
+interface MarkdownTextProps {
+  children: string;
+  className?: string;
+  streaming?: boolean;
+  preserveStreamingLayout?: boolean;
+  onOpenFilePreview?: (path: string) => void;
+  documentPath?: string;
+}
+
+const loadMarkdownRenderer = () => import("@/components/MarkdownTextRenderer");
+const LazyMarkdownRenderer = lazy(loadMarkdownRenderer);
+
+const MemoizedMarkdownRenderer = memo(function MemoizedMarkdownRenderer({
+  source,
+  className,
+  highlightCode,
+  streaming,
+  preserveStreamingLayout,
+  onOpenFilePreview,
+  documentPath,
+}: {
+  source: string;
+  className?: string;
+  highlightCode: boolean;
+  streaming: boolean;
+  preserveStreamingLayout: boolean;
+  onOpenFilePreview?: (path: string) => void;
+  documentPath?: string;
+}) {
+  return (
+    <LazyMarkdownRenderer
+      className={className}
+      highlightCode={highlightCode}
+      streaming={streaming}
+      preserveStreamingLayout={preserveStreamingLayout}
+      onOpenFilePreview={onOpenFilePreview}
+      documentPath={documentPath}
+    >
+      {source}
+    </LazyMarkdownRenderer>
+  );
+});
+
+class MarkdownRendererBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode; resetKey: string },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidUpdate(previous: Readonly<{ resetKey: string }>) {
+    if (this.state.failed && previous.resetKey !== this.props.resetKey) {
+      this.setState({ failed: false });
+    }
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+export function preloadMarkdownText(): Promise<void> {
+  return loadMarkdownRenderer().then(() => undefined);
+}
+
+export function MarkdownText({
+  children,
+  className,
+  streaming = false,
+  preserveStreamingLayout = false,
+  onOpenFilePreview,
+  documentPath,
+}: MarkdownTextProps) {
+  const renderedSource = children;
+  const renderPhase = streaming ? "streaming" : "complete";
+  const highlightCode = !streaming;
+
+  useEffect(() => {
+    if (streaming) void preloadMarkdownText();
+  }, [streaming]);
+
+  const plainFallback = (
+    <div
+      data-theme-ink
+      className={cn(
+        "whitespace-pre-wrap break-words text-reading text-foreground/92",
+        streaming && "streaming-text-fallback",
+        className,
+      )}
+    >
+      {renderedSource}
+    </div>
+  );
+
+  return (
+    <MarkdownRendererBoundary resetKey={renderPhase} fallback={plainFallback}>
+      <Suspense fallback={plainFallback}>
+        <MemoizedMarkdownRenderer
+          source={renderedSource}
+          className={className}
+          highlightCode={highlightCode}
+          streaming={streaming}
+          preserveStreamingLayout={preserveStreamingLayout}
+          onOpenFilePreview={onOpenFilePreview}
+          documentPath={documentPath}
+        />
+      </Suspense>
+    </MarkdownRendererBoundary>
+  );
+}

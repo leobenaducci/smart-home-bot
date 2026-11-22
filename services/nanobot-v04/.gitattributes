@@ -1,0 +1,4 @@
+*.sh text eol=lf
+
+# The public Sigstore fixture is signed over exact bytes, including newlines.
+tests/fixtures/sigstore/bundle_v3.txt -text

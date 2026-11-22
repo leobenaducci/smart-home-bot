@@ -1,0 +1,483 @@
+# Tool.execute accepts heterogeneous schemas.
+# pyright: reportIncompatibleMethodOverride=false
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
+
+from loguru import logger
+
+from nanobot.agent.tools.base import Tool, ToolResult
+from nanobot.agent.tools.context import current_request_context, current_request_session_key
+from nanobot.agent.tools.runtime_control import (
+    RUNTIME_COMMAND_KEYS,
+    RUNTIME_SNAPSHOT_KEYS,
+    JsonValue,
+    RuntimeControl,
+    RuntimeSnapshot,
+)
+from nanobot.agent.tools.self_config import MyToolConfig
+
+if TYPE_CHECKING:
+    from nanobot.agent.tools.context import ToolContext
+
+
+def _is_string_mapping(value: object) -> TypeGuard[Mapping[str, object]]:
+    if not isinstance(value, Mapping):
+        return False
+    mapping = cast(Mapping[object, object], value)
+    return all(isinstance(key, str) for key in mapping)
+
+
+class MyTool(Tool):
+    """Check and set the agent loop's runtime configuration."""
+
+    config_key = "my"
+
+    @classmethod
+    def config_cls(cls):
+        return MyToolConfig
+
+    @classmethod
+    def enabled(cls, ctx: ToolContext) -> bool:
+        return ctx.runtime_control is not None and ctx.config.my.enable
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> Tool:
+        if ctx.runtime_control is None:
+            raise RuntimeError("MyTool requires a runtime control capability")
+        return cls(
+            runtime_control=ctx.runtime_control,
+            modify_allowed=ctx.config.my.allow_set,
+        )
+
+    BLOCKED = frozenset({
+        "bus", "provider", "runtime_resolver", "_running", "tools",
+        "_runtime_vars",
+        "runner", "sessions", "consolidator", "subagents",
+        "dream", "auto_compact", "context", "commands",
+        # Sensitive runtime state (credentials, message routing, task tracking)
+        "_pending_queues",
+        "_session_locks", "_active_tasks", "_background_tasks",
+        # Security boundaries (inspect + modify both blocked)
+        "restrict_to_workspace", "channels_config",
+        "_concurrency_gate", "_unified_session", "_extra_hooks", "_hook_factories",
+    })
+
+    READ_ONLY = frozenset({
+        "tool_names",
+        "exec_config",  # inspect allowed (e.g. check sandbox), modify blocked
+        "web_config",  # inspect allowed (e.g. check enable), modify blocked
+        "model_presets",  # config-derived catalog; changes require config reload
+        "workspace_sandbox",  # read-only view of workspace enforcement level
+        "request",
+    })
+
+    _REQUEST_FIELDS = ("channel", "chat_id", "sender_id")
+
+    _DENIED_ATTRS = frozenset({
+        "__class__", "__dict__", "__bases__", "__subclasses__", "__mro__",
+        "__init__", "__new__", "__reduce__", "__getstate__", "__setstate__",
+        "__del__", "__call__", "__getattr__", "__setattr__", "__delattr__",
+        "__code__", "__globals__", "func_globals", "func_code",
+        "__wrapped__", "__closure__",
+    })
+
+    # Sub-field names that are sensitive regardless of parent path
+    _SENSITIVE_NAMES = frozenset({
+        "api_key", "secret", "password", "token", "credential",
+        "private_key", "access_token", "refresh_token", "auth",
+    })
+
+    RESTRICTED: dict[str, dict[str, Any]] = {
+        "max_iterations":        {"type": int, "min": 1,   "max": 100},
+        "context_window_tokens": {"type": int, "min": 4096, "max": 1_000_000},
+        "model":                 {"type": str, "min_len": 1},
+    }
+
+    _MAX_RUNTIME_KEYS = 64
+    _MODEL_RUNTIME_FIELDS = frozenset({
+        "model",
+        "model_preset",
+        "context_window_tokens",
+    })
+
+    def __init__(self, runtime_control: RuntimeControl, modify_allowed: bool = True) -> None:
+        self._runtime_control = runtime_control
+        self._modify_allowed = modify_allowed
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> MyTool:
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        result._runtime_control = self._runtime_control
+        result._modify_allowed = self._modify_allowed
+        return result
+
+    @property
+    def name(self) -> str:
+        return "my"
+
+    @property
+    def description(self) -> str:
+        base = (
+            "Inspect runtime state with check: omit key for an overview or use a dot-path. "
+            "set changes runtime parameters or stores scratchpad keys across turns, not restarts. "
+            "Use model_preset for session model/context switching; direct model and "
+            "context_window_tokens writes are disabled during active sessions. "
+            "Read-only access info: workspace_sandbox shows the current project and restriction; "
+            "exec_config shows shell sandbox settings and binds. Shell binds do not grant "
+            "file-tool access; OS permissions still apply. workspace is a legacy agent-directory "
+            "display, not the current project or an access grant. web_config is also read-only."
+        )
+        if not self._modify_allowed:
+            base += "\nREAD-ONLY MODE: set is disabled."
+        return base
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["check", "set"],
+                    "description": "Action to perform",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Dot-path for check; top-level runtime or scratchpad key for set. "
+                    "Read-only routing metadata: request.channel, request.chat_id, request.sender_id.",
+                },
+                "value": {"description": "New value for set; match the setting's type. Scratchpad accepts JSON values."},
+            },
+            "required": ["action"],
+        }
+
+    def _audit(self, action: str, detail: str) -> None:
+        ctx = current_request_context()
+        session = (
+            ctx.session_key or f"{ctx.channel}:{ctx.chat_id}"
+            if ctx is not None and ctx.channel
+            else "unknown"
+        )
+        logger.info("self.{} | {} | session:{}", action, detail, session)
+
+
+    def _resolve_path(
+        self,
+        snapshot: RuntimeSnapshot,
+        path: str,
+    ) -> tuple[object | None, str | None]:
+        parts = path.split(".")
+        for part in parts:
+            if part in self._DENIED_ATTRS or part.startswith("__"):
+                return None, f"'{part}' is not accessible"
+            if part in self.BLOCKED and path != "workspace_sandbox.restrict_to_workspace":
+                return None, f"'{part}' is not accessible"
+            if part.lower() in self._SENSITIVE_NAMES:
+                return None, f"'{part}' is not accessible"
+        obj: object = snapshot.as_mapping()
+        for part in parts:
+            if not _is_string_mapping(obj):
+                return None, f"'{part}' not found"
+            if part not in obj:
+                return None, f"'{part}' not found in mapping"
+            obj = obj[part]
+        return obj, None
+
+    @staticmethod
+    def _validate_key(key: str | None, label: str = "key") -> str | None:
+        if not key or not key.strip():
+            return ToolResult.error(f"Error: '{label}' cannot be empty or whitespace")
+        return None
+
+
+    @staticmethod
+    def _format_value(val: Any, key: str = "") -> str:
+        if isinstance(val, (str, int, float, bool, type(None))):
+            r = repr(val)
+            return f"{key}: {r}" if key else r
+        if isinstance(val, Mapping):
+            value_mapping = cast(Mapping[object, object], val)
+            if key == "workspace_sandbox":
+                return f"{key}: {dict(value_mapping)!r}"
+            ks = list(value_mapping.keys())
+            if not ks:
+                return f"{key}: {{}}" if key else "{}"
+            if len(ks) <= 5:
+                r = repr(value_mapping)
+                if len(r) <= 200:
+                    return f"{key}: {r}" if key else r
+            preview = ", ".join(str(k) for k in ks[:15])
+            suffix = ", ..." if len(ks) > 15 else ""
+            return f"{key}: {{{preview}{suffix}}}" if key else f"{{{preview}{suffix}}}"
+        if isinstance(val, (list, tuple)):
+            sequence = cast(list[object] | tuple[object, ...], val)
+            if len(sequence) > 20:
+                return f"{key}: [{len(sequence)} items]" if key else f"[{len(sequence)} items]"
+            r = repr(sequence)
+            return f"{key}: {r}" if key else r
+        r = repr(val)
+        return f"{key}: {r}" if key else r
+
+
+    async def execute(
+        self,
+        action: str,
+        key: str | None = None,
+        value: Any = None,
+        **_kwargs: Any,
+    ) -> str:
+        if action in ("inspect", "check"):
+            return self._inspect(key)
+        if not self._modify_allowed:
+            return ToolResult.error("Error: set is disabled (tools.my.allow_set is false)")
+        if action in ("modify", "set"):
+            return await self._modify(key, value)
+        return f"Unknown action: {action}"
+
+
+    def _current_runtime_value(self, key: str) -> tuple[bool, Any]:
+        request_ctx = current_request_context()
+        runtime = request_ctx.runtime if request_ctx is not None else None
+        if runtime is None or key not in self._MODEL_RUNTIME_FIELDS:
+            return False, None
+        values: dict[str, object] = {
+            "model": runtime.model,
+            "model_preset": runtime.model_preset,
+            "context_window_tokens": runtime.context_window_tokens,
+        }
+        return True, values[key]
+
+    def _inspect(self, key: str | None) -> str:
+        if not key:
+            return self._inspect_all()
+        if key == "request" or key.startswith("request."):
+            request_ctx = current_request_context()
+            if request_ctx is None:
+                return ToolResult.error("Error: current request context is unavailable")
+            request_values: dict[str, str | None] = {
+                "channel": request_ctx.channel,
+                "chat_id": request_ctx.chat_id,
+                "sender_id": request_ctx.sender_id,
+            }
+            if key == "request":
+                return self._format_value(request_values, key)
+            field = key.removeprefix("request.")
+            if field not in self._REQUEST_FIELDS:
+                return ToolResult.error(f"Error: '{key}' not found")
+            return self._format_value(request_values[field], key)
+        if "." not in key:
+            found, value = self._current_runtime_value(key)
+            if found:
+                return self._format_value(value, key)
+        snapshot = self._runtime_control.snapshot()
+        top = key.split(".")[0]
+        if top in self._DENIED_ATTRS or top.startswith("__"):
+            return ToolResult.error(f"Error: '{top}' is not accessible")
+        obj, err = self._resolve_path(snapshot, key)
+        if err:
+            if key == "scratchpad":
+                return (
+                    self._format_value(snapshot.scratchpad, "scratchpad")
+                    if snapshot.scratchpad
+                    else "scratchpad is empty"
+                )
+            if "." not in key and key in snapshot.scratchpad:
+                return self._format_value(snapshot.scratchpad[key], key)
+            return ToolResult.error(f"Error: {err}")
+        return self._format_value(obj, key)
+
+    def _inspect_all(self) -> str:
+        snapshot = self._runtime_control.snapshot()
+        values = snapshot.as_mapping()
+        parts: list[str] = []
+        for k in self.RESTRICTED:
+            found, value = self._current_runtime_value(k)
+            parts.append(self._format_value(value if found else values[k], k))
+        found, value = self._current_runtime_value("model_preset")
+        parts.append(self._format_value(
+            value if found else snapshot.model_preset,
+            "model_preset",
+        ))
+        for k in (
+            "workspace",
+            "workspace_sandbox",
+            "provider_retry_mode",
+            "max_tool_result_chars",
+            "web_config",
+            "exec_config",
+        ):
+            parts.append(self._format_value(values[k], k))
+        if snapshot.scratchpad:
+            parts.append(self._format_value(snapshot.scratchpad, "scratchpad"))
+        return "\n".join(parts)
+
+
+    async def _modify(self, key: str | None, value: Any) -> str:
+        if err := self._validate_key(key):
+            return err
+        key = cast(str, key)
+        top = key.split(".")[0]
+        if top in self.BLOCKED or top in self._DENIED_ATTRS or top.startswith("__") or top.lower() in self._SENSITIVE_NAMES:
+            self._audit("modify", f"BLOCKED {key}")
+            return ToolResult.error(f"Error: '{key}' is protected and cannot be modified")
+        if top in self.READ_ONLY:
+            self._audit("modify", f"READ_ONLY {key}")
+            return ToolResult.error(f"Error: '{key}' is read-only and cannot be modified")
+        if "." in key:
+            parent_path, leaf = key.rsplit(".", 1)
+            if leaf in self._DENIED_ATTRS or leaf.startswith("__"):
+                self._audit("modify", f"BLOCKED leaf '{leaf}'")
+                return ToolResult.error(f"Error: '{leaf}' is not accessible")
+            if leaf.lower() in self._SENSITIVE_NAMES:
+                self._audit("modify", f"BLOCKED sensitive leaf '{leaf}'")
+                return ToolResult.error(f"Error: '{leaf}' is not accessible")
+            snapshot = self._runtime_control.snapshot()
+            _parent, err = self._resolve_path(snapshot, parent_path)
+            if err:
+                return ToolResult.error(f"Error: {err}")
+            self._audit("modify", f"READ_ONLY {key}")
+            return ToolResult.error(f"Error: '{key}' is read-only and cannot be modified")
+        if key == "model_preset":
+            return await self._modify_model_preset(value)
+        if key in self.RESTRICTED:
+            return self._modify_restricted(key, value)
+        if key in RUNTIME_COMMAND_KEYS:
+            return self._modify_runtime_setting(key, value)
+        if key in RUNTIME_SNAPSHOT_KEYS:
+            self._audit("modify", f"READ_ONLY {key}")
+            return ToolResult.error(f"Error: '{key}' is read-only and cannot be modified")
+        return self._modify_scratchpad(key, value)
+
+    async def _modify_model_preset(self, value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            return ToolResult.error("Error: 'model_preset' must be a non-empty string")
+        name = value.strip()
+        session_key = current_request_session_key()
+        old = self._runtime_control.snapshot().model_preset
+        try:
+            runtime = await self._runtime_control.set_model_preset(
+                name,
+                session_key=session_key,
+            )
+        except (KeyError, ValueError) as exc:
+            message = str(exc.args[0]) if exc.args else str(exc)
+            punctuation = "" if message.endswith((".", "!", "?")) else "."
+            return ToolResult.error(f"Error: {message}{punctuation}")
+        if session_key:
+            self._audit("modify", f"model_preset = {name!r}")
+            return (
+                f"Set model_preset = {name!r} for the next turn; "
+                f"model will be {runtime.model!r}; "
+                f"context_window_tokens will be {runtime.context_window_tokens!r}"
+            )
+        self._audit("modify", f"model_preset: {old!r} -> {name!r}")
+        return (
+            f"Set model_preset = {name!r} (was {old!r}); model is now {runtime.model!r}; "
+            f"context_window_tokens is now {runtime.context_window_tokens!r}"
+        )
+
+    def _modify_restricted(self, key: str, value: Any) -> str:
+        spec = self.RESTRICTED[key]
+        expected = cast(type[Any], spec["type"])
+        if expected is int and isinstance(value, bool):
+            return ToolResult.error(f"Error: '{key}' must be {expected.__name__}, got bool")
+        if not isinstance(value, expected):
+            try:
+                value = expected(value)
+            except (ValueError, TypeError):
+                return ToolResult.error(f"Error: '{key}' must be {expected.__name__}, got {type(value).__name__}")
+        old = self._runtime_control.snapshot().as_mapping()[key]
+        if "min" in spec and value < spec["min"]:
+            return ToolResult.error(f"Error: '{key}' must be >= {spec['min']}")
+        if "max" in spec and value > spec["max"]:
+            return ToolResult.error(f"Error: '{key}' must be <= {spec['max']}")
+        if "min_len" in spec and len(str(value)) < spec["min_len"]:
+            return ToolResult.error(f"Error: '{key}' must be at least {spec['min_len']} characters")
+        if key in {"model", "context_window_tokens"} and current_request_session_key():
+            return ToolResult.error(
+                f"Error: direct '{key}' changes are instance-wide and disabled "
+                "during an active session; use a configured model_preset"
+            )
+        if key == "model":
+            self._runtime_control.set_model(cast(str, value))
+        elif key == "context_window_tokens":
+            self._runtime_control.set_context_window_tokens(cast(int, value))
+        else:
+            self._runtime_control.set_max_iterations(cast(int, value))
+        self._audit("modify", f"{key}: {old!r} -> {value!r}")
+        return f"Set {key} = {value!r} (was {old!r})"
+
+    def _modify_runtime_setting(self, key: str, value: Any) -> str:
+        old = self._runtime_control.snapshot().as_mapping()[key]
+        if key == "workspace":
+            if not isinstance(value, str):
+                return ToolResult.error(
+                    f"Error: 'workspace' expects str, got {type(value).__name__}"
+                )
+            self._runtime_control.set_workspace_display(value)
+            self._audit("modify", f"workspace: {old!r} -> {value!r}")
+            return f"Set workspace = {value!r} (was {old!r})"
+        old_t = type(old)
+        new_t = cast(type[Any], type(value))
+        if old_t is float and new_t is int:
+            pass
+        elif old_t is not new_t:
+            self._audit(
+                "modify",
+                f"REJECTED type mismatch {key}: expects {old_t.__name__}, got {new_t.__name__}",
+            )
+            return ToolResult.error(
+                f"Error: '{key}' expects {old_t.__name__}, got {new_t.__name__}"
+            )
+        if key == "provider_retry_mode":
+            self._runtime_control.set_provider_retry_mode(cast(str, value))
+        elif key == "max_tool_result_chars":
+            self._runtime_control.set_max_tool_result_chars(cast(int, value))
+        else:
+            raise AssertionError(f"Unhandled runtime command: {key}")
+        self._audit("modify", f"{key}: {old!r} -> {value!r}")
+        return f"Set {key} = {value!r} (was {old!r})"
+
+    def _modify_scratchpad(self, key: str, value: Any) -> str:
+        if callable(value):
+            self._audit("modify", f"REJECTED callable {key}")
+            return ToolResult.error("Error: cannot store callable values")
+        err = self._validate_json_safe(value)
+        if err:
+            self._audit("modify", f"REJECTED {key}: {err}")
+            return ToolResult.error(f"Error: {err}")
+        try:
+            self._runtime_control.set_scratchpad(
+                key,
+                cast(JsonValue, value),
+                max_keys=self._MAX_RUNTIME_KEYS,
+            )
+        except ValueError as exc:
+            self._audit("modify", f"REJECTED {key}: max keys ({self._MAX_RUNTIME_KEYS}) reached")
+            return ToolResult.error(f"Error: {exc}. Remove unused keys first.")
+        self._audit("modify", f"scratchpad.{key} = {value!r}")
+        return f"Set scratchpad.{key} = {value!r}"
+
+    @classmethod
+    def _validate_json_safe(cls, value: Any, depth: int = 0) -> str | None:
+        if depth > 10:
+            return "value nesting too deep (max 10 levels)"
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return None
+        if isinstance(value, list):
+            for i, item in enumerate(cast(list[Any], value)):
+                if err := cls._validate_json_safe(item, depth + 1):
+                    return f"list[{i}] contains {err}"
+            return None
+        if isinstance(value, dict):
+            for k, v in cast(dict[Any, Any], value).items():
+                if not isinstance(k, str):
+                    return f"dict key must be str, got {type(k).__name__}"
+                if err := cls._validate_json_safe(v, depth + 1):
+                    return f"dict key '{k}' contains {err}"
+            return None
+        return f"unsupported type {type(value).__name__}"

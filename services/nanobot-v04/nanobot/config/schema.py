@@ -1,0 +1,805 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, ClassVar, Literal, cast
+
+from pydantic import AliasChoices, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+from nanobot.agent.tools.cli_apps_config import CliAppsToolConfig
+from nanobot.agent.tools.filesystem_config import FileToolsConfig
+from nanobot.agent.tools.image_generation_config import ImageGenerationToolConfig
+from nanobot.agent.tools.self_config import MyToolConfig
+from nanobot.agent.tools.shell_config import ExecToolConfig
+from nanobot.agent.tools.web_config import (
+    WebFetchConfig as WebFetchConfig,
+)
+from nanobot.agent.tools.web_config import (
+    WebSearchConfig as WebSearchConfig,
+)
+from nanobot.agent.tools.web_config import WebToolsConfig
+from nanobot.config.home import get_default_workspace
+from nanobot.config.household import (
+    HouseholdAgentFields,
+    N8nConfig,
+    ProfilingConfig,
+    map_model_fallback,
+)
+from nanobot.config.network import NetworkConfig, migrate_legacy_proxy_config
+from nanobot.config.provider_api_migration import migrate_legacy_provider_api
+from nanobot.config.timezone import detect_system_timezone
+from nanobot.config_base import Base
+from nanobot.cron.types import CronSchedule
+from nanobot.providers.generation import GenerationSettings
+from nanobot.providers.model_api import ModelAPICapabilities, RequestAPI
+
+
+class ChannelsConfig(Base):
+    """Configuration for chat channels.
+
+    Built-in and plugin channel configs are stored as extra fields (dicts).
+    Each channel parses its own config in __init__.
+    Per-channel "streaming": true enables streaming output (requires send_delta impl).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    send_progress: bool = True
+    send_tool_hints: bool = False  # household: off, as the fork ran (upstream: True)
+    show_reasoning: bool = True  # surface model reasoning when channel implements it
+    show_compaction_notices: bool = False  # automatic compaction chat notices, not UI lifecycle events
+    extract_document_text: bool = True  # Deprecated and ignored; documents are read on demand
+    send_max_retries: int = Field(default=3, ge=0, le=10)  # Max delivery attempts (initial send included)
+    transcription_provider: str = "groq"  # Deprecated: use top-level transcription.provider
+    transcription_language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")  # Deprecated: use top-level transcription.language
+
+
+class TranscriptionConfig(Base):
+    """Cross-channel audio transcription configuration."""
+
+    enabled: bool = True
+    provider: str | None = None
+    model: str | None = None
+    language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")
+    max_duration_sec: int = Field(default=120, ge=1, le=600)
+    max_upload_mb: int = Field(default=25, ge=1, le=100)
+
+
+class DreamConfig(Base):
+    """Dream memory consolidation configuration."""
+
+    _HOUR_MS = 3_600_000
+
+    enabled: bool = True
+    interval_h: int = Field(default=2, ge=1)
+    cron: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )  # Legacy cron expression override
+    model_override: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("modelOverride", "model", "model_override"),
+    )
+    # household: whether Dream may author skills into workspace/skills.
+    write_skills: bool = Field(default=False, validation_alias=AliasChoices("writeSkills", "write_skills"))
+
+    def build_schedule(self, timezone: str) -> CronSchedule:
+        """Build the runtime schedule, preferring the legacy cron override if present."""
+        if self.cron:
+            return CronSchedule(kind="cron", expr=self.cron, tz=timezone)
+        return CronSchedule(kind="every", every_ms=self.interval_h * self._HOUR_MS)
+
+    def describe_schedule(self) -> str:
+        """Return a human-readable summary for logs and startup output."""
+        if self.cron:
+            return f"cron {self.cron} (legacy)"
+        hours = self.interval_h
+        return f"every {hours}h"
+
+
+class ProviderAPIConfig(Base):
+    """Connection API defaults and custom endpoints' accepted request APIs."""
+
+    supported_apis: tuple[RequestAPI, ...] = Field(min_length=1)
+    preferred_api: RequestAPI | None = None
+
+    @model_validator(mode="after")
+    def _validate_preference(self) -> "ProviderAPIConfig":
+        if self.preferred_api is not None and self.preferred_api not in self.supported_apis:
+            raise ValueError("preferred_api must be one of supported_apis")
+        return self
+
+    def to_capabilities(self) -> ModelAPICapabilities:
+        return ModelAPICapabilities(
+            supported_apis=self.supported_apis,
+            preferred_api=self.preferred_api or self.supported_apis[0],
+        )
+
+
+class ModelAPIConfig(ProviderAPIConfig):
+    """Allowed request APIs and preference for a model preset's endpoint."""
+
+    @model_validator(mode="after")
+    def _validate_api_family(self) -> "ModelAPIConfig":
+        if "anthropic_messages" in self.supported_apis and set(self.supported_apis) != {
+            "anthropic_messages",
+        }:
+            raise ValueError("anthropic_messages cannot be combined with OpenAI request APIs")
+        return self
+
+
+class RequestOverrides(Base):
+    """Optional request differences; omitted fields inherit connection defaults."""
+
+    extra_headers: dict[str, str] | None = Field(default=None, repr=False)
+    extra_query: dict[str, str] | None = Field(default=None, repr=False)
+    extra_body: dict[str, Any] | None = Field(default=None, repr=False)
+
+
+class InlineFallbackConfig(RequestOverrides):
+    """One inline fallback model configuration."""
+
+    model: str
+    provider: str
+    max_tokens: int | None = None
+    context_window_tokens: int | None = None
+    temperature: float | None = None
+    reasoning_effort: str | None = None
+    api: ModelAPIConfig | None = None
+
+
+FallbackCandidate = str | InlineFallbackConfig
+
+
+class ModelPresetConfig(RequestOverrides):
+    """A named set of model + generation parameters for quick switching."""
+
+    model: str
+    provider: str = "auto"
+    max_tokens: int = 8192
+    context_window_tokens: int = 200_000
+    temperature: float = 0.1
+    reasoning_effort: str | None = None
+    api: ModelAPIConfig | None = None
+
+    def to_generation_settings(self) -> GenerationSettings:
+        return GenerationSettings(
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            reasoning_effort=self.reasoning_effort,
+        )
+
+
+class AgentDefaults(HouseholdAgentFields):
+    """Default agent configuration.
+
+    household: the household's per-role keys come from ``HouseholdAgentFields``.
+    """
+
+    workspace: str = Field(default_factory=get_default_workspace)
+    model_preset: str | None = None  # Active preset name — takes precedence over fields below
+    model: str = "anthropic/claude-opus-4-5"
+    provider: str = (
+        "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
+    )
+    max_tokens: int = 8192
+    context_window_tokens: int = 200_000
+    temperature: float = 0.1
+    fallback_models: list[FallbackCandidate] = Field(default_factory=list)
+    max_tool_iterations: int = 200
+    max_concurrent_subagents: int = Field(default=2, ge=1)  # household: 2, as the fork ran (upstream: 4)
+    max_tool_result_chars: int = 16_000
+    provider_retry_mode: Literal["standard", "persistent"] = "standard"
+    tool_hint_max_length: int = Field(
+        default=40,
+        ge=20,
+        le=500,
+        validation_alias=AliasChoices("toolHintMaxLength"),
+        serialization_alias="toolHintMaxLength",
+    )
+    reasoning_effort: str | None = None  # low / medium / high / xhigh / max / adaptive / none — LLM thinking effort; None preserves the provider default
+    api: ModelAPIConfig | None = None
+    timezone: str = "UTC"  # Effective IANA timezone, e.g. "Asia/Shanghai"
+    timezone_mode: Literal["auto", "manual"] = "auto"
+    bot_name: str = "nanobot"
+    bot_icon: str = "🐈"  # Short icon (emoji or text) shown next to the bot name in CLI; "" to omit
+    unified_session: bool = False  # Share one session across all channels (single-user multi-device)
+    disabled_skills: list[str] = Field(default_factory=list)  # Skill names to exclude from loading (e.g. ["summarize", "skill-creator"])
+    session_ttl_minutes: int = Field(
+        default=0,  # household: idle compaction off, as the fork ran (upstream: 15)
+        ge=0,
+        validation_alias=AliasChoices("idleCompactAfterMinutes", "sessionTtlMinutes"),
+        serialization_alias="idleCompactAfterMinutes",
+    )  # Auto-compact idle threshold in minutes (0 = disabled)
+    idle_compact_check_interval_seconds: int = Field(
+        default=60,
+        ge=0,
+    )
+    dream: DreamConfig = Field(default_factory=DreamConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _household_model_fallback(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return map_model_fallback(cast(dict[str, Any], value))
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_timezone(cls, value: object) -> object:
+        """Detect new defaults server-side while preserving configured timezones."""
+        if not isinstance(value, dict):
+            return value
+
+        data = dict(cast(dict[str, object], value))
+        timezone_mode = data.get("timezoneMode", data.get("timezone_mode"))
+        if timezone_mode is None:
+            timezone_mode = "manual" if "timezone" in data else "auto"
+            data["timezoneMode"] = timezone_mode
+        if timezone_mode == "auto":
+            data["timezone"] = detect_system_timezone()
+        return data
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError:
+            raise ValueError(f"unknown timezone {value!r}") from None
+        return value
+
+
+class AgentsConfig(Base):
+    """Agent configuration."""
+
+    defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+
+
+class ProviderConfig(Base):
+    """LLM provider configuration."""
+
+    display_name: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    api_key: str | None = Field(default=None, repr=False)
+    api_base: str | None = None
+    api: ProviderAPIConfig | None = Field(default=None, exclude_if=lambda value: value is None)
+    extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    extra_body: dict[str, Any] | None = None  # Extra provider request fields; shape depends on provider/API surface
+    extra_query: dict[str, str] | None = None  # Extra query params (e.g. api-version for Azure-style gateways)
+    use_proxy: bool = False
+    thinking_style: str | None = None
+
+    # Valid values mirror the keys of _THINKING_STYLE_MAP in
+    # nanobot/providers/openai_compat_provider.py. Kept duplicated here to
+    # avoid an import cycle (schema.py must not import from providers/).
+    _VALID_THINKING_STYLES: ClassVar[tuple[str, ...]] = (
+        "thinking_type",
+        "enable_thinking",
+        "reasoning_split",
+    )
+
+    @field_validator("thinking_style")
+    @classmethod
+    def _validate_thinking_style(cls, v: str | None) -> str | None:
+        if not v:  # None or "" -> no injection, valid (backwards compatible)
+            return v
+        if v not in cls._VALID_THINKING_STYLES:
+            raise ValueError(
+                f"Invalid thinking_style {v!r}. "
+                f"Must be one of: {', '.join(repr(s) for s in cls._VALID_THINKING_STYLES)} "
+                f"(or empty/omitted)."
+            )
+        return v
+
+
+class BedrockProviderConfig(ProviderConfig):
+    """AWS Bedrock Runtime provider configuration."""
+
+    region: str | None = None  # AWS region, falls back to AWS_REGION/AWS_DEFAULT_REGION/profile
+    profile: str | None = None  # Optional AWS shared config profile
+
+
+class ProvidersConfig(Base):
+    """Configuration for LLM providers.
+
+    Supports custom providers via extra fields — any additional field
+    becomes an OpenAI-compatible custom provider.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
+    azure_openai: ProviderConfig = Field(default_factory=ProviderConfig)  # Azure OpenAI (model = deployment name)
+    bedrock: BedrockProviderConfig = Field(default_factory=BedrockProviderConfig)
+    anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
+    openai: ProviderConfig = Field(default_factory=ProviderConfig)
+    openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
+    orcarouter: ProviderConfig = Field(default_factory=ProviderConfig)
+    assemblyai: ProviderConfig = Field(default_factory=ProviderConfig)
+    huggingface: ProviderConfig = Field(default_factory=ProviderConfig)
+    skywork: ProviderConfig = Field(default_factory=ProviderConfig)
+    deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
+    groq: ProviderConfig = Field(default_factory=ProviderConfig)
+    zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
+    dashscope: ProviderConfig = Field(default_factory=ProviderConfig)
+    modelscope: ProviderConfig = Field(default_factory=ProviderConfig)
+    vllm: ProviderConfig = Field(default_factory=ProviderConfig)
+    ollama: ProviderConfig = Field(default_factory=ProviderConfig)
+    lm_studio: ProviderConfig = Field(default_factory=ProviderConfig)
+    atomic_chat: ProviderConfig = Field(default_factory=ProviderConfig)
+    ovms: ProviderConfig = Field(default_factory=ProviderConfig)
+    gemini: ProviderConfig = Field(default_factory=ProviderConfig)
+    moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
+    kimi_coding: ProviderConfig = Field(default_factory=ProviderConfig)  # Kimi Coding Plan (Anthropic Messages API)
+    minimax: ProviderConfig = Field(default_factory=ProviderConfig)
+    minimax_anthropic: ProviderConfig = Field(default_factory=ProviderConfig)  # MiniMax Anthropic endpoint (thinking)
+    mistral: ProviderConfig = Field(default_factory=ProviderConfig)
+    stepfun: ProviderConfig = Field(default_factory=ProviderConfig)  # Step Fun (阶跃星辰) — LLM + ASR (set apiBase to Plan URL for ASR)
+    xiaomi_mimo: ProviderConfig = Field(default_factory=ProviderConfig)
+    longcat: ProviderConfig = Field(default_factory=ProviderConfig)
+    ant_ling: ProviderConfig = Field(default_factory=ProviderConfig)
+    aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)
+    siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)
+    edenai: ProviderConfig = Field(default_factory=ProviderConfig)
+    novita: ProviderConfig = Field(default_factory=ProviderConfig)
+    volcengine: ProviderConfig = Field(default_factory=ProviderConfig)
+    volcengine_coding_plan: ProviderConfig = Field(default_factory=ProviderConfig)
+    byteplus: ProviderConfig = Field(default_factory=ProviderConfig)
+    byteplus_coding_plan: ProviderConfig = Field(default_factory=ProviderConfig)
+    openai_codex: ProviderConfig = Field(default_factory=ProviderConfig, exclude=True)  # OpenAI Codex (OAuth)
+    xai_grok: ProviderConfig = Field(default_factory=ProviderConfig, exclude=True)  # xAI Grok (OAuth)
+    github_copilot: ProviderConfig = Field(default_factory=ProviderConfig, exclude=True)  # Github Copilot (OAuth)
+    qianfan: ProviderConfig = Field(default_factory=ProviderConfig)
+    nvidia: ProviderConfig = Field(default_factory=ProviderConfig)  # NVIDIA NIM (nvapi- keys)
+    opencode: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenCode Zen (canonical provider id)
+    opencode_zen: ProviderConfig = Field(default_factory=ProviderConfig)
+    opencode_go: ProviderConfig = Field(default_factory=ProviderConfig)
+
+    @model_validator(mode="after")
+    def convert_extra_providers(self):
+        """Convert extra fields (custom providers) to ProviderConfig objects."""
+        if self.model_extra:
+            from nanobot.providers.registry import find_by_name
+
+            for key, value in self.model_extra.items():
+                if spec := find_by_name(key):
+                    raise ValueError(
+                        f"providers.{key} conflicts with built-in provider {spec.name!r}; "
+                        "use the built-in provider key or choose a different custom provider name"
+                    )
+                if isinstance(value, dict):
+                    self.model_extra[key] = ProviderConfig.model_validate(value)
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_api_type(cls, value: Any) -> Any:
+        # Temporary for two releases; remove with provider_api_migration.py.
+        if not isinstance(value, dict):
+            return value
+        providers = cast(dict[str, Any], value)
+        return {
+            name: migrate_legacy_provider_api(cast(dict[str, Any], provider), provider_name=name)
+            if isinstance(provider, dict) else provider
+            for name, provider in providers.items()
+        }
+
+
+class HeartbeatConfig(Base):
+    """Heartbeat service configuration (now backed by cron)."""
+
+    enabled: bool = True
+    interval_s: int = 30 * 60
+    # household: fixed delivery target and history kept for the decision turn.
+    keep_recent_messages: int = 8
+    channel: str = ""
+    chat_id: str = ""
+
+
+class ApiConfig(Base):
+    """OpenAI-compatible API server configuration."""
+
+    host: str = "127.0.0.1"  # Safer default: local-only bind.
+    port: int = 8900
+    timeout: float = 120.0  # Per-request timeout in seconds.
+    api_key: str = Field(default="", repr=False)
+
+    @model_validator(mode="after")
+    def wildcard_host_requires_auth(self) -> "ApiConfig":
+        if self.host not in ("0.0.0.0", "::"):
+            return self
+        if self.api_key.strip():
+            return self
+        raise ValueError(
+            "host is 0.0.0.0 (all interfaces) but api_key is not set "
+            "- set api.api_key to prevent unauthenticated access"
+        )
+
+
+class MorningGreetingConfig(Base):
+    """household: the daily good-morning message (``agent/morning_greeting.py``).
+
+    Off by default. Needs ``HOMECORE_USER_ID``; without it the job is
+    registered disabled. The wording lives in the workspace's ``MORNING.md``.
+    """
+
+    enabled: bool = False
+    cron: str = "0 7 * * *"   # local time, in agents.defaults.timezone
+
+
+class GatewayConfig(Base):
+    """Gateway/server configuration."""
+
+    host: str = "127.0.0.1"  # Safer default: local-only bind.
+    port: int = 18790
+    restart_mode: Literal["auto", "exec", "spawn", "exit"] = "auto"
+    # household: the WebUI is not served. It would list every session to any
+    # token holder, and its settings page is the only path to the
+    # release-feed check. Upstream serves it.
+    serve_webui: bool = False
+    # household: /health answers 200 while channels start (the readiness stays in
+    # the payload's "ready"), so a compose healthcheck does not mark a booting
+    # gateway unhealthy; upstream answers 503 until the websocket channel runs.
+    health_ok_while_starting: bool = True
+    heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    morning_greeting: MorningGreetingConfig = Field(default_factory=MorningGreetingConfig)
+
+
+class MCPServerConfig(Base):
+    """MCP server connection configuration (stdio or HTTP)."""
+
+    type: Literal["stdio", "sse", "streamableHttp"] | None = None  # auto-detected if omitted
+    auth: Literal["oauth"] | None = None  # Remote MCP OAuth; tokens are stored outside config
+    command: str = ""  # Stdio: command to run (e.g. "npx")
+    args: list[str] = Field(default_factory=list)  # Stdio: command arguments
+    env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
+    cwd: str = ""  # Stdio: working directory for MCP server runtime artifacts
+    url: str = ""  # HTTP/SSE: endpoint URL
+    headers: dict[str, str] = Field(default_factory=dict)  # HTTP/SSE: custom headers
+    use_proxy: bool = False
+    tool_timeout: int = 30  # seconds before a tool call is cancelled
+    enabled_tools: list[str] = Field(default_factory=lambda: ["*"])  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all capabilities (tools, resources, prompts); any restriction = only listed tools, no resources/prompts
+    # household: never register these, whatever enabled_tools says; raw,
+    # wrapped, or raw without Home Assistant's "<domain>__" prefix.
+    disabled_tools: list[str] = Field(default_factory=list)
+
+
+class ToolsConfig(Base):
+    """Root settings assembled from tool-owned configuration models."""
+
+    web: WebToolsConfig = Field(default_factory=WebToolsConfig)
+    exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    file: FileToolsConfig = Field(default_factory=FileToolsConfig)
+    cli_apps: CliAppsToolConfig = Field(default_factory=CliAppsToolConfig)
+    my: MyToolConfig = Field(default_factory=MyToolConfig)
+    image_generation: ImageGenerationToolConfig = Field(
+        default_factory=ImageGenerationToolConfig,
+    )
+    max_session_messages_per_minute: int = Field(default=6, ge=1)
+    restrict_to_workspace: bool = False  # policy intent: keep tool access inside workspace when possible
+    webui_allow_local_service_access: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "webuiAllowLocalServiceAccess",
+            "webui_allow_local_service_access",
+            "allowLocalPreviewAccess",
+            "allow_local_preview_access",
+        ),
+    )  # allow WebUI Full Access shell checks against localhost services; legacy allowLocalPreviewAccess still reads
+    webui_allow_remote_package_install: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "webuiAllowRemotePackageInstall",
+            "webui_allow_remote_package_install",
+        ),
+    )  # allow non-local WebUI clients to install optional packages and agent skills
+    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    # household: tool names never registered (e.g. ["glob", "notebook_edit"]).
+    disabled: list[str] = Field(default_factory=list)
+    ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
+
+
+class _ExecRuntimeConfigSource(PydanticBaseSettingsSource):
+    """Merge shell runtime aliases using the normal settings-source precedence."""
+
+    def __init__(self, source: PydanticBaseSettingsSource) -> None:
+        super().__init__(source.settings_cls)
+        self._source = source
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        return self._source.get_field_value(field, field_name)
+
+    def __call__(self) -> dict[str, Any]:
+        data = self._source()
+        tools: object = data.get("tools")
+        if not isinstance(tools, dict):
+            return data
+        tools = cast(dict[str, Any], tools)
+        execution: object = tools.get("exec")
+        if not isinstance(execution, dict):
+            return data
+        execution = cast(dict[str, Any], execution)
+        if "timeout" in execution and ("maxRuntime" in execution or "max_runtime" in execution):
+            # Preserve same-source conflicts for the configuration model to reject.
+            return data
+        aliases = ("maxRuntime", "max_runtime", "timeout")
+        previous_tools: object = self.current_state.get("tools")
+        if not any(name in execution for name in aliases) or not isinstance(previous_tools, dict):
+            return data
+        previous_tools = cast(dict[str, Any], previous_tools)
+        previous_execution: object = previous_tools.get("exec")
+        if not isinstance(previous_execution, dict):
+            return data
+        previous_execution = cast(dict[str, Any], previous_execution)
+        if not any(name in previous_execution for name in aliases):
+            return data
+        execution = {name: value for name, value in execution.items() if name not in aliases}
+        return {**data, "tools": {**tools, "exec": execution}}
+
+
+class Config(BaseSettings):
+    """Root configuration for nanobot."""
+
+    _source_path: Path | None = PrivateAttr(default=None)
+
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    network: NetworkConfig = Field(default_factory=NetworkConfig)
+    api: ApiConfig = Field(default_factory=ApiConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    model_presets: dict[str, ModelPresetConfig] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("modelPresets", "model_presets"),
+        serialization_alias="modelPresets",
+    )
+    # household: top-level blocks. Config forbids unknown top-level keys, so
+    # without these the base config.json did not load at all.
+    n8n: N8nConfig = Field(default_factory=N8nConfig)
+    profiling: ProfilingConfig = Field(default_factory=ProfilingConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_proxy_config(cls, value: Any) -> Any:
+        return migrate_legacy_proxy_config(value)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return tuple(_ExecRuntimeConfigSource(source) for source in (
+            init_settings, env_settings, dotenv_settings, file_secret_settings,
+        ))
+
+    def bind_source_path(self, path: Path) -> None:
+        """Record the config file that owns instance-level runtime data."""
+        self._source_path = path.expanduser().resolve(strict=False)
+
+    @property
+    def runtime_data_dir(self) -> Path | None:
+        """Return the active instance data directory when loaded from a config path."""
+        return self._source_path.parent if self._source_path is not None else None
+
+    @model_validator(mode="after")
+    def _validate_model_preset(self) -> "Config":
+        # Keep persisted names accepted by previous releases loadable. New
+        # names are normalized and checked case-insensitively at mutation
+        # boundaries, where conflicts can be reported without breaking startup.
+        if "default" in self.model_presets:
+            raise ValueError("model_preset name 'default' is reserved for agents.defaults")
+        name = self.agents.defaults.model_preset
+        if name and name != "default" and name not in self.model_presets:
+            raise ValueError(f"model_preset {name!r} not found in model_presets")
+        dream_name = self.agents.defaults.dream.model_override
+        if dream_name and dream_name != "default" and dream_name not in self.model_presets:
+            raise ValueError(f"Dream model preset {dream_name!r} not found in model_presets")
+        for fallback in self.agents.defaults.fallback_models:
+            if isinstance(fallback, str) and fallback not in self.model_presets:
+                raise ValueError(f"fallback_models entry {fallback!r} not found in model_presets")
+        return self
+
+    def resolve_default_preset(self) -> ModelPresetConfig:
+        """Return the implicit `default` preset from agents.defaults fields."""
+        d = self.agents.defaults
+        return ModelPresetConfig(
+            model=d.model, provider=d.provider, max_tokens=d.max_tokens,
+            context_window_tokens=d.context_window_tokens,
+            temperature=d.temperature, reasoning_effort=d.reasoning_effort, api=d.api,
+        )
+
+    def resolve_preset(self, name: str | None = None) -> ModelPresetConfig:
+        """Return effective model params from a named preset or the implicit default."""
+        name = self.agents.defaults.model_preset if name is None else name
+        if not name or name == "default":
+            return self.resolve_default_preset()
+        if name not in self.model_presets:
+            raise KeyError(f"model_preset {name!r} not found in model_presets")
+        return self.model_presets[name]
+
+    @property
+    def workspace_path(self) -> Path:
+        """Get expanded workspace path."""
+        return Path(self.agents.defaults.workspace).expanduser()
+
+    def _match_provider(
+        self, model: str | None = None,
+        *,
+        preset: ModelPresetConfig | None = None,
+    ) -> tuple["ProviderConfig | None", str | None]:
+        from nanobot.providers.registry import (
+            PROVIDERS,
+            find_by_name,
+        )
+
+        resolved = preset or self.resolve_preset()
+        forced = resolved.provider
+
+        def _custom_provider_by_name(name: str) -> tuple[ProviderConfig, str] | None:
+            normalized = name.replace("-", "_").lower()
+            for attr_name, provider in (self.providers.model_extra or {}).items():
+                if not isinstance(provider, ProviderConfig):
+                    continue
+                if attr_name.replace("-", "_").lower() == normalized:
+                    return provider, attr_name
+            return None
+
+        if forced != "auto":
+            spec = find_by_name(forced)
+            if spec:
+                p = getattr(self.providers, spec.name, None)
+                return (p, spec.name) if p else (None, None)
+            custom = _custom_provider_by_name(forced)
+            if custom is not None:
+                return custom
+            return None, None
+
+        model_lower = (model or resolved.model).lower()
+        model_normalized = model_lower.replace("-", "_")
+        model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
+        normalized_prefix = model_prefix.replace("-", "_")
+        prefixed_provider = find_by_name(model_prefix) if model_prefix else None
+
+        def _kw_matches(kw: str) -> bool:
+            kw = kw.lower()
+            return kw in model_lower or kw.replace("-", "_") in model_normalized
+
+        # Explicit provider prefix wins — prevents `github-copilot/...codex` matching openai_codex.
+        for spec in PROVIDERS:
+            if spec.is_transcription_only:
+                continue
+            p = getattr(self.providers, spec.name, None)
+            if p and model_prefix and normalized_prefix == spec.name:
+                if spec.is_oauth or spec.is_local or spec.is_direct or p.api_key:
+                    return p, spec.name
+
+        # Check for custom provider by prefix (e.g., "companyProxy/gpt-4").
+        # Return the matching provider even when apiBase is missing, so a
+        # malformed explicit prefix fails instead of falling through to a
+        # different custom provider.
+        if model_prefix:
+            custom = _custom_provider_by_name(normalized_prefix)
+            if custom is not None:
+                return custom
+
+        for spec in PROVIDERS:
+            if spec.is_transcription_only:
+                continue
+            p = getattr(self.providers, spec.name, None)
+            if p and any(_kw_matches(kw) for kw in spec.keywords):
+                # Local providers (Ollama, vLLM, …) keep model-family keywords
+                # like "nemotron" or "llama" to enable bare-model auto-routing,
+                # but those keywords collide with cloud-hosted variants of the
+                # same family (e.g. `nvidia/nemotron-...` via OpenRouter). Only
+                # honor a local keyword match when the user has actually
+                # configured that local endpoint via `api_base` — mirrors the
+                # gate already used by the local-fallback loop below.
+                if spec.is_local:
+                    # A qualified model belongs to its explicit provider or a
+                    # gateway fallback, never to a different local provider
+                    # whose model-family keyword happens to match.
+                    foreign_prefix = bool(
+                        prefixed_provider is not None and prefixed_provider.name != spec.name
+                    )
+                    if not p.api_base or foreign_prefix:
+                        continue
+                if spec.is_oauth or spec.is_local or spec.is_direct or p.api_key:
+                    return p, spec.name
+
+        # Fallback: configured local providers can route models without
+        # provider-specific keywords (for example plain "llama3.2" on Ollama).
+        # Prefer providers whose detect_by_base_keyword matches the configured api_base
+        # (e.g. Ollama's "11434" in "http://localhost:11434") over plain registry order.
+        local_fallback: tuple[ProviderConfig, str] | None = None
+        if prefixed_provider is None:
+            for spec in PROVIDERS:
+                if not spec.is_local:
+                    continue
+                p = getattr(self.providers, spec.name, None)
+                if not (p and p.api_base):
+                    continue
+                if spec.detect_by_base_keyword and spec.detect_by_base_keyword in p.api_base:
+                    return p, spec.name
+                if local_fallback is None:
+                    local_fallback = (p, spec.name)
+        if local_fallback:
+            return local_fallback
+
+        # OAuth providers are NOT valid fallbacks — they require explicit model selection
+        for spec in PROVIDERS:
+            if spec.is_oauth or spec.is_transcription_only:
+                continue
+            p = getattr(self.providers, spec.name, None)
+            if p and p.api_key:
+                return p, spec.name
+
+        for attr_name, p in (self.providers.model_extra or {}).items():
+            if isinstance(p, ProviderConfig) and p.api_base:
+                return p, attr_name
+
+        return None, None
+
+    def get_provider(
+        self,
+        model: str | None = None,
+        *,
+        preset: ModelPresetConfig | None = None,
+    ) -> ProviderConfig | None:
+        """Get matched provider config (api_key, api_base, extra_headers). Falls back to first available."""
+        p, _ = self._match_provider(model, preset=preset)
+        return p
+
+    def get_provider_name(
+        self,
+        model: str | None = None,
+        *,
+        preset: ModelPresetConfig | None = None,
+    ) -> str | None:
+        """Get the registry name of the matched provider (e.g. "deepseek", "openrouter")."""
+        _, name = self._match_provider(model, preset=preset)
+        return name
+
+    def get_api_key(
+        self,
+        model: str | None = None,
+        *,
+        preset: ModelPresetConfig | None = None,
+    ) -> str | None:
+        """Get API key for the given model. Falls back to first available key."""
+        p = self.get_provider(model, preset=preset)
+        return p.api_key if p else None
+
+    def get_api_base(
+        self,
+        model: str | None = None,
+        *,
+        preset: ModelPresetConfig | None = None,
+    ) -> str | None:
+        """Get API base URL for the given model, falling back to the provider default when present."""
+        from nanobot.providers.registry import find_by_name
+
+        p, name = self._match_provider(model, preset=preset)
+        if p and p.api_base:
+            return p.api_base
+        if name:
+            spec = find_by_name(name)
+            if spec and spec.default_api_base:
+                return spec.default_api_base
+        return None
+
+    model_config = SettingsConfigDict(
+        env_prefix="NANOBOT_",
+        env_nested_delimiter="__",
+    )

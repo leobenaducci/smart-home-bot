@@ -1,0 +1,449 @@
+from __future__ import annotations
+
+import shutil
+from dataclasses import fields
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
+
+from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.context import ToolContext
+from nanobot.agent.tools.loader import _SKIP_MODULES, ToolLoader
+
+
+class _MinimalTool(Tool):
+    @property
+    def name(self) -> str:
+        return "test_minimal"
+
+    @property
+    def description(self) -> str:
+        return "A test tool"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs: Any) -> Any:
+        return "ok"
+
+
+def test_tool_default_config_cls_is_none():
+    assert _MinimalTool.config_cls() is None
+
+
+def test_tool_default_config_key_is_empty():
+    assert _MinimalTool.config_key == ""
+
+
+def test_tool_default_enabled_is_true():
+    assert _MinimalTool.enabled(None) is True
+
+
+def test_tool_default_create_returns_instance():
+    tool = _MinimalTool.create(None)
+    assert isinstance(tool, _MinimalTool)
+    assert tool.name == "test_minimal"
+
+
+def test_tool_plugin_discoverable_default_is_true():
+    assert _MinimalTool._plugin_discoverable is True
+
+
+def test_tool_context_has_required_fields():
+    field_names = {f.name for f in fields(ToolContext)}
+    required = {
+        "config", "workspace", "bus", "subagent_manager",
+        "cron_service", "exec_session_manager", "file_state_store",
+        "provider_snapshot_loader", "providers_config", "timezone",
+        "runtime_control",
+    }
+    assert required <= field_names
+
+
+def test_tool_context_defaults():
+    ctx = ToolContext(config=None, workspace="/tmp")
+    assert ctx.bus is None
+    assert ctx.subagent_manager is None
+    assert ctx.cron_service is None
+    assert ctx.exec_session_manager is None
+    assert ctx.provider_snapshot_loader is None
+    assert ctx.providers_config is None
+    assert ctx.runtime_control is None
+    assert ctx.timezone == "UTC"
+
+
+def test_skip_modules_excludes_infrastructure():
+    infra = {"base", "schema", "registry", "context", "loader", "config",
+             "file_state", "sandbox", "mcp", "__init__"}
+    assert infra <= _SKIP_MODULES
+
+
+def test_discover_finds_concrete_tools():
+    loader = ToolLoader()
+    discovered = loader.discover()
+    class_names = {cls.__name__ for cls in discovered}
+    assert "ApplyPatchTool" in class_names
+    assert "ExecTool" in class_names
+    assert "CliAppsTool" in class_names
+    assert "MessageTool" in class_names
+    assert "MyTool" in class_names
+    assert "SubagentTool" in class_names
+    assert "ExecSessionTool" in class_names
+
+
+def test_discover_excludes_abstract_and_mcp():
+    loader = ToolLoader()
+    discovered = loader.discover()
+    class_names = {cls.__name__ for cls in discovered}
+    assert "_FsTool" not in class_names
+    assert "_SearchTool" not in class_names
+    assert "MCPToolWrapper" not in class_names
+    assert "MCPResourceWrapper" not in class_names
+    assert "MCPPromptWrapper" not in class_names
+
+
+def test_discover_skips_private_classes():
+    loader = ToolLoader()
+    discovered = loader.discover()
+    for cls in discovered:
+        assert not cls.__name__.startswith("_")
+
+
+def test_loader_registers_exec_with_real_tools_config(tmp_path):
+    from types import SimpleNamespace
+
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.config.schema import ToolsConfig
+
+    ctx = ToolContext(
+        config=ToolsConfig(),
+        workspace=str(tmp_path),
+        bus=None,
+        subagent_manager=SimpleNamespace(
+            get_running_count=lambda: 0,
+            max_concurrent_subagents=4,
+        ),
+        cron_service=None,
+        timezone="UTC",
+    )
+    registry = ToolRegistry()
+    registered = ToolLoader().load(ctx, registry)
+
+    assert "exec" in registered
+    assert registry.has("exec")
+
+
+def test_loader_wires_shared_exec_session_manager(tmp_path):
+    from types import SimpleNamespace
+
+    from nanobot.agent.tools.exec_session import ExecSessionManager
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.config.schema import ToolsConfig
+
+    manager = ExecSessionManager()
+    ctx = ToolContext(
+        config=ToolsConfig(),
+        workspace=str(tmp_path),
+        subagent_manager=SimpleNamespace(
+            get_running_count=lambda: 0,
+            max_concurrent_subagents=4,
+        ),
+        exec_session_manager=manager,
+        timezone="UTC",
+    )
+    registry = ToolRegistry()
+    ToolLoader().load(ctx, registry)
+
+    assert registry.get("exec")._session_manager is manager
+    assert registry.get("exec_session")._manager is manager
+    assert registry.get("write_stdin") is None
+    assert registry.get("list_exec_sessions")._manager is manager
+    definition_names = {
+        definition["function"]["name"]
+        for definition in registry.get_definitions()
+    }
+    assert "exec_session" in definition_names
+    assert "write_stdin" not in definition_names
+
+
+def test_loader_preserves_caller_supplied_tool(tmp_path):
+    from nanobot.agent.tools.filesystem import ReadFileTool
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.config.schema import ToolsConfig
+
+    tool = ReadFileTool(workspace=tmp_path / "custom-root")
+    registry = ToolRegistry()
+    registry.register(tool)
+
+    registered = ToolLoader(test_classes=[ReadFileTool]).load(
+        ToolContext(config=ToolsConfig(), workspace=str(tmp_path)), registry,
+    )
+
+    assert registry.get("read_file") is tool
+    assert "read_file" not in registered
+
+
+def test_fs_tool_create_builds_from_context():
+    from nanobot.agent.tools.filesystem import ReadFileTool
+    mock_config = MagicMock()
+    mock_config.restrict_to_workspace = False
+    mock_config.exec.sandbox = ""
+    ctx = ToolContext(config=mock_config, workspace="/tmp/test")
+    tool = ReadFileTool.create(ctx)
+    assert isinstance(tool, ReadFileTool)
+    assert tool._workspace == Path("/tmp/test")
+
+
+def test_fs_tool_create_respects_restrict_to_workspace():
+    from nanobot.agent.tools.filesystem import ReadFileTool
+    mock_config = MagicMock()
+    mock_config.restrict_to_workspace = True
+    mock_config.exec.sandbox = ""
+    ctx = ToolContext(config=mock_config, workspace="/tmp/test")
+    tool = ReadFileTool.create(ctx)
+    assert tool._allowed_dir == Path("/tmp/test")
+
+
+def test_fs_tool_create_respects_sandbox():
+    from nanobot.agent.tools.filesystem import ReadFileTool
+    mock_config = MagicMock()
+    mock_config.restrict_to_workspace = False
+    mock_config.exec.sandbox = "bwrap"
+    ctx = ToolContext(config=mock_config, workspace="/tmp/test")
+    tool = ReadFileTool.create(ctx)
+    assert tool._allowed_dir == Path("/tmp/test")
+
+
+async def test_message_tool_create():
+    from nanobot.agent.tools.message import MessageTool
+    mock_bus = MagicMock()
+    mock_config = MagicMock()
+    ctx = ToolContext(config=mock_config, workspace="/tmp", bus=mock_bus)
+    tool = MessageTool.create(ctx)
+    assert isinstance(tool, MessageTool)
+
+
+def test_subagent_tool_create():
+    from nanobot.agent.tools.subagent import SubagentTool
+    mock_mgr = MagicMock()
+    mock_config = MagicMock()
+    ctx = ToolContext(config=mock_config, workspace="/tmp", subagent_manager=mock_mgr)
+    tool = SubagentTool.create(ctx)
+    assert isinstance(tool, SubagentTool)
+
+
+def test_cron_tool_enabled_without_service():
+    from nanobot.agent.tools.cron import CronTool
+    mock_config = MagicMock()
+    ctx = ToolContext(config=mock_config, workspace="/tmp", cron_service=None)
+    assert CronTool.enabled(ctx) is False
+
+
+def test_cron_tool_enabled_with_service():
+    from nanobot.agent.tools.cron import CronTool
+    mock_service = MagicMock()
+    mock_config = MagicMock()
+    ctx = ToolContext(config=mock_config, workspace="/tmp", cron_service=mock_service)
+    assert CronTool.enabled(ctx) is True
+
+
+def test_cron_tool_create():
+    from nanobot.agent.tools.cron import CronTool
+    mock_service = MagicMock()
+    mock_config = MagicMock()
+    ctx = ToolContext(
+        config=mock_config, workspace="/tmp",
+        cron_service=mock_service, timezone="Asia/Shanghai",
+    )
+    tool = CronTool.create(ctx)
+    assert isinstance(tool, CronTool)
+
+
+def test_exec_tool_config_cls():
+    from nanobot.agent.tools.shell import ExecTool, ExecToolConfig
+    assert ExecTool.config_cls() is ExecToolConfig
+    assert ExecTool.config_key == "exec"
+
+
+def test_exec_tool_enabled():
+    from nanobot.agent.tools.shell import ExecTool
+    mock_config = MagicMock()
+    mock_config.exec.enable = True
+    ctx = ToolContext(config=mock_config, workspace="/tmp")
+    assert ExecTool.enabled(ctx) is True
+    mock_config.exec.enable = False
+    assert ExecTool.enabled(ctx) is False
+
+
+def test_exec_tool_create():
+    from nanobot.agent.tools.shell import ExecTool, ExecToolConfig
+    from nanobot.config.schema import ToolsConfig
+
+    config = ToolsConfig(exec=ExecToolConfig(
+        max_runtime=120,
+        max_runtime_limit=900,
+        idle_timeout=15,
+        idle_action="terminate",
+        path_prepend="/venv/bin",
+    ))
+    ctx = ToolContext(config=config, workspace="/tmp")
+    tool = ExecTool.create(ctx)
+
+    assert isinstance(tool, ExecTool)
+    assert tool.path_prepend == "/venv/bin"
+    assert tool._resolve_timeout(None) == 120
+    for name in ("max_runtime", "timeout"):
+        assert tool.parameters["properties"][name]["maximum"] == 900
+
+
+def test_web_tools_config_cls():
+    from nanobot.agent.tools.web import WebFetchTool, WebSearchTool, WebToolsConfig
+    assert WebSearchTool.config_key == "web"
+    assert WebSearchTool.config_cls() is WebToolsConfig
+    assert WebFetchTool.config_key == "web"
+    assert WebFetchTool.config_cls() is WebToolsConfig
+
+
+def test_web_tools_enabled():
+    from nanobot.agent.tools.web import WebSearchTool
+    mock_config = MagicMock()
+    mock_config.web.enable = True
+    ctx = ToolContext(config=mock_config, workspace="/tmp")
+    assert WebSearchTool.enabled(ctx) is True
+    mock_config.web.enable = False
+    assert WebSearchTool.enabled(ctx) is False
+
+
+def test_web_search_tool_create():
+    from nanobot.agent.tools.web import WebSearchTool
+    mock_config = MagicMock()
+    mock_config.web.enable = True
+    mock_config.web.search = MagicMock()
+    mock_config.web.use_proxy = False
+    mock_config.web.user_agent = None
+    ctx = ToolContext(config=mock_config, workspace="/tmp")
+    tool = WebSearchTool.create(ctx)
+    assert isinstance(tool, WebSearchTool)
+
+
+def test_web_fetch_tool_create():
+    from nanobot.agent.tools.web import WebFetchTool
+    mock_config = MagicMock()
+    mock_config.web.enable = True
+    mock_config.web.fetch = MagicMock()
+    mock_config.web.use_proxy = False
+    mock_config.web.user_agent = None
+    ctx = ToolContext(config=mock_config, workspace="/tmp")
+    tool = WebFetchTool.create(ctx)
+    assert isinstance(tool, WebFetchTool)
+
+
+def test_image_gen_tool_config_cls():
+    from nanobot.agent.tools.image_generation import ImageGenerationTool, ImageGenerationToolConfig
+    assert ImageGenerationTool.config_key == "image_generation"
+    assert ImageGenerationTool.config_cls() is ImageGenerationToolConfig
+
+
+def test_image_gen_tool_enabled():
+    from nanobot.agent.tools.image_generation import ImageGenerationTool
+    from nanobot.config.schema import ProvidersConfig
+    mock_config = MagicMock()
+    mock_config.image_generation.enabled = True
+    ctx = ToolContext(config=mock_config, workspace="/tmp", providers_config=ProvidersConfig())
+    assert ImageGenerationTool.enabled(ctx) is True
+    mock_config.image_generation.enabled = False
+    assert ImageGenerationTool.enabled(ctx) is False
+
+
+def test_image_gen_tool_create():
+    from nanobot.agent.tools.image_generation import ImageGenerationTool
+    from nanobot.config.schema import ProviderConfig, ProvidersConfig
+    mock_config = MagicMock()
+    mock_config.image_generation = MagicMock()
+    ctx = ToolContext(
+        config=mock_config, workspace="/tmp",
+        providers_config=ProvidersConfig(openrouter=ProviderConfig(api_key="image-key")),
+    )
+    tool = ImageGenerationTool.create(ctx)
+    assert isinstance(tool, ImageGenerationTool)
+    assert tool.provider_configs["openrouter"].api_key == "image-key"
+
+
+def test_my_tool_config_cls():
+    from nanobot.agent.tools.self import MyTool, MyToolConfig
+    assert MyTool.config_key == "my"
+    assert MyTool.config_cls() is MyToolConfig
+
+
+def test_my_tool_enabled():
+    from nanobot.agent.tools.self import MyTool
+    mock_config = MagicMock()
+    mock_config.my.enable = True
+    ctx = ToolContext(
+        config=mock_config,
+        workspace="/tmp",
+        runtime_control=MagicMock(),
+    )
+    assert MyTool.enabled(ctx) is True
+    mock_config.my.enable = False
+    assert MyTool.enabled(ctx) is False
+
+
+def test_my_tool_requires_runtime_control():
+    from nanobot.agent.tools.self import MyTool
+
+    mock_config = MagicMock()
+    mock_config.my.enable = True
+    ctx = ToolContext(config=mock_config, workspace="/tmp")
+
+    assert MyTool.enabled(ctx) is False
+
+
+def test_mcp_wrappers_not_discoverable():
+    from nanobot.agent.tools.mcp import MCPPromptWrapper, MCPResourceWrapper, MCPToolWrapper
+    assert MCPToolWrapper._plugin_discoverable is False
+    assert MCPResourceWrapper._plugin_discoverable is False
+    assert MCPPromptWrapper._plugin_discoverable is False
+
+
+def test_loader_registers_builtin_tools():
+    from nanobot.agent.tools.loader import ToolLoader
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.agent.tools.shell import ExecToolConfig
+
+    mock_config = MagicMock()
+    mock_config.exec = ExecToolConfig(max_runtime=60)
+    mock_config.restrict_to_workspace = False
+    mock_config.web.enable = True
+    mock_config.web.search = MagicMock()
+    mock_config.web.fetch = MagicMock()
+    mock_config.web.use_proxy = False
+    mock_config.web.user_agent = None
+    mock_config.image_generation.enabled = False
+    mock_config.my.enable = True
+    mock_config.my.allow_set = False
+
+    ctx = ToolContext(
+        config=mock_config,
+        workspace="/tmp",
+        bus=MagicMock(),
+        subagent_manager=MagicMock(),
+        cron_service=MagicMock(),
+        timezone="UTC",
+        runtime_control=MagicMock(),
+    )
+    registry = ToolRegistry()
+    loader = ToolLoader()
+    registered = loader.load(ctx, registry)
+
+    expected = {
+        "read_file", "write_file", "edit_file", "list_dir",
+        "exec", "exec_session", "list_exec_sessions",
+        "web_search", "web_fetch",
+        "message", "subagent", "cron",
+        "my",
+    }
+    actual = set(registered)
+    expected.update({"rg"} if shutil.which("rg") else {"find_files", "grep"})
+    assert expected <= actual, f"Missing tools: {expected - actual}"

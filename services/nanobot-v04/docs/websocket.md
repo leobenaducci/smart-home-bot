@@ -1,0 +1,517 @@
+# WebSocket Server Channel
+
+Nanobot can act as a WebSocket server, allowing external clients (web apps, CLIs, scripts) to interact with the agent in real time via persistent connections.
+
+## Features
+
+- Bidirectional real-time communication over WebSocket
+- Streaming support — receive agent responses token by token
+- Token-based authentication (static tokens and short-lived issued tokens)
+- Multi-chat multiplexing — one connection can run many concurrent `chat_id`s
+- TLS/SSL support (WSS) with enforced TLSv1.2 minimum
+- Client allow-list via `allowFrom`
+- Auto-cleanup of dead connections
+
+## Quick Start
+
+### 1. Configure
+
+For normal browser setup, run `nanobot webui`; the launcher prepares the local channel and opens the WebUI. Configure models in **Settings → Models**. The listener and protocol fields below are for custom clients and deployments and have no graphical editor.
+
+The WebSocket channel is enabled by default. Add only the fields you want to override under `channels.websocket`:
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "host": "127.0.0.1",
+      "port": 8765,
+      "path": "/",
+      "tokenIssuePath": "/auth/token",
+      "tokenIssueSecret": "your-webui-password",
+      "websocketRequiresToken": true,
+      "allowFrom": ["*"],
+      "streaming": true
+    }
+  }
+}
+```
+
+### 2. Apply the configuration
+
+Replace `your-webui-password` with a private secret before using the configuration. Restart the gateway that owns this config if it is already running. If none is running, start it with the same installation and config:
+
+```bash
+nanobot gateway
+```
+
+Keep it running while connecting clients from another terminal.
+
+### 3. Obtain a token and connect
+
+The secret above authorizes token issuance; it is not itself an issued connection token. Each WebSocket connection needs a new single-use token. Choose either client below. Both use the `/auth/token` path configured in step 1.
+
+With `curl` and `websocat` installed:
+
+```bash
+# Replace the example secret with the value saved in your config.
+curl --fail -H "Authorization: Bearer your-webui-password" http://127.0.0.1:8765/auth/token
+# Copy the returned token into the URL; keep the whole URL quoted.
+websocat "ws://127.0.0.1:8765/?client_id=alice&token=TOKEN_FROM_RESPONSE"
+```
+
+After the `ready` event, send `{"content":"Hello nanobot!"}`. Obtain another token before reconnecting. Do not share the secret or the token URL.
+
+Alternatively, save and run this Python example in an environment with `websockets` installed. It asks for the configured secret, obtains its own token, and prints server events until you press Ctrl+C:
+
+```python
+import asyncio
+import json
+from getpass import getpass
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+import websockets
+
+request = Request(
+    "http://127.0.0.1:8765/auth/token",
+    headers={"Authorization": "Bearer " + getpass("WebSocket token-issue secret: ")},
+)
+with urlopen(request, timeout=10) as response:
+    token = json.load(response)["token"]
+
+
+async def main():
+    query = urlencode({"client_id": "alice", "token": token})
+    async with websockets.connect("ws://127.0.0.1:8765/?" + query) as ws:
+        print(json.loads(await ws.recv()))  # ready event
+        await ws.send(json.dumps({"content": "Hello nanobot!"}))
+        async for frame in ws:
+            print(json.loads(frame))
+
+
+asyncio.run(main())
+```
+
+## Connection URL
+
+```text
+ws://{host}:{port}{path}?client_id={id}&token={token}
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `client_id` | No | Identifier for `allowFrom` authorization. Auto-generated as `anon-xxxxxxxxxxxx` if omitted. Truncated to 128 chars. |
+| `token` | Conditional | Authentication token. Required when `websocketRequiresToken` is `true` or `token` (static secret) is configured, unless the request comes through an authenticated `trustedProxyAuth` peer. |
+
+## Wire Protocol
+
+All frames are JSON text. Each message has an `event` field.
+
+### Server → Client
+
+**`ready`** — sent immediately after connection is established:
+
+```json
+{
+  "event": "ready",
+  "chat_id": "uuid-v4",
+  "client_id": "alice"
+}
+```
+
+**`message`** — full agent response:
+
+```json
+{
+  "event": "message",
+  "chat_id": "uuid-v4",
+  "text": "Hello! How can I help?",
+  "media": ["/tmp/image.png"],
+  "reply_to": "msg-id"
+}
+```
+
+`media` and `reply_to` are only present when applicable.
+
+**`delta`** — streaming text chunk (only when `streaming: true`):
+
+```json
+{
+  "event": "delta",
+  "chat_id": "uuid-v4",
+  "text": "Hello",
+  "stream_id": "s1"
+}
+```
+
+**`stream_end`** — signals the end of a streaming segment:
+
+```json
+{
+  "event": "stream_end",
+  "chat_id": "uuid-v4",
+  "stream_id": "s1"
+}
+```
+
+**`reasoning_delta`** — incremental model reasoning / thinking chunk for the active assistant turn. Mirrors `delta` but targets the reasoning bubble above the answer rather than the answer body:
+
+```json
+{
+  "event": "reasoning_delta",
+  "chat_id": "uuid-v4",
+  "text": "Let me decompose ",
+  "stream_id": "r1"
+}
+```
+
+**`reasoning_end`** — close marker for the active reasoning stream. WebUI uses this to lock the in-place bubble and switch from the shimmer header to a static collapsed state:
+
+```json
+{
+  "event": "reasoning_end",
+  "chat_id": "uuid-v4",
+  "stream_id": "r1"
+}
+```
+
+Reasoning frames only flow when the channel's `showReasoning` is `true` (default) and the model returns reasoning content (DeepSeek-R1 / Kimi / MiMo / OpenAI reasoning models, Anthropic extended thinking, or inline `<think>` / `<thought>` tags). Models without reasoning produce zero `reasoning_delta` frames.
+
+**`runtime_model_updated`** — broadcast when the gateway default runtime changes or when a config reload requires clients to refresh their model catalog:
+
+```json
+{
+  "event": "runtime_model_updated",
+  "model_name": "openai/gpt-4.1-mini",
+  "model_preset": "fast"
+}
+```
+
+`model_preset` is omitted when no named preset is active. WebUI clients use this event to refresh model settings after default-runtime and config changes. `/model <preset>` is session-scoped; its selection is reflected through `session_updated` and the session row's `model_preset` field instead of this global event.
+
+**`pairing_changed`** — sent only to authenticated WebUI connections after an in-process pairing change:
+
+```json
+{"event":"pairing_changed"}
+```
+
+The event contains no pairing codes or account data. Read the current state from `GET /api/settings/pairing`; notifications are not replayed, so read a fresh snapshot on initial connection and reconnect. Existing polling continues to discover changes made by another process and expired requests. Approval, denial and authentication checks are unchanged.
+
+**`attached`** — confirmation for `new_chat` / `attach` inbound envelopes (see [Multi-chat multiplexing](#multi-chat-multiplexing)):
+
+```json
+{"event": "attached", "chat_id": "uuid-v4"}
+```
+
+**`error`** — soft error for malformed inbound envelopes. The connection stays open:
+
+```json
+{"event": "error", "detail": "invalid chat_id"}
+```
+
+### Client → Server
+
+**Legacy (default chat):** send a plain string, or a JSON object with a recognized text field:
+
+```json
+"Hello nanobot!"
+```
+
+```json
+{"content": "Hello nanobot!"}
+```
+
+Recognized fields: `content`, `text`, `message` (checked in that order). Invalid JSON is treated as plain text. These frames route to the connection's default `chat_id` (the one announced in `ready`).
+
+**Typed envelopes (multi-chat):** any JSON object with a string `type` field is a typed envelope:
+
+| `type` | Fields | Effect |
+|--------|--------|--------|
+| `new_chat` | — | Server mints a new `chat_id`, subscribes this connection, replies with `attached`. |
+| `attach` | `chat_id` | Subscribe to an existing `chat_id` (e.g. after a page reload). Replies with `attached`. |
+| `message` | `chat_id`, `content` | Send `content` on `chat_id`. First use auto-attaches; no explicit `attach` needed. |
+
+See [Multi-chat multiplexing](#multi-chat-multiplexing) for the full flow.
+
+### Binary attachments (WebUI and TUI)
+
+The gateway advertises `webui.attachments.binary.v1`. WebUI protocol 1 and the terminal protocol are unchanged. Bundled clients and their gateway use HTTP on the same listener for attachment uploads. After an authorized handshake, `ready` includes an `upload` object with `path: "/api/attachments"` and an opaque `token`. This token is a short-lived capability tied to that live connection, not the one-time handshake token, API token, or client-selected `client_id`.
+
+1. `POST` the raw file bytes to the advertised path with `Authorization: Bearer <upload token>`, the file's `Content-Type`, and an exact `Content-Length`. `X-Attachment-Name` may contain a percent-encoded display filename. Compressed request bodies and chunked transfer encoding are rejected.
+2. The response is `201 {"reference": "<opaque reference>"}`. Use it in a small WebSocket envelope, for example:
+
+   ```json
+   {"type":"message","chat_id":"chat-id","content":"Inspect this","webui":true,"turn_id":"unique-turn-id","media":[{"reference":"opaque-reference","name":"report.pdf"}]}
+   ```
+
+3. Retain the draft and local preview until `message_accepted` confirms the turn. A connection close before confirmation means delivery is uncertain, not that the draft should be discarded. Reconnect obtains a new upload capability; old uncommitted references cannot be used by the new connection. A repeated accepted `(chat_id, turn_id)` is acknowledged without another dispatch within the gateway's bounded ten-minute in-memory retry window.
+
+The upload path accepts the existing image, document, and video MIME whitelist. Existing file/count/total limits still apply independently of `maxMessageBytes`. Uploads time out after five minutes, or after 30 seconds without receiving more data. Uploads are not resumable, so a retry sends the whole file.
+
+Update WebUI and TUI together with the gateway. Existing messages and attachments remain available without a history migration. Clients must use HTTP uploads; `media.data_url` message uploads are no longer accepted. Local previews and the separate audio transcription protocol are unchanged.
+
+Reverse proxies must forward `POST /api/attachments` (including its authorization header) to the gateway and permit the configured file sizes. Same-origin browser uploads include origin cookies for edge authentication; cross-origin uploads do not send cookies. Do not enable public CORS for this capability endpoint.
+
+For a remote host opened through the local WebUI, update the local installation and the remote gateway together to use binary attachments. An older host's text chats and HTTP reads remain available.
+
+## Configuration Reference
+
+All fields go under `channels.websocket` in `config.json`. Unrecognized options retain the existing behavior: they are ignored without preventing startup. Active options below remain validated.
+
+### Connection
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable the WebSocket server. Set to `false` only when you intentionally do not want the bundled WebUI/WebSocket surface. |
+| `host` | string | `"127.0.0.1"` | Bind address. Use `"0.0.0.0"` to accept external connections. |
+| `port` | int | `8765` | Listen port. |
+| `path` | string | `"/"` | WebSocket upgrade path. Trailing slashes are normalized (root `/` is preserved). |
+| `publicWsUrl` | string | `""` | Exact public `ws://` or `wss://` endpoint returned by `/webui/bootstrap`. Set this when a reverse proxy forwards requests with an origin `Host` header (for example, `wss://claw.example.com/`); its path must match `path`. |
+| `maxMessageBytes` | int | `37748736` | Maximum inbound WebSocket frame size in bytes (1 KB – 40 MB). The existing 36 MB default is retained. HTTP binary attachments do not count toward this limit; a legacy 1 MB setting no longer prevents larger attachments from being sent. |
+
+### Authentication
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `token` | string | `""` | Static shared secret. When set, clients must provide `?token=<value>` matching this secret (timing-safe comparison). Issued tokens are also accepted as a fallback. A trusted proxy assertion bypasses this requirement. |
+| `websocketRequiresToken` | bool | `true` | When `true` and no static `token` is configured, clients must still present a valid issued token, unless `trustedProxyAuth` authenticates the direct proxy peer. Set to `false` to allow unauthenticated connections (only safe for local/trusted networks). |
+| `tokenIssuePath` | string | `""` | HTTP path for issuing short-lived tokens. Must differ from `path`. See [Token Issuance](#token-issuance). |
+| `tokenIssueSecret` | string | `""` | Secret required to obtain tokens via the issue endpoint. If empty, any client can obtain WebSocket connection tokens from `tokenIssuePath` (logged as a warning). `/webui/bootstrap` issues tokens for local/secret-authenticated requests; trusted-proxy requests intentionally receive no bootstrap or API token. |
+| `trustedProxyAuth` | object or `null` | `null` | Optional two-part no-token authorization for a directly connected upstream proxy. Both `trustedPeerCidrs` and a non-empty `assertionHeader` value must match; a CIDR alone never authorizes bootstrap or WebSocket/API access. |
+| `trustedProxyAuth.trustedPeerCidrs` | list of CIDR strings | — | Direct TCP peer networks that may present the assertion. IPv4, IPv6, and IPv4-mapped IPv6 peers are supported; universal CIDRs (`0.0.0.0/0`, `::/0`) are rejected. |
+| `trustedProxyAuth.assertionHeader` | string | — | Header injected by the identity-aware proxy after successful authentication. Routing/client metadata headers (`Host`, `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `CF-Connecting-IP`) are rejected; nanobot trusts the remaining header's non-empty value but does not cryptographically validate it. |
+| `tokenTtlS` | int | `300` | Time-to-live for issued tokens in seconds (30 – 86,400). |
+
+### Access Control
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `allowFrom` | list of string | `["*"]` | Allowed `client_id` values. `"*"` allows all; `[]` denies all. |
+
+### Streaming
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `streaming` | bool | `true` | Enable streaming mode. The agent sends `delta` + `stream_end` frames instead of a single `message`. |
+
+### Keep-alive
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pingIntervalS` | float | `20.0` | WebSocket ping interval in seconds (5 – 300). |
+| `pingTimeoutS` | float | `20.0` | Time to wait for a pong before closing the connection (5 – 300). |
+
+### TLS/SSL
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `sslCertfile` | string | `""` | Path to the TLS certificate file (PEM). Both `sslCertfile` and `sslKeyfile` must be set to enable WSS. |
+| `sslKeyfile` | string | `""` | Path to the TLS private key file (PEM). Minimum TLS version is enforced as TLSv1.2. |
+
+## Token Issuance
+
+For production deployments where `websocketRequiresToken: true`, use short-lived tokens instead of embedding static secrets in clients.
+
+### How it works
+
+1. Client sends `GET {tokenIssuePath}` with `Authorization: Bearer {tokenIssueSecret}` (or `X-Nanobot-Auth` header).
+2. Server responds with a one-time-use token:
+
+```json
+{"token": "nbwt_aBcDeFg...", "expires_in": 300}
+```
+
+3. Client opens WebSocket with `?token=nbwt_aBcDeFg...&client_id=...`.
+4. The token is consumed (single use) and cannot be reused.
+
+The embedded WebUI's `/webui/bootstrap` route returns a WebSocket token and REST `api_token` for local or secret-authenticated requests. When `trustedProxyAuth` authenticates the direct proxy peer, it returns connection metadata only: no bootstrap token, no REST API token, and no token query parameter is required for the WebSocket handshake or subsequent REST requests.
+
+### Trusted proxy no-token bootstrap
+
+`trustedProxyAuth` is an opt-in alternative for deployments where an identity-aware reverse proxy authenticates the user before connecting to nanobot. The proxy assertion becomes the authentication boundary for the entire WebUI surface: `/webui/bootstrap`, the WebSocket handshake, and REST API routes. Bootstrap is accepted only when **both** the direct TCP peer matches one of `trustedPeerCidrs` and the configured assertion header is present and non-empty. A trusted address by itself is never sufficient.
+
+Nanobot deliberately uses only `connection.remote_address` for the peer check. It never uses `X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `CF-Connecting-IP`, or `X-Forwarded-Host` to decide whether the proxy is trusted. Nanobot trusts the assertion supplied by the explicitly trusted peer, but does not cryptographically validate or interpret the JWT/assertion contents. Do not enable this option if untrusted clients can connect directly to the nanobot listener.
+
+The configured assertion header must be a proxy-generated authentication assertion, not a routing or client metadata header. Headers such as `Host`, `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, and `CF-Connecting-IP` are rejected by configuration; use the identity provider's post-authentication assertion header instead (for example, `Cf-Access-Jwt-Assertion`).
+
+For example, a local Cloudflare Tunnel with Cloudflare Access can validate the user at the edge and forward the resulting `Cf-Access-Jwt-Assertion`:
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "host": "127.0.0.1",
+      "publicWsUrl": "wss://nanobot.example.com/",
+      "trustedProxyAuth": {
+        "trustedPeerCidrs": ["127.0.0.1/32", "::1/128"],
+        "assertionHeader": "Cf-Access-Jwt-Assertion"
+      }
+    }
+  }
+}
+```
+
+This works only when the directly connected `cloudflared` process reaches nanobot over the configured loopback address and supplies a non-empty assertion. Keep nanobot firewalled from untrusted clients; this configuration is not a CIDR-based bootstrap bypass.
+
+### Example setup
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "port": 8765,
+      "path": "/ws",
+      "tokenIssuePath": "/auth/token",
+      "tokenIssueSecret": "your-secret-here",
+      "tokenTtlS": 300,
+      "websocketRequiresToken": true,
+      "allowFrom": ["*"],
+      "streaming": true
+    }
+  }
+}
+```
+
+Client flow:
+
+```bash
+# 1. Obtain a token
+curl -H "Authorization: Bearer your-secret-here" http://127.0.0.1:8765/auth/token
+
+# 2. Connect using the token
+websocat "ws://127.0.0.1:8765/ws?client_id=alice&token=nbwt_aBcDeFg..."
+```
+
+### Limits
+
+- Issued tokens are single-use — each token can only complete one handshake.
+- Outstanding tokens are capped at 10,000. Requests beyond this return HTTP 429.
+- Expired tokens are purged lazily on each issue or validation request.
+
+## Multi-chat multiplexing
+
+A single WebSocket can carry many concurrent chats. The server tracks `chat_id -> {connections}` as a fan-out set, so the same chat can also be mirrored across multiple connections (e.g. two browser tabs).
+
+### Typical flow (web UI with a sidebar)
+
+```text
+client                                server
+  | --- connect -------------------->  |
+  | <-- {"event":"ready",              |
+  |      "chat_id":"d3..."}   (default)|
+  |                                     |
+  | --- {"type":"new_chat"} --------->  |
+  | <-- {"event":"attached",            |
+  |      "chat_id":"a1..."}             |
+  |                                     |
+  | --- {"type":"message",              |
+  |      "chat_id":"a1...",             |
+  |      "content":"hi"} ------------>  |
+  | <-- {"event":"delta", ...}          |
+  | <-- {"event":"stream_end", ...}     |
+  |                                     |
+  | --- {"type":"attach",               |  # after page reload
+  |      "chat_id":"a1..."} --------->  |
+  | <-- {"event":"attached", ...}       |
+```
+
+### Rules
+
+- Every outbound event carries `chat_id`. Clients must dispatch by that field.
+- `chat_id` format: `^[A-Za-z0-9_:-]{1,64}$`. Non-matching values return `error`.
+- `message` auto-attaches on first use — no separate `attach` is required for chats the server minted (`new_chat`) on the same connection.
+- Errors (invalid envelope, unknown `type`, bad `chat_id`) are soft: the server replies with `{"event":"error","detail":"..."}` and keeps the connection open.
+
+### Backward compatibility
+
+Legacy clients that only send plain text or `{"content": ...}` keep working unchanged: those frames route to the connection's default `chat_id` (the one from `ready`). No config flag is needed.
+
+### Security boundary
+
+`chat_id` is a *capability*: anyone holding a valid WebSocket auth credential and the chat_id can attach to that conversation and see its output. This is safe for nanobot's local, single-user model. Namespacing chat IDs alone does not enforce ownership. An application serving multiple users must authorize access before forwarding requests; separate instances and appropriate host permissions are needed when workspace files, memory, and tools must also be isolated. Nanobot does not provide per-user WebSocket authorization.
+
+## Security Notes
+
+- **Timing-safe comparison**: Static token validation uses `hmac.compare_digest` to prevent timing attacks.
+- **Defense in depth**: `allowFrom` is checked at both the HTTP handshake level and the message level.
+- **chat_id as capability**: see [Multi-chat multiplexing](#multi-chat-multiplexing). Auth on the WebSocket handshake is the single line of defense; callers who pass it can attach to any chat_id they know.
+- **TLS enforcement**: When SSL is enabled, TLSv1.2 is the minimum allowed version.
+- **Default-secure**: `websocketRequiresToken` defaults to `true`. Use `false` only for deliberate loopback-only development without authentication, as shown below.
+
+## Media Files
+
+Outbound `message` events may include a `media` field containing local filesystem paths. Remote clients cannot access these files directly — they need either:
+
+- A shared filesystem mount, or
+- An HTTP file server serving the nanobot media directory
+
+## Common Patterns
+
+### Loopback-only development (no auth)
+
+Use this only for local clients on the same trusted machine, without forwarding the port. Remove any existing static token, token-issue secret, or trusted-proxy authentication settings if deliberately switching to this mode. Binding all interfaces (`0.0.0.0` or `::`) requires configured authentication and is rejected without it.
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "host": "127.0.0.1",
+      "port": 8765,
+      "websocketRequiresToken": false,
+      "allowFrom": ["*"],
+      "streaming": true
+    }
+  }
+}
+```
+
+### Static token (simple auth)
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "token": "my-shared-secret",
+      "allowFrom": ["alice", "bob"]
+    }
+  }
+}
+```
+
+Clients connect with `?token=my-shared-secret&client_id=alice`.
+
+### Public endpoint with issued tokens
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "host": "0.0.0.0",
+      "port": 8765,
+      "path": "/ws",
+      "tokenIssuePath": "/auth/token",
+      "tokenIssueSecret": "production-secret",
+      "websocketRequiresToken": true,
+      "sslCertfile": "/etc/ssl/certs/server.pem",
+      "sslKeyfile": "/etc/ssl/private/server-key.pem",
+      "allowFrom": ["*"]
+    }
+  }
+}
+```
+
+### Custom path
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "path": "/chat/ws",
+      "allowFrom": ["*"]
+    }
+  }
+}
+```
+
+Clients connect to `ws://127.0.0.1:8765/chat/ws?client_id=...`. Trailing slashes are normalized, so `/chat/ws/` works the same.

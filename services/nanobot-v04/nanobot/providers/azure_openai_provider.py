@@ -1,0 +1,337 @@
+"""Azure OpenAI provider using the OpenAI SDK Responses API.
+
+Uses ``AsyncOpenAI`` pointed at ``https://{endpoint}/openai/v1/`` which
+routes to the Responses API (``/responses``).  Reuses shared conversion
+helpers from :mod:`nanobot.providers.openai_responses`.
+
+Authentication
+--------------
+Two modes are supported, selected automatically:
+
+1. **Static API key** — when ``api_key`` is non-empty it is sent as the
+   ``api-key`` / ``Authorization: Bearer`` header (existing behavior).
+2. **Microsoft Entra ID (AAD)** — when ``api_key`` is empty the provider
+   falls back to :class:`azure.identity.aio.DefaultAzureCredential` and
+   acquires a bearer token scoped to
+   ``https://cognitiveservices.azure.com/.default``.  ``azure-identity``
+   is an optional dependency installed via ``nanobot plugins enable azure``.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from openai import AsyncOpenAI
+
+from nanobot.providers.base import (
+    LLMProvider,
+    LLMResponse,
+    ProviderCallContext,
+    ProviderConversationState,
+)
+from nanobot.providers.openai_responses import ResponsesBackend, responses_state_matches
+
+_AZURE_OPENAI_SCOPE = "https://cognitiveservices.azure.com/.default"
+
+
+class _AzureTokenProvider:
+    """Async bearer-token callback for AAD authentication.
+
+    Thin wrapper around :class:`azure.identity.aio.DefaultAzureCredential`
+    that exposes itself as an async callable returning a fresh bearer
+    token.  The Azure SDK's own MSAL-backed token cache already returns
+    valid tokens without network calls, so no extra caching is layered on
+    top here.
+
+    Raises ``RuntimeError`` with a clear install hint if
+    ``azure-identity`` is not installed.
+    """
+
+    def __init__(self, scope: str = _AZURE_OPENAI_SCOPE) -> None:
+        try:
+            from azure.identity.aio import DefaultAzureCredential
+        except ImportError as exc:
+            raise RuntimeError(
+                "Azure OpenAI AAD authentication requires the 'azure-identity' package. "
+                "Run: nanobot plugins enable azure"
+            ) from exc
+
+        self._scope = scope
+        self._credential = DefaultAzureCredential()
+
+    async def __call__(self) -> str:
+        access_token = await self._credential.get_token(self._scope)
+        return access_token.token
+
+    async def aclose(self) -> None:
+        close = getattr(self._credential, "close", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                pass
+
+
+class AzureOpenAIProvider(LLMProvider):
+    """Azure OpenAI provider backed by the Responses API.
+
+    Features:
+    - Uses the OpenAI Python SDK (``AsyncOpenAI``) with
+      ``base_url = {endpoint}/openai/v1/``
+    - Calls ``client.responses.create()`` (Responses API)
+    - Reuses shared message/tool/SSE conversion from
+      ``openai_responses``
+    - Falls back to :class:`DefaultAzureCredential` (AAD) when ``api_key``
+      is empty.  See module docstring for details.
+    """
+
+    def __init__(
+        self,
+        api_key: str = "",
+        api_base: str = "",
+        default_model: str = "gpt-5.2-chat",
+        *,
+        provider_name: str = "azure_openai",
+    ):
+        super().__init__(api_key, api_base, provider_name=provider_name)
+        self.default_model = default_model
+        self._responses = ResponsesBackend()
+
+        if not api_base:
+            raise ValueError("Azure OpenAI api_base is required")
+
+        if not api_base.endswith("/"):
+            api_base += "/"
+        self.api_base = api_base
+
+        # Select auth mode.  A truthy api_key wins; otherwise fall back to
+        # AAD via DefaultAzureCredential.  The OpenAI SDK accepts an async
+        # callable as ``api_key`` and invokes it per request, using the
+        # returned string as the bearer token.
+        self._token_provider: _AzureTokenProvider | None = None
+        client_api_key: str | Callable[[], Awaitable[str]]
+        if api_key:
+            client_api_key = api_key
+        else:
+            self._token_provider = _AzureTokenProvider()
+            client_api_key = self._token_provider
+
+        base_url = f"{api_base.rstrip('/')}/openai/v1/"
+        self._client = AsyncOpenAI(
+            api_key=client_api_key,
+            base_url=base_url,
+            default_headers={"x-session-affinity": uuid.uuid4().hex},
+            max_retries=0,
+        )
+
+
+    async def aclose(self) -> None:
+        try:
+            await self._responses.aclose()
+        finally:
+            try:
+                await self._client.close()
+            finally:
+                if self._token_provider is not None:
+                    await self._token_provider.aclose()
+
+    @staticmethod
+    def _supports_temperature(
+        deployment_name: str,
+        reasoning_effort: str | None = None,
+    ) -> bool:
+        """Return True when temperature is likely supported for this deployment."""
+        if reasoning_effort and reasoning_effort.lower() != "none":
+            return False
+        name = deployment_name.lower()
+        return not any(token in name for token in ("gpt-5", "o1", "o3", "o4"))
+
+    def _responses_state_provider(self) -> str:
+        return f"azure_openai:{str(self.api_base).rstrip('/')}"
+
+    def can_resume_conversation_state(
+        self,
+        state: ProviderConversationState,
+        model: str | None = None,
+    ) -> bool:
+        return responses_state_matches(
+            state,
+            provider=self._responses_state_provider(),
+            model=model or self.default_model,
+        )
+
+    def supports_native_compaction(self, model: str | None = None) -> bool:
+        """Azure's native Responses endpoint accepts context management."""
+        _ = model
+        return self._responses.native_compaction_available
+
+    def _build_body(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        model: str | None,
+        max_tokens: int,
+        temperature: float,
+        reasoning_effort: str | None,
+        tool_choice: str | dict[str, Any] | None,
+        provider_context: ProviderCallContext | None = None,
+    ) -> dict[str, Any]:
+        deployment = model or self.default_model
+        sanitized_messages = self._sanitize_empty_content(messages)
+        sanitized_state = (
+            provider_context.conversation_state
+            if provider_context is not None
+            else None
+        )
+        if sanitized_state is not None:
+            sanitized_state = sanitized_state.with_pending_messages(
+                self._sanitize_empty_content(sanitized_state.pending_messages)
+            )
+        prepared = self._responses.prepare(
+            sanitized_messages, state=sanitized_state,
+            provider=self._responses_state_provider(), model=deployment,
+            tools=tools, tool_choice=tool_choice,
+        )
+        body = prepared.body
+        body["max_output_tokens"] = max(1, max_tokens)
+        if self.supports_native_compaction(deployment):
+            self._responses.add_compaction(
+                body, provider_context.context_window_tokens if provider_context else None,
+                max_tokens,
+            )
+
+        if self._supports_temperature(deployment, reasoning_effort):
+            body["temperature"] = temperature
+
+        if not self._supports_temperature(deployment, reasoning_effort):
+            body["include"] = ["reasoning.encrypted_content"]
+        if reasoning_effort and reasoning_effort.lower() != "none":
+            body["reasoning"] = {"effort": reasoning_effort}
+        if prepared.replayed and "gpt-5.6" in deployment.lower():
+            body.setdefault("reasoning", {})["context"] = "all_turns"
+
+        return body
+
+    @staticmethod
+    def _handle_error(e: Exception) -> LLMResponse:
+        response = getattr(e, "response", None)
+        body = getattr(e, "body", None) or getattr(response, "text", None)
+        body_text = str(body).strip() if body is not None else ""
+        msg = f"Error: {body_text[:500]}" if body_text else f"Error calling Azure OpenAI: {e}"
+        headers = getattr(response, "headers", None)
+        retry_after = LLMProvider._extract_retry_after_from_headers(headers)
+        if retry_after is None:
+            retry_after = LLMProvider._extract_retry_after(msg)
+        status_code = getattr(e, "status_code", None)
+        if status_code is None and response is not None:
+            status_code = getattr(response, "status_code", None)
+        error_type, error_code = LLMProvider._extract_error_type_code(body)
+        should_retry: bool | None = None
+        if headers is not None:
+            raw_should_retry = headers.get("x-should-retry")
+            if isinstance(raw_should_retry, str):
+                lowered = raw_should_retry.strip().lower()
+                if lowered == "true":
+                    should_retry = True
+                elif lowered == "false":
+                    should_retry = False
+        error_name = type(e).__name__.lower()
+        error_kind = (
+            "timeout"
+            if "timeout" in error_name
+            else "connection"
+            if "connection" in error_name
+            else None
+        )
+        return LLMResponse(
+            content=msg,
+            finish_reason="error",
+            retry_after=retry_after,
+            error_status_code=int(status_code) if status_code is not None else None,
+            error_kind=error_kind,
+            error_type=error_type,
+            error_code=error_code,
+            error_retry_after_s=retry_after,
+            error_should_retry=should_retry,
+        )
+
+
+    async def chat_with_context(
+        self,
+        *,
+        provider_context: ProviderCallContext,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        return await self.chat(
+            **kwargs,
+            provider_context=provider_context,
+        )
+
+    async def chat_stream_with_context(
+        self,
+        *,
+        provider_context: ProviderCallContext,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        return await self.chat_stream(
+            **kwargs,
+            provider_context=provider_context,
+        )
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        provider_context: ProviderCallContext | None = None,
+    ) -> LLMResponse:
+        body = self._build_body(
+            messages, tools, model, max_tokens, temperature,
+            reasoning_effort, tool_choice,
+            provider_context,
+        )
+        try:
+            return await self._responses.sdk_request(
+                self._client, body, provider=self._responses_state_provider(),
+            )
+        except Exception as e:
+            return self._handle_error(e)
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_call_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        provider_context: ProviderCallContext | None = None,
+    ) -> LLMResponse:
+        body = self._build_body(
+            messages, tools, model, max_tokens, temperature,
+            reasoning_effort, tool_choice,
+            provider_context,
+        )
+        body["stream"] = True
+
+        try:
+            return await self._responses.sdk_request(
+                self._client, body, provider=self._responses_state_provider(),
+                on_content_delta=on_content_delta, on_thinking_delta=on_thinking_delta,
+                on_tool_call_delta=on_tool_call_delta,
+            )
+        except Exception as e:
+            return self._handle_error(e)
+
+    def get_default_model(self) -> str:
+        return self.default_model

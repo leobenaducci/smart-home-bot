@@ -1,0 +1,268 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from loguru import logger
+
+from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
+from nanobot.agent.tools.image_generation_config import ImageGenerationToolConfig
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.schema import (
+    ArraySchema,
+    IntegerSchema,
+    StringSchema,
+    tool_parameters_schema,
+)
+from nanobot.config.network import NetworkConfig
+from nanobot.config.paths import get_media_dir
+from nanobot.providers.image_generation import (
+    ImageGenerationError,
+    ImageGenerationProvider,
+    get_image_gen_provider,
+    image_gen_provider_configs,
+)
+from nanobot.security.workspace_access import current_tool_workspace
+from nanobot.security.workspace_policy import WorkspaceBoundaryError, resolve_allowed_path
+from nanobot.utils.artifacts import (
+    ArtifactError,
+    generated_image_tool_result,
+    store_generated_image_artifact,
+)
+from nanobot.utils.helpers import detect_image_mime
+
+if TYPE_CHECKING:
+    from nanobot.agent.tools.context import ToolContext
+    from nanobot.config.schema import Config, ProviderConfig
+
+
+@tool_parameters(
+    tool_parameters_schema(
+        prompt=StringSchema(
+            "Detailed image generation or edit instructions.",
+            min_length=1,
+        ),
+        reference_images=ArraySchema(
+            StringSchema(""),
+            description="Existing local image paths for edits, including prior generated artifacts.",
+        ),
+        aspect_ratio=StringSchema(
+            "Output aspect ratio, e.g. 1:1 or 16:9.",
+        ),
+        image_size=StringSchema(
+            "Provider-supported output size hint, e.g. 1K or 1024x1024.",
+        ),
+        count=IntegerSchema(
+            description="Number of images to generate in this turn.",
+            minimum=1,
+            maximum=8,
+        ),
+        required=["prompt"],
+    )
+)
+class ImageGenerationTool(Tool):
+    """Generate persistent image artifacts through the configured image provider."""
+
+    config_key = "image_generation"
+
+    @classmethod
+    def config_cls(cls):
+        return ImageGenerationToolConfig
+
+    @classmethod
+    def enabled(cls, ctx: ToolContext) -> bool:
+        return ctx.providers_config is not None and ctx.config.image_generation.enabled
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> Tool:
+        return cls(
+            workspace=ctx.workspace,
+            config=ctx.config.image_generation,
+            provider_configs=image_gen_provider_configs(ctx.providers_config),
+            network=ctx.network,
+        )
+
+    def __init__(
+        self,
+        *,
+        workspace: str | Path,
+        config: ImageGenerationToolConfig,
+        provider_config: ProviderConfig | None = None,
+        provider_configs: dict[str, ProviderConfig] | None = None,
+        network: NetworkConfig | None = None,
+    ) -> None:
+        self.workspace = Path(workspace).expanduser()
+        self.config = config
+        self.network = network or NetworkConfig()
+        self.provider_configs = dict(provider_configs or {})
+        if provider_config is not None and "openrouter" not in self.provider_configs:
+            self.provider_configs["openrouter"] = provider_config
+
+    @property
+    def name(self) -> str:
+        return "generate_image"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Generate or edit images as persistent artifacts. Returns artifact IDs and local paths."
+        )
+
+    def _provider_config(self) -> ProviderConfig | None:
+        return self.provider_configs.get(self.config.provider)
+
+    def _provider_client(self) -> ImageGenerationProvider | None:
+        provider = self._provider_config()
+        cls = get_image_gen_provider(self.config.provider, provider)
+        if cls is None:
+            return None
+        headers = dict(provider.extra_headers or {}) if provider else {}
+        overridden = {key.lower() for key in (self.config.extra_headers or {})}
+        headers = {key: value for key, value in headers.items() if key.lower() not in overridden}
+        headers.update(self.config.extra_headers or {})
+        body = deepcopy(provider.extra_body or {}) if provider else {}
+        body.update(deepcopy(self.config.extra_body or {}))
+        kwargs: dict[str, Any] = {
+            "api_key": provider.api_key if provider and isinstance(provider.api_key, str) else None,
+            "api_base": provider.api_base if provider and isinstance(provider.api_base, str) else None,
+            "extra_headers": headers or None,
+            "extra_body": body or None,
+            "proxy": self.network.resolve_proxy(provider.use_proxy) if provider else None,
+        }
+        return cls(**kwargs)
+
+    def _resolve_reference_image(self, value: str) -> str:
+        access = current_tool_workspace(self.workspace, restrict_to_workspace=True)
+        workspace = access.project_path or self.workspace
+        try:
+            resolved = resolve_allowed_path(
+                value,
+                workspace=workspace,
+                allowed_root=access.allowed_root,
+                extra_allowed_roots=[get_media_dir()] if access.allowed_root is not None else None,
+                strict=True,
+            )
+        except WorkspaceBoundaryError as exc:
+            raise ImageGenerationError(
+                "reference_images must be inside the workspace or nanobot media directory"
+            ) from exc
+        except OSError as exc:
+            raise ImageGenerationError(f"reference image not found: {value}") from exc
+        if not resolved.is_file():
+            raise ImageGenerationError(f"reference image is not a file: {value}")
+        raw = resolved.read_bytes()
+        if detect_image_mime(raw) is None:
+            raise ImageGenerationError(f"unsupported reference image: {value}")
+        return str(resolved)
+
+    def _resolve_reference_images(self, values: list[str] | None) -> list[str]:
+        if not values:
+            return []
+        return [self._resolve_reference_image(value) for value in values if value]
+
+    async def execute(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        prompt: str,
+        reference_images: list[str] | None = None,
+        aspect_ratio: str | None = None,
+        image_size: str | None = None,
+        count: int | None = None,
+        **kwargs: Any,
+    ) -> str:
+        client = self._provider_client()
+        if client is None:
+            return ToolResult.error(f"Error: unsupported image generation provider '{self.config.provider}'")
+
+        requested = count or 1
+        if requested > self.config.max_images_per_turn:
+            return ToolResult.error(
+                "Error: count exceeds tools.imageGeneration.maxImagesPerTurn "
+                f"({self.config.max_images_per_turn})"
+            )
+
+        try:
+            refs = self._resolve_reference_images(reference_images)
+            artifacts: list[dict[str, Any]] = []
+            while len(artifacts) < requested:
+                response = await client.generate(
+                    prompt=prompt,
+                    model=self.config.model,
+                    reference_images=refs,
+                    aspect_ratio=aspect_ratio or self.config.default_aspect_ratio,
+                    image_size=image_size or self.config.default_image_size,
+                )
+                for image_data_url in response.images:
+                    artifact = store_generated_image_artifact(
+                        image_data_url,
+                        prompt=prompt,
+                        model=self.config.model,
+                        source_images=refs,
+                        save_dir=self.config.save_dir,
+                        provider=self.config.provider,
+                    )
+                    artifacts.append(artifact)
+                    if len(artifacts) >= requested:
+                        break
+            return generated_image_tool_result(artifacts)
+        except (ArtifactError, ImageGenerationError, OSError) as exc:
+            return ToolResult.error(f"Error: {exc}")
+
+
+def register_image_generation_tool(
+    config: Config,
+    registry: ToolRegistry,
+    *,
+    workspace: Path,
+) -> None:
+    """Assemble the configured tool in the application's shared registry."""
+    from nanobot.agent.tools.context import ToolContext
+
+    ctx = ToolContext(
+        config=config.tools,
+        network=config.network,
+        workspace=str(workspace),
+        providers_config=config.providers,
+    )
+    if ImageGenerationTool.enabled(ctx):
+        registry.register(ImageGenerationTool.create(ctx))
+    else:
+        registry.unregister("generate_image")
+
+
+async def reload_image_generation_tool(
+    *,
+    config_path: Path,
+    workspace: Path,
+    registry: ToolRegistry,
+) -> dict[str, Any]:
+    """Refresh the application's image tool from its persisted config."""
+    try:
+        from nanobot.config.loader import load_config, resolve_config_env_vars
+
+        config = resolve_config_env_vars(load_config(config_path), config_path=config_path)
+        register_image_generation_tool(config, registry, workspace=workspace)
+    except Exception as exc:
+        logger.warning("Image generation hot reload could not read config: {}", exc)
+        return {
+            "ok": False,
+            "message": "Could not reload image generation config.",
+            "requires_restart": True,
+            "error": str(exc),
+        }
+
+    tool_config = config.tools.image_generation
+    logger.info(
+        "Image generation config reloaded: enabled={} provider={} model={}",
+        tool_config.enabled,
+        tool_config.provider,
+        tool_config.model,
+    )
+    return {
+        "ok": True,
+        "message": "Image generation settings applied without restarting nanobot.",
+        "enabled": tool_config.enabled,
+        "provider": tool_config.provider,
+        "model": tool_config.model,
+        "requires_restart": False,
+    }
