@@ -219,3 +219,17 @@ async def test_a_blank_answer_keeps_the_stream_open_for_the_escalation(tmp_path,
     assert calls[-1] == "strong"
     # One terminator, at the very end: the blank cheap answer does not close it.
     assert ends[-1] is False and ends.count(False) == 1, ends
+
+
+@pytest.mark.asyncio
+async def test_the_classifier_is_warmed_once_at_start(tmp_path):
+    """Fork loop.warm_up: the cold first call to the local classifier crossed
+    its timeout in the dress rehearsal, routing the first real turn blind."""
+    import asyncio
+
+    from nanobot.household import _WARMING, bind_household_loop
+
+    loop, calls = _loop(tmp_path, {"tiny": LLMResponse(content='{"label": "chat", "reason": "x"}')})
+    bind_household_loop(loop, _config())
+    await asyncio.gather(*list(_WARMING))
+    assert calls == ["tiny"]

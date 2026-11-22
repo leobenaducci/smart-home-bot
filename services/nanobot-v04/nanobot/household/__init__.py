@@ -30,6 +30,7 @@ def bind_household_loop(loop: Any, config: Any) -> None:
     from nanobot.household.runtime import RUNTIME
 
     RUNTIME.bind(loop, config)
+    _warm_classifier(loop, config)
     # describe_image from the first turn, as the fork had it (D6).
     ensure = getattr(loop, "_ensure_describe_image", None)
     if callable(ensure):
@@ -67,3 +68,31 @@ def health_ok_while_starting(config: Any) -> bool:
 
     gateway = getattr(config, "gateway", None)
     return household_enabled() and bool(getattr(gateway, "health_ok_while_starting", False))
+
+
+_WARMING: set = set()
+
+
+def _warm_classifier(loop: Any, config: Any) -> None:
+    """Ask the turn classifier once in the background at start (fork loop.warm_up).
+
+    The first call to the local classifier after a restart is the cold one and
+    crossed its 3 s timeout in the dress rehearsal, so the first real turn was
+    routed on the default label. A warm-up that fails or is slow costs nobody
+    a turn.
+    """
+    import asyncio
+
+    try:
+        from nanobot.household import turn_router
+
+        if config.agents.defaults.routing.mode == "off":
+            return
+        classifier = turn_router._classifier(loop, config)
+        if classifier is None:
+            return
+        task = asyncio.get_running_loop().create_task(classifier.classify("hola"))
+    except Exception:  # noqa: BLE001 -- no running loop (tests) or no classifier
+        return
+    _WARMING.add(task)
+    task.add_done_callback(_WARMING.discard)
