@@ -4949,6 +4949,69 @@ _mu_unit = next(u for u in shipped_manifest["services"]["nanobot"]["units"] if u
 check("  the manifest builds the rebased image only on demand",
       any(isinstance(b, dict) and b.get("tag") == "alfred-nanobot-v04:latest" and b.get("only_if_used")
           for b in _mu_unit["image_build"]), _mu_unit.get("image_build"))
+
+# Its context is a sibling of the unit's build directory, which only holds the
+# unit's own tree: the source tree has to be shipped there, with the plugins'
+# floor skills and the assistant's name, or the build finds no context.
+import shutil  # noqa: E402
+_src_root = Path(tempfile.mkdtemp(prefix="v04-src-"))
+(_src_root / "services/rebased/nanobot/skills/weather").mkdir(parents=True)
+(_src_root / "services/rebased/nanobot/skills/weather/SKILL.md").write_text("Alfred checks the sky.\n")
+(_src_root / "services/rebased/nanobot/household/skills_data/family").mkdir(parents=True)
+(_src_root / "services/rebased/nanobot/household/skills_data/family/SKILL.md").write_text(
+    "Alfred knows Tomi and Mora.\n")
+_floor = _src_root / "plugin/backups-floor"
+_floor.mkdir(parents=True)
+(_floor / "SKILL.md").write_text("---\nname: backups\n---\n")
+
+
+class _PushTarget:
+    def __init__(self):
+        self.pushed = {}
+
+    def push(self, local_dir, remote_dir):
+        self.pushed[remote_dir] = {str(p.relative_to(local_dir)): p.read_text()
+                                   for p in Path(local_dir).rglob("*") if p.is_file()}
+
+
+_src_unit = {"image_build": [
+    {"tag": "alfred-nanobot:latest", "context": "."},
+    {"tag": "alfred-nanobot-v04:latest", "context": "../rebased", "source": "services/rebased",
+     "only_if_used": True, "skill_floors": "nanobot/skills",
+     "assistant_name_in": ["nanobot/skills/*/SKILL.md",
+                           "nanobot/household/skills_data/*/SKILL.md"]}]}
+_src_contrib = {"floors": [("backups", _floor)]}
+_saved_root = D.ROOT
+D.ROOT = _src_root
+try:
+    _pt = _PushTarget()
+    D.push_image_sources(_src_unit, CFG, _src_contrib, _pt, "/stack/nanobot/multiuser", _Out())
+    check("  a source nobody runs is not shipped", _pt.pushed == {}, list(_pt.pushed))
+    _named_cfg = copy.deepcopy(_v04_cfg)
+    _named_cfg.setdefault("site", {})["assistant_name"] = "Juana"
+    _pt = _PushTarget()
+    D.push_image_sources(_src_unit, _named_cfg, _src_contrib, _pt, "/stack/nanobot/multiuser", _Out())
+    _tree = _pt.pushed.get("/stack/nanobot/rebased") or {}
+    check("  one somebody runs goes to its build context",
+          list(_pt.pushed) == ["/stack/nanobot/rebased"], list(_pt.pushed))
+    check("  with the plugins' floor skills, marked as floors",
+          "nanobot/skills/backups/SKILL.md" in _tree
+          and D.PLUGIN_FLOOR_MARKER in {Path(k).name for k in _tree if k.startswith("nanobot/skills/backups/")},
+          sorted(_tree))
+    check("  and the assistant's name, in shipped and household skills",
+          _tree.get("nanobot/skills/weather/SKILL.md") == "Juana checks the sky.\n"
+          and _tree.get("nanobot/household/skills_data/family/SKILL.md") == "Juana knows Tomi and Mora.\n",
+          _tree)
+    check("  the checkout itself is left as it was",
+          (_src_root / "services/rebased/nanobot/skills/weather/SKILL.md").read_text()
+          == "Alfred checks the sky.\n" and not (_src_root / "services/rebased/nanobot/skills/backups").exists())
+finally:
+    D.ROOT = _saved_root
+    shutil.rmtree(_src_root, ignore_errors=True)
+_mu_v04 = next(b for b in _mu_unit["image_build"] if isinstance(b, dict) and b.get("source"))
+check("  the manifest ships the rebased tree with floors and the name",
+      _mu_v04["source"] == "services/nanobot-v04" and _mu_v04["skill_floors"] == "nanobot/skills"
+      and (D.ROOT / _mu_v04["source"] / _mu_v04["dockerfile"]).is_file(), _mu_v04)
 # A unit whose suite is its own test stage names that stage's tag as
 # `test.image`. Run before the build, the gate checked the previous deploy's
 # image -- and failed every deploy once that image had been pruned.

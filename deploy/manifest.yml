@@ -566,7 +566,11 @@ services:
           # for the members whose `nanobot_image` names it. Its own tree and
           # Dockerfile, never this tag; built only while somebody runs it.
           - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
-             dockerfile: docker/household/Dockerfile, only_if_used: true}
+             source: services/nanobot-v04,
+             dockerfile: docker/household/Dockerfile, only_if_used: true,
+             skill_floors: nanobot/skills,
+             assistant_name_in: ["nanobot/skills/*/SKILL.md",
+                                 "nanobot/household/skills_data/*/SKILL.md"]}
         # Shared with the `broker` unit below, which is a separate compose
         # project and so has a default network of its own. The assistants dial
         # `http://code-broker:8910` by name, so both join this one instead.
@@ -921,7 +925,11 @@ services:
           # The rebased assistant, while `services.nanobot-house.nanobot_image`
           # (or a member) names it; see the multiuser unit.
           - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
-             dockerfile: docker/household/Dockerfile, only_if_used: true}
+             source: services/nanobot-v04,
+             dockerfile: docker/household/Dockerfile, only_if_used: true,
+             skill_floors: nanobot/skills,
+             assistant_name_in: ["nanobot/skills/*/SKILL.md",
+                                 "nanobot/household/skills_data/*/SKILL.md"]}
         # Where a plugin's `floor:` skill is staged. Builtin, not workspace:
         # SkillsLoader checks workspace, then remote, then builtin, so a floor
         # copy in the workspace would permanently beat the live one the service

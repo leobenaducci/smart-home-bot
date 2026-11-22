@@ -6685,6 +6685,90 @@ def nanobot_images_in_use(cfg: dict) -> set[str]:
     return used
 
 
+def stage_skill_floors(tree: Path, skills_dir: str, floors: list) -> int:
+    """Copy each plugin's floor skill into *tree*/*skills_dir*, marked.
+
+    A floor is staged into the *builtin* skills directory on purpose --
+    SkillsLoader reads workspace, then remote, then builtin, so this is the
+    only tier where the live copy the service serves still wins. But nanobot
+    also derives "skills this package ships" from that same directory, and it
+    does so at runtime, after this staging. So an unmarked floor made the
+    remote entry look like a name collision and it was dropped -- leaving the
+    floor as the only copy, the exact opposite of what a floor is for.
+
+    The two collision checks that matter both run before the marker:
+    `plugin_contributions` refuses a plugin skill named after a shipped one,
+    and the `exists()` check here refuses a floor that would overwrite one.
+    """
+    for skill_name, floor in floors:
+        dest = tree / skills_dir / skill_name
+        if dest.exists():
+            raise DeployError(
+                f"a plugin's floor skill {skill_name!r} would "
+                f"overwrite one this package ships"
+            )
+        shutil.copytree(floor, dest)
+        (dest / PLUGIN_FLOOR_MARKER).write_text(
+            "Written by deploy/deploy.py. This directory is a "
+            "plugin's floor copy, not a skill this package ships; "
+            "the live one is served by the plugin's own service.\n",
+            encoding="utf-8")
+    return len(floors)
+
+
+def rename_assistant_in(tree: Path, patterns: list, cfg: dict) -> int:
+    """The assistant's own name in the files *patterns* match under *tree*."""
+    renamed = 0
+    for pattern in patterns or []:
+        for path in sorted(tree.glob(pattern)):
+            if not path.is_file():
+                continue
+            original = path.read_text(encoding="utf-8")
+            updated = apply_assistant_name(original, cfg)
+            if updated != original:
+                path.write_text(updated, encoding="utf-8")
+                renamed += 1
+    return renamed
+
+
+def push_image_sources(unit: dict, cfg: dict, contributions: dict, target,
+                       remote_dir: str, out) -> None:
+    """Ship the tree of every `image_build` entry that names a `source:`.
+
+    The unit's own directory is what reaches `remote_dir`; an image built from
+    another tree (the rebased assistant, `context: ../nanobot-v04`) would find
+    nothing at its context there. Its tree goes to that context, staged the way
+    the unit's own is where it reaches the image: the plugins' floor skills
+    (`skill_floors:`) and the assistant's name (`assistant_name_in:`), both
+    relative to the source tree. Config the containers mount stays the unit's.
+    Skipped, like the build, while nobody runs an `only_if_used` image.
+    """
+    builds = unit.get("image_build")
+    for b in (builds if isinstance(builds, list) else ([builds] if builds else [])):
+        if not isinstance(b, dict) or not b.get("source"):
+            continue
+        if b.get("only_if_used") and b.get("tag") not in nanobot_images_in_use(cfg):
+            continue
+        src = ROOT / b["source"]
+        if not src.is_dir():
+            raise DeployError(f"image {b.get('tag')}: source {b['source']} does not exist")
+        dest_dir = os.path.normpath(os.path.join(remote_dir, b["context"]))
+        staging = Path(tempfile.mkdtemp(prefix="home-stack-"))
+        try:
+            tree = staging / "src"
+            shutil.copytree(src, tree, symlinks=True,
+                            ignore=shutil.ignore_patterns(
+                                ".git", "__pycache__", "node_modules", ".venv"))
+            floors = (contributions.get("floors") or []) if b.get("skill_floors") else []
+            staged = stage_skill_floors(tree, b.get("skill_floors") or "", floors)
+            renamed = rename_assistant_in(tree, b.get("assistant_name_in") or [], cfg)
+            target.push(tree, dest_dir)
+            out.ok(f"image {b.get('tag')}: {b['source']} staged ({staged} plugin "
+                   f"skill floor(s), assistant named in {renamed} file(s))")
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out,
                       cfg: dict | None = None) -> None:
     # One image, built by name, before compose runs. Not the same thing as
@@ -7293,49 +7377,12 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                         "\n".join(lines) + "\n", encoding="utf-8")
                     out.ok(f"{len(contributed_env)} contributed variable(s) staged")
 
-                for skill_name, floor in floors:
-                    dest = staging / "src" / unit["skill_floors"] / skill_name
-                    if dest.exists():
-                        raise DeployError(
-                            f"a plugin's floor skill {skill_name!r} would "
-                            f"overwrite one this package ships"
-                        )
-                    shutil.copytree(floor, dest)
-                    # Mark it, or the two halves of this feature refuse each
-                    # other. A floor is staged into the *builtin* skills
-                    # directory on purpose -- SkillsLoader reads workspace,
-                    # then remote, then builtin, so this is the only tier where
-                    # the live copy the service serves still wins. But nanobot
-                    # also derives "skills this package ships" from that same
-                    # directory, and it does so at runtime, after the staging
-                    # this loop just did. So the floor made the remote entry
-                    # look like a name collision and it was dropped -- leaving
-                    # the floor as the only copy, which is the exact opposite
-                    # of what a floor is for.
-                    #
-                    # The two collision checks that matter both run before
-                    # this: `plugin_contributions` refuses a plugin skill named
-                    # after a shipped one, and `dest.exists()` above refuses a
-                    # floor that would overwrite one. By the time a marker is
-                    # written, the name is known not to be a shipped skill's.
-                    (dest / PLUGIN_FLOOR_MARKER).write_text(
-                        "Written by deploy/deploy.py. This directory is a "
-                        "plugin's floor copy, not a skill this package ships; "
-                        "the live one is served by the plugin's own service.\n",
-                        encoding="utf-8")
                 if floors:
+                    stage_skill_floors(staging / "src", unit["skill_floors"], floors)
                     out.ok(f"{len(floors)} plugin skill floor(s) staged")
 
-                renamed = 0
-                for pattern in (unit.get("assistant_name_in") or []):
-                    for path in sorted((staging / "src").glob(pattern)):
-                        if not path.is_file():
-                            continue
-                        original = path.read_text(encoding="utf-8")
-                        updated = apply_assistant_name(original, cfg)
-                        if updated != original:
-                            path.write_text(updated, encoding="utf-8")
-                            renamed += 1
+                renamed = rename_assistant_in(
+                    staging / "src", unit.get("assistant_name_in") or [], cfg)
                 if renamed:
                     who = (cfg.get("site") or {}).get("assistant_name")
                     out.ok(f"assistant renamed to {who} in {renamed} file(s)")
@@ -7404,6 +7451,8 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 shutil.rmtree(staging, ignore_errors=True)
         else:
             target.push(local_dir, remote_dir)
+        # An image built from another tree gets that tree at its context.
+        push_image_sources(unit, cfg, contributions, target, remote_dir, out)
 
         # A unit may stack an override on a base file -- `compose:` accepts a
         # list. The local proxy's file is an override and was deployed alone,
