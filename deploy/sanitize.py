@@ -218,8 +218,15 @@ UPSTREAM = {
 # belong in someone else's copyright line -- "Copyright (c) 2024 J. Muller" is a
 # legal attribution, not a household member, and rewriting it to "J. Roe" is a
 # compliance problem rather than a redaction. --check still reads them.
+# Whole trees vendored from elsewhere. services/nanobot-v04 is upstream nanobot
+# with the household's code in it, copied from the rebase tree it is built in:
+# a fix belongs there, so --apply never rewrites a file here. --check still
+# reads every one of them.
+UPSTREAM_TREES = ("services/nanobot-v04/",)
+
+
 def _is_vendored(rel: Path) -> bool:
-    if str(rel) in UPSTREAM:
+    if str(rel) in UPSTREAM or str(rel).startswith(UPSTREAM_TREES):
         return True
     stem = rel.name.upper()
     return stem.startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")) or \

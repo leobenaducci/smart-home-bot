@@ -565,6 +565,9 @@ services:
           # The rebased assistant (upstream nanobot 0.4.x + nanobot/household),
           # for the members whose `nanobot_image` names it. Its own tree and
           # Dockerfile, never this tag; built only while somebody runs it.
+          # No suite runs against it here before it rolls: the unit's `test`
+          # stage is the fork image's. Its own suite runs in the rebase tree
+          # before a tree is vendored into services/nanobot-v04.
           - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
              source: services/nanobot-v04,
              dockerfile: docker/household/Dockerfile, only_if_used: true,
@@ -923,7 +926,8 @@ services:
         image_build:
           - {tag: alfred-nanobot:latest, context: ., target: runtime}
           # The rebased assistant, while `services.nanobot-house.nanobot_image`
-          # (or a member) names it; see the multiuser unit.
+          # (or a member) names it; see the multiuser unit (and its note that
+          # no suite runs against it here).
           - {tag: alfred-nanobot-v04:latest, context: ../nanobot-v04,
              source: services/nanobot-v04,
              dockerfile: docker/household/Dockerfile, only_if_used: true,

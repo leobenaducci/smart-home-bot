@@ -3029,8 +3029,10 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
     env.setdefault("GID", str(os.getgid()))
     # The house assistant's image, read by docker-compose.house.yml: the
     # fork's unless `services.nanobot-house.nanobot_image` names the rebased
-    # one (the house switches last, after every member).
-    env["NANOBOT_HOUSE_IMAGE"] = house_image(cfg)
+    # one (the house switches last, after every member). Only for that unit:
+    # a bad value there must not stop a deploy of anything else.
+    if unit.get("compose") == "docker-compose.house.yml":
+        env["NANOBOT_HOUSE_IMAGE"] = house_image(cfg)
 
     # HOST_HUB / HOST_COMPUTE / HOST_STORAGE used to be exported here, under
     # the comment "so a compose file can pin extra_hosts without a literal".

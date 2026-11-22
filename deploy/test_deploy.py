@@ -4268,6 +4268,17 @@ _house_cfg = copy.deepcopy(CFG)
 _house_cfg.setdefault("services", {}).setdefault("nanobot-house", {})["nanobot_image"] = \
     "alfred-nanobot-v04:latest"
 check("  and takes the rebased one when named", D.house_image(_house_cfg) == "alfred-nanobot-v04:latest")
+_bad_house = copy.deepcopy(CFG)
+_bad_house.setdefault("services", {}).setdefault("nanobot-house", {})["nanobot_image"] = "nope:latest"
+try:
+    _other_env = D.collect_env({}, {"name": "t", "env": {}}, {}, _bad_house)
+    _other_ok = "NANOBOT_HOUSE_IMAGE" not in _other_env
+except ValueError:
+    _other_ok = False
+check("  another service's deploy neither reads nor trips over the house's image", _other_ok)
+_house_env = D.collect_env({}, {"name": "house", "compose": "docker-compose.house.yml", "env": {}},
+                           {}, _house_cfg)
+check("  the house unit gets it", _house_env.get("NANOBOT_HOUSE_IMAGE") == "alfred-nanobot-v04:latest")
 
 print("\nthe code broker is told the login people sign in with")
 # The three-ids rule, on the one table that crosses from what the deployer

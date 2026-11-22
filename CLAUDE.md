@@ -637,7 +637,9 @@ hidden, read-only is the default and the runtime enforces it).
   0.4.x (household code in `nanobot/household/`, short `# household` seams in
   upstream files); it builds `alfred-nanobot-v04:latest` only for a member or
   the house whose `nanobot_image` names it, and carries upstream's docs and
-  contacts the same way.
+  contacts the same way. It is vendored from the rebase tree without upstream's
+  `webui/` frontend, which this stack never serves; edit it there, not here
+  (`sanitize.py --apply` leaves it alone).
 - **One assistant config, one entrypoint.** `services/nanobot/config/` holds the
   base — `config.json` plus the prompt files nanobot itself names (`SOUL.md`,
   `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`, `MORNING.md`). `NANOBOT_INSTANCE`
