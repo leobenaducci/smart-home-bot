@@ -79,7 +79,7 @@ reverse proxy on a VPS you own, which forwards traffic home and stores nothing.
 
 ## Services
 
-This ships twenty-one services, twelve of them on by default; the rest wait until
+This ships twenty-two services, twelve of them on by default; the rest wait until
 you ask for them.
 
 | Service | What it does | Default |
@@ -100,6 +100,7 @@ you ask for them.
 | `home-search` | SearXNG metasearch for the assistants | off |
 | `home-studio` | Video, pictures, songs and voices on a GPU of its own (WanGP) | off |
 | `homeassistant`, `nodered`, `n8n` | Devices, flows, workflow automation | off |
+| `home-devices` | Every device in one list, with names, rooms and an inbox of new ones; Alfred's way to them | off |
 | `browser-use` | An agent that drives a real browser | off |
 | `alfred-mcp` | The assistant's capabilities offered to a coding agent | off |
 | `registry` | An image registry, only for Kubernetes on several machines | off |
@@ -242,7 +243,7 @@ deploy/     installer, manifest, deployer, backups, sanitizer, the Ollama and
             llama.cpp host helpers, units for the services built from images
 admin/      the admin page
 i18n/       seven catalogues and the Python/PHP/JS bindings
-services/   the thirteen service directories the shipped services build from
+services/   the fourteen service directories the shipped services build from
 docs/       the conventions that span more than one service
 ```
 

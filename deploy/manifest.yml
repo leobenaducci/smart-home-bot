@@ -630,6 +630,10 @@ services:
           # is not deployed, and that is a failed connect on every message.
           browser-use:
             disable_mcp: [browser-use]
+          # Every device in the house. Off, its entry goes: nanobot dials
+          # whatever is listed, and an unreachable one costs every message.
+          home-devices:
+            disable_mcp: [devices]
         # Where the assistant's name appears. Its own prompts and every skill
         # that speaks as it -- the capitalised word only, so the `alfred/`
         # paths and the `alfred-nanobot` image are untouched.
@@ -651,6 +655,10 @@ services:
           # can never be "shorter than the default" the way NANOBOT_URL was.
           # Blank when the household has no Home Assistant -- the shipped state.
           HOMEASSISTANT_URL: "{services.homeassistant.url}"
+          # The devices service's MCP endpoint and its token (`devices` in the
+          # assistant's config). Empty, with the entry removed, while it is off.
+          HOME_DEVICES_URL: "{derived.home_devices_url}"
+          HOME_DEVICES_TOKEN: "{derived.home_devices_token}"
           # The one private range the assistant's SSRF check treats as this
           # house rather than as somewhere it is being steered. Empty means no
           # exemption, and empty is the shipped state -- see site.lan_cidr.
@@ -960,6 +968,10 @@ services:
           # is not deployed, and that is a failed connect on every message.
           browser-use:
             disable_mcp: [browser-use]
+          # Every device in the house. Off, its entry goes: nanobot dials
+          # whatever is listed, and an unreachable one costs every message.
+          home-devices:
+            disable_mcp: [devices]
         assistant_name_in:
           - "config/*.md"
           - "config/instances/house/*.md"
@@ -971,6 +983,10 @@ services:
           # house assistant is the one a room talks to, so it paid that on
           # every voice turn.
           HOMEASSISTANT_URL: "{services.homeassistant.url}"
+          # The devices service's MCP endpoint and its token (`devices` in the
+          # assistant's config). Empty, with the entry removed, while it is off.
+          HOME_DEVICES_URL: "{derived.home_devices_url}"
+          HOME_DEVICES_TOKEN: "{derived.home_devices_token}"
           # The one private range the assistant's SSRF check treats as this
           # house rather than as somewhere it is being steered. Empty means no
           # exemption, and empty is the shipped state -- see site.lan_cidr.
@@ -1923,6 +1939,64 @@ services:
             # unit's healthcheck.
             expect: "Home Assistant"
             timeout: 180
+
+  home-devices:
+    title: Devices
+    description: Every device in the house, where it is, and how to reach it.
+    role: hub
+    tier: basic
+    icon: "🎛️"
+    # Carried by the portal (`mounts:` below), so the tile links the path and
+    # the page works from outside the house only if the household says so.
+    portal_path: "/home-devices/"
+    mounts:
+      - path: /home-devices
+        house_only: true
+        writes: true
+    units:
+      - name: app
+        dir: services/home-devices
+        compose: docker-compose.yml
+        build: true
+        # The shared translation catalogues, staged into the build context.
+        assets:
+          - { from: i18n, to: i18n }
+        env:
+          HOME_DEVICES_PORT: "{services.home-devices.port}"
+          # Home Assistant as *this* container reaches it: host networking, so
+          # the hub's address and HA's published port. The assistants'
+          # `services.homeassistant.url` is a bridge-network name
+          # (host.docker.internal) that does not resolve here.
+          HOME_DEVICES_HA_URL: "http://{hosts.hub.address}:{services.homeassistant.port}"
+          # What the assistants present at /mcp. Derived, so there is nothing
+          # to fill in; the nanobot units get the same value.
+          HOME_DEVICES_MCP_TOKEN: "{derived.home_devices_token}"
+          HOME_DEVICES_WIZ_SUBNETS: "{derived.home_devices_wiz_subnets}"
+          HOME_STACK_DEFAULT_LOCALE: "{locale.default}"
+          MEMBER_LOCALES: "{derived.member_locales}"
+        state:
+          # The registry: every device's name, room, status and place on the
+          # plan. The household typed all of it and no scan regenerates it.
+          - path: "{paths.state}/home-devices"
+            mount: /data
+            env: HOME_DEVICES_DATA_DIR
+            backup: essential
+        # The suite, against the built image, before it replaces anything.
+        # `python -m` so the image's /app (the package) is on the path.
+        test:
+          image: home-devices:latest
+          command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "/test"]
+          mount: { from: tests, to: /test }
+        verify:
+          # The payload: the service's own name, which only this server
+          # answers on this port.
+          - http: "http://127.0.0.1:{services.home-devices.port}/healthz"
+            expect_json: {status: ok, service: home-devices}
+            timeout: 120
+    secrets:
+      required: [PROXY_SHARED_SECRET]
+      # Without it the Home Assistant backend stays off and the page says so.
+      optional: [HOMEASSISTANT_TOKEN]
 
   n8n:
     description: Workflow automation — what the house does when something happens elsewhere.

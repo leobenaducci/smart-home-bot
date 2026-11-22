@@ -2180,6 +2180,23 @@ def derive(cfg: dict, secrets: dict) -> dict:
         "usage_token_voice": (
             derive_service_token(secrets["PROXY_SHARED_SECRET"], "voice-gateway")
             if secrets.get("PROXY_SHARED_SECRET") else ""),
+        # The devices service, as the assistants reach it, and the token its
+        # MCP endpoint takes. Both empty while it is off: the MCP entry is
+        # removed then (`disable_mcp`), and an empty value is visibly nothing.
+        # host.docker.internal because the service runs on host networking
+        # (UDP discovery) and the assistants on a bridge; their compose files
+        # map that name to the host gateway.
+        "home_devices_url": (
+            f"http://host.docker.internal:{(cfg.get('services') or {}).get('home-devices', {}).get('port')}"
+            if (cfg.get("services") or {}).get("home-devices", {}).get("enabled")
+            and isinstance((cfg.get("services") or {}).get("home-devices", {}).get("port"), int) else ""),
+        # Networks a WiZ broadcast cannot reach (behind another router), swept
+        # host by host. Empty is the common case: one flat network.
+        "home_devices_wiz_subnets": str(
+            ((cfg.get("services") or {}).get("home-devices") or {}).get("wiz_subnets") or "").strip(),
+        "home_devices_token": (
+            derive_service_token(secrets["PROXY_SHARED_SECRET"], "home-devices")
+            if secrets.get("PROXY_SHARED_SECRET") else ""),
         "usage_token_cameras": (
             derive_service_token(secrets["PROXY_SHARED_SECRET"], "home-cameras")
             if secrets.get("PROXY_SHARED_SECRET") else ""),
@@ -4098,7 +4115,13 @@ def build_portal_dashboard(cfg: dict, plugins: list | None = None) -> str:
             continue
         path = spec.get("portal_path")
         if path:
-            url, lan_only = path, HOUSE_ONLY_APPS.get(name) in lan_only_keys
+            # A page carried by a house-only mount is refused off the house
+            # network, so its tile is house only too -- offering it from a
+            # phone on mobile data would offer a 404.
+            mounted_house_only = any(m.get("house_only", True) is not False
+                                     for m in spec.get("mounts") or [])
+            url = path
+            lan_only = mounted_house_only or HOUSE_ONLY_APPS.get(name) in lan_only_keys
         else:
             address = browsable_address(cfg, spec.get("role", "hub"))
             # `tile_path:` is the path on that service's *own* port, for the
@@ -5985,12 +6008,22 @@ def plugin_service_url(cfg: dict, name: str) -> str:
 
 
 def plugin_mounts(cfg: dict, plugins: list | None = None) -> list[dict]:
-    """Every mount of a plugin service that is switched on, as the portal reads
-    it: `{path, upstream, house_only, writes, max_bytes, wasm}`. House only and
+    """Every mount of a shipped or plugin service that is switched on, as the
+    portal reads it: `{path, upstream, house_only, writes, max_bytes, wasm}`. House only and
     writable unless the plugin says otherwise: a mount carries a member's own
     data more often than not, and the safe way to be wrong is closed."""
     out = []
-    for plugin in plugins if plugins is not None else load_plugins(cfg):
+    # The shipped services' own mounts first, held to the same rules: a page
+    # this package serves through the portal is declared beside the service in
+    # the manifest, exactly as a plugin declares one, rather than written into
+    # the portal by name.
+    shipped = []
+    for name, spec in ((load_yaml(MANIFEST) or {}).get("services") or {}).items():
+        if spec.get("mounts"):
+            _check_mounts({"contract": 2, "services": {name: spec}, "mounts": spec["mounts"]},
+                          MANIFEST)
+            shipped.append({"doc": {"services": {name: spec}, "mounts": spec["mounts"]}})
+    for plugin in shipped + list(plugins if plugins is not None else load_plugins(cfg)):
         doc = plugin.get("doc") or {}
         services = list((doc.get("services") or {}).keys())
         for m in doc.get("mounts") or []:
