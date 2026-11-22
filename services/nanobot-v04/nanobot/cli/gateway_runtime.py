@@ -847,10 +847,16 @@ def _run_claimed_gateway(
 
         if is_bound_cron_job(job):
             # household: a HomeCore chat job delivers into today's conversation.
-            from nanobot.household.cron_extras import retarget_bound_job
+            from nanobot.household.cron_extras import retarget_bound_job, with_reminder_meta
 
-            job = retarget_bound_job(job, config.agents.defaults.timezone)
+            job = with_reminder_meta(retarget_bound_job(job, config.agents.defaults.timezone))
             return await run_bound_cron_job(job, agent=agent, cron=cron)
+
+        # household: a fork job that never delivered runs as a private turn.
+        from nanobot.household.cron_extras import is_silent_job, run_silent_job
+
+        if is_silent_job(job):
+            return await run_silent_job(job, agent)
 
         reason = "unbound agent cron job must be recreated from a chat session"
         logger.warning(

@@ -9,6 +9,11 @@
   binds a job to its original session, so a daily reminder created in July
   keeps writing into July's chat; the fork rewrote the chat id at fire time
   and this keeps doing so, on a copy of the job.
+- ``is_silent_job``/``run_silent_job``: an agent job that delivers nowhere
+  (the fork's ``deliver: false`` with no channel or target, e.g. a daily check
+  that alerts through ``ntfy-send`` itself and otherwise says nothing). v0.4.1
+  disables every agent job not bound to a chat session; the fork ran these as
+  a private turn in ``cron:<job id>`` and this keeps doing so.
 """
 
 from __future__ import annotations
@@ -88,3 +93,45 @@ def heartbeat_runtime(loop: Any, config: Any) -> Any:
         logger.warning("heartbeat model {} unavailable ({}); using the default", d.heartbeat_model, exc)
         return None
     return LLMRuntime.capture(provider, d.heartbeat_model, context_window_tokens=loop.context_window_tokens)
+
+
+def is_silent_job(job: CronJob) -> bool:
+    """An agent job with no delivery and no target of any kind, household on."""
+    from nanobot.household.skill_roots import household_enabled
+
+    p = job.payload
+    return (
+        p.kind == "agent_turn"
+        and not (p.deliver or p.channel or p.to or p.channel_meta)
+        and not (p.session_key or p.origin_channel or p.origin_chat_id)
+        and household_enabled()
+    )
+
+
+async def run_silent_job(job: CronJob, agent: Any) -> str:
+    """Run *job* the way the fork did: its own session, nothing delivered."""
+    from nanobot.utils.prompt_templates import render_template
+
+    prompt = render_template("agent/cron_reminder.md", strip=True, message=job.payload.message)
+
+    async def _quiet(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    resp = await agent.process_direct(
+        prompt, session_key=f"cron:{job.id}", channel="cli", chat_id="direct", on_progress=_quiet,
+    )
+    return resp.content if resp else ""
+
+
+def with_reminder_meta(job: CronJob) -> CronJob:
+    """A copy of *job* whose reply says which job it came from (fork commands.py).
+
+    HomeCore puts done / discard / snooze buttons on a fired reminder when the
+    message carries ``reminder_job``; the channels that ignore metadata are
+    unaffected. A bound job's origin metadata becomes its turn's, and a turn's
+    becomes its reply's, so it is set there, on a copy.
+    """
+    meta = dict(job.payload.origin_metadata or {})
+    meta.update({"reminder_job": job.id, "reminder_name": job.name,
+                 "reminder_recurring": job.schedule.kind != "at"})
+    return dataclasses.replace(job, payload=dataclasses.replace(job.payload, origin_metadata=meta))

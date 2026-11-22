@@ -30,6 +30,15 @@ def bind_household_loop(loop: Any, config: Any) -> None:
     from nanobot.household.runtime import RUNTIME
 
     RUNTIME.bind(loop, config)
+    # describe_image from the first turn, as the fork had it (D6).
+    ensure = getattr(loop, "_ensure_describe_image", None)
+    if callable(ensure):
+        try:
+            ensure()
+        except Exception:  # noqa: BLE001 -- a vision misconfiguration must not stop the gateway
+            from loguru import logger
+
+            logger.exception("describe_image could not be registered at start")
     from nanobot.household.profiling import PROFILER
 
     profiling = getattr(config, "profiling", None)

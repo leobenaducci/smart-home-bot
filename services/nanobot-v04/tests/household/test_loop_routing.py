@@ -168,3 +168,54 @@ async def test_background_work_saves_the_acknowledgement_the_person_read(tmp_pat
     saved = loop.sessions.get_existing("whatsapp-own:1").messages
     assert [m["role"] for m in saved] == ["user", "assistant"]
     assert saved[-1]["content"] == out.content == delegate.ack("long")
+
+
+@pytest.mark.asyncio
+async def test_an_api_turn_is_routed_like_a_chat_turn_when_a_default_effort_is_set(tmp_path):
+    """HomeCore's chat goes through the API adapter. With `reasoningEffortDefault`
+    set (every member's config sets "low"), the adapter used to hand the loop a
+    preset runtime for every turn, which skips the classifier: no escalation,
+    no plan, no everyday budget."""
+    from nanobot.household.api_adapter import LoopAdapter
+
+    loop, calls = _loop(tmp_path, {
+        "tiny": LLMResponse(content='{"label": "complex", "reason": "advice"}'),
+        "strong": LLMResponse(content="Pagalo al contado."),
+    })
+    cfg = _config()
+    cfg.agents.defaults.reasoning_effort_default = "low"
+    RUNTIME.config = cfg
+    out = await LoopAdapter(loop).process_direct(
+        "¿cuotas o contado con este interés?",
+        session_key="api:homeweb:999000111:2026-11-22:s-1:3", channel="api", chat_id="default")
+    assert out.content == "Pagalo al contado."
+    assert calls == ["tiny", "strong"]
+
+
+@pytest.mark.asyncio
+async def test_a_blank_answer_keeps_the_stream_open_for_the_escalation(tmp_path, monkeypatch):
+    """Fork `ends_unanswered`: ending the stream on the cheap model's blank
+    answer sent the API's terminator first, and the strong model's answer to
+    the same turn never reached the page that was waiting for it."""
+    loop, calls = _loop(tmp_path, {
+        "tiny": LLMResponse(content='{"label": "chat", "reason": "smalltalk"}'),
+        "cheap": LLMResponse(content=""),
+        "strong": LLMResponse(content="Las persianas están cerradas."),
+    })
+    monkeypatch.setenv("NANOBOT_HOUSEHOLD", "1")  # the image sets it
+    RUNTIME.config = _config()
+    ends: list[bool] = []
+
+    async def on_stream(_delta):
+        pass
+
+    async def on_stream_end(*_a, resuming=False, **_kw):
+        ends.append(resuming)
+
+    out = await loop.process_direct("¿cerraste las persianas?", session_key="voice:cocina",
+                                    channel="voice", chat_id="cocina",
+                                    on_stream=on_stream, on_stream_end=on_stream_end)
+    assert out.content == "Las persianas están cerradas."
+    assert calls[-1] == "strong"
+    # One terminator, at the very end: the blank cheap answer does not close it.
+    assert ends[-1] is False and ends.count(False) == 1, ends

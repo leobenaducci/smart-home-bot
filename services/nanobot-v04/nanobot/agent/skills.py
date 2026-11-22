@@ -123,6 +123,9 @@ class SkillsLoader:
 
         plugin_skills = enabled_agent_plugin_skill_documents(self.workspace)
         disabled = set(self.disabled_skills)
+        from nanobot.household.skills import hidden_builtin_skills  # household
+
+        disabled |= hidden_builtin_skills()
         if disabled:
             from nanobot.household.skills import SKILL_ALIASES  # household
 

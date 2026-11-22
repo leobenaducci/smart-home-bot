@@ -156,3 +156,32 @@ async def test_oversized_image_is_rejected(tmp_path) -> None:
 
     assert "over the" in result
     assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_describe_image_is_there_on_a_text_only_turn(tmp_path, monkeypatch):
+    """The camera skill snapshots and then calls describe_image from a plain
+    question ("what plate is at the gate?"), with no picture attached."""
+    from agent.conftest import make_provider
+
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.schema import Config
+    from nanobot.household.loop import HouseholdAgentLoop
+    from nanobot.household.runtime import RUNTIME
+    from nanobot.providers.base import LLMResponse
+
+    provider = make_provider(default_model="cheap")
+    provider.provider_name = "custom"
+
+    async def chat(**_kw):
+        return LLMResponse(content="ok")
+
+    provider.chat_with_retry = provider.chat_stream_with_retry = provider.chat = chat
+    loop = HouseholdAgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path,
+                              model="cheap", context_window_tokens=128_000)
+    RUNTIME.config = Config.model_validate({"agents": {"defaults": {
+        "model": "cheap", "provider": "custom", "visionModel": "gemma4:e4b"}}})
+    assert not loop.tools.has("describe_image")
+    await loop.process_direct("¿qué patente hay en el portón?", session_key="whatsapp-own:56999999999",
+                              channel="whatsapp", chat_id="56999999999")
+    assert loop.tools.has("describe_image")

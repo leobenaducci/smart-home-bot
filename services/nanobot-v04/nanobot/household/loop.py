@@ -62,6 +62,10 @@ class HouseholdAgentLoop(AgentLoop):
         from nanobot.household.plan import PlanTool
 
         self.tools.register(PlanTool())  # A1: the checklist for work of several steps
+        from nanobot.household import turn_facts
+
+        # Current Time and the answering model, which upstream no longer sends.
+        self.register_runtime_context_provider(turn_facts.provider_for(self))
 
     async def process_direct(self, *args: Any, **kwargs: Any) -> Any:
         from nanobot.utils.progress_events import _on_progress_accepts
@@ -138,6 +142,10 @@ class HouseholdAgentLoop(AgentLoop):
         inline = bool(ctx.attributes.get(INLINE_ATTR))
         ctx.attributes[PRESET_ATTR] = ctx.runtime is not None or inline
         if ctx.kind is TurnKind.USER and RUNTIME.config is not None:
+            # The fork registered describe_image at startup: the camera skill
+            # snapshots and reads the picture with it on a text-only turn,
+            # which the image path below never sees.
+            self._ensure_describe_image()
             self._images_to_describe_image(ctx)
         if (ctx.runtime is None and not inline and ctx.kind is TurnKind.USER
                 and RUNTIME.config is not None):
@@ -188,6 +196,8 @@ class HouseholdAgentLoop(AgentLoop):
                         ctx.session_key, ctx.runtime.model if ctx.runtime else None, span,
                         route=telemetry.route_dict(ctx.attributes.get(ROUTE_ATTR)))
                     raise
+                if not _is_subagent_result(ctx):
+                    await self._deliver_left_out_files(ctx)
                 # B5: the sub-agent bills its own run; a plan handed off past
                 # its time limit (A4) bills what the chat turn spent first.
                 if ctx.stop_reason != "delegated" or ctx.attributes.get(BILL_ATTR):
@@ -202,6 +212,25 @@ class HouseholdAgentLoop(AgentLoop):
             context_extras.TURN_STANDING.reset(standing_token)
             context_extras.TURN_RECENT.reset(recent_token)
             context_extras.TURN_NOTE.reset(note_token)
+
+    async def _deliver_left_out_files(self, ctx: TurnContext) -> None:
+        """A file a tool produced and the reply left out goes as its own
+        message (fork ``_undelivered_download_links``). Own message, not
+        appended: a streamed reply is already final on the page."""
+        if ctx.ephemeral or not ctx.msg.channel or not ctx.msg.chat_id:
+            return
+        from nanobot.bus.events import OutboundMessage
+        from nanobot.household.download_rescue import undelivered_for_turn
+
+        try:
+            links = undelivered_for_turn(ctx)
+        except Exception:  # noqa: BLE001 -- a rescue must never fail the turn
+            logger.exception("download rescue failed")
+            return
+        for link in links:
+            logger.info("Delivering file the reply left out: {}", link)
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id, content=link, metadata={}))
 
     async def _summarise_capped(self, ctx: TurnContext) -> None:
         """A sub-agent result's summary, capped (A9, fork ``_dispatch``).

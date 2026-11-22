@@ -1030,6 +1030,9 @@ class OpenAICompatProvider(LLMProvider):
             for msg in kwargs["messages"]:
                 if msg.get("role") == "assistant" and "reasoning_content" not in msg:
                     msg["reasoning_content"] = ""
+        from nanobot.household.compat_retries import normalize_outgoing
+
+        normalize_outgoing(kwargs["messages"])  # household: "" beside tool calls; thinking-mode net
 
         # Merge user-configured extra_body last so ordinary fields can override
         # provider defaults. Keep configured tools at the top level: the SDK

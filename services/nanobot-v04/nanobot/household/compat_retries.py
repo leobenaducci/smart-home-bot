@@ -115,3 +115,44 @@ async def call(provider: Any, *, streaming: bool, messages: Any, args: tuple,
 
 __all__ = ["accepted_efforts", "call", "nearest_effort", "refuses_temperature",
            "rejected_temperature", "requires_streaming"]
+
+
+def normalize_outgoing(messages: list[dict]) -> None:
+    """household: the fork's rules for the assistant messages a request carries.
+
+    - An assistant message with tool calls is sent with content ``""``. Some
+      OpenAI-compatible gateways refuse non-empty content beside tool calls,
+      and ``null`` does not survive everywhere: Together answers 400 for it on
+      gpt-oss and GLM-5.3 does not answer with valid JSON. Measured by the fork
+      across every model the house ran, ``""`` was accepted by all six.
+    - When any assistant message already carries ``reasoning_content``, the
+      conversation is in thinking mode and every assistant message needs the
+      field (DeepSeek's rule), even through a gateway whose spec has no
+      thinking style -- DeepSeek on NanoGPT, the household's everyday route.
+      ``""`` reads as "no thinking that turn".
+    - Reasoning from *earlier* turns (before the latest user message) is
+      emptied, the field kept (fork ``_strip_stale_reasoning``): it is scratch
+      work for the turn that produced it, re-sent and billed on every later
+      request otherwise. The key stays because a thinking model refuses an
+      assistant message without it (absent or None: 400, "": 200). The
+      current turn keeps its reasoning between a tool call and its result.
+    """
+    if not household_on():
+        return
+    thinking = any(m.get("role") == "assistant" and "reasoning_content" in m for m in messages)
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+    for i, m in enumerate(messages):
+        if m.get("role") != "assistant":
+            continue
+        if m.get("tool_calls"):
+            m["content"] = ""
+        if thinking and "reasoning_content" not in m:
+            m["reasoning_content"] = ""
+        elif i < last_user and m.get("reasoning_content"):
+            m["reasoning_content"] = ""
+
+
+def household_on() -> bool:
+    from nanobot.household.skill_roots import household_enabled
+
+    return household_enabled()

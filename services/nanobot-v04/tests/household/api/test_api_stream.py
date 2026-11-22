@@ -824,3 +824,53 @@ async def test_an_answer_already_on_screen_is_not_repeated(aiohttp_client) -> No
     text = await _stream_text(aiohttp_client, _segmented_agent(
         ["Listo, prendí Oficina Tomi.", ""], "Listo, prendí Oficina Tomi."))
     assert text.count("Listo, prendí Oficina Tomi.") == 1
+
+
+@pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
+@pytest.mark.asyncio
+async def test_reasoning_as_upstream_delivers_it_keeps_a_turn_alive(aiohttp_client, monkeypatch) -> None:
+    """v0.4.1 hands reasoning to on_progress as `reasoning=True`, never as
+    `alive=True`; the fork's loop minted the ticks. Without that, a thinking
+    model silent past the budget was handed to a sub-agent."""
+    monkeypatch.setattr("nanobot.household.api_server._FIRST_TOKEN_BUDGET_S", 0.25)
+    monkeypatch.setattr("nanobot.household.api_server._ALIVE_INTERVAL_S", 0.01)
+
+    async def fake(*, on_stream=None, on_stream_end=None, on_progress=None, **_kw):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 0.5
+        while loop.time() < deadline:
+            await on_progress("pensando en la hora", reasoning=True)
+            await asyncio.sleep(0.02)
+        await on_stream("son las 20:41")
+        await on_stream_end()
+        return "son las 20:41"
+
+    agent = _agent(fake)
+    agent.subagents = MagicMock()
+    agent.subagents.spawn = AsyncMock()
+    client = await aiohttp_client(create_app(agent, model_name="m"))
+    body = await (await client.post("/v1/chat/completions", json={
+        "messages": [{"role": "user", "content": "que hora es"}],
+        "stream": True, "channel": "websocket", "chat_id": "c1"})).text()
+    assert _streamed_text(body) == "son las 20:41"
+    agent.subagents.spawn.assert_not_awaited()
+    assert "pensando" not in body          # reasoning itself never reaches the reader
+
+
+@pytest.mark.asyncio
+async def test_the_usage_hook_reads_upstreams_usage_object() -> None:
+    from types import SimpleNamespace
+
+    from nanobot.household.api_adapter import _UsageHook
+    from nanobot.llm_usage.types import LLMUsage
+
+    got: list[dict] = []
+
+    async def on_progress(_content, *, usage=None, **_kw):
+        got.append(usage)
+
+    usage = LLMUsage(input_tokens=1200, output_tokens=40, total_tokens=1240, reported_tokens=1240)
+    await _UsageHook(on_progress, "deepseek/deepseek-v4.1-flash").after_iteration(
+        SimpleNamespace(usage=usage))
+    assert got == [{"prompt_tokens": 1200, "completion_tokens": 40,
+                    "model": "deepseek/deepseek-v4.1-flash"}]

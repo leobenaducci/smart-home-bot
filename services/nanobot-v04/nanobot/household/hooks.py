@@ -221,7 +221,7 @@ class HouseholdNudgeHook(AgentHook):
             # turn has; blank means it really is stuck, and says so.
             return ModelResponseAction(
                 finalize=True,
-                finalize_fallback=_STUCK_MESSAGE,
+                finalize_fallback=text_calls._dead_end("loop") or _STUCK_MESSAGE,
                 finalize_stop_reason="repeated_tool_calls",
             )
         return ModelResponseAction(refuse=refuse) if refuse else None

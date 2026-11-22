@@ -28,9 +28,13 @@ class _UsageHook(AgentHook):
         usage = context.usage
         if usage is None or self._on_progress is None:
             return
+        # v0.4.1's LLMUsage says input/output; the fork's dict said
+        # prompt/completion, which is what the API's usage step reads.
         payload = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
-            "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "prompt_tokens": (getattr(usage, "input_tokens", None)
+                              or getattr(usage, "prompt_tokens", 0) or 0),
+            "completion_tokens": (getattr(usage, "output_tokens", None)
+                                  or getattr(usage, "completion_tokens", 0) or 0),
             "model": self._model,
         }
         try:
@@ -127,7 +131,12 @@ class LoopAdapter:
     ) -> Any:
         from nanobot.household.routing import resolve_runtime
 
-        runtime = resolve_runtime(self._loop, powerful=powerful, profile=profile)
+        # Only a role the caller asked for is preset. A plain turn is left to
+        # the loop, which classifies it like a chat turn and applies the
+        # default effort itself (turn_router); presetting it here whenever
+        # `reasoningEffortDefault` is set skipped routing for every API turn.
+        runtime = (resolve_runtime(self._loop, powerful=powerful, profile=profile)
+                   if powerful or profile else None)
         model = runtime.model if runtime is not None else getattr(self._loop, "model", None)
         extra: dict[str, Any] = {}
         if runtime is not None:

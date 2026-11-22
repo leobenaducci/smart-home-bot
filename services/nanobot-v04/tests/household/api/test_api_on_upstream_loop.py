@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 
 import pytest
@@ -65,7 +67,13 @@ async def test_streamed_turn_with_a_long_homeweb_chat_id(tmp_path, aiohttp_clien
     text = "".join(c["choices"][0]["delta"].get("content", "") for c in chunks if c.get("choices"))
     assert text == "Hola Tomi"
     assert body.rstrip().endswith("data: [DONE]")
-    session = loop.sessions.get_existing(f"websocket:{LONG_CHAT_ID}")
+    # The terminator follows the final usage, not the end of the turn (the
+    # answer is not held for work after it), so the save may land just after.
+    for _ in range(100):
+        session = loop.sessions.get_existing(f"websocket:{LONG_CHAT_ID}")
+        if session is not None and session.messages and session.messages[-1]["content"] == "Hola Tomi":
+            break
+        await asyncio.sleep(0.02)
     assert session is not None and session.messages[-1]["content"] == "Hola Tomi"
 
 

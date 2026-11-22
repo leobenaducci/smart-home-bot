@@ -59,3 +59,27 @@ def test_upstream_keeps_the_history_entry_hard_cap(tmp_path):
     from nanobot.agent import memory
 
     assert memory._HISTORY_ENTRY_HARD_CAP == 64_000              # the fork's emergency cap
+
+
+def test_upstream_skills_the_house_does_not_offer_are_hidden(tmp_path, monkeypatch):
+    from nanobot.agent.skills import SkillsLoader
+
+    monkeypatch.setenv("NANOBOT_HOUSEHOLD", "1")
+    names = {s["name"] for s in SkillsLoader(tmp_path).list_skills(filter_unavailable=False)}
+    assert "image-generation" not in names and "nanobot-document" not in names
+    assert "images" in names and "weather" in names
+
+
+def test_dead_ends_are_said_in_the_house_language(monkeypatch):
+    """Fork runner._DEAD_ENDS: SEARCH_LANGUAGE=es gets the Spanish sentences."""
+    from types import SimpleNamespace
+
+    from nanobot.agent.runner import AgentRunner
+
+    monkeypatch.setenv("NANOBOT_HOUSEHOLD", "1")
+    monkeypatch.setenv("SEARCH_LANGUAGE", "es")
+    spec = SimpleNamespace(max_iterations_message=None, max_iterations=40)
+    assert AgentRunner._max_iterations_fallback(spec).startswith("Llegué al límite de 40 pasos")
+    monkeypatch.setenv("SEARCH_LANGUAGE", "en")
+    assert "40" in AgentRunner._max_iterations_fallback(spec)
+    assert not AgentRunner._max_iterations_fallback(spec).startswith("Llegué")

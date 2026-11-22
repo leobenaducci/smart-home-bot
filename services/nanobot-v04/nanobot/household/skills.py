@@ -31,3 +31,17 @@ def with_trigger(name: str, description: str) -> str:
     if not trigger or not household_enabled() or "use when" in description.lower():
         return description
     return f"{description.rstrip()} {trigger}"
+
+
+# Upstream builtin skills the household does not offer. `image-generation`
+# drives a `generate_image` tool the house does not configure and tells the
+# model to say image generation is not enabled, against the household's own
+# `images` and `canvas-image` skills, which do generate. `nanobot-document` is
+# nanobot's own manual. Neither existed in the fork.
+HIDDEN_BUILTIN_SKILLS = frozenset({"image-generation", "nanobot-document"})
+
+
+def hidden_builtin_skills() -> frozenset[str]:
+    from nanobot.household.skill_roots import household_enabled
+
+    return HIDDEN_BUILTIN_SKILLS if household_enabled() else frozenset()

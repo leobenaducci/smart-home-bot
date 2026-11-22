@@ -214,6 +214,17 @@ def _names_tool(entry: str, raw: str, wrapped: str) -> bool:
     return raw.endswith(f"__{entry}") or raw.replace("__", "_") == entry
 
 
+def _denied_extra(disabled: set[str], raw: str, wrapped: str, unmatched: list[str]) -> bool:
+    """household: disabledTools applies to a server's resources and prompts too
+    (the fork's did; Home Assistant's `Assist` prompt and context snapshot are
+    listed there). A match is no longer reported as not found."""
+    hits = [entry for entry in disabled if _names_tool(entry, raw, wrapped)]
+    for entry in hits:
+        if entry in unmatched:
+            unmatched.remove(entry)
+    return bool(hits)
+
+
 def _sanitize_mcp_tool_name(name: str) -> str:
     return _limit_tool_name(_sanitize_name(name))
 
@@ -250,7 +261,9 @@ def _log_mcp_connection_failure(
                     details = details.replace(f"{value}@", "[redacted]@")
         # Keep exception-aware sinks, but never give Loguru live frames or a raw
         # exception chain: diagnose=True would render credential-bearing locals.
-        exception = Exception("\n" + details.rstrip())
+        from nanobot.household.log_scrub import scrub  # household: every URL, not only the proxy
+
+        exception = Exception("\n" + scrub(details).rstrip())
     if _is_transient_connection_failure(exc):
         logger.warning("MCP server '{}': transient connection failure", name)
         logger.opt(exception=exception).debug(
@@ -289,6 +302,11 @@ async def _probe_http_url(url: str, timeout: float = 3.0, *, proxy: str | None =
         port = 443 if parsed.scheme == "https" else 80
     ok, _, resolved_ips = resolve_url_target(url)
     if not ok:
+        # household: a configured server's own host may be private (mcp_trust).
+        from nanobot.household.mcp_trust import check_request
+
+        ok, resolved_ips = check_request(url, lambda _u: (False, ""))[0], ()
+    if not ok:
         return False
     if proxy or env_proxy_applies_to_url(url):
         return True
@@ -305,6 +323,19 @@ async def _probe_http_url(url: str, timeout: float = 3.0, *, proxy: str | None =
         except (OSError, asyncio.TimeoutError):
             continue
     return False
+
+
+def _loggable_exc(exc: BaseException) -> BaseException:
+    """household: a tool-call failure logged with its URLs scrubbed (log_scrub)."""
+    from nanobot.household.log_scrub import loggable
+
+    return loggable(exc)
+
+
+def _scrub_text(value: object) -> str:
+    from nanobot.household.log_scrub import scrub  # household
+
+    return scrub(value)
 
 
 def _redact_url(url: str) -> str:
@@ -326,10 +357,13 @@ def _redact_url(url: str) -> str:
         return "<redacted-url>"
 
 
-def _pinned_transport_kwargs(proxy: str | None = None) -> dict[str, Any]:
+def _pinned_transport_kwargs(proxy: str | None = None, url: str | None = None) -> dict[str, Any]:
     if proxy:
         return {"transport": httpx.AsyncHTTPTransport(proxy=proxy), "trust_env": False}
-    kwargs: dict[str, Any] = {"transport": PinnedDNSAsyncTransport()}
+    # household: a configured server's own host may be private (mcp_trust).
+    from nanobot.household.mcp_trust import transport_for
+
+    kwargs: dict[str, Any] = {"transport": transport_for(url) or PinnedDNSAsyncTransport()}
     mounts = httpx_env_proxy_mounts()
     if mounts:
         kwargs["mounts"] = mounts
@@ -337,7 +371,9 @@ def _pinned_transport_kwargs(proxy: str | None = None) -> dict[str, Any]:
 
 
 async def _validate_mcp_request_url(request: httpx.Request) -> None:
-    ok, error = validate_url_target(str(request.url))
+    from nanobot.household.mcp_trust import check_request  # household
+
+    ok, error = check_request(str(request.url), validate_url_target)
     if not ok:
         raise httpx.RequestError(
             f"Blocked unsafe MCP URL {_redact_url(str(request.url))} ({error})",
@@ -647,7 +683,7 @@ class _MCPWrapperBase(Tool):
                     refreshed_session = True
                     continue
                 if capability_kind == "prompt" and isinstance(exc, McpError):
-                    logger.opt(exception=exc if tool_log_content_allowed() else False).error(
+                    logger.opt(exception=_loggable_exc(exc) if tool_log_content_allowed() else False).error(
                         "MCP prompt '{}' failed: code={} message={}",
                         self._name,
                         exc.error.code,
@@ -667,19 +703,19 @@ class _MCPWrapperBase(Tool):
                         retried = True
                         await asyncio.sleep(1)
                         continue
-                    logger.opt(exception=exc if tool_log_content_allowed() else False).error(
+                    logger.opt(exception=_loggable_exc(exc) if tool_log_content_allowed() else False).error(
                         "MCP {} '{}' failed after retry: {}",
                         capability_kind,
                         self._name,
                         type(exc).__name__,
                     )
                     return ToolResult.error(f"(MCP {operation} failed after retry: {type(exc).__name__})")
-                logger.opt(exception=exc if tool_log_content_allowed() else False).error(
+                logger.opt(exception=_loggable_exc(exc) if tool_log_content_allowed() else False).error(
                     "MCP {} '{}' failed: {}: {}",
                     capability_kind,
                     self._name,
                     type(exc).__name__,
-                    exc if tool_log_content_allowed() else "[content hidden]",
+                    _scrub_text(exc) if tool_log_content_allowed() else "[content hidden]",
                 )
                 return ToolResult.error(f"(MCP {operation} failed: {type(exc).__name__})")
 
@@ -1015,7 +1051,9 @@ async def connect_mcp_servers(
                     return False
 
             if transport_type in {"sse", "streamableHttp"}:
-                ok, error = validate_url_target(cfg.url)
+                from nanobot.household.mcp_trust import check_configured  # household
+
+                ok, error = check_configured(cfg.url, validate_url_target)
                 if not ok:
                     logger.warning(
                         "MCP server '{}': blocked unsafe URL {} ({})",
@@ -1086,7 +1124,7 @@ async def connect_mcp_servers(
                         follow_redirects=True,
                         timeout=timeout,
                         auth=auth,
-                        **_pinned_transport_kwargs(proxy),
+                        **_pinned_transport_kwargs(proxy, cfg.url),
                     )
 
                 sse_kwargs: dict[str, Any] = {
@@ -1113,7 +1151,7 @@ async def connect_mcp_servers(
                         connect=10.0,
                         read=max(_HTTP_READ_TIMEOUT, cfg.tool_timeout),
                     ),
-                    **_pinned_transport_kwargs(proxy),
+                    **_pinned_transport_kwargs(proxy, cfg.url),
                 }
                 if oauth_auth is not None:
                     http_client_kwargs["auth"] = oauth_auth
@@ -1157,11 +1195,6 @@ async def connect_mcp_servers(
                     for td in tool_defs
                 )
             )
-            if unmatched_disabled_tools:
-                logger.warning(
-                    "MCP server '{}': disabledTools entries not found: {}",
-                    name, ", ".join(unmatched_disabled_tools),
-                )
             registered_count = 0
             matched_enabled_tools: set[str] = set()
             available_raw_names = [tool_def.name for tool_def in tool_defs]
@@ -1235,6 +1268,9 @@ async def connect_mcp_servers(
                         wrapper = MCPResourceWrapper(
                             session, name, resource, resource_timeout=cfg.tool_timeout
                         )
+                        if _denied_extra(disabled_tools, resource.name, wrapper.name,
+                                         unmatched_disabled_tools):  # household
+                            continue
                         registry.register(wrapper)
                         registered_count += 1
                         logger.debug(
@@ -1264,6 +1300,9 @@ async def connect_mcp_servers(
                         wrapper = MCPPromptWrapper(
                             session, name, prompt, prompt_timeout=cfg.tool_timeout
                         )
+                        if _denied_extra(disabled_tools, prompt.name, wrapper.name,
+                                         unmatched_disabled_tools):  # household
+                            continue
                         registry.register(wrapper)
                         registered_count += 1
                         logger.debug(
@@ -1282,6 +1321,11 @@ async def connect_mcp_servers(
                     name,
                 )
 
+            if unmatched_disabled_tools:  # household: after resources and prompts had their turn
+                logger.warning(
+                    "MCP server '{}': disabledTools entries not found: {}",
+                    name, ", ".join(unmatched_disabled_tools),
+                )
             logger.info(
                 "MCP server '{}': connected, {} capabilities registered", name, registered_count
             )

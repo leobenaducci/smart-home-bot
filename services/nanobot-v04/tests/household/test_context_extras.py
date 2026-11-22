@@ -98,3 +98,30 @@ async def test_context_block_limit_applies_to_the_turn(tmp_path):
         await loop.process_direct(f"message {i} " + "z" * 600, session_key="email:tomi@example.org",
                                   channel="email", chat_id="tomi@example.org")
     assert len(sent[-1]) < len(sent[-2]) + 2 and len(sent[-1]) <= 4
+
+
+@pytest.mark.asyncio
+async def test_every_turn_tells_the_model_the_time_and_who_is_answering(tmp_path):
+    import datetime
+
+    loop, sent = _loop(tmp_path)
+    await loop.process_direct("what do I have today?", session_key=KEY, channel="websocket",
+                              chat_id=KEY.split(":", 1)[1])
+    user = _text(sent[-1][-1])
+    assert "Current Time: " + datetime.date.today().isoformat() in user
+    assert "Model: cheap" in user
+    # Upstream keeps each turn's runtime context with that message and replays
+    # it unchanged (prompt-cache stability), so an earlier message keeps the
+    # time it was sent at; the newest message carries the current one.
+    assert user.count("Current Time: ") == 1
+
+
+def test_the_time_line_is_the_forks():
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from nanobot.household.turn_facts import current_time_str
+
+    now = dt.datetime(2026, 11, 22, 10, 5, tzinfo=ZoneInfo("America/Santiago"))
+    assert current_time_str("America/Santiago", now) == \
+        "2026-11-22 10:05 (Sunday) (America/Santiago, UTC-03:00)"

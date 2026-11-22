@@ -84,6 +84,12 @@ InjectionCallback = Callable[[], Awaitable[Iterable[Any] | None]]
 # its iteration budget while it runs.
 CURRENT_RUN_SPEC: ContextVar["AgentRunSpec | None"] = ContextVar("current_run_spec", default=None)
 
+
+def _household_on() -> bool:  # household
+    from nanobot.household.skill_roots import household_enabled
+
+    return household_enabled()
+
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
 _ARREARAGE_ERROR_MESSAGE = (
     "The AI provider rejected the request because the API key is out of quota or the "
@@ -858,8 +864,14 @@ class AgentRunner:
             if should_continue:
                 had_injections = True
 
+            # household (fork ends_unanswered): a turn that ends with no answer
+            # is not over for its caller; the household loop hands it to the
+            # stronger model or a sub-agent on the same stream. Ending it here
+            # sent the API's terminator first and the escalation went unseen.
+            ends_unanswered = (_household_on() and response.finish_reason != "error"
+                               and is_blank_text(clean))
             if hook.wants_streaming():
-                await hook.on_stream_end(context, resuming=should_continue)
+                await hook.on_stream_end(context, resuming=should_continue or ends_unanswered)
 
             if should_continue:
                 followup_requested = True
@@ -1472,6 +1484,11 @@ class AgentRunner:
             return spec.max_iterations_message.format(
                 max_iterations=spec.max_iterations,
             )
+        if _household_on():  # household: in the house's language (fork runner._DEAD_ENDS)
+            from nanobot.household.text_calls import _dead_end
+
+            if text := _dead_end("max_iterations", max_iterations=spec.max_iterations):
+                return text
         return render_template(
             "agent/max_iterations_message.md",
             strip=True,

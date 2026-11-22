@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -88,3 +90,49 @@ def test_heartbeat_runs_on_its_own_model_when_set():
     cfg = Config.model_validate({"agents": {"defaults": {"model": "m", "heartbeatModel": "small"}}})
     runtime = heartbeat_runtime(loop, cfg)
     assert runtime.model == "small" and runtime.provider is loop.provider
+
+
+@pytest.mark.asyncio
+async def test_a_fired_reminder_carries_the_job_so_homecore_can_offer_buttons(tmp_path):
+    """Fork commands.py: the fired reminder says which job it came from;
+    HomeCore turns that into done / discard / snooze buttons."""
+    import asyncio
+
+    from agent.conftest import make_provider
+
+    from nanobot.bus.queue import MessageBus
+    from nanobot.channels.homeweb_durable import homeweb_record
+    from nanobot.cron.bound_runner import run_bound_cron_job
+    from nanobot.cron.service import CronService
+    from nanobot.cron.types import CronSchedule
+    from nanobot.household.cron_extras import with_reminder_meta
+    from nanobot.household.loop import HouseholdAgentLoop
+    from nanobot.providers.base import LLMResponse
+
+    provider = make_provider(default_model="cheap")
+    provider.provider_name = "custom"
+
+    async def chat(**_kw):
+        return LLMResponse(content="Hora de regar las plantas, Mora.")
+
+    provider.chat_with_retry = provider.chat_stream_with_retry = provider.chat = chat
+    bus = MessageBus()
+    loop = HouseholdAgentLoop(bus=bus, provider=provider, workspace=tmp_path,
+                              model="cheap", context_window_tokens=128_000)
+    chat_id = "homeweb:999000111:2026-11-22:s-1:3"
+    cron = CronService(tmp_path / "cron" / "jobs.json")
+    job = cron.add_job(name="regar", schedule=CronSchedule(kind="every", every_ms=86_400_000),
+                       message="Recordar regar las plantas", session_key=f"websocket:{chat_id}",
+                       origin_channel="websocket", origin_chat_id=chat_id)
+    runner = asyncio.create_task(loop.run())
+    try:
+        await run_bound_cron_job(with_reminder_meta(job), agent=loop, cron=cron)
+    finally:
+        loop.stop()
+        runner.cancel()
+    records = []
+    while not bus.outbound.empty():
+        rec = homeweb_record(bus.outbound.get_nowait(), tmp_path)
+        if rec and rec.get("type") == "message":
+            records.append(rec)
+    assert records and records[-1]["reminder"] == {"job": job.id, "name": "regar", "recurring": True}

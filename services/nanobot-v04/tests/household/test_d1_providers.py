@@ -246,3 +246,39 @@ async def test_one_rescue_opens_the_window_for_the_whole_house(tmp_path):
     gw.asked.clear()
     await wrapper.chat(messages=[], model="cheap")
     assert gw.asked == ["flash"]                                # skipped from the next call on
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,text", [
+    (400, "Input validation error"),
+    (404, "The model `gemma-old` does not exist"),
+    (400, "prompt is too long: 27852 tokens > 16384 maximum"),
+])
+async def test_a_refusal_about_the_model_takes_the_fallback_without_a_window(status, text):
+    """Fork _MODEL_SPECIFIC_ERROR_*: another model answers the same request;
+    upstream handed the person the raw error. Not an outage, so no window."""
+    class _Refuses(_Down):
+        async def chat(self, **kwargs):
+            self.calls += 1
+            return LLMResponse(content=text, finish_reason="error", error_status_code=status,
+                               error_should_retry=False)
+
+    primary = _Refuses("nanogpt", "https://nano-gpt.com/api/v1", fail=True)
+    wrapper = outages.HouseholdFallbackProvider(primary, [ModelPresetConfig(model="qwen")],
+                                                lambda _: _Down("x", "http://x", fail=False))
+    for _ in range(outages.FAILURE_THRESHOLD + 1):
+        assert (await wrapper.chat(messages=[])).content == "rescued"
+    assert outages.remaining("https://nano-gpt.com/api/v1", "main-model") == 0
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_bad_request_is_still_the_callers():
+    class _Bad(_Down):
+        async def chat(self, **kwargs):
+            return LLMResponse(content="messages[3].role must be one of ...", finish_reason="error",
+                               error_status_code=400, error_should_retry=False)
+
+    wrapper = outages.HouseholdFallbackProvider(_Bad("nanogpt", "https://nano-gpt.com/api/v1", fail=True),
+                                                [ModelPresetConfig(model="qwen")],
+                                                lambda _: _Down("x", "http://x", fail=False))
+    assert (await wrapper.chat(messages=[])).finish_reason == "error"

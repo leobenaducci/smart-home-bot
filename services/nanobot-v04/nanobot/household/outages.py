@@ -114,6 +114,17 @@ def record(gateway: str, model: str, response: LLMResponse) -> None:
         mark_down(gateway, model)
 
 
+# Fork providers/base.py, measured 2026-09-02: a retired model, a parameter one
+# model refuses ("input validation error" from gpt-oss on reasoning_effort
+# "none"), and prompts past a model's context ceiling.
+MODEL_SPECIFIC_ERROR_MARKERS = (
+    "model_not_found", "model not found", "unknown model", "no such model", "does not exist",
+    "decommissioned", "has been deprecated", "has been retired", "input validation error",
+    "prompt is too long", "context length", "maximum context length",
+    "reduce the length of the messages", "context_length",
+)
+
+
 def _skipped(model: str, left: float) -> LLMResponse:
     return LLMResponse(
         content=f"Model '{model}' is inside a shared outage window ({left:.0f} s left)",
@@ -135,6 +146,25 @@ class HouseholdFallbackProvider(FallbackProvider):
 
     def _primary_available(self) -> bool:
         return True
+
+    @staticmethod
+    def _should_fallback(response: LLMResponse) -> bool:
+        """Upstream's rule, plus the fork's errors that are about the *model*
+        (fork providers/base.py ``_MODEL_SPECIFIC_ERROR_*``): a 404 or a model
+        that is gone, a parameter this model refuses, a prompt it cannot hold.
+        Retrying sends the same request to the same refusal; another model
+        answers it. Upstream treats all of them as the caller's mistake, so
+        the person got the raw error. They take the fallback but never open
+        an outage window (``record`` keeps upstream's rule)."""
+        if FallbackProvider._should_fallback(response):
+            return True
+        if response.finish_reason != "error":
+            return False
+        if response.error_status_code == 404:
+            return True
+        text = " ".join(str(v or "") for v in (response.content, response.error_code,
+                                               response.error_type, response.error_kind)).lower()
+        return any(marker in text for marker in MODEL_SPECIFIC_ERROR_MARKERS)
 
     def _detoured(self, provider: LLMProvider, detour: dict[str, Any]) -> LLMProvider:
         """The client for a detour's target: the same one unless it names another provider."""

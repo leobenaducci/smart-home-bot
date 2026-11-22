@@ -282,3 +282,35 @@ async def test_the_raw_result_is_kept_for_the_summary_turn(tmp_path):
     await manager._announce_result("t8", "flights", "find flights", "340 USD",
                                    {"channel": "whatsapp", "chat_id": "5491100000000"}, "ok")
     assert manager.take_raw_result("t8") == "340 USD" and manager.take_raw_result("t8") is None
+
+
+@pytest.mark.asyncio
+async def test_a_sub_agent_runs_a_tool_call_its_model_wrote_as_text(tmp_path):
+    """The fork's sub-agents ran the chat turn's runner: a call written as text
+    (or a skill block) was executed. Upstream's sub-agent runner ignored it and
+    returned the text as the result."""
+    from unittest.mock import MagicMock
+
+    from nanobot.providers.base import GenerationSettings, LLMProvider, LLMResponse
+
+    (tmp_path / "notes.txt").write_text("Water the roses on Tuesday.")
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "worker"
+    provider.generation = GenerationSettings()
+    seen: list[list[dict]] = []
+    replies = iter([LLMResponse(content='read_file(path="notes.txt")'),
+                    LLMResponse(content="The roses get water on Tuesday.")])
+
+    async def chat(**kw):
+        seen.append(kw["messages"])
+        return next(replies)
+
+    provider.chat_stream_with_retry = chat
+    provider.chat_with_retry = chat
+    loop = _loop(tmp_path)
+    RUNTIME.config = _cfg()
+    result = await loop.subagents.run_inline(
+        task="When do the roses get water?", session_key="websocket:homeweb:999000111:2026-11-22:1",
+        runtime=LLMRuntime.capture(provider, "worker", context_window_tokens=128_000))
+    assert result == "The roses get water on Tuesday."
+    assert any("Water the roses on Tuesday." in str(m.get("content")) for m in seen[-1])

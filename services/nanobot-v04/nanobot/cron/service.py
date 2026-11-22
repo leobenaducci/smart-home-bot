@@ -218,6 +218,12 @@ class CronService:
         return self._running or self._active_executions > 0
 
     def _is_unbound_agent_job(self, job: CronJob) -> bool:
+        # household: the fork's silent agent jobs (no delivery, no target) are
+        # kept and run as a private turn; see household/cron_extras.py.
+        from nanobot.household.cron_extras import is_silent_job
+
+        if is_silent_job(job):
+            return False
         return job.payload.kind == "agent_turn" and not is_bound_cron_job(job)
 
     def _enforce_agent_binding(self, job: CronJob) -> bool:

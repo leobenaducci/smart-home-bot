@@ -745,7 +745,8 @@ class SubagentManager:
             raise asyncio.CancelledError
         return outcome.result
 
-    def _extra_turn_hooks(self, record: _SubagentTask) -> list[AgentHook]:
+    def _extra_turn_hooks(self, record: _SubagentTask, tools: Any = None,
+                          workspace: Any = None) -> list[AgentHook]:
         """household seam: further hooks for one sub-agent run (none upstream)."""
         return []
 
@@ -801,7 +802,7 @@ class SubagentManager:
                 status, check_active=record.raise_if_stopping,
                 max_result_chars=self.max_tool_result_chars,
                 on_status=save_observation,
-            ), *self._extra_turn_hooks(record)],  # household: task-panel narration
+            ), *self._extra_turn_hooks(record, tools, root)],  # household: runner hooks, task panel
             ephemeral=not record.session.policy.persist,
             run_extra_hooks_for_ephemeral=True,
             log_content=record.session.policy.log_content,

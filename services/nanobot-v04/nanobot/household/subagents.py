@@ -282,14 +282,35 @@ class HouseholdSubagentManager(SubagentManager):
 
         return Narrator(record.origin.get("chat_id"), record.status.task_id, record.status.label)
 
-    def _extra_turn_hooks(self, record: Any) -> list[Any]:
-        from nanobot.household.hooks import ToolTimingHook
+    def _build_subagent_prompt(self, workspace: Any = None) -> str:
+        """Upstream's prompt (the household template, via the loader), with the
+        current time the fork's sub-agents had (``{{ time_ctx }}``): a task
+        about "today" or "next week" otherwise runs without knowing when."""
+        from nanobot.household.turn_facts import current_time_str
+
+        prompt = super()._build_subagent_prompt(workspace)
+        timezone = getattr(RUNTIME.config.agents.defaults, "timezone", None) if RUNTIME.config else None
+        return prompt.replace("# Subagent\n", f"# Subagent\n\nCurrent Time: {current_time_str(timezone)}\n", 1)
+
+    def _extra_turn_hooks(self, record: Any, tools: Any = None, workspace: Any = None) -> list[Any]:
+        from nanobot.household.hooks import HouseholdNudgeHook, HouseholdResponseHook, ToolTimingHook
         from nanobot.household.task_panel import TaskPanelHook
 
-        hooks = [*super()._extra_turn_hooks(record), TaskPanelHook(self._narrator(record)),
-                 ToolTimingHook()]
         model = getattr(getattr(record, "runtime", None), "model", None)
-        if (budget := iteration_budget(model)) is not None:
+        budget = iteration_budget(model)
+        hooks = [*super()._extra_turn_hooks(record, tools, workspace)]
+        if tools is not None:
+            # The fork's sub-agents ran the same runner as a chat turn: skill
+            # blocks executed, written-out tool calls parsed, the repeated-call
+            # stop and the exec-failure cap. Upstream's sub-agent runner has
+            # none of it, and the sub-agent prompt still lists the skills.
+            limit = budget or self.max_iterations
+            session_key = getattr(getattr(record, "session", None), "key", None)
+            hooks += [HouseholdResponseHook(tools, workspace=workspace or self.workspace,
+                                            session_key=session_key, max_iterations=limit),
+                      HouseholdNudgeHook(max_iterations=limit)]
+        hooks += [TaskPanelHook(self._narrator(record)), ToolTimingHook()]
+        if budget is not None:
             from nanobot.household.plan import TurnBudgetHook
 
             hooks.append(TurnBudgetHook(budget, exact=True))

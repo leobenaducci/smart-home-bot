@@ -16,11 +16,22 @@ from nanobot.context_sources import record_source
 _TEMPLATES_ROOT = Path(__file__).resolve().parent.parent / "templates"
 
 
-@lru_cache
 def _environment() -> Environment:
+    # household: the household's copies of the templates it changed come
+    # first (nanobot/household/templates); everything else is upstream's.
+    from nanobot.household.skill_roots import household_enabled
+
+    return _environment_for(household_enabled())
+
+
+@lru_cache
+def _environment_for(household: bool) -> Environment:
+    roots = [str(_TEMPLATES_ROOT)]
+    if household:
+        roots.insert(0, str(_TEMPLATES_ROOT.parent / "household" / "templates"))
     # Plain-text prompts: do not HTML-escape variable values.
     return Environment(
-        loader=FileSystemLoader(str(_TEMPLATES_ROOT)),
+        loader=FileSystemLoader(roots),
         autoescape=False,
         trim_blocks=True,
         lstrip_blocks=True,

@@ -47,10 +47,13 @@ WORKDIR /app
 
 # Python dependencies from pyproject alone (cached until it changes), plus the
 # household's extras: paho-mqtt (mqtt channel), smbprotocol (file share),
-# pandas (documents), brotli >= 1.2.1 (CVE floor the fork states).
+# pandas (documents), brotli >= 1.2.1 (CVE floor the fork states),
+# websocket-client (the home-assistant skill's device registry) and reportlab
+# (the document skill's fallback): fork dependencies v0.4.1 dropped.
 COPY pyproject.toml ./
 RUN uv pip install --system --no-cache -r pyproject.toml && \
-    uv pip install --system --no-cache paho-mqtt smbprotocol pandas "brotli>=1.2.1"
+    uv pip install --system --no-cache paho-mqtt smbprotocol pandas "brotli>=1.2.1" \
+        "websocket-client>=1.9.0,<2.0.0" "reportlab>=4.0.0,<5.0.0"
 
 # pi (pi.dev) for the harness, pinned by its lockfile; never phones home.
 ENV PI_HOME=/opt/pi PI_TELEMETRY=0 PI_OFFLINE=1
@@ -79,7 +82,9 @@ COPY --from=bridge-build /app/bridge/dist bridge/dist
 
 COPY docker/household/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && \
-    chmod +x /usr/local/bin/entrypoint.sh
+    chmod +x /usr/local/bin/entrypoint.sh && \
+    printf '#!/bin/sh\nexec env PYTHONPATH=/app python3 -m nanobot.household.md2pdf "$@"\n' > /usr/local/bin/md2pdf && \
+    chmod +x /usr/local/bin/md2pdf
 
 USER nanobot
 ENV HOME=/home/nanobot PYTHONPATH=/app NANOBOT_HOUSEHOLD=1 PYTHONUNBUFFERED=1

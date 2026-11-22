@@ -196,6 +196,8 @@ _PACE_TICK_S = 0.05
 # sub-agent run, while being wrong the other way costs the household an
 # announcement of work that never happened.
 _STALL_PREAMBLE_CHARS = 200
+# Reasoning ticks reach the stall timer at most this often (fork loop.py).
+_ALIVE_INTERVAL_S = 3.0
 # How long the end of a streamed answer waits for its final usage report. The
 # runner closes the stream and then reports that iteration's usage, normally in
 # the same millisecond; this only bounds a provider that never reports any.
@@ -676,6 +678,8 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                 await asyncio.wait_for(_final_usage.wait(), timeout=_USAGE_GRACE_S)
             await _finish()
 
+        _last_alive = [0.0]
+
         async def _on_stream_end(*_a: Any, resuming: bool = False, **_kw: Any) -> None:
             if resuming:
                 _segment_chars[0] = 0
@@ -704,9 +708,21 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
             usage: dict[str, Any] | None = None,
             alive: bool = False,
             plan: dict[str, Any] | None = None,
+            reasoning: bool = False,
             **_kw: Any,
         ) -> None:
             now = time.monotonic()
+
+            if reasoning:
+                # Fork loop `on_reasoning`: a thinking model that has shown no
+                # word yet is alive, not stalled. Upstream delivers reasoning
+                # only to a callback that names this field; without it the
+                # stall timer handed long thoughts to a sub-agent. One tick
+                # per interval is enough for the timer.
+                if now - _last_alive[0] < _ALIVE_INTERVAL_S:
+                    return
+                _last_alive[0] = now
+                alive = True
 
             if plan is not None:
                 # The whole checklist, every time: the page redraws its card
