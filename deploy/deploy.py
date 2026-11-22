@@ -2794,6 +2794,15 @@ def house_image(cfg: dict) -> str:
     return image
 
 
+def _unit_compose_names(unit: dict) -> list[str]:
+    """Every compose file a unit names, optional ones included, whatever the
+    shape of `compose:` (one name, a list, {file, when} entries)."""
+    entries = unit.get("compose", "docker-compose.yml")
+    if isinstance(entries, (str, dict)):
+        entries = [entries]
+    return [e if isinstance(e, str) else str(e.get("file") or "") for e in entries]
+
+
 def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
                 contributions: dict | None = None) -> dict[str, str]:
     """Build the complete environment one unit's compose file will interpolate.
@@ -3031,7 +3040,7 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
     # fork's unless `services.nanobot-house.nanobot_image` names the rebased
     # one (the house switches last, after every member). Only for that unit:
     # a bad value there must not stop a deploy of anything else.
-    if unit.get("compose") == "docker-compose.house.yml":
+    if "docker-compose.house.yml" in _unit_compose_names(unit):
         env["NANOBOT_HOUSE_IMAGE"] = house_image(cfg)
 
     # HOST_HUB / HOST_COMPUTE / HOST_STORAGE used to be exported here, under

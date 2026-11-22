@@ -80,5 +80,5 @@ def test_only_the_configured_host_is_trusted(monkeypatch):
     refuse = lambda url: (False, "private")  # noqa: E731
     assert mcp_trust.check_configured("http://host.docker.internal:21068/mcp", refuse) == (True, "")
     assert mcp_trust.check_request("http://host.docker.internal:21068/mcp/x", refuse) == (True, "")
-    assert mcp_trust.check_request("http://192.168.88.1/admin", refuse) == (False, "private")
-    assert mcp_trust.transport_for("http://192.168.88.1/") is None
+    assert mcp_trust.check_request("http://10.20.30.40/admin", refuse) == (False, "private")
+    assert mcp_trust.transport_for("http://10.20.30.40/") is None

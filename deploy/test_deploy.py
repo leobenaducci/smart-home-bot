@@ -4279,6 +4279,11 @@ check("  another service's deploy neither reads nor trips over the house's image
 _house_env = D.collect_env({}, {"name": "house", "compose": "docker-compose.house.yml", "env": {}},
                            {}, _house_cfg)
 check("  the house unit gets it", _house_env.get("NANOBOT_HOUSE_IMAGE") == "alfred-nanobot-v04:latest")
+_house_env2 = D.collect_env({}, {"name": "house", "env": {},
+                                 "compose": ["docker-compose.house.yml", {"file": "x.yml", "when": "a.b"}]},
+                            {}, _house_cfg)
+check("  and still does when its compose is a list",
+      _house_env2.get("NANOBOT_HOUSE_IMAGE") == "alfred-nanobot-v04:latest")
 
 print("\nthe code broker is told the login people sign in with")
 # The three-ids rule, on the one table that crosses from what the deployer

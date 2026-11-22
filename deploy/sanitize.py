@@ -218,6 +218,8 @@ UPSTREAM = {
     "services/nanobot-v04/docs/guides/email-ai-agent.md",
     "services/nanobot-v04/tui/SOURCE_OFFER.md",
     # Copyright attributions, which have to stay verbatim (see _is_vendored).
+    # Listed here, --check skips this file as it skips every UPSTREAM one;
+    # publish_check's real-value checks still read its added lines.
     "services/nanobot-v04/THIRD_PARTY_NOTICES.md",
 }
 
