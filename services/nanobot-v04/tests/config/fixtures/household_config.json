@@ -1,0 +1,222 @@
+{
+  "api": {
+    "timeout": 300
+  },
+  "gateway": {
+    "morningGreeting": {
+      "enabled": true,
+      "cron": "0 7 * * *"
+    },
+    "heartbeat": {
+      "enabled": true,
+      "intervalS": 1800,
+      "channel": "websocket",
+      "chatId": "homeweb:999000111:2026-11-17"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "gpt-5.6-luna",
+      "provider": "custom",
+      "providerRetryMode": "persistent",
+      "timezone": "Etc/UTC",
+      "subagentModel": "deepseek-v4-pro",
+      "subagentProvider": "custom",
+      "modelPowerful": "deepseek-v4-pro",
+      "providerPowerful": "custom",
+      "visionModel": "qwen3-vl:8b",
+      "visionProvider": "ollama",
+      "modelFallback": "deepseek-v4-flash",
+      "modelProfiles": {
+        "programmer": "kimi-k3",
+        "designer": "gpt-5.6-luna",
+        "teacher": "gpt-5.6-luna",
+        "notifications": "gpt-5.6-luna",
+        "events": "gpt-5.6-luna",
+        "doctor": "deepseek-v4-pro",
+        "legal": "deepseek-v4-pro"
+      },
+      "providerProfiles": {
+        "programmer": "custom",
+        "designer": "custom",
+        "teacher": "custom",
+        "notifications": "custom",
+        "events": "custom",
+        "doctor": "custom",
+        "legal": "custom"
+      },
+      "maxTokens": 32768,
+      "contextWindowTokens": 256000,
+      "subagentModelPowerful": "deepseek-v4-pro",
+      "subagentProviderPowerful": "custom",
+      "reasoningEffortProfiles": {
+        "notifications": "none"
+      },
+      "reasoningEffortPowerful": "high",
+      "reasoningEffortDefault": "low",
+      "heartbeatModel": "ollama:gemma4:e4b",
+      "heartbeatProvider": "ollama",
+      "heartbeatReasoningEffort": "none",
+      "classifierModel": "gemma4:e4b",
+      "classifierProvider": "ollama",
+      "classifierReasoningEffort": "none",
+      "planModel": "gpt-5.6-luna",
+      "planProvider": "custom",
+      "planStepModel": "qwen3.5:9b",
+      "planStepProvider": "ollama",
+      "routing": {
+        "mode": "active",
+        "planExecutor": "everyday",
+        "stickyTurns": 2
+      },
+      "harness": {
+        "enabled": true,
+        "longTasks": false,
+        "contextWindow": 65536
+      },
+      "contextBlockLimit": 12000,
+      "dream": {
+        "writeSkills": false
+      }
+    }
+  },
+  "n8n": {
+    "baseUrl": "http://n8n.example:5678",
+    "apiKey": "${NANOBOT_N8N_API_KEY}",
+    "workflowsEndpoint": "/api/v1/workflows/"
+  },
+  "providers": {
+    "custom": {
+      "apiKey": "${OPENCODE_API_KEY}",
+      "apiBase": "https://opencode.ai/zen/v1"
+    },
+    "ollama": {
+      "apiKey": "${OLLAMA_API_KEY}",
+      "apiBase": "${OLLAMA_URL}/v1"
+    },
+    "ollama_cloud": {
+      "apiKey": "${OLLAMA_CLOUD_API_KEY}",
+      "apiBase": "${OLLAMA_CLOUD_URL}/v1"
+    },
+    "together_ai": {
+      "apiKey": "${TOGETHER_API_KEY}",
+      "apiBase": "https://api.together.xyz/v1"
+    },
+    "ollama_vision": {
+      "apiKey": "${OLLAMA_API_KEY}",
+      "apiBase": "${OLLAMA_VISION_URL}/v1"
+    },
+    "openrouter": {
+      "apiKey": "${OPENROUTER_API_KEY}",
+      "apiBase": "https://openrouter.ai/api/v1"
+    },
+    "nanogpt": {
+      "apiKey": "${NANOGPT_API_KEY}",
+      "apiBase": "https://nano-gpt.com/api/v1"
+    },
+    "openai": {
+      "apiKey": "${OPENAI_API_KEY}",
+      "apiBase": "https://api.openai.com/v1"
+    },
+    "openai_compatible": {
+      "apiKey": "${OPENAI_COMPATIBLE_API_KEY}",
+      "apiBase": "${OPENAI_COMPATIBLE_URL}/v1"
+    }
+  },
+  "channels": {
+    "websocket": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "token": "${NANOBOT_API_SECRET}",
+      "websocketRequiresToken": false
+    },
+    "transcriptionLanguage": "es",
+    "email": {
+      "enabled": false,
+      "allowFrom": [
+        "tomi@example.org"
+      ],
+      "alfredAddresses": [
+        "alfred@example.org"
+      ],
+      "rules": [
+        {
+          "from": "tomi@example.org",
+          "allow": [
+            "reply"
+          ]
+        }
+      ],
+      "rulesEnforced": true
+    }
+  },
+  "tools": {
+    "exec": {
+      "allowedEnvKeys": [
+        "HOMECORE_USER_ID",
+        "HOMECORE_PROXY_TOKEN"
+      ]
+    },
+    "ssrfWhitelist": [
+      "192.168.0.0/16",
+      "100.64.0.0/10"
+    ],
+    "disabled": [
+      "glob",
+      "notebook_edit"
+    ],
+    "mcpServers": {
+      "homeassistant": {
+        "type": "sse",
+        "url": "${HOMEASSISTANT_URL}/mcp_server/sse",
+        "headers": {
+          "Authorization": "Bearer ${HOMEASSISTANT_TOKEN}"
+        },
+        "toolTimeout": 30,
+        "disabledTools": [
+          "todo_get_items",
+          "HassListAddItem",
+          "HassListCompleteItem",
+          "HassListRemoveItem",
+          "HassCancelAllTimers",
+          "HassBroadcast",
+          "GetDateTime",
+          "mcp_homeassistant_prompt_Assist",
+          "mcp_homeassistant_resource_assist_context_snapshot"
+        ]
+      },
+      "brightdata": {
+        "type": "streamableHttp",
+        "url": "https://mcp.example/mcp?token=${BRIGHTDATA_API_TOKEN}",
+        "toolTimeout": 60,
+        "enabledTools": [
+          "scrape_as_markdown",
+          "web_data_amazon_product",
+          "search_engine",
+          "web_data_google_shopping"
+        ]
+      },
+      "crawl4ai": {
+        "url": "http://crawl4ai:11235/mcp/sse",
+        "headers": {
+          "Authorization": "Bearer ${CRAWL4AI_API_TOKEN}"
+        },
+        "toolTimeout": 120,
+        "enabledTools": [
+          "md"
+        ]
+      },
+      "browser-use": {
+        "type": "streamableHttp",
+        "url": "http://browser-use:21034/mcp",
+        "toolTimeout": 180,
+        "enabledTools": [
+          "browse"
+        ]
+      }
+    }
+  },
+  "profiling": {
+    "enabled": true
+  }
+}

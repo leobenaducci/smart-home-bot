@@ -43,6 +43,38 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
+
+def _is_v04() -> bool:
+    """True inside the rebased assistant (upstream nanobot 0.4.x + nanobot/household,
+    services/nanobot-v04); False in the fork. The page runs this script in
+    whichever container it picks, so every internal this file touches has both
+    paths."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("nanobot.household") is not None
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
+V04 = _is_v04()
+
+
+def load_runtime_config():
+    """The container's own config, env references resolved, as its gateway sees it."""
+    if V04:
+        from nanobot.config.loader import load_config, resolve_config_env_vars
+        return resolve_config_env_vars(load_config())
+    from nanobot.cli import commands as C
+    return C._load_runtime_config()
+
+
+def _pi_runner():
+    if V04:
+        from nanobot.household.harness import pi_runner
+    else:
+        from nanobot.harness import pi_runner
+    return pi_runner
+
 # The prefixes assistant.models uses -- MODEL_PROVIDERS in deploy/deploy.py.
 PREFIXES = {
     "ollama": "ollama", "ollama-cloud": "ollama_cloud", "ollama-vision": "ollama_vision",
@@ -313,8 +345,10 @@ def install_guard(agent, rec: Recorder, workspace: Path) -> None:
         return tool, cast, error
     agent.tools.prepare_call = prepare
 
-    for name, tool in list(agent.tools._tools.items()):
+    def guard(name, tool):
         real = tool.execute
+        if getattr(real, "_bench_guard", False):
+            return
 
         async def guarded(_name=name, _real=real, **params):
             label, run = classify(_name, params)
@@ -328,11 +362,53 @@ def install_guard(agent, rec: Recorder, workspace: Path) -> None:
                 if _name == "exec" else params
             return stub_result(label, _name, skill_params)
 
+        guarded._bench_guard = True
         tool.execute = guarded
+
+    for name, tool in list(agent.tools._tools.items()):
+        guard(name, tool)
+    # A tool registered after this point -- the rebased assistant registers new
+    # MCP wrappers when a server reconnects -- is guarded on the way in, or it
+    # would reach the house unguarded.
+    real_register = agent.tools.register
+
+    def register(tool):
+        real_register(tool)
+        guard(tool.name, tool)
+    agent.tools.register = register
+
+
+def _remember_translations(rec: Recorder, pending: dict, out) -> None:
+    for tc in out.tool_calls:
+        args = pending.get(tc.id)
+        if args is not None and tc.name == "exec":
+            inv = args.get("invocation") or {}
+            skill = inv.get("skill") or Path(str(args.get("path") or "")).parent.name
+            cmd = str(tc.arguments.get("command") or "")
+            rec.skill_by_command[cmd] = (str(skill), str(inv.get("action") or ""))
+            rec.skill_params[cmd] = {k: v for k, v in inv.items() if k not in ("skill", "action")}
 
 
 def hook_skill_translation(rec: Recorder) -> None:
     """Remember which exec command each skill call became, to label and gate it."""
+    if V04:
+        # household/hooks.py calls skill_translation.maybe_translate_skill_calls,
+        # imported by name: the name in that module is the one to replace.
+        import nanobot.household.hooks as hooks_mod
+        original = hooks_mod.maybe_translate_skill_calls
+        if getattr(original, "_bench", False):
+            return
+
+        async def wrapped_v04(response, spec, messages, **kw):
+            pending = {tc.id: tc.arguments for tc in response.tool_calls
+                       if tc.name == "__skill_translate"}
+            out = await original(response, spec, messages, **kw)
+            _remember_translations(rec, pending, out)
+            return out
+
+        wrapped_v04._bench = True
+        hooks_mod.maybe_translate_skill_calls = wrapped_v04
+        return
     from nanobot.agent.runner import AgentRunner
 
     original = AgentRunner._maybe_translate_skill_calls
@@ -359,6 +435,17 @@ def hook_skill_translation(rec: Recorder) -> None:
 
 def neutralise_side_effects() -> None:
     """No usage reports, no shared outage marks: the live house never sees a run."""
+    def _quiet(*_a, **_k):
+        return None
+    if V04:
+        import nanobot.household.outages as outages
+        import nanobot.household.telemetry as telemetry
+        for fn in ("report", "report_cancelled"):
+            if hasattr(telemetry, fn):
+                setattr(telemetry, fn, _quiet)
+        outages.mark_down = _quiet
+        outages.remaining = lambda *_a, **_k: 0.0
+        return
     import nanobot.agent.loop as loop_mod
     import nanobot.agent.usage_report as usage_mod
     import nanobot.heartbeat.service as hb_mod
@@ -549,7 +636,10 @@ def setup_digest(config) -> str:
     """
     import nanobot
     from nanobot.agent.context import ContextBuilder
-    from nanobot.agent.remote_skills import cache_dir as remote_cache_dir
+    if V04:
+        from nanobot.household.remote_skills import cache_dir as remote_cache_dir
+    else:
+        from nanobot.agent.remote_skills import cache_dir as remote_cache_dir
 
     h = hashlib.sha256()
 
@@ -564,7 +654,8 @@ def setup_digest(config) -> str:
     workspace = Path(config.workspace_path)
     for name in ContextBuilder.BOOTSTRAP_FILES:
         path = workspace / name
-        if name not in ContextBuilder.PER_USER_BOOTSTRAP_FILES and path.is_file():
+        if name not in getattr(ContextBuilder, "PER_USER_BOOTSTRAP_FILES", ("USER.md",)) \
+                and path.is_file():
             add("ws/" + name, path.read_bytes())
     for label, root in (("ws-skills", workspace / "skills"),
                         ("remote-skills", remote_cache_dir(workspace))):
@@ -589,13 +680,7 @@ def setup_digest(config) -> str:
 
 
 def build(model: str, effort_override: str | None, ollama_url: str = ""):
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
-    from nanobot.cli import commands as C
-    from nanobot.cron.service import CronService
-    from nanobot.session.manager import SessionManager
-
-    config = C._load_runtime_config()
+    config = load_runtime_config()
     real_ws = Path(config.workspace_path)
     ws = Path(tempfile.mkdtemp(prefix="model-bench-"))
     shutil.copytree(real_ws, ws, dirs_exist_ok=True,
@@ -630,6 +715,14 @@ def build(model: str, effort_override: str | None, ollama_url: str = ""):
     if effort_override:
         efforts = {k: (None if effort_override == "unset" else effort_override) for k in efforts}
 
+    if V04:
+        return _build_v04(config, ws, efforts, name, provider_name)
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.cli import commands as C
+    from nanobot.cron.service import CronService
+    from nanobot.session.manager import SessionManager
+
     provider = C._make_provider(config)
     agent = AgentLoop(
         bus=MessageBus(), provider=provider, workspace=config.workspace_path,
@@ -651,6 +744,69 @@ def build(model: str, effort_override: str | None, ollama_url: str = ""):
     return config, ws, provider, agent, efforts, name, provider_name
 
 
+def _build_v04(config, ws: Path, efforts: dict, name: str, provider_name: str):
+    """The rebased assistant's loop, as its gateway builds it, on the model named.
+
+    Every role runs that model: no routing, no profiles, no powerful, plan,
+    vision or sub-agent models, no fallback chain and no harness -- what the
+    fork's bench got by building a bare AgentLoop. The role's effort goes on
+    each turn's runtime (turn_runtime)."""
+    from nanobot.agent.tools.mcp import MCPProvider
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.bus.queue import MessageBus
+    from nanobot.cron.service import CronService
+    from nanobot.household import household_hook_factories
+    from nanobot.household.loop import HouseholdAgentLoop
+    from nanobot.household.runtime import RUNTIME
+    from nanobot.providers.factory import make_provider
+    from nanobot.session.manager import SessionManager
+
+    d = config.agents.defaults
+    for attr in ("model_powerful", "subagent_model", "subagent_model_powerful", "plan_model",
+                 "plan_step_model", "classifier_model", "vision_model", "heartbeat_model"):
+        if hasattr(d, attr):
+            setattr(d, attr, None)
+    for attr in ("model_profiles", "provider_profiles"):
+        if hasattr(d, attr):
+            setattr(d, attr, {})
+    if hasattr(d, "fallback_models"):
+        d.fallback_models = []
+    if getattr(d, "harness", None) is not None and hasattr(d.harness, "enabled"):
+        d.harness.enabled = False
+    d.routing.mode = "off"
+    d.reasoning_effort_default = efforts["everyday"]
+    provider = make_provider(config)
+    tools = ToolRegistry()
+    mcp = MCPProvider.from_config(config, tools)
+    agent = HouseholdAgentLoop.from_config(
+        config, MessageBus(), tool_registry=tools, provider=provider, model=name,
+        cron_service=CronService(ws / "cron" / "jobs.json"),
+        session_manager=SessionManager(ws),
+        hook_factories=[*household_hook_factories(config, tools)],
+    )
+    # The household's code reads its config through RUNTIME; the gateway's own
+    # bind (bind_household_loop) also starts remote skill sync and a classifier
+    # warm-up, which a bench has no use for.
+    RUNTIME.bind(agent, config)
+    agent._connect_mcp = mcp.connect
+    agent.close_mcp = mcp.aclose
+    agent._bench_tz = d.timezone
+    agent._bench_provider_name = provider_name
+    return config, ws, provider, agent, efforts, name, provider_name
+
+
+def turn_runtime(agent, provider, model: str, effort: str | None):
+    """v0.4: the runtime a bench turn runs on -- the model named, the role's effort."""
+    import dataclasses
+
+    from nanobot.utils.llm_runtime import LLMRuntime
+    runtime = LLMRuntime.capture(provider, model, context_window_tokens=agent.context_window_tokens)
+    if effort:
+        runtime = dataclasses.replace(
+            runtime, generation=dataclasses.replace(runtime.generation, reasoning_effort=effort))
+    return runtime
+
+
 def instrument_provider(provider, rec: Recorder) -> None:
     for meth in ("chat_with_retry", "chat_stream_with_retry"):
         original = getattr(provider, meth)
@@ -661,8 +817,12 @@ def instrument_provider(provider, rec: Recorder) -> None:
             rec.llm_seconds += time.monotonic() - t
             rec.llm_calls += 1
             u = getattr(r, "usage", None) or {}
-            rec.tokens_in += int(u.get("prompt_tokens") or 0)
-            rec.tokens_out += int(u.get("completion_tokens") or 0)
+            if isinstance(u, dict):
+                rec.tokens_in += int(u.get("prompt_tokens") or 0)
+                rec.tokens_out += int(u.get("completion_tokens") or 0)
+            else:                                   # v0.4: LLMUsage
+                rec.tokens_in += int(getattr(u, "input_tokens", 0) or 0)
+                rec.tokens_out += int(getattr(u, "output_tokens", 0) or 0)
             if getattr(r, "finish_reason", None) == "error":
                 rec.llm_errors.append(str(getattr(r, "content", "") or "no message")[:200])
             return r
@@ -675,7 +835,7 @@ def harness_endpoint(config, name: str, provider_name: str):
     """The OpenAI-compatible endpoint a long task runs on, or None when there is
     none the harness may use (a hosted model it is not set up for, OpenCode)."""
     try:
-        from nanobot.harness import pi_runner
+        pi_runner = _pi_runner()
     except Exception:                                      # noqa: BLE001
         return None
     # Local engines only. A hosted provider's default base would be accepted by
@@ -719,7 +879,7 @@ def harness_label(call) -> tuple[str, bool]:
 
 async def run_harness_case(case, rep, endpoint, ws, timeout, rec):
     """One long task, the way a background task now runs: pi, bench mode."""
-    from nanobot.harness import pi_runner
+    pi_runner = _pi_runner()
     rec.reset()
     prompt = case["prompt"]
     if (case.get("reply") or {}).get("lang") == "es":
@@ -794,10 +954,57 @@ class _PlannerStandIn:
         return AgentRunResult(final_content="", messages=[], stop_reason="step_dead_end")
 
 
+class _StandInProvider:
+    """v0.4: the planner's stand-in -- answers nothing, so a step that dead-ends on
+    the step model is recorded as a failure, not rescued (see _PlannerStandIn)."""
+
+    def __init__(self):
+        from nanobot.providers.base import GenerationSettings
+        self.generation = GenerationSettings()
+
+    def __getattr__(self, name):
+        if name in ("chat", "chat_with_retry", "chat_stream_with_retry", "chat_stream"):
+            async def nothing(*_a, **_k):
+                from nanobot.providers.base import LLMResponse
+                return LLMResponse(content="", finish_reason="stop")
+            return nothing
+        raise AttributeError(name)
+
+
+async def run_step_case_v04(case, agent, provider, model, timeout) -> tuple[str, str]:
+    """One plan step through household/plan_steps.make_executor -- the step model,
+    the slim prompt, read-only unless the plan says the step acts."""
+    from nanobot.household import plan as household_plan
+    from nanobot.household import plan_steps
+    from nanobot.household.runtime import RUNTIME
+    from nanobot.household.turn_facts import current_time_str
+    cfg = RUNTIME.config
+    d = cfg.agents.defaults
+    d.plan_step_model, d.plan_step_provider = model, getattr(agent, "_bench_provider_name", None)
+    plan = household_plan.TurnPlan(limit_s=float("inf"), per_step=d.routing.plan_step_calls)
+    plan.steps = list(case["plan"])
+    plan.acts = {int(a) for a in case.get("acts") or []}
+    for k, text in (case.get("earlier") or {}).items():
+        plan.results[int(k)] = text
+        plan.done[int(k)] = text[:160]
+    chat = f"bench-steps-{case['id']}-{int(time.time())}"
+    stand_in = turn_runtime(agent, _StandInProvider(), "planner", None)
+    run = plan_steps.make_executor(
+        agent, plan, request=case["request"],
+        preamble=f"Current Time: {current_time_str(getattr(agent, '_bench_tz', None))}",
+        fallback=stand_in, session_key=f"websocket:{chat}", channel="websocket", config=cfg)
+    res = await asyncio.wait_for(run(int(case["step"])), timeout=timeout)
+    if str(res.get("by") or "").startswith("planner"):
+        return "", "the step dead-ended on the step model (the planner would have had to redo it)"
+    return str(res.get("text") or ""), ""
+
+
 async def run_step_case(case, agent, provider, model, timeout) -> tuple[str, str]:
     """One step of a plan, through AgentLoop._step_runner -- the slim prompt,
     read-only unless the plan says the step acts, thinking off -- the way the
     plan-steps role runs it. (reply, error)."""
+    if V04:
+        return await run_step_case_v04(case, agent, provider, model, timeout)
     from nanobot.agent.context import ContextBuilder
     from nanobot.agent.tools import plan as plan_tool
     agent._plan_step_provider, agent._plan_step_model = provider, model
@@ -827,19 +1034,40 @@ async def run_planner_case(case, agent, timeout, rec) -> tuple[str, str, list[st
     something (`acts` -- every other step can only read). Steps answer "done"
     here without running, so the case costs the planner's calls and nothing on
     the house. (reply, error, problems with the plan)."""
-    from nanobot.agent.classify import TurnClass
     plans: list = []
 
-    def fake_steps(plan, *_a, **_k):
-        plans.append(plan)
+    async def not_run(k):
+        return {"text": f"Step {k} done (benchmark: not run).", "by": "bench", "tools": ["bench"]}
 
-        async def run(k):
-            return {"text": f"Step {k} done (benchmark: not run).", "by": "bench", "tools": ["bench"]}
-        return run
+    if V04:
+        from nanobot.household import turn_router
+        from nanobot.household.classify import TurnClass
+        real_plan = agent._turn_plan
 
-    async def long_route(*_a, **_k):
-        return TurnClass("long", "everyday", "benchmark", "forced")
-    agent._step_runner, agent._route_turn = fake_steps, long_route
+        def bench_plan(ctx):
+            plan = real_plan(ctx)
+            plan.executor = not_run
+            plans.append(plan)
+            return plan
+
+        async def long_route(*_a, **_k):
+            return TurnClass("long", "everyday", "benchmark", "forced"), None
+        agent._turn_plan, turn_router.route_turn = bench_plan, long_route
+        # The planning note goes on a `long` turn only with routing active, as the
+        # house runs it; the bench builds with routing off (every role on the
+        # model named), so it is switched on for this role.
+        from nanobot.household.runtime import RUNTIME
+        RUNTIME.config.agents.defaults.routing.mode = "active"
+    else:
+        from nanobot.agent.classify import TurnClass
+
+        def fake_steps(plan, *_a, **_k):
+            plans.append(plan)
+            return not_run
+
+        async def long_route(*_a, **_k):
+            return TurnClass("long", "everyday", "benchmark", "forced")
+        agent._step_runner, agent._route_turn = fake_steps, long_route
     rec.plan_runs = True
     chat = f"bench-planner-{case['id']}-{int(time.time())}"
 
@@ -918,10 +1146,12 @@ async def run_case(role, case, rep, agent, provider, model, ws, efforts, timeout
 
             async def nothing(*_a, **_k):
                 pass
+            role_kw = ({"runtime": turn_runtime(agent, provider, model, efforts.get(profile or "everyday"))}
+                       if V04 else {"profile": profile})
             result = await asyncio.wait_for(agent.process_direct(
                 prompt, session_key=f"websocket:{chat}", channel="websocket", chat_id=chat,
                 on_stream=on_stream, on_stream_end=nothing, on_progress=nothing,
-                profile=profile), timeout=timeout)
+                **role_kw), timeout=timeout)
             reply = (getattr(result, "content", None) or "") if result is not None else ""
             if not reply.strip() and rec.sent:
                 reply = "\n".join(rec.sent)
@@ -1046,14 +1276,27 @@ async def classify_only(args, cases: dict) -> int:
     asking costs more than the turn it helps.
     """
     import statistics
-    from nanobot.agent.classify import TurnClassifier
-    from nanobot.cli import commands as C
-    config = C._load_runtime_config()
+    config = load_runtime_config()
     d = config.agents.defaults
     if args.model:
         name, provider_name = split_model(args.model)
         d.classifier_model, d.classifier_provider = name, provider_name
-    provider, model = C._make_classifier_provider(config)
+    if V04:
+        from nanobot.household.classify import TurnClassifier
+        from nanobot.household.routing import _provider_for
+        from nanobot.providers.factory import make_provider
+        model = d.classifier_model
+        provider = None
+        if model:
+            # Its own client, no fallback chain: the classifier named is what is scored.
+            provider = (_provider_for(config, d.classifier_provider, model, None, chain=False)
+                        if d.classifier_provider and d.classifier_provider != d.provider
+                        else make_provider(config))
+            provider = getattr(provider, "_primary", provider)
+    else:
+        from nanobot.agent.classify import TurnClassifier
+        from nanobot.cli import commands as C
+        provider, model = C._make_classifier_provider(config)
     if not model:
         print("no classifier configured: set assistant.models.classifier or pass --model", file=sys.stderr)
         return 2
@@ -1130,8 +1373,7 @@ async def main() -> int:
     logger.add(sys.stderr, level="ERROR")
 
     if args.setup_digest:
-        from nanobot.cli import commands as C
-        print(setup_digest(C._load_runtime_config()))
+        print(setup_digest(load_runtime_config()))
         return 0
     raw = Path(args.cases).read_bytes()
     args.cases_digest = hashlib.sha256(raw).hexdigest()[:12]
@@ -1143,6 +1385,13 @@ async def main() -> int:
         ap.error("--model is required")
 
     roles = [r.strip() for r in args.roles.split(",") if r.strip() in cases]
+    if V04 and "heartbeat" in roles:
+        # The fork's heartbeat asked the model whether to act; v0.4 runs it as a
+        # scheduled turn when HEARTBEAT.md has active tasks, so there is no
+        # decision for a model to make and nothing here to score.
+        roles.remove("heartbeat")
+        print("heartbeat: not scored on this assistant (v0.4 runs it as a scheduled turn, "
+              "with no decision step for the model)", flush=True)
     only = {c.strip() for c in args.only.split(",") if c.strip()}
 
     neutralise_side_effects()
@@ -1150,8 +1399,7 @@ async def main() -> int:
     hook_skill_translation(rec)
     # Before build(), which points the config at a throwaway copy: the page
     # checks the live container, so this has to hash what it will hash.
-    from nanobot.cli import commands as C
-    setup = setup_digest(C._load_runtime_config())
+    setup = setup_digest(load_runtime_config())
     config, ws, provider, agent, efforts, name, provider_name = build(args.model, args.effort, args.ollama_url)
     instrument_provider(provider, rec)
     print(f"model {args.model}  ->  {name} on {provider_name}"
@@ -1164,8 +1412,7 @@ async def main() -> int:
     # path, and the result says which one ran.
     endpoint = None
     if "longtask" in roles and not args.no_harness:
-        from nanobot.harness import pi_runner
-        endpoint = harness_endpoint(config, name, provider_name) if pi_runner.available() else None
+        endpoint = harness_endpoint(config, name, provider_name) if _pi_runner().available() else None
         print("longtask: " + (f"pi harness on {endpoint.base_url} ({endpoint.model})" if endpoint
                                else "nanobot's own loop (no harness for this model here)"), flush=True)
 

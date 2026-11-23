@@ -4217,7 +4217,10 @@ _seen_images = 0
 for _name, _body in _NANOBOT_COMPOSE:
     for _chunk in _re.split(r"\n  (?=\S)", _body):
         _svc = _chunk.split(":", 1)[0].strip()
-        _img = _re.search(r"^\s+image: (alfred-nanobot[a-z-]*:latest)", _chunk, _re.M)
+        # The house reads its image from NANOBOT_HOUSE_IMAGE with the fork's
+        # as the default (`services.nanobot-house.nanobot_image`).
+        _img = _re.search(r"^\s+image: (?:\$\{NANOBOT_HOUSE_IMAGE:-)?(alfred-nanobot[a-z-]*:latest)",
+                          _chunk, _re.M)
         if not _img:
             continue
         _seen_images += 1
@@ -4235,6 +4238,52 @@ for _name, _body in _NANOBOT_COMPOSE:
 # a split that silently matched one block would otherwise report the file clean.
 check("  and all three kinds of block were reached", _seen_images >= 4,
       f"only {_seen_images} found: the split missed blocks and proved nothing")
+
+print("\nthe assistant image is chosen per member, and per house")
+_img_cfg = copy.deepcopy(CFG)
+_img_mid = (D.member_ids(_img_cfg) or ["user1"])[0]
+check("  a member with no nanobot_image runs the current image",
+      CM.member_image(_img_cfg, _img_mid) == "alfred-nanobot:latest")
+for _m in _img_cfg.get("members") or []:
+    if str(_m.get("id")) == _img_mid:
+        _m["nanobot_image"] = "alfred-nanobot-v04:latest"
+check("  a member set to the rebased image gets it",
+      CM.member_image(_img_cfg, _img_mid) == "alfred-nanobot-v04:latest")
+check("  and the rendered block runs it",
+      "image: alfred-nanobot-v04:latest" in CM.agent_block(_img_cfg, _img_mid, 0))
+_others = [m for m in (D.member_ids(_img_cfg) or []) if m != _img_mid]
+check("  the other members stay where they are",
+      all(CM.member_image(_img_cfg, m) == "alfred-nanobot:latest" for m in _others), _others)
+for _m in _img_cfg.get("members") or []:
+    if str(_m.get("id")) == _img_mid:
+        _m["nanobot_image"] = "ghcr.io/somebody/nanobot:latest"
+try:
+    CM.member_image(_img_cfg, _img_mid)
+    _refused = False
+except ValueError:
+    _refused = True
+check("  an image the deployer does not build is refused", _refused)
+check("  the house defaults to the current image", D.house_image(CFG) == "alfred-nanobot:latest")
+_house_cfg = copy.deepcopy(CFG)
+_house_cfg.setdefault("services", {}).setdefault("nanobot-house", {})["nanobot_image"] = \
+    "alfred-nanobot-v04:latest"
+check("  and takes the rebased one when named", D.house_image(_house_cfg) == "alfred-nanobot-v04:latest")
+_bad_house = copy.deepcopy(CFG)
+_bad_house.setdefault("services", {}).setdefault("nanobot-house", {})["nanobot_image"] = "nope:latest"
+try:
+    _other_env = D.collect_env({}, {"name": "t", "env": {}}, {}, _bad_house)
+    _other_ok = "NANOBOT_HOUSE_IMAGE" not in _other_env
+except ValueError:
+    _other_ok = False
+check("  another service's deploy neither reads nor trips over the house's image", _other_ok)
+_house_env = D.collect_env({}, {"name": "house", "compose": "docker-compose.house.yml", "env": {}},
+                           {}, _house_cfg)
+check("  the house unit gets it", _house_env.get("NANOBOT_HOUSE_IMAGE") == "alfred-nanobot-v04:latest")
+_house_env2 = D.collect_env({}, {"name": "house", "env": {},
+                                 "compose": ["docker-compose.house.yml", {"file": "x.yml", "when": "a.b"}]},
+                            {}, _house_cfg)
+check("  and still does when its compose is a list",
+      _house_env2.get("NANOBOT_HOUSE_IMAGE") == "alfred-nanobot-v04:latest")
 
 print("\nthe code broker is told the login people sign in with")
 # The three-ids rule, on the one table that crosses from what the deployer
@@ -4891,6 +4940,94 @@ D.build_unit_images({"image_build": {"tag": "one:latest", "context": "."}}, _bt,
 D.build_unit_images({}, _bt, "/s", {}, _Out())
 check("  one entry is still one build, and none is none",
       _bt.cmds == ["docker build -t one:latest ."], _bt.cmds)
+
+# The rebased assistant: its own Dockerfile, and built only while a member or
+# the house is set to run it.
+_v04_unit = {"image_build": [
+    {"tag": "alfred-nanobot:latest", "context": ".", "target": "runtime"},
+    {"tag": "alfred-nanobot-v04:latest", "context": "../nanobot-v04",
+     "dockerfile": "docker/household/Dockerfile", "only_if_used": True}]}
+_bt = _BuildTarget()
+D.build_unit_images(_v04_unit, _bt, "/s", {}, _Out(), cfg=CFG)
+check("  an image nobody runs is not built",
+      _bt.cmds == ["docker build --target runtime -t alfred-nanobot:latest ."], _bt.cmds)
+_v04_cfg = copy.deepcopy(CFG)
+_v04_cfg.setdefault("services", {}).setdefault("nanobot-house", {})["nanobot_image"] = \
+    "alfred-nanobot-v04:latest"
+_bt = _BuildTarget()
+D.build_unit_images(_v04_unit, _bt, "/s", {}, _Out(), cfg=_v04_cfg)
+check("  and one somebody runs is built from its own Dockerfile",
+      _bt.cmds[-1] == "docker build -f ../nanobot-v04/docker/household/Dockerfile "
+                      "-t alfred-nanobot-v04:latest ../nanobot-v04", _bt.cmds)
+check("  the restore path still knows both tags",
+      D.unit_image_tags(_v04_unit) == ["alfred-nanobot:latest", "alfred-nanobot-v04:latest"])
+_mu_unit = next(u for u in shipped_manifest["services"]["nanobot"]["units"] if u["name"] == "multiuser")
+check("  the manifest builds the rebased image only on demand",
+      any(isinstance(b, dict) and b.get("tag") == "alfred-nanobot-v04:latest" and b.get("only_if_used")
+          for b in _mu_unit["image_build"]), _mu_unit.get("image_build"))
+
+# Its context is a sibling of the unit's build directory, which only holds the
+# unit's own tree: the source tree has to be shipped there, with the plugins'
+# floor skills and the assistant's name, or the build finds no context.
+import shutil  # noqa: E402
+_src_root = Path(tempfile.mkdtemp(prefix="v04-src-"))
+(_src_root / "services/rebased/nanobot/skills/weather").mkdir(parents=True)
+(_src_root / "services/rebased/nanobot/skills/weather/SKILL.md").write_text("Alfred checks the sky.\n")
+(_src_root / "services/rebased/nanobot/household/skills_data/family").mkdir(parents=True)
+(_src_root / "services/rebased/nanobot/household/skills_data/family/SKILL.md").write_text(
+    "Alfred knows Tomi and Mora.\n")
+_floor = _src_root / "plugin/backups-floor"
+_floor.mkdir(parents=True)
+(_floor / "SKILL.md").write_text("---\nname: backups\n---\n")
+
+
+class _PushTarget:
+    def __init__(self):
+        self.pushed = {}
+
+    def push(self, local_dir, remote_dir):
+        self.pushed[remote_dir] = {str(p.relative_to(local_dir)): p.read_text()
+                                   for p in Path(local_dir).rglob("*") if p.is_file()}
+
+
+_src_unit = {"image_build": [
+    {"tag": "alfred-nanobot:latest", "context": "."},
+    {"tag": "alfred-nanobot-v04:latest", "context": "../rebased", "source": "services/rebased",
+     "only_if_used": True, "skill_floors": "nanobot/skills",
+     "assistant_name_in": ["nanobot/skills/*/SKILL.md",
+                           "nanobot/household/skills_data/*/SKILL.md"]}]}
+_src_contrib = {"floors": [("backups", _floor)]}
+_saved_root = D.ROOT
+D.ROOT = _src_root
+try:
+    _pt = _PushTarget()
+    D.push_image_sources(_src_unit, CFG, _src_contrib, _pt, "/stack/nanobot/multiuser", _Out())
+    check("  a source nobody runs is not shipped", _pt.pushed == {}, list(_pt.pushed))
+    _named_cfg = copy.deepcopy(_v04_cfg)
+    _named_cfg.setdefault("site", {})["assistant_name"] = "Juana"
+    _pt = _PushTarget()
+    D.push_image_sources(_src_unit, _named_cfg, _src_contrib, _pt, "/stack/nanobot/multiuser", _Out())
+    _tree = _pt.pushed.get("/stack/nanobot/rebased") or {}
+    check("  one somebody runs goes to its build context",
+          list(_pt.pushed) == ["/stack/nanobot/rebased"], list(_pt.pushed))
+    check("  with the plugins' floor skills, marked as floors",
+          "nanobot/skills/backups/SKILL.md" in _tree
+          and D.PLUGIN_FLOOR_MARKER in {Path(k).name for k in _tree if k.startswith("nanobot/skills/backups/")},
+          sorted(_tree))
+    check("  and the assistant's name, in shipped and household skills",
+          _tree.get("nanobot/skills/weather/SKILL.md") == "Juana checks the sky.\n"
+          and _tree.get("nanobot/household/skills_data/family/SKILL.md") == "Juana knows Tomi and Mora.\n",
+          _tree)
+    check("  the checkout itself is left as it was",
+          (_src_root / "services/rebased/nanobot/skills/weather/SKILL.md").read_text()
+          == "Alfred checks the sky.\n" and not (_src_root / "services/rebased/nanobot/skills/backups").exists())
+finally:
+    D.ROOT = _saved_root
+    shutil.rmtree(_src_root, ignore_errors=True)
+_mu_v04 = next(b for b in _mu_unit["image_build"] if isinstance(b, dict) and b.get("source"))
+check("  the manifest ships the rebased tree with floors and the name",
+      _mu_v04["source"] == "services/nanobot-v04" and _mu_v04["skill_floors"] == "nanobot/skills"
+      and (D.ROOT / _mu_v04["source"] / _mu_v04["dockerfile"]).is_file(), _mu_v04)
 # A unit whose suite is its own test stage names that stage's tag as
 # `test.image`. Run before the build, the gate checked the previous deploy's
 # image -- and failed every deploy once that image had been pruned.

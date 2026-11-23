@@ -394,6 +394,8 @@ services:
     # The shared, room-facing assistant. Holds house credentials only, never
     # per-member ones — the deployer asserts this after every roll.
     enabled: true
+    # Same choice as `members[].nanobot_image`; the house switches last.
+    # nanobot_image: alfred-nanobot:latest
     host: hub
     # The top of each member range, not the next number after the last member:
     # that way adding members never walks into it. Same naming as above -- the
@@ -1423,3 +1425,8 @@ members:
     # each holds one member's credentials and nothing lets a tool call choose
     # somebody else's.
     programmer: false
+    # Which assistant image this person runs: alfred-nanobot:latest (the
+    # current one, the default) or alfred-nanobot-v04:latest (the rebased one,
+    # built only when a member or the house names it). One member at a time;
+    # setting it back is the rollback.
+    # nanobot_image: alfred-nanobot:latest

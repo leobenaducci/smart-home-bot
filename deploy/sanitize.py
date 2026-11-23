@@ -210,6 +210,17 @@ UPSTREAM = {
     "services/nanobot/SECURITY.md",
     "services/nanobot/CONTRIBUTING.md",
     "services/nanobot/docs/chat-apps.md",
+    # The same upstream documents in the rebased tree, and two more of
+    # upstream's that carry its maintainers' and example addresses.
+    "services/nanobot-v04/SECURITY.md",
+    "services/nanobot-v04/CONTRIBUTING.md",
+    "services/nanobot-v04/docs/chat-apps.md",
+    "services/nanobot-v04/docs/guides/email-ai-agent.md",
+    "services/nanobot-v04/tui/SOURCE_OFFER.md",
+    # Copyright attributions, which have to stay verbatim (see _is_vendored).
+    # Listed here, --check skips this file as it skips every UPSTREAM one;
+    # publish_check's real-value checks still read its added lines.
+    "services/nanobot-v04/THIRD_PARTY_NOTICES.md",
 }
 
 
@@ -218,8 +229,15 @@ UPSTREAM = {
 # belong in someone else's copyright line -- "Copyright (c) 2024 J. Muller" is a
 # legal attribution, not a household member, and rewriting it to "J. Roe" is a
 # compliance problem rather than a redaction. --check still reads them.
+# Whole trees vendored from elsewhere. services/nanobot-v04 is upstream nanobot
+# with the household's code in it, copied from the rebase tree it is built in:
+# a fix belongs there, so --apply never rewrites a file here. --check still
+# reads every one of them.
+UPSTREAM_TREES = ("services/nanobot-v04/",)
+
+
 def _is_vendored(rel: Path) -> bool:
-    if str(rel) in UPSTREAM:
+    if str(rel) in UPSTREAM or str(rel).startswith(UPSTREAM_TREES):
         return True
     stem = rel.name.upper()
     return stem.startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")) or \

@@ -2782,6 +2782,27 @@ def derive_service_token(shared_secret: str, service: str) -> str:
         f"{shared_secret}:svc:{service}".encode()).hexdigest()
 
 
+def house_image(cfg: dict) -> str:
+    """`services.nanobot-house.nanobot_image`, checked like a member's."""
+    members = _generator("compose_members")
+    DEFAULT_NANOBOT_IMAGE, NANOBOT_IMAGES = members.DEFAULT_NANOBOT_IMAGE, members.NANOBOT_IMAGES
+    house = ((cfg.get("services") or {}).get("nanobot-house") or {})
+    image = str(house.get("nanobot_image") or "").strip() or DEFAULT_NANOBOT_IMAGE
+    if image not in NANOBOT_IMAGES:
+        raise ValueError(f"services.nanobot-house.nanobot_image must be one of "
+                         f"{', '.join(NANOBOT_IMAGES)}, not {image!r}")
+    return image
+
+
+def _unit_compose_names(unit: dict) -> list[str]:
+    """Every compose file a unit names, optional ones included, whatever the
+    shape of `compose:` (one name, a list, {file, when} entries)."""
+    entries = unit.get("compose", "docker-compose.yml")
+    if isinstance(entries, (str, dict)):
+        entries = [entries]
+    return [e if isinstance(e, str) else str(e.get("file") or "") for e in entries]
+
+
 def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
                 contributions: dict | None = None) -> dict[str, str]:
     """Build the complete environment one unit's compose file will interpolate.
@@ -3015,6 +3036,12 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
     # than root, or the next deploy cannot read what they wrote.
     env.setdefault("UID", str(os.getuid()))
     env.setdefault("GID", str(os.getgid()))
+    # The house assistant's image, read by docker-compose.house.yml: the
+    # fork's unless `services.nanobot-house.nanobot_image` names the rebased
+    # one (the house switches last, after every member). Only for that unit:
+    # a bad value there must not stop a deploy of anything else.
+    if "docker-compose.house.yml" in _unit_compose_names(unit):
+        env["NANOBOT_HOUSE_IMAGE"] = house_image(cfg)
 
     # HOST_HUB / HOST_COMPUTE / HOST_STORAGE used to be exported here, under
     # the comment "so a compose file can pin extra_hosts without a literal".
@@ -6650,7 +6677,111 @@ def restore_image_tags(target, before: dict[str, str | None], remote_dir: str, o
             out.warn(f"could not put {tag} back: {((r.stderr or r.stdout) or '').strip()[:200]}")
 
 
-def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out) -> None:
+def _image_build_options(unit: dict, tag: str) -> dict:
+    """The `image_build` entry for *tag*, when it is a dict: `dockerfile`,
+    `only_if_used`. Kept beside `unit_image_specs` rather than widening its
+    tuple, which the tag-restore path also reads."""
+    builds = unit.get("image_build")
+    for b in (builds if isinstance(builds, list) else ([builds] if builds else [])):
+        if isinstance(b, dict) and b.get("tag") == tag:
+            return b
+    return {}
+
+
+def nanobot_images_in_use(cfg: dict) -> set[str]:
+    """Every assistant image a member or the house is set to run."""
+    members = _generator("compose_members")
+    used = {members.member_image(cfg, mid) for mid in member_ids(cfg)}
+    used.add(house_image(cfg))
+    return used
+
+
+def stage_skill_floors(tree: Path, skills_dir: str, floors: list) -> int:
+    """Copy each plugin's floor skill into *tree*/*skills_dir*, marked.
+
+    A floor is staged into the *builtin* skills directory on purpose --
+    SkillsLoader reads workspace, then remote, then builtin, so this is the
+    only tier where the live copy the service serves still wins. But nanobot
+    also derives "skills this package ships" from that same directory, and it
+    does so at runtime, after this staging. So an unmarked floor made the
+    remote entry look like a name collision and it was dropped -- leaving the
+    floor as the only copy, the exact opposite of what a floor is for.
+
+    The two collision checks that matter both run before the marker:
+    `plugin_contributions` refuses a plugin skill named after a shipped one,
+    and the `exists()` check here refuses a floor that would overwrite one.
+    """
+    for skill_name, floor in floors:
+        dest = tree / skills_dir / skill_name
+        if dest.exists():
+            raise DeployError(
+                f"a plugin's floor skill {skill_name!r} would "
+                f"overwrite one this package ships"
+            )
+        shutil.copytree(floor, dest)
+        (dest / PLUGIN_FLOOR_MARKER).write_text(
+            "Written by deploy/deploy.py. This directory is a "
+            "plugin's floor copy, not a skill this package ships; "
+            "the live one is served by the plugin's own service.\n",
+            encoding="utf-8")
+    return len(floors)
+
+
+def rename_assistant_in(tree: Path, patterns: list, cfg: dict) -> int:
+    """The assistant's own name in the files *patterns* match under *tree*."""
+    renamed = 0
+    for pattern in patterns or []:
+        for path in sorted(tree.glob(pattern)):
+            if not path.is_file():
+                continue
+            original = path.read_text(encoding="utf-8")
+            updated = apply_assistant_name(original, cfg)
+            if updated != original:
+                path.write_text(updated, encoding="utf-8")
+                renamed += 1
+    return renamed
+
+
+def push_image_sources(unit: dict, cfg: dict, contributions: dict, target,
+                       remote_dir: str, out) -> None:
+    """Ship the tree of every `image_build` entry that names a `source:`.
+
+    The unit's own directory is what reaches `remote_dir`; an image built from
+    another tree (the rebased assistant, `context: ../nanobot-v04`) would find
+    nothing at its context there. Its tree goes to that context, staged the way
+    the unit's own is where it reaches the image: the plugins' floor skills
+    (`skill_floors:`) and the assistant's name (`assistant_name_in:`), both
+    relative to the source tree. Config the containers mount stays the unit's.
+    Skipped, like the build, while nobody runs an `only_if_used` image.
+    """
+    builds = unit.get("image_build")
+    for b in (builds if isinstance(builds, list) else ([builds] if builds else [])):
+        if not isinstance(b, dict) or not b.get("source"):
+            continue
+        if b.get("only_if_used") and b.get("tag") not in nanobot_images_in_use(cfg):
+            continue
+        src = ROOT / b["source"]
+        if not src.is_dir():
+            raise DeployError(f"image {b.get('tag')}: source {b['source']} does not exist")
+        dest_dir = os.path.normpath(os.path.join(remote_dir, b["context"]))
+        staging = Path(tempfile.mkdtemp(prefix="home-stack-"))
+        try:
+            tree = staging / "src"
+            shutil.copytree(src, tree, symlinks=True,
+                            ignore=shutil.ignore_patterns(
+                                ".git", "__pycache__", "node_modules", ".venv"))
+            floors = (contributions.get("floors") or []) if b.get("skill_floors") else []
+            staged = stage_skill_floors(tree, b.get("skill_floors") or "", floors)
+            renamed = rename_assistant_in(tree, b.get("assistant_name_in") or [], cfg)
+            target.push(tree, dest_dir)
+            out.ok(f"image {b.get('tag')}: {b['source']} staged ({staged} plugin "
+                   f"skill floor(s), assistant named in {renamed} file(s))")
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out,
+                      cfg: dict | None = None) -> None:
     # One image, built by name, before compose runs. Not the same thing as
     # `build: true`: that maps to `docker compose build`, which builds what
     # a *service* declares. These compose files deliberately declare no
@@ -6664,13 +6795,23 @@ def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out) -> No
     # a runtime image and the test stage beside it. One entry stays one
     # entry; nothing that declared a single image has to change.
     for tag, context, stage in unit_image_specs(unit):
+        options = _image_build_options(unit, tag)
+        # An image only some members run (the rebased assistant while it is
+        # being rolled out) is built only while somebody is set to run it:
+        # minutes of build on every deploy for an image nobody starts is the
+        # cost the one-image rule above exists to avoid.
+        if options.get("only_if_used") and cfg is not None and tag not in nanobot_images_in_use(cfg):
+            out.sub(f"image {tag}: no member or house runs it, not built")
+            continue
         # A named stage, for a Dockerfile that keeps its test tooling out
         # of the runtime image. Without it the only way to run a service's
         # own suite against the thing being deployed is to ship pytest to
         # the house.
         staged = f"--target {shlex.quote(stage)} " if stage else ""
+        dockerfile = (f"-f {shlex.quote(context.rstrip('/') + '/' + options['dockerfile'])} "
+                      if options.get("dockerfile") else "")
         target.run(
-            f"docker build {staged}-t {shlex.quote(tag)} {shlex.quote(context)}",
+            f"docker build {staged}{dockerfile}-t {shlex.quote(tag)} {shlex.quote(context)}",
             cwd=remote_dir, env=env)
         out.ok(f"image {tag} built")
 
@@ -7247,49 +7388,12 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                         "\n".join(lines) + "\n", encoding="utf-8")
                     out.ok(f"{len(contributed_env)} contributed variable(s) staged")
 
-                for skill_name, floor in floors:
-                    dest = staging / "src" / unit["skill_floors"] / skill_name
-                    if dest.exists():
-                        raise DeployError(
-                            f"a plugin's floor skill {skill_name!r} would "
-                            f"overwrite one this package ships"
-                        )
-                    shutil.copytree(floor, dest)
-                    # Mark it, or the two halves of this feature refuse each
-                    # other. A floor is staged into the *builtin* skills
-                    # directory on purpose -- SkillsLoader reads workspace,
-                    # then remote, then builtin, so this is the only tier where
-                    # the live copy the service serves still wins. But nanobot
-                    # also derives "skills this package ships" from that same
-                    # directory, and it does so at runtime, after the staging
-                    # this loop just did. So the floor made the remote entry
-                    # look like a name collision and it was dropped -- leaving
-                    # the floor as the only copy, which is the exact opposite
-                    # of what a floor is for.
-                    #
-                    # The two collision checks that matter both run before
-                    # this: `plugin_contributions` refuses a plugin skill named
-                    # after a shipped one, and `dest.exists()` above refuses a
-                    # floor that would overwrite one. By the time a marker is
-                    # written, the name is known not to be a shipped skill's.
-                    (dest / PLUGIN_FLOOR_MARKER).write_text(
-                        "Written by deploy/deploy.py. This directory is a "
-                        "plugin's floor copy, not a skill this package ships; "
-                        "the live one is served by the plugin's own service.\n",
-                        encoding="utf-8")
                 if floors:
+                    stage_skill_floors(staging / "src", unit["skill_floors"], floors)
                     out.ok(f"{len(floors)} plugin skill floor(s) staged")
 
-                renamed = 0
-                for pattern in (unit.get("assistant_name_in") or []):
-                    for path in sorted((staging / "src").glob(pattern)):
-                        if not path.is_file():
-                            continue
-                        original = path.read_text(encoding="utf-8")
-                        updated = apply_assistant_name(original, cfg)
-                        if updated != original:
-                            path.write_text(updated, encoding="utf-8")
-                            renamed += 1
+                renamed = rename_assistant_in(
+                    staging / "src", unit.get("assistant_name_in") or [], cfg)
                 if renamed:
                     who = (cfg.get("site") or {}).get("assistant_name")
                     out.ok(f"assistant renamed to {who} in {renamed} file(s)")
@@ -7358,6 +7462,8 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
                 shutil.rmtree(staging, ignore_errors=True)
         else:
             target.push(local_dir, remote_dir)
+        # An image built from another tree gets that tree at its context.
+        push_image_sources(unit, cfg, contributions, target, remote_dir, out)
 
         # A unit may stack an override on a base file -- `compose:` accepts a
         # list. The local proxy's file is an override and was deployed alone,
@@ -7442,7 +7548,7 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
         # a red suite, a second image failing to build, `compose build`
         # failing, the test run itself raising -- puts the tags back.
         try:
-            build_unit_images(unit, target, remote_dir, env, out)
+            build_unit_images(unit, target, remote_dir, env, out, cfg=cfg)
 
             # Tests run against the built image before it replaces the running
             # one, so a red run stops the house getting the change rather than

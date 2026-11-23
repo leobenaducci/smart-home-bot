@@ -297,6 +297,28 @@ def _listing(key: str, items: list[str], indent: str = "    ") -> list[str]:
     return out
 
 
+DEFAULT_NANOBOT_IMAGE = "alfred-nanobot:latest"
+# The rebased assistant (upstream nanobot v0.4.x plus nanobot/household),
+# built by its own unit next to the fork's image and never under its tag.
+REBASED_NANOBOT_IMAGE = "alfred-nanobot-v04:latest"
+NANOBOT_IMAGES = (DEFAULT_NANOBOT_IMAGE, REBASED_NANOBOT_IMAGE)
+
+
+def member_image(cfg: dict, mid: str) -> str:
+    """The assistant image one member runs: `members[].nanobot_image`.
+
+    Per member so the switch to the rebased assistant can go one member at a
+    time, with a rollback that is one line. Only the two images the deployer
+    builds are accepted: anything else would be pulled from nowhere, or run
+    an image nobody here built.
+    """
+    image = str(_member(cfg, mid).get("nanobot_image") or "").strip() or DEFAULT_NANOBOT_IMAGE
+    if image not in NANOBOT_IMAGES:
+        raise ValueError(f"members[{mid}].nanobot_image must be one of {', '.join(NANOBOT_IMAGES)}, "
+                         f"not {image!r}")
+    return image
+
+
 def agent_block(cfg: dict, mid: str, index: int) -> str:
     """One member's assistant."""
     lines = [
@@ -305,8 +327,9 @@ def agent_block(cfg: dict, mid: str, index: int) -> str:
         f'profiles: ["{mid}"]',
         # One image for everyone, built by the deployer -- NOT a per-service
         # `build:` block, which makes compose build the same Dockerfile once
-        # per member and export N byte-identical images.
-        "image: alfred-nanobot:latest",
+        # per member and export N byte-identical images. Which of the two
+        # assistant images a member runs is `members[].nanobot_image`.
+        f"image: {member_image(cfg, mid)}",
         "restart: unless-stopped",
         'user: "${UID:-1000}:${GID:-1000}"',
     ]
