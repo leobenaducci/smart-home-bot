@@ -291,6 +291,7 @@ class Profiler:
         reasoning_chars: int = 0,
         tool_calls: int = 0,
         answerless: bool = False,
+        shape_known: bool = True,
     ) -> None:
         """One trip through the retry ladder, however many requests that took."""
         if not self.enabled:
@@ -323,7 +324,8 @@ class Profiler:
             # this field exists to count. The cause is the model's; the
             # `error` finish_reason is ours.
             "empty": answerless or (
-                finish_reason != "error" and not content_chars and not tool_calls),
+                shape_known and finish_reason not in ("error", "cancelled")
+                and not content_chars and not tool_calls),
             "truncated": finish_reason == "length",
             "tokens": tokens,
             "cache_hit_pct": (

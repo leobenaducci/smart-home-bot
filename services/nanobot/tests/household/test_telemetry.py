@@ -13,7 +13,7 @@ from nanobot.household.loop import HouseholdAgentLoop
 from nanobot.household.profiling import PROFILER
 from nanobot.llm_usage.models import LLMCallRecord
 from nanobot.llm_usage.types import LLMUsage
-from nanobot.providers.base import LLMResponse
+from nanobot.providers.base import LLMProvider, LLMResponse
 
 
 @pytest.fixture()
@@ -49,6 +49,61 @@ def test_the_chained_observer_feeds_the_profiler_and_names_the_provider(posts):
     assert seen == [record] and span.outcome["provider"] == "together_ai"
     assert span.tokens["prompt_tokens"] == 10
     assert PROFILER.snapshot()["totals"]
+
+
+def _record(finish_reason="stop"):
+    return LLMCallRecord(started_at_ms=1, duration_ms=100, provider="opencode", model="m",
+                         source="user", stream=False, finish_reason=finish_reason,
+                         usage=LLMUsage(input_tokens=10, output_tokens=5, total_tokens=15,
+                                        reported_tokens=15))
+
+
+def test_an_answer_is_not_counted_empty(posts):
+    # 2026-11-23, the D4 soak: every call counted as llm:empty, because the
+    # upstream record carries no content and the profiler read that as none.
+    with PROFILER.span("turn", "t1") as span:
+        with telemetry.response_shape(LLMResponse(content="hola")):
+            telemetry.observe_call(_record())
+        with telemetry.response_shape(LLMResponse(content=None, tool_calls=[object()])):
+            telemetry.observe_call(_record("tool_calls"))
+    assert "llm:empty" not in span.events
+
+
+def test_an_empty_reply_still_is(posts):
+    with PROFILER.span("turn", "t2") as span:
+        with telemetry.response_shape(LLMResponse(content="", reasoning_content="pienso...",
+                                                  finish_reason="length")):
+            telemetry.observe_call(_record("length"))
+    assert "llm:empty" in span.events
+
+
+def test_a_call_seen_outside_the_seam_is_unknown_not_empty(posts):
+    with PROFILER.span("turn", "t3") as span:
+        telemetry.observe_call(_record())
+    assert "llm:empty" not in span.events
+
+
+class _Provider(LLMProvider):
+    async def chat(self, *args, **kwargs):  # pragma: no cover - never called
+        raise NotImplementedError
+
+    def get_default_model(self) -> str:
+        return "m"
+
+
+def test_the_provider_seam_hands_the_reply_sizes_to_the_observer(posts):
+    provider = _Provider(provider_name="opencode")
+    provider.set_llm_call_observer(telemetry.chain(None))
+    with PROFILER.span("turn", "t4") as span:
+        provider._record_llm_call(
+            LLMResponse(content="una respuesta"), {"model": "m"},
+            observer=provider._llm_call_observer, usage=None,
+            started_at_ms=1, started_at_ns=0, finished_at_ns=1_000_000, stream=False)
+        provider._record_llm_call(
+            LLMResponse(content=""), {"model": "m"},
+            observer=provider._llm_call_observer, usage=None,
+            started_at_ms=1, started_at_ns=0, finished_at_ns=1_000_000, stream=False)
+    assert span.events.get("llm:empty") == 1
 
 
 @pytest.mark.asyncio

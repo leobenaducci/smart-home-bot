@@ -595,21 +595,23 @@ class LLMProvider(ABC):
         model_value = kwargs.get("model")
         model = model_value if isinstance(model_value, str) and model_value else self.get_default_model()
         try:
+            from nanobot.household.telemetry import response_shape  # household: reply sizes (B5)
             from nanobot.llm_usage.context import current_llm_usage_source
             from nanobot.llm_usage.models import LLMCallRecord
 
-            observer(LLMCallRecord(
-                started_at_ms=started_at_ms,
-                duration_ms=max(0, (finished_at_ns - started_at_ns) // 1_000_000),
-                provider=self.provider_name,
-                model=model,
-                source=current_llm_usage_source(),
-                stream=stream,
-                finish_reason=response.finish_reason,
-                usage=usage,
-                error_status_code=response.error_status_code,
-                error_kind=response.error_kind,
-            ))
+            with response_shape(response):  # household: the record carries no content (B5)
+                observer(LLMCallRecord(
+                    started_at_ms=started_at_ms,
+                    duration_ms=max(0, (finished_at_ns - started_at_ns) // 1_000_000),
+                    provider=self.provider_name,
+                    model=model,
+                    source=current_llm_usage_source(),
+                    stream=stream,
+                    finish_reason=response.finish_reason,
+                    usage=usage,
+                    error_status_code=response.error_status_code,
+                    error_kind=response.error_kind,
+                ))
         except Exception:
             logger.exception("LLM call observer failed for {}", self.provider_name)
         return response

@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Callable, Iterator
 
 from loguru import logger
 
@@ -38,6 +40,30 @@ def usage_dict(usage: Any) -> dict[str, int]:
     return out
 
 
+# What the reply held, for the call being observed right now. Upstream's
+# ``LLMCallRecord`` leaves content out on purpose ("Sessions already own that
+# content"), so without this every call reached the profiler with no text and
+# no tool calls -- and was counted ``llm:empty``, the very event that exists to
+# catch a model spending its whole budget thinking and answering nothing.
+_SHAPE: ContextVar[dict[str, int] | None] = ContextVar("household_llm_shape", default=None)
+
+
+@contextmanager
+def response_shape(response: Any) -> Iterator[None]:
+    """Hold ``response``'s sizes (never its text) while upstream's observer runs."""
+    try:
+        shape = {"content_chars": len(getattr(response, "content", None) or ""),
+                 "reasoning_chars": len(getattr(response, "reasoning_content", None) or ""),
+                 "tool_calls": len(getattr(response, "tool_calls", None) or [])}
+    except Exception:  # noqa: BLE001 -- instrumentation never fails a call
+        shape = None
+    token = _SHAPE.set(shape)
+    try:
+        yield
+    finally:
+        _SHAPE.reset(token)
+
+
 def observe_call(record: Any) -> None:
     """One upstream ``LLMCallRecord`` into the profiler, attributed to the open span."""
     try:
@@ -45,11 +71,15 @@ def observe_call(record: Any) -> None:
         if span is not None and getattr(record, "finish_reason", "") != "error":
             span.note(provider=record.provider, served_by=record.model)
         duration_s = max(0.0, float(record.duration_ms) / 1000.0)
+        shape = _SHAPE.get()
         PROFILER.record_call(
             model=record.model, served_by=record.model, api_base=None,
             duration_s=duration_s, request_s=duration_s, attempts=1,
             finish_reason=record.finish_reason, usage=usage_dict(record.usage),
             stream=bool(record.stream), error=record.error_kind,
+            # Unknown is not empty: a call observed outside the seam says
+            # nothing about its reply, and must not be counted as answerless.
+            shape_known=shape is not None, **(shape or {}),
         )
     except Exception:  # noqa: BLE001 -- instrumentation never fails a call
         logger.debug("profiler observer failed", exc_info=True)
@@ -104,7 +134,7 @@ def report(session_key: str | None, model: str | None, usage: Any, *, tools: lis
         logger.debug("usage report failed", exc_info=True)
 
 
-__all__ = ["chain", "observe_call", "report", "report_cancelled", "route_dict", "tool_names",
+__all__ = ["chain", "observe_call", "report", "response_shape", "report_cancelled", "route_dict", "tool_names",
            "usage_dict"]
 
 
