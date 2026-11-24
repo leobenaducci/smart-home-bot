@@ -1,15 +1,13 @@
-"""Cron tool for scheduling reminders and tasks."""
+# pyright: reportIncompatibleMethodOverride=false
 
-import re
-from contextvars import ContextVar
+from __future__ import annotations
+
+import time
 from datetime import datetime
 from typing import Any
 
-from nanobot.agent.skill_invocation import (
-    INVOCATION_DEBRIS_RE,
-    SKILL_BLOCK_RE,
-)
-from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
+from nanobot.agent.tools.context import ToolContext, current_request_context
 from nanobot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
@@ -17,51 +15,48 @@ from nanobot.agent.tools.schema import (
     tool_parameters_schema,
 )
 from nanobot.cron.service import CronService
+from nanobot.cron.session_turns import is_bound_cron_job, is_cron_turn
 from nanobot.cron.types import CronJob, CronJobState, CronSchedule
 
-# A skill-invocation block, fenced or bare. Meaningful only inside the turn that
-# emits it, so scheduling one guarantees a job that does nothing.
-# Shared with the message and exec tools so the three cannot drift: the same
-# block that must not be echoed through a shell must not become a job body.
-_SKILL_BLOCK_RE = SKILL_BLOCK_RE
-_INVOCATION_DEBRIS_RE = INVOCATION_DEBRIS_RE
-
 _CRON_PARAMETERS = tool_parameters_schema(
-    action=StringSchema("Action to perform", enum=["add", "list", "remove"]),
-    name=StringSchema(
-        "Optional short human-readable label for the job "
-        "(e.g., 'weather-monitor', 'daily-standup'). Defaults to first 30 chars of message."
+    action=StringSchema(
+        "Action to perform", enum=["add", "list", "remove", "update", "enable", "disable", "history"]
     ),
+    name=StringSchema("Job label; generated from message for add if omitted."),
     message=StringSchema(
-        "REQUIRED when action='add'. Instruction for the agent to execute when the job triggers "
-        "(e.g., 'Send a reminder to WeChat: xxx' or 'Check system status and report'). "
-        "Not used for action='list' or action='remove'."
+        "REQUIRED when action='add': non-empty instruction to execute when the job triggers. "
+        "The final reply goes to the task's saved chat automatically. "
+        "Do not copy the current channel/chat ID or require a message tool call for that reply. "
+        "Include other recipients only when the user requests separate sends."
     ),
-    every_seconds=IntegerSchema(0, description="Interval in seconds (for recurring tasks)"),
-    delay_seconds=IntegerSchema(0, description="One-shot delay: run once after this many seconds from now (e.g. 10 for 'in 10 seconds'). Simpler than computing an absolute 'at' time."),
+    every_seconds=IntegerSchema(
+        description="Interval in seconds (for recurring tasks)", minimum=1
+    ),
+    # household: a one-shot delay relative to now ("in 10 minutes").
+    delay_seconds=IntegerSchema(
+        description="One-shot delay: run once after this many seconds from now "
+        "(e.g. 600 for 'in 10 minutes'). Simpler than computing an absolute 'at' time.",
+        minimum=1,
+    ),
     cron_expr=StringSchema("Cron expression like '0 9 * * *' (for scheduled tasks)"),
     tz=StringSchema(
-        "Optional IANA timezone for cron expressions (e.g. 'America/Vancouver'). "
-        "When omitted with cron_expr, the tool's default timezone applies."
+        "IANA timezone for cron_expr only, e.g. 'America/Vancouver'. "
+        "For update, omitting tz retains the existing cron timezone."
     ),
     at=StringSchema(
         "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00'). "
         "Naive values use the tool's default timezone."
     ),
-    deliver=BooleanSchema(
-        description="Whether to deliver the execution result to the user channel (default true)",
-        default=True,
+    job_id=StringSchema(
+        "REQUIRED when action='remove', 'update', 'enable', 'disable', or 'history'. "
+        "Job ID (obtain via action='list')."
     ),
-    job_id=StringSchema("REQUIRED when action='remove'. Job ID to remove (obtain via action='list')."),
+    include_disabled=BooleanSchema(description="Include disabled jobs when action='list'."),
+    limit=IntegerSchema(description="Maximum runs for action='history'; defaults to 5.", minimum=1, maximum=20),
     required=["action"],
     description=(
-        "Action-specific parameters: add requires a non-empty message plus one schedule "
-        "(delay_seconds, every_seconds, cron_expr, or at); remove requires job_id; list only needs action. "
-        "Use delay_seconds for simple one-shot reminders like 'in 30 seconds' or 'in 5 minutes' without "
-        "needing to know the current time. "
-        "Per-action requirements are enforced at runtime (see field descriptions) so the "
-        "top-level schema stays compatible with providers (e.g. OpenAI Codex/Responses) that "
-        "reject oneOf/anyOf/allOf/enum/not at the root of function parameters."
+        "add requires exactly one schedule: every_seconds, cron_expr, or at. "
+        "update changes only supplied fields and requires name, message, or one schedule."
     ),
 )
 
@@ -73,22 +68,25 @@ class CronTool(Tool):
     def __init__(self, cron_service: CronService, default_timezone: str = "UTC"):
         self._cron = cron_service
         self._default_timezone = default_timezone
-        self._channel: ContextVar[str] = ContextVar("cron_channel", default="")
-        self._chat_id: ContextVar[str] = ContextVar("cron_chat_id", default="")
-        self._in_cron_context: ContextVar[bool] = ContextVar("cron_in_context", default=False)
 
-    def set_context(self, channel: str, chat_id: str) -> None:
-        """Set the current session context for delivery."""
-        self._channel.set(channel)
-        self._chat_id.set(chat_id)
+    @classmethod
+    def enabled(cls, ctx: ToolContext) -> bool:
+        return ctx.cron_service is not None
 
-    def set_cron_context(self, active: bool):
-        """Mark whether the tool is executing inside a cron job callback."""
-        return self._in_cron_context.set(active)
+    @classmethod
+    def create(cls, ctx: ToolContext) -> Tool:
+        cron_service = ctx.cron_service
+        if cron_service is None:
+            raise RuntimeError("CronTool requires an initialized cron service")
+        return cls(cron_service=cron_service, default_timezone=ctx.timezone)
 
-    def reset_cron_context(self, token) -> None:
-        """Restore previous cron context."""
-        self._in_cron_context.reset(token)
+    @staticmethod
+    def _request_route() -> tuple[str, str, str, dict[str, Any]]:
+        """Return routing from the authoritative request snapshot."""
+        ctx = current_request_context()
+        if ctx is None:
+            return "", "", "", {}
+        return ctx.session_key or "", ctx.channel or "", ctx.chat_id or "", dict(ctx.metadata or {})
 
     @staticmethod
     def _validate_timezone(tz: str) -> str | None:
@@ -97,11 +95,10 @@ class CronTool(Tool):
         try:
             ZoneInfo(tz)
         except (KeyError, Exception):
-            return f"Error: unknown timezone '{tz}'"
+            return ToolResult.error(f"Error: unknown timezone '{tz}'")
         return None
 
     def _display_timezone(self, schedule: CronSchedule) -> str:
-        """Pick the most human-meaningful timezone for display."""
         return schedule.tz or self._default_timezone
 
     @staticmethod
@@ -118,176 +115,185 @@ class CronTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Schedule reminders and recurring tasks. Actions: add, list, remove. "
-            "Use delay_seconds for one-shot reminders relative to now (e.g. delay_seconds=30 for 'in 30 seconds'). "
-            f"If tz is omitted, cron expressions and naive ISO times default to {self._default_timezone}."
+            "Schedule reminders and recurring tasks. Actions: add, list, remove, update, enable, disable, history. "
+            f"New cron schedules and naive ISO times default to {self._default_timezone}. "
+            "Updates retain the existing cron timezone when tz is omitted."
         )
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:
         errors = super().validate_params(params)
+        if errors:
+            return errors
         action = params.get("action")
         if action == "add" and not str(params.get("message") or "").strip():
             errors.append("message is required when action='add'")
-        if action == "remove" and not str(params.get("job_id") or "").strip():
-            errors.append("job_id is required when action='remove'")
+        if action in {"remove", "update", "enable", "disable", "history"} and not str(params.get("job_id") or "").strip():
+            errors.append(f"job_id is required when action='{action}'")
         return errors
 
     async def execute(
         self,
         action: str,
         name: str | None = None,
-        message: str = "",
+        message: str | None = None,
         every_seconds: int | None = None,
-        delay_seconds: int | None = None,
         cron_expr: str | None = None,
         tz: str | None = None,
         at: str | None = None,
         job_id: str | None = None,
-        deliver: bool = True,
-        **kwargs: Any,
+        include_disabled: bool = False,
+        limit: int = 5,
+        delay_seconds: int | None = None,
     ) -> str:
+        # household: delay_seconds is an `at` relative to now.
+        if delay_seconds is not None and action in ("add", "update"):
+            from nanobot.household.cron_extras import delay_to_at
+
+            if at is not None or every_seconds is not None or cron_expr is not None:
+                return ToolResult.error(
+                    "Error: exactly one of delay_seconds, every_seconds, cron_expr, or at is required"
+                )
+            if delay_seconds <= 0:
+                return ToolResult.error("Error: delay_seconds must be a positive integer")
+            at = delay_to_at(delay_seconds, self._default_timezone)
         if action == "add":
-            if self._in_cron_context.get():
-                return "Error: cannot schedule new jobs from within a cron job execution"
-            return self._add_job(
-                name,
-                message,
-                every_seconds=every_seconds,
-                delay_seconds=delay_seconds,
-                cron_expr=cron_expr,
-                tz=tz,
-                at=at,
-                deliver=deliver,
-            )
+            request = current_request_context()
+            if request is not None and is_cron_turn(request.metadata):
+                return ToolResult.error("Error: cannot schedule new jobs from within a cron job execution")
+            return self._add_job(name, message or "", every_seconds, cron_expr, tz, at)
         elif action == "list":
-            return self._list_jobs()
+            return self._list_jobs(include_disabled=include_disabled)
         elif action == "remove":
             return self._remove_job(job_id)
+        elif action == "update":
+            return self._update_job(job_id, name, message, every_seconds, cron_expr, tz, at)
+        elif action in {"enable", "disable"}:
+            return self._set_job_enabled(job_id, enabled=action == "enable")
+        elif action == "history":
+            return self._job_history(job_id, limit)
         return f"Unknown action: {action}"
-
-    @staticmethod
-    def _validate_message(message: str) -> str | None:
-        """Reject a job body that will not mean anything when it fires.
-
-        A cron job's message is executed or delivered days later, with nobody
-        watching, so a malformed one fails silently and long after the mistake.
-        One reached production reading exactly
-
-            Recordatorio skill JSON invocation
-
-        — a fragment of a skill-invocation block captured as the body during a
-        confused turn. It sat queued for the next morning and would have run
-        that string as a task.
-
-        Only shapes that are certainly wrong are refused; anything a person
-        might plausibly want scheduled is left alone.
-        """
-        text = message.strip()
-
-        if _SKILL_BLOCK_RE.search(text):
-            return (
-                "Error: the cron message contains a skill-invocation block. Those "
-                "are instructions to the runtime for the current turn, and mean "
-                "nothing when the job fires later. Write what should happen in "
-                "words instead — e.g. message=\"Saca una foto del patio y "
-                "send it to me\" — and the agent will invoke the skill at that time."
-            )
-
-        if _INVOCATION_DEBRIS_RE.fullmatch(text):
-            return (
-                f"Error: {message!r} is not something that can run later — it "
-                "reads as leftover plumbing rather than an instruction. Give the "
-                "job the actual reminder text or task description."
-            )
-
-        if len(text) < 3:
-            return (
-                f"Error: the cron message {message!r} is too short to mean "
-                "anything when it fires. Describe the reminder or task."
-            )
-
-        return None
 
     def _add_job(
         self,
         name: str | None,
         message: str,
-        *,
-        # Keyword-only past this point. These are six interchangeable
-        # str|int|None slots, so inserting one shifts the meaning of every
-        # positional call without any type error to catch it: adding
-        # `delay_seconds` here once silently redirected a caller's cron
-        # expression into it, and the schedule it produced was not the one
-        # asked for.
-        every_seconds: int | None = None,
-        delay_seconds: int | None = None,
-        cron_expr: str | None = None,
-        tz: str | None = None,
-        at: str | None = None,
-        deliver: bool = True,
+        every_seconds: int | None,
+        cron_expr: str | None,
+        tz: str | None,
+        at: str | None,
     ) -> str:
         if not message:
-            return (
+            return ToolResult.error(
                 "Error: cron action='add' requires a non-empty 'message' parameter "
                 "describing what to do when the job triggers "
                 "(e.g. the reminder text). Retry including message=\"...\"."
             )
-        if err := self._validate_message(message):
-            return err
-        channel = self._channel.get()
-        chat_id = self._chat_id.get()
-        if not channel or not chat_id:
-            return "Error: no session context (channel/chat_id)"
+        from nanobot.household.cron_extras import validate_cron_message  # household
+
+        if err := validate_cron_message(message):
+            return ToolResult.error(err)
+        session_key, origin_channel, origin_chat_id, origin_metadata = self._request_route()
+        if not session_key:
+            return ToolResult.error("Error: scheduled cron jobs must be created from a chat session")
+        if not origin_channel or not origin_chat_id:
+            return ToolResult.error("Error: scheduled cron jobs must be created from a chat session")
+        if cron_expr and not tz:
+            tz = self._default_timezone
+        schedule = self._parse_schedule(every_seconds, cron_expr, tz, at)
+        if isinstance(schedule, str):
+            return schedule
+
+        job = self._cron.add_job(
+            name=name or message[:30],
+            schedule=schedule,
+            message=message,
+            delete_after_run=schedule.kind == "at",
+            session_key=session_key,
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+            origin_metadata=origin_metadata,
+        )
+        return f"Created job '{job.name}' (id: {job.id})"
+
+    def _parse_schedule(
+        self, every_seconds: int | None, cron_expr: str | None,
+        tz: str | None, at: str | None,
+    ) -> CronSchedule | str:
         if tz and not cron_expr:
-            return "Error: tz can only be used with cron_expr"
+            return ToolResult.error("Error: tz can only be used with cron_expr")
         if tz:
             if err := self._validate_timezone(tz):
                 return err
 
-        # Build schedule
-        delete_after = False
-        if delay_seconds:
-            import time as _time
-            at_ms = int(_time.time() * 1000) + delay_seconds * 1000
-            schedule = CronSchedule(kind="at", at_ms=at_ms)
-            delete_after = True
-        elif every_seconds:
+        schedule_count = sum(
+            value is not None for value in (every_seconds, cron_expr, at)
+        )
+        if schedule_count != 1:
+            return ToolResult.error(
+                "Error: exactly one of every_seconds, cron_expr, or at is required"
+            )
+
+        if every_seconds is not None:
+            if every_seconds <= 0:
+                return ToolResult.error("Error: every_seconds must be a positive integer")
             schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
         elif cron_expr:
-            effective_tz = tz or self._default_timezone
-            if err := self._validate_timezone(effective_tz):
-                return err
-            schedule = CronSchedule(kind="cron", expr=cron_expr, tz=effective_tz)
+            schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
         elif at:
             from zoneinfo import ZoneInfo
 
             try:
                 dt = datetime.fromisoformat(at)
             except ValueError:
-                return f"Error: invalid ISO datetime format '{at}'. Expected format: YYYY-MM-DDTHH:MM:SS"
+                return ToolResult.error(f"Error: invalid ISO datetime format '{at}'. Expected format: YYYY-MM-DDTHH:MM:SS")
             if dt.tzinfo is None:
                 if err := self._validate_timezone(self._default_timezone):
                     return err
                 dt = dt.replace(tzinfo=ZoneInfo(self._default_timezone))
             at_ms = int(dt.timestamp() * 1000)
+            if at_ms <= int(time.time() * 1000):
+                return ToolResult.error(
+                    f"Error: one-time job time '{at}' is not in the future. "
+                    "Retry with a future ISO datetime computed from the current time."
+                )
             schedule = CronSchedule(kind="at", at_ms=at_ms)
-            delete_after = True
         else:
-            return "Error: either delay_seconds, every_seconds, cron_expr, or at is required"
+            return ToolResult.error("Error: either every_seconds, cron_expr, or at is required")
 
-        job = self._cron.add_job(
-            name=name or message[:30],
-            schedule=schedule,
-            message=message,
-            deliver=deliver,
-            channel=channel,
-            to=chat_id,
-            delete_after_run=delete_after,
-        )
-        return f"Created job '{job.name}' (id: {job.id})"
+        return schedule
+
+    def _update_job(
+        self, job_id: str | None, name: str | None, message: str | None,
+        every_seconds: int | None, cron_expr: str | None, tz: str | None, at: str | None,
+    ) -> str:
+        if not job_id:
+            return ToolResult.error("Error: job_id is required for update")
+        if all(value is None for value in (name, message, every_seconds, cron_expr, tz, at)):
+            return ToolResult.error("Error: update requires at least one changed field")
+        for field, value in (("name", name), ("message", message)):
+            if value is not None and not value.strip():
+                return ToolResult.error(f"Error: {field} must not be empty")
+        job = self._cron.get_job(job_id)
+        if job is None:
+            return ToolResult.error(f"Error: job {job_id} not found")
+        schedule = None
+        if any(value is not None for value in (every_seconds, cron_expr, tz, at)):
+            if cron_expr and not tz:
+                tz = job.schedule.tz if job.schedule.kind == "cron" else self._default_timezone
+            schedule = self._parse_schedule(every_seconds, cron_expr, tz, at)
+            if isinstance(schedule, str):
+                return schedule
+        try:
+            result = self._cron.update_job(job_id, name=name, message=message, schedule=schedule)
+        except ValueError as exc:
+            return ToolResult.error(f"Error: {exc}")
+        if result == "protected":
+            return ToolResult.error("Error: system-managed cron jobs are protected")
+        if result == "not_found":
+            return ToolResult.error(f"Error: job {job_id} not found")
+        return f"Updated job '{result.name}' (id: {result.id})"
 
     def _format_timing(self, schedule: CronSchedule) -> str:
-        """Format schedule as a human-readable timing string."""
         if schedule.kind == "cron":
             tz = f" ({schedule.tz})" if schedule.tz else ""
             return f"cron: {schedule.expr}{tz}"
@@ -305,7 +311,6 @@ class CronTool(Tool):
         return schedule.kind
 
     def _format_state(self, state: CronJobState, schedule: CronSchedule) -> list[str]:
-        """Format job run state as display lines."""
         lines: list[str] = []
         display_tz = self._display_timezone(schedule)
         if state.last_run_at_ms:
@@ -326,14 +331,16 @@ class CronTool(Tool):
             return "Dream memory consolidation for long-term memory."
         return "System-managed internal job."
 
-    def _list_jobs(self) -> str:
-        jobs = self._cron.list_jobs()
+    def _list_jobs(self, include_disabled: bool = False) -> str:
+        jobs = self._cron.list_jobs(include_disabled=include_disabled)
         if not jobs:
             return "No scheduled jobs."
-        lines = []
+        lines: list[str] = []
         for j in jobs:
             timing = self._format_timing(j.schedule)
             parts = [f"- {j.name} (id: {j.id}, {timing})"]
+            if include_disabled:
+                parts.append(f"  Status: {'enabled' if j.enabled else 'disabled'}")
             if j.payload.kind == "system_event":
                 parts.append(f"  Purpose: {self._system_job_purpose(j)}")
                 parts.append("  Protected: visible for inspection, but cannot be removed.")
@@ -341,9 +348,39 @@ class CronTool(Tool):
             lines.append("\n".join(parts))
         return "Scheduled jobs:\n" + "\n".join(lines)
 
+    def _set_job_enabled(self, job_id: str | None, *, enabled: bool) -> str:
+        if not job_id:
+            return ToolResult.error("Error: job_id is required for enable or disable")
+        job = self._cron.get_job(job_id)
+        if job is None:
+            return ToolResult.error(f"Error: job {job_id} not found")
+        if job.payload.kind == "system_event":
+            return ToolResult.error("Error: system-managed cron jobs are protected; change their configuration instead")
+        if enabled and not is_bound_cron_job(job):
+            return ToolResult.error("Error: job has no linked chat; recreate it from a chat session")
+        self._cron.enable_job(job_id, enabled=enabled)
+        return f"{'Enabled' if enabled else 'Disabled'} job {job_id}"
+
+    def _job_history(self, job_id: str | None, limit: int) -> str:
+        if not job_id:
+            return ToolResult.error("Error: job_id is required for history")
+        job = self._cron.get_job(job_id)
+        if job is None:
+            return ToolResult.error(f"Error: job {job_id} not found")
+        if not job.state.run_history:
+            return f"No recorded runs for job {job_id}."
+        lines = [f"Recent runs for '{job.name}' (id: {job.id}), newest first:"]
+        display_tz = self._display_timezone(job.schedule)
+        for run in reversed(job.state.run_history[-int(limit):]):
+            timestamp = self._format_timestamp(run.run_at_ms, display_tz)
+            lines.append(f"- {timestamp} — {run.status} ({run.duration_ms}ms)")
+            if run.error:
+                lines.append(f"  Error: {run.error}")
+        return "\n".join(lines)
+
     def _remove_job(self, job_id: str | None) -> str:
         if not job_id:
-            return "Error: job_id is required for remove"
+            return ToolResult.error("Error: job_id is required for remove")
         result = self._cron.remove_job(job_id)
         if result == "removed":
             return f"Removed job {job_id}"

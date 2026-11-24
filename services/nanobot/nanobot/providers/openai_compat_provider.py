@@ -1,45 +1,74 @@
-"""OpenAI-compatible provider for all non-Anthropic LLM APIs."""
+# pyright: reportPrivateImportUsage=false
 
 from __future__ import annotations
 
 import asyncio
-import json
-import re
 import hashlib
-import httpx
 import importlib.util
+import json
 import os
 import secrets
 import string
 import time
-import uuid
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from collections import deque
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
+from ipaddress import ip_address
+from typing import TYPE_CHECKING, Any, TypeVar, cast
+from urllib.parse import urlparse
 
-import json_repair
 from loguru import logger
 
-if os.environ.get("LANGFUSE_SECRET_KEY") and importlib.util.find_spec("langfuse"):
-    from langfuse.openai import AsyncOpenAI
-else:
-    if os.environ.get("LANGFUSE_SECRET_KEY"):
-        import logging
-        logging.getLogger(__name__).warning(
-            "LANGFUSE_SECRET_KEY is set but langfuse is not installed; "
-            "install with `pip install langfuse` to enable tracing"
-        )
-    from openai import AsyncOpenAI
-
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from nanobot.providers.openai_responses import (
-    consume_sdk_stream,
-    convert_messages,
-    convert_tools,
-    parse_response_output,
+from nanobot.providers.base import (
+    LLMProvider,
+    LLMResponse,
+    LLMUsage,
+    ProviderCallContext,
+    ProviderConversationState,
+    ToolCallRequest,
+    parse_tool_arguments,
+    resolve_stream_idle_timeout_s,
+    tool_arguments_json_for_replay,
 )
+from nanobot.providers.images import prepare_inline_images
+from nanobot.providers.model_api import (
+    ModelAPICapabilities,
+    ResponsesCapabilities,
+    hosted_web_search_enabled,
+    is_direct_openai_base,
+    is_hosted_web_search_tool,
+)
+from nanobot.providers.openai_responses import ResponsesBackend, responses_state_matches
+from nanobot.providers.openai_responses.errors import (
+    RESPONSES_FEATURES,
+    is_unsupported_feature_error,
+    response_error_details,
+)
+from nanobot.providers.registry import KIMI_K3_MODELS
 
 if TYPE_CHECKING:
+    from openai import AsyncOpenAI as AsyncOpenAIType
+
     from nanobot.providers.registry import ProviderSpec
+
+# Module-level placeholder — set lazily by _ensure_client on first real
+# use, or replaced by tests via ``patch(...)``.  Kept as a plain name so
+# that ``unittest.mock.patch`` can find and replace it.
+AsyncOpenAI: Any = None
+
+_GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+
+def _is_named_function_tool(tool: object, name: str) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    record = cast(dict[object, object], tool)
+    if record.get("type") != "function":
+        return False
+    function = record.get("function")
+    if isinstance(function, dict):
+        return cast(dict[object, object], function).get("name") == name
+    return record.get("name") == name
 
 _ALLOWED_MSG_KEYS = frozenset({
     "role", "content", "tool_calls", "tool_call_id", "name",
@@ -57,36 +86,164 @@ _DEFAULT_OPENROUTER_HEADERS = {
 _KIMI_THINKING_MODELS: frozenset[str] = frozenset({
     "kimi-k2.5",
     "kimi-k2.6",
+    "kimi-k2.7",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
     "k2.6-code-preview",
 })
+_KIMI_ALWAYS_THINKING_MODELS: frozenset[str] = frozenset({
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+})
+_KIMI_SERVER_MANAGED_TEMPERATURE_MODELS: frozenset[str] = frozenset({
+    "kimi-k2.5",
+    "kimi-k2.6",
+})
+# Thinking-capable MiMo models per Xiaomi docs (see
+# tests/providers/test_xiaomi_mimo_thinking.py). mimo-v2-flash is omitted
+# because it does not support thinking.
+_MIMO_THINKING_MODELS: frozenset[str] = frozenset({
+    "mimo-v2.5-pro",
+    "mimo-v2.5",
+    "mimo-v2-pro",
+    "mimo-v2-omni",
+})
+_OPENAI_COMPAT_REQUEST_TIMEOUT_S = 120.0
+
+
+class _ChatStreamCloseError(Exception):
+    """A stream finished without a primary error, but its cleanup failed."""
+
+
+class _ChatStreamCallbackError(Exception):
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+_Delta = TypeVar("_Delta")
+
+
+async def _emit_chat_delta(callback: Callable[[_Delta], Awaitable[None]], delta: _Delta) -> None:
+    try:
+        await callback(delta)
+    except Exception as error:
+        raise _ChatStreamCallbackError(error) from error
+
+
+@asynccontextmanager
+async def _managed_chat_stream(chat_stream: Any) -> AsyncGenerator[Any, None]:
+    try:
+        yield chat_stream
+    except BaseException as primary_error:
+        try:
+            await chat_stream.close()
+        except Exception as close_error:
+            logger.warning(
+                "OpenAI chat stream cleanup failed after {}: {}",
+                type(primary_error).__name__, close_error,
+            )
+        raise
+    else:
+        try:
+            await chat_stream.close()
+        except Exception as close_error:
+            raise _ChatStreamCloseError(str(close_error)) from close_error
+
 
 # Maps ProviderSpec.thinking_style → extra_body builder.
 # Each builder takes a bool (thinking_enabled) and returns the dict to
 # merge into extra_body, keeping the style→wire-format mapping in one place.
-_THINKING_STYLE_MAP: dict[str, Any] = {
+_THINKING_STYLE_MAP: dict[
+    str,
+    Callable[[bool], dict[str, Any]],
+] = {
     "thinking_type": lambda on: {"thinking": {"type": "enabled" if on else "disabled"}},
     "enable_thinking": lambda on: {"enable_thinking": on},
     "reasoning_split": lambda on: {"reasoning_split": on},
 }
+_GATEWAY_REASONING_STYLE_MAP: dict[
+    str,
+    Callable[[str], dict[str, Any]],
+] = {
+    "reasoning_effort": lambda effort: {"reasoning": {"effort": effort}},
+}
+_QWEN_THINKING_MODELS: frozenset[str] = frozenset({
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-max-preview",
+    "qwen3.6-plus",
+    "qwen3.6-flash",
+    "qwen3.5-plus",
+    "qwen3.5-flash",
+})
+
+_MODEL_THINKING_STYLES: dict[str, str] = {
+    **dict.fromkeys(_KIMI_THINKING_MODELS, "thinking_type"),
+    **dict.fromkeys(_MIMO_THINKING_MODELS, "thinking_type"),
+    **dict.fromkeys(_QWEN_THINKING_MODELS, "enable_thinking"),
+}
 
 
-def _is_kimi_thinking_model(model_name: str) -> bool:
-    """Return True if model_name refers to a Kimi thinking-capable model.
+def _model_slug(model_name: str) -> str:
+    return model_name.lower().rsplit("/", 1)[-1]
 
-    Supports two forms:
-    - Exact match: e.g. kimi-k2.5 / kimi-k2.6 in _KIMI_THINKING_MODELS
-    - Slug match:  moonshotai/kimi-k2.5 -> the part after the last "/"
-                   is checked against _KIMI_THINKING_MODELS
 
-    This covers both the native Moonshot provider (bare slug) and
-    OpenRouter-style names (``"publisher/slug"``).
-    """
-    name = model_name.lower()
-    if name in _KIMI_THINKING_MODELS:
-        return True
-    if "/" in name and name.rsplit("/", 1)[1] in _KIMI_THINKING_MODELS:
-        return True
-    return False
+def _requires_max_completion_tokens(model_name: str) -> bool:
+    slug = _model_slug(model_name)
+    return slug in KIMI_K3_MODELS or "gpt-5" in slug or any(
+        slug == p or slug.startswith((p + "-", p + ".")) for p in ("o1", "o3", "o4")
+    )
+
+
+def _model_thinking_style(model_name: str) -> str:
+    return _MODEL_THINKING_STYLES.get(_model_slug(model_name), "")
+
+
+def _thinking_styles_for(spec: ProviderSpec | None, model_name: str) -> list[str]:
+    styles: list[str] = []
+    if spec and spec.thinking_style:
+        styles.append(spec.thinking_style)
+    elif spec and spec.name == "zhipu" and _model_slug(model_name) in {
+        "glm-4.6", "glm-4.7", "glm-5", "glm-5.1", "glm-5.2",
+    }:
+        # Keep this model-specific: GLM-5.3 requires thinking and cannot disable it.
+        styles.append("thinking_type")
+    model_style = _model_thinking_style(model_name)
+    if model_style and model_style not in styles:
+        styles.append(model_style)
+    return styles
+
+
+def _thinking_extra_body(style: str, thinking_enabled: bool) -> dict[str, Any] | None:
+    builder = _THINKING_STYLE_MAP.get(style)
+    return builder(thinking_enabled) if builder else None
+
+
+def _gateway_reasoning_extra_body(style: str, effort: str | None) -> dict[str, Any] | None:
+    if not effort:
+        return None
+    builder = _GATEWAY_REASONING_STYLE_MAP.get(style)
+    return builder(effort) if builder else None
+
+
+def _openai_compat_timeout_s() -> float:
+    return _float_env("NANOBOT_OPENAI_COMPAT_TIMEOUT_S", _OPENAI_COMPAT_REQUEST_TIMEOUT_S)
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid {}={!r}; using {}", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("Ignoring non-positive {}={!r}; using {}", name, raw, default)
+        return default
+    return value
 
 
 def _short_tool_id() -> str:
@@ -94,24 +251,22 @@ def _short_tool_id() -> str:
     return "".join(secrets.choice(_ALNUM) for _ in range(9))
 
 
-def _get(obj: Any, key: str) -> Any:
-    """Get a value from dict or object attribute, returning None if absent."""
+def _get(obj: object, key: str) -> Any:
     if isinstance(obj, dict):
-        return obj.get(key)
+        return cast(dict[str, Any], obj).get(key)
     return getattr(obj, key, None)
 
 
-def _coerce_dict(value: Any) -> dict[str, Any] | None:
-    """Try to coerce *value* to a dict; return None if not possible or empty."""
+def _coerce_dict(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
     if isinstance(value, dict):
-        return value if value else None
+        return cast(dict[str, Any], value) if value else None
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
-        dumped = model_dump()
+        dumped: object = model_dump()
         if isinstance(dumped, dict) and dumped:
-            return dumped
+            return cast(dict[str, Any], dumped)
     return None
 
 
@@ -120,11 +275,6 @@ def _extract_tc_extras(tc: Any) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
 ]:
-    """Extract (extra_content, provider_specific_fields, fn_provider_specific_fields).
-
-    Works for both SDK objects and dicts.  Captures Gemini ``extra_content``
-    verbatim and any non-standard keys on the tool-call / function.
-    """
     extra_content = _coerce_dict(_get(tc, "extra_content"))
 
     tc_dict = _coerce_dict(tc)
@@ -151,87 +301,45 @@ def _extract_tc_extras(tc: Any) -> tuple[
 
 
 def _uses_openrouter_attribution(spec: "ProviderSpec | None", api_base: str | None) -> bool:
-    """Apply Nanobot attribution headers to OpenRouter requests by default."""
     if spec and spec.name == "openrouter":
         return True
     return bool(api_base and "openrouter" in api_base.lower())
 
 
-def _stable_session_id(api_base: str | None, model: str | None) -> str:
-    """One id per assistant instance, per endpoint, that survives a restart.
-
-    This was `uuid.uuid4().hex`, which is stable for the life of a provider
-    instance and therefore new on every deploy -- and it is the value sent as
-    `prompt_cache_key`. A new key is a cold prefix cache for every
-    conversation, so deploying the assistants cost a full-price first turn
-    each, every time, on top of whatever else the deploy changed.
-
-    Derived instead from `NANOBOT_INSTANCE` -- the same variable the entrypoint
-    already uses to pick a config -- plus the endpoint and model, so:
-
-    - it is the same across restarts, which is the point;
-    - two members never share one, because their instances differ, and a
-      shared key would group two households' prompts into one cache namespace;
-    - two endpoints never share one, because a key that spans providers claims
-      two unrelated prefixes are the same.
-
-    Hashed rather than sent in the clear: this value reaches a third party on
-    every request, and `user1` is a member id, which is one of the three ids
-    `CLAUDE.md` says not to leak into places they do not belong.
-
-    Falls back to a random id when there is no instance name, which is the old
-    behaviour and the safe direction: a key that is unique is merely useless,
-    while a key shared by accident is wrong.
-    """
-    instance = os.environ.get("NANOBOT_INSTANCE", "").strip()
-    if not instance:
-        return uuid.uuid4().hex
-    seed = f"{instance}|{api_base or ''}|{model or ''}"
-    return hashlib.sha256(seed.encode()).hexdigest()[:32]
-
-
-def _uses_opencode(spec: "ProviderSpec | None", api_base: str | None) -> bool:
-    """True for OpenCode's gateway, which wants a session id on every request.
-
-    Matched on the host rather than the path: Zen is `/zen/v1` and the flat plan
-    is `/zen/go/v1`, this provider only ever reaches the first (Go is the
-    Programmer's harness alone -- see CLAUDE.md), and the header is asked for
-    either way. Keying on the path would add a second place that has to be right
-    about which of the two is in use, to no benefit: the answer is the same.
-    """
-    if spec and spec.name in ("opencode", "opencode-go", "opencode_zen"):
+def _uses_opencode_affinity(spec: ProviderSpec | None, api_base: str | None) -> bool:
+    if spec and spec.name in {"opencode", "opencode_zen", "opencode_go"}:
         return True
-    return bool(api_base and "opencode.ai" in api_base.lower())
+    host = (urlparse(api_base or "").hostname or "").rstrip(".")
+    return host == "opencode.ai" or host.endswith(".opencode.ai")
 
 
 _RESPONSES_FAILURE_THRESHOLD = 3
-_RESPONSES_PROBE_INTERVAL_S = 300  # 5 minutes
+_RESPONSES_PROBE_INTERVAL_S = 300
 
 
-def _is_direct_openai_base(api_base: str | None) -> bool:
-    """Return True for direct OpenAI endpoints, not generic OpenAI-compatible gateways."""
-    if not api_base:
+def _is_local_endpoint(
+    spec: "ProviderSpec | None",
+    api_base: str | None,
+) -> bool:
+    if spec and spec.is_local:
         return True
-    normalized = api_base.strip().lower().rstrip("/")
-    return "api.openai.com" in normalized and "openrouter" not in normalized
-
-
-def _uses_openai_caching(spec: "ProviderSpec | None", api_base: str | None) -> bool:
-    """Whether `prompt_cache_key` means anything to this endpoint.
-
-    OpenAI defines the field and OpenCode Zen proxies to models that honour
-    it. Everything else -- a local vLLM, SGLang, Ollama's Responses endpoint,
-    Together -- either ignores unknown body fields or refuses the request, and
-    the second outcome turns a caching hint into an outage on a provider the
-    hint could never have helped.
-
-    Built from the two predicates above rather than a third host test, so
-    there is one place that knows what "OpenCode" means and one that knows
-    what "OpenAI itself" means. `_is_direct_openai_base` answers True for an
-    empty base -- the client's own default is OpenAI -- which is the right
-    answer here too.
-    """
-    return _uses_opencode(spec, api_base) or _is_direct_openai_base(api_base)
+    if not api_base:
+        return False
+    raw = api_base.strip().lower()
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    try:
+        host = parsed.hostname
+    except ValueError:
+        return False
+    if host in {"localhost", "host.docker.internal"}:
+        return True
+    if not host:
+        return False
+    try:
+        addr = ip_address(host)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_private
 
 
 def _responses_circuit_key(
@@ -244,26 +352,98 @@ def _responses_circuit_key(
     return f"{model_name}:{effort}"
 
 
-def _squash(text: str) -> str:
-    """Whitespace-insensitive form: an echo that only gained a blank line is
-    still an echo."""
-    return " ".join(text.split())
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge(
+                cast(dict[str, Any], merged[key]),
+                cast(dict[str, Any], value),
+            )
+        else:
+            merged[key] = value
+    return merged
 
 
-# Below this, a reply that merely appears inside the reasoning ("Listo.") is
-# more likely a short answer the model also thought than a copy of its notes.
+def _merge_unique_list(base: object, override: object) -> object:
+    if not isinstance(base, list) or not isinstance(override, list):
+        return override
+    result: list[object] = []
+    seen: set[str] = set()
+    for value in [
+        *cast(list[object], base),
+        *cast(list[object], override),
+    ]:
+        try:
+            key = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            key = repr(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _merge_chat_extra_body(
+    kwargs: dict[str, Any],
+    extra_body: dict[str, Any],
+) -> dict[str, Any]:
+    regular_extra = {key: value for key, value in extra_body.items() if key != "tools"}
+    merged = dict(kwargs)
+    if regular_extra:
+        existing = kwargs.get("extra_body", {})
+        merged["extra_body"] = _deep_merge(existing, regular_extra)
+
+    if "tools" in extra_body:
+        current_tools = kwargs.get("tools")
+        configured_tools = extra_body["tools"]
+        if isinstance(current_tools, list) and isinstance(configured_tools, list):
+            merged["tools"] = [*current_tools, *configured_tools]
+        else:
+            merged["tools"] = configured_tools
+
+    return merged
+
+
+def _merge_responses_extra_body(
+    body: dict[str, Any],
+    extra_body: dict[str, Any],
+) -> dict[str, Any]:
+    reserved = {"include", "tools"}
+    regular_extra = {key: value for key, value in extra_body.items() if key not in reserved}
+    merged = _deep_merge(body, regular_extra)
+
+    if "include" in extra_body:
+        merged["include"] = _merge_unique_list(body.get("include"), extra_body["include"])
+
+    if "tools" in extra_body:
+        current_tools = body.get("tools")
+        configured_tools = extra_body["tools"]
+        if isinstance(current_tools, list) and isinstance(configured_tools, list):
+            merged["tools"] = [*current_tools, *configured_tools]
+        else:
+            merged["tools"] = configured_tools
+
+    return merged
+
+
+
+# household: a reply that is the reasoning again is no reply (fork 54a0744,
+# f1f89e5, b382ad8). NanoGPT streaming DeepSeek carried the reasoning back as
+# `content` on an answerless turn and it was published as the reply.
 _ECHO_MIN_PARTIAL_CHARS = 40
 
 
-def _is_reasoning_echo(content: Any, reasoning: Any) -> bool:
-    """Whether `content` is the model's reasoning again rather than a reply.
+def _squash(text: str) -> str:
+    return " ".join(text.split())
 
-    A reply is never word for word what the model thought. NanoGPT streaming
-    DeepSeek V4 Flash, on a turn where the model gave no answer, carried the
-    reasoning again as `content` -- whole, or cut short -- and it was published
-    as the assistant's reply: its private planning, in English, with none of
-    the calls it describes made. Whole copies match after squashing whitespace;
-    a partial copy matches when it is long enough to be one."""
+
+def _is_reasoning_echo(content: Any, reasoning: Any) -> bool:
     if not isinstance(content, str) or not isinstance(reasoning, str):
         return False
     c, r = _squash(content), _squash(reasoning)
@@ -273,7 +453,7 @@ def _is_reasoning_echo(content: Any, reasoning: Any) -> bool:
 
 
 class OpenAICompatProvider(LLMProvider):
-    """Unified provider for all OpenAI-compatible APIs.
+    """Provider for OpenAI-compatible Chat Completions and Responses endpoints.
 
     Receives a resolved ``ProviderSpec`` from the caller — no internal
     registry lookups needed.
@@ -286,72 +466,129 @@ class OpenAICompatProvider(LLMProvider):
         default_model: str = "gpt-4o",
         extra_headers: dict[str, str] | None = None,
         spec: ProviderSpec | None = None,
+        extra_body: dict[str, Any] | None = None,
+        model_api: ModelAPICapabilities | None = None,
+        extra_query: dict[str, str] | None = None,
+        proxy: str | None = None,
+        provider_name: str = "openai",
     ):
-        super().__init__(api_key, api_base)
+        super().__init__(api_key, api_base, provider_name=provider_name)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
         self._spec = spec
-
-        if api_key and spec and spec.env_key:
-            self._setup_env(api_key, api_base)
+        self._preset_model_api = model_api
+        self._extra_body = (
+            spec.responses.request_extra_body(extra_body)
+            if spec and spec.responses is not None else dict(extra_body or {})
+        )
+        self._extra_query = extra_query or {}
+        self._proxy = proxy or None
+        self._responses = ResponsesBackend()
 
         effective_base = api_base or (spec.default_api_base if spec else None) or None
         self._effective_base = effective_base
-        # One id, under both names. `x-session-affinity` is the gateway's
-        # routing hint; `x-opencode-session` is what OpenCode began requiring on
-        # 2026-09-06, without which "requests may error". They ask the same
-        # question -- which ongoing thing is this -- so they get the same
-        # answer, and only OpenCode is sent the second one.
-        #
-        # Stable per provider instance, which is coarser than the "one stable ID
-        # per conversation" OpenCode asks for: `LLMProvider.chat()` takes no
-        # session, and giving it one touches every provider in the tree. This is
-        # the honest approximation -- stable for the life of the client, never
-        # shared between assistants, and never a value that pretends two
-        # conversations are one when they are on different instances. Threading
-        # the real session key through is the upgrade, and it is its own change.
-        session_id = _stable_session_id(effective_base, default_model)
-        # Kept, because it is also the cache key: `prompt_cache_key` on a
-        # Responses request wants exactly this -- a stable, deterministic value
-        # grouping semantically related calls.
-        self._session_id = session_id
-        default_headers = {"x-session-affinity": session_id}
-        if _uses_opencode(spec, effective_base):
-            default_headers["x-opencode-session"] = session_id
-        if _uses_openrouter_attribution(spec, effective_base):
-            default_headers.update(_DEFAULT_OPENROUTER_HEADERS)
-        if extra_headers:
-            default_headers.update(extra_headers)
+        from nanobot.household.cache_key import stable_session_id  # household A12
 
-        self._client = AsyncOpenAI(
-            api_key=api_key or "no-key",
-            base_url=effective_base,
-            default_headers=default_headers,
-            max_retries=0,
-            # Bound the request so an unresponsive gateway fails fast (and is then
-            # retried) instead of riding the whole api.timeout. connect: quick;
-            # read: no data for 90s (covers a hung first token) -> APITimeoutError.
-            timeout=httpx.Timeout(90.0, connect=15.0),
+        self._session_id = stable_session_id(effective_base, default_model)
+        self._default_headers = {"x-session-affinity": self._session_id}
+        if _uses_openrouter_attribution(spec, effective_base):
+            self._default_headers.update(_DEFAULT_OPENROUTER_HEADERS)
+        if extra_headers:
+            self._default_headers.update(extra_headers)
+        self._opencode_session_affinity = _uses_opencode_affinity(spec, effective_base) and not any(
+            name.lower() == "x-opencode-session" for name in self.extra_headers
         )
+        if self._opencode_session_affinity:
+            # Calls without conversation context still need a stable routing header.
+            self._default_headers["x-opencode-session"] = self._session_id  # household A12
+        self._api_key_for_client = api_key or "no-key"
+        self._is_local = _is_local_endpoint(spec, effective_base)
+
+        # Lazy-init: the OpenAI client and its httpx transport are expensive
+        # to create (~700 ms on Windows). Defer until first use.
+        self._client: AsyncOpenAIType | None = None
+        self._client_lock = asyncio.Lock()
 
         # Responses API circuit breaker: skip after repeated failures,
         # probe again after _RESPONSES_PROBE_INTERVAL_S seconds.
         self._responses_failures: dict[str, int] = {}
         self._responses_tripped_at: dict[str, float] = {}
 
-    def _setup_env(self, api_key: str, api_base: str | None) -> None:
-        """Set environment variables based on provider spec."""
-        spec = self._spec
-        if not spec or not spec.env_key:
-            return
-        if spec.is_gateway:
-            os.environ[spec.env_key] = api_key
-        else:
-            os.environ.setdefault(spec.env_key, api_key)
-        effective_base = api_base or spec.default_api_base
-        for env_name, env_val in spec.env_extras:
-            resolved = env_val.replace("{api_key}", api_key).replace("{api_base}", effective_base)
-            os.environ.setdefault(env_name, resolved)
+    def _build_client(self) -> None:
+        import httpx
+
+        timeout_s = _openai_compat_timeout_s()
+        http_client: httpx.AsyncClient | None = None
+        if self._proxy:
+            http_client = httpx.AsyncClient(
+                timeout=timeout_s,
+                proxy=self._proxy,
+                trust_env=False,
+                follow_redirects=True,
+            )
+        elif self._is_local:
+            # Local model servers (Ollama, llama.cpp, vLLM) often close idle
+            # HTTP connections before the client-side keepalive expires. When
+            # two LLM calls happen seconds apart, the second may grab a dead
+            # pooled connection, causing a transient APIConnectionError on every first
+            # attempt. Disabling keepalive for local endpoints avoids this by
+            # opening a fresh connection for each request, which is cheap on a
+            # LAN. Cloud providers benefit from keepalive, so we leave the
+            # default pool settings for them.
+            # Also disable proxy for local endpoints: when the host has
+            # HTTP_PROXY / HTTPS_PROXY / ALL_PROXY set, httpx would try to
+            # route local traffic through the proxy, which typically cannot
+            # reach localhost or LAN addresses.
+            _local_limits = httpx.Limits(keepalive_expiry=0)
+            http_client = httpx.AsyncClient(
+                limits=_local_limits,
+                timeout=timeout_s,
+                transport=httpx.AsyncHTTPTransport(proxy=None, limits=_local_limits),
+            )
+        # else: http_client stays None → SDK creates DefaultAsyncHttpxClient
+        # which already reads proxy env vars via trust_env=True, has proper
+        # connection limits, and follows redirects.
+        self._client = AsyncOpenAI(
+            api_key=self._api_key_for_client,
+            base_url=self._effective_base,
+            default_headers=self._default_headers,
+            default_query=self._extra_query or None,
+            max_retries=0,
+            timeout=timeout_s,
+            http_client=http_client,
+        )
+
+    async def _ensure_client(self) -> AsyncOpenAIType:
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._client is not None:
+                return self._client
+            global AsyncOpenAI
+            if AsyncOpenAI is None:
+                if os.environ.get("LANGFUSE_SECRET_KEY") and importlib.util.find_spec("langfuse"):
+                    from langfuse.openai import AsyncOpenAI as _AsyncOpenAI
+                else:
+                    if os.environ.get("LANGFUSE_SECRET_KEY"):
+                        logger.warning(
+                            "LANGFUSE_SECRET_KEY is set but langfuse is not installed; "
+                            "run `nanobot plugins enable langfuse` to enable tracing"
+                        )
+                    from openai import AsyncOpenAI as _AsyncOpenAI
+                AsyncOpenAI = _AsyncOpenAI
+
+            self._build_client()
+            if self._client is None:
+                raise RuntimeError("OpenAI client initialization did not produce a client")
+            return self._client
+
+    async def aclose(self) -> None:
+        try:
+            await self._responses.aclose()
+        finally:
+            client, self._client = self._client, None
+            if client is not None:
+                await client.close()
 
     @classmethod
     def _apply_cache_control(
@@ -370,7 +607,7 @@ class OpenAICompatProvider(LLMProvider):
                     {"type": "text", "text": content, "cache_control": cache_marker},
                 ]}
             if isinstance(content, list) and content:
-                nc = list(content)
+                nc = list(cast(list[dict[str, Any]], content))
                 nc[-1] = {**nc[-1], "cache_control": cache_marker}
                 return {**msg, "content": nc}
             return msg
@@ -396,48 +633,102 @@ class OpenAICompatProvider(LLMProvider):
             return tool_call_id
         return hashlib.sha1(tool_call_id.encode()).hexdigest()[:9]
 
-    @staticmethod
-    def _normalize_tool_call_arguments(arguments: Any) -> str:
-        """Force function.arguments into a valid JSON object string."""
-        if isinstance(arguments, str):
-            stripped = arguments.strip()
-            if not stripped:
-                return "{}"
-            try:
-                parsed = json_repair.loads(stripped)
-            except Exception:
-                return "{}"
-            if isinstance(parsed, dict):
-                return json.dumps(parsed, ensure_ascii=False)
-            return "{}"
-        if isinstance(arguments, dict):
-            return json.dumps(arguments, ensure_ascii=False)
-        return "{}"
+    def _should_normalize_tool_call_ids(self) -> bool:
+        return bool(self._spec and self._spec.name == "mistral")
 
-    def _sanitize_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Strip non-standard keys, normalize tool_call IDs."""
+    @staticmethod
+    def _coerce_content_to_string(content: Any) -> str | None:
+        """Coerce block/list content into plain text for strict string-only APIs."""
+        if content is None or isinstance(content, str):
+            return content
+        text = OpenAICompatProvider._extract_text_content(content)
+        if isinstance(text, str) and text:
+            return text
+        try:
+            dumped = json.dumps(content, ensure_ascii=False)
+        except Exception:
+            dumped = str(content)
+        return dumped or "(empty)"
+
+    def _sanitize_messages(
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+    ) -> list[dict[str, Any]]:
         sanitized = LLMProvider._sanitize_request_messages(messages, _ALLOWED_MSG_KEYS)
         id_map: dict[str, str] = {}
+        pending_tool_ids: dict[str, deque[str]] = {}
+        force_string_content = False
+        if self._spec and self._spec.name == "deepseek":
+            metadata = self._spec.model_metadata(model or self.default_model)
+            force_string_content = metadata is None or "image" not in metadata.input_modalities
+        normalize_tool_ids = self._should_normalize_tool_call_ids()
+        strip_reasoning = bool(
+            self._spec
+            and getattr(self._spec, "strip_history_reasoning_content", False)
+        )
+        if strip_reasoning:
+            for msg in sanitized:
+                msg.pop("reasoning_content", None)
+        if self._spec and self._spec.name == "gemini":
+            sanitized = self._ensure_gemini_thought_signatures(sanitized)
 
         def map_id(value: Any) -> Any:
             if not isinstance(value, str):
                 return value
+            if not normalize_tool_ids:
+                return value
             return id_map.setdefault(value, self._normalize_tool_call_id(value))
 
+        def unique_tool_id(value: Any, used_ids: set[str], idx: int) -> str:
+            if isinstance(value, str) and value:
+                base = map_id(value)
+            else:
+                base = _short_tool_id()
+            if not isinstance(base, str) or not base:
+                base = _short_tool_id()
+            if base not in used_ids:
+                return base
+            seed = value if isinstance(value, str) and value else base
+            salt = 1
+            while True:
+                candidate = self._normalize_tool_call_id(f"{seed}:{idx}:{salt}")
+                if isinstance(candidate, str) and candidate not in used_ids:
+                    return candidate
+                salt += 1
+
+        def map_tool_result_id(value: Any) -> Any:
+            if not isinstance(value, str):
+                return value
+            queue = pending_tool_ids.get(value)
+            if queue:
+                mapped = queue.popleft()
+                if not queue:
+                    pending_tool_ids.pop(value, None)
+                return mapped
+            return map_id(value)
+
         for clean in sanitized:
-            if isinstance(clean.get("tool_calls"), list):
-                normalized = []
-                for tc in clean["tool_calls"]:
+            tool_calls_value = cast(object, clean.get("tool_calls"))
+            if isinstance(tool_calls_value, list):
+                normalized: list[Any] = []
+                used_ids: set[str] = set()
+                for idx, tc in enumerate(cast(list[object], tool_calls_value)):
                     if not isinstance(tc, dict):
                         normalized.append(tc)
                         continue
-                    tc_clean = dict(tc)
-                    tc_clean["id"] = map_id(tc_clean.get("id"))
-                    function = tc_clean.get("function")
+                    tc_clean = dict(cast(dict[str, Any], tc))
+                    raw_id = tc_clean.get("id")
+                    mapped_id = unique_tool_id(raw_id, used_ids, idx)
+                    tc_clean["id"] = mapped_id
+                    used_ids.add(mapped_id)
+                    if isinstance(raw_id, str) and raw_id:
+                        pending_tool_ids.setdefault(raw_id, deque()).append(mapped_id)
+                    function = cast(object, tc_clean.get("function"))
                     if isinstance(function, dict):
-                        function_clean = dict(function)
+                        function_clean = dict(cast(dict[str, Any], function))
                         if "arguments" in function_clean:
-                            function_clean["arguments"] = self._normalize_tool_call_arguments(
+                            function_clean["arguments"] = tool_arguments_json_for_replay(
                                 function_clean.get("arguments")
                             )
                         else:
@@ -445,122 +736,129 @@ class OpenAICompatProvider(LLMProvider):
                         tc_clean["function"] = function_clean
                     normalized.append(tc_clean)
                 clean["tool_calls"] = normalized
-                if clean.get("role") == "assistant":
-                    # Empty, because some OpenAI-compatible gateways reject an
-                    # assistant message that mixes *non-empty* content with
-                    # tool_calls. The empty string satisfies that and `None`
-                    # does not survive everywhere: Together answers 400
-                    # "Input validation error" for a null here on
-                    # openai/gpt-oss-20b, and zai-org/GLM-5.3 does not answer
-                    # with valid JSON at all.
-                    #
-                    # Measured 2026-09-02 across every model this house runs --
-                    # deepseek-v4-flash and -pro on both Zen and Together,
-                    # GLM-5.3, gpt-oss-20b -- "" is accepted by all six and
-                    # None by four. It is the follow-up call that breaks, the
-                    # one carrying the tool result, so a role only fails once
-                    # it actually uses a tool: household events send a message
-                    # on nearly every turn, and every one of them died here.
-                    clean["content"] = ""
             if "tool_call_id" in clean and clean["tool_call_id"]:
-                clean["tool_call_id"] = map_id(clean["tool_call_id"])
+                clean["tool_call_id"] = map_tool_result_id(clean["tool_call_id"])
+            if (
+                force_string_content
+                and not self._contains_image_content(clean.get("content"))
+                and not (clean.get("role") == "assistant" and clean.get("tool_calls"))
+            ):
+                clean["content"] = self._coerce_content_to_string(clean.get("content"))
         return self._enforce_role_alternation(sanitized)
 
-    # ------------------------------------------------------------------
-    # Build kwargs
-    # ------------------------------------------------------------------
-
-    # Models that have *told us* they will not take a temperature, learned at
-    # runtime from the rejection itself. The name list below is a guess and a
-    # gateway may call a model anything it likes: one behind Console Go asked
-    # for "only 1 is allowed for this model" while being named nothing like
-    # gpt-5 or o3, so every turn on it failed and no name check would have
-    # caught it. Once a model says so, it is not asked again this process.
-    _NO_TEMPERATURE: set[str] = set()
-    # The thinking levels a model accepts, once it has said. NanoGPT names them
-    # in the refusal ("Supported values are: none, high") and they differ per
-    # model: on 2026-09-26 the planner sent the everyday level, "low", to
-    # xiaomi/mimo-v2.6-flash, and every multi-step request in the house failed
-    # on a setting nobody chose for that model.
-    _EFFORTS_ACCEPTED: dict[str, tuple[str, ...]] = {}
-    _EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
-
     @staticmethod
-    def _accepted_efforts(error: Exception) -> tuple[str, ...] | None:
-        """The levels a refusal of `reasoning_effort` says are allowed, or None."""
-        text = str(error)
-        if "reasoning_effort" not in text:
-            return None
-        m = re.search(r"[Ss]upported values are:?\s*([a-z][a-z ,]*)", text)
-        if not m:
-            return None
-        levels = tuple(v.strip() for v in m.group(1).split(",") if v.strip())
-        return levels or None
+    def _gemini_thought_signature(tool_call: dict[str, Any]) -> str | None:
+        """Return Gemini's thought signature attached to a tool call, if any.
 
-    @classmethod
-    def _nearest_effort(cls, want: str, accepted: tuple[str, ...]) -> str:
-        """The accepted level closest to *want*; on a tie, the higher one --
-        a role that asked for some thinking should not silently get none."""
-        if want in accepted:
-            return want
-        order = cls._EFFORT_ORDER
-        at = order.index(want) if want in order else order.index("low")
-        known = [a for a in accepted if a in order] or list(accepted)
-        return min(known, key=lambda a: (abs(order.index(a) - at) if a in order else 99,
-                                         -(order.index(a) if a in order else 0)))
-
-    @staticmethod
-    def _rejected_temperature(error: Exception) -> bool:
-        """Is this the provider objecting to `temperature` specifically?
-
-        Deliberately narrow. A 400 usually means the request was wrong in a way
-        that will be wrong again, and retrying it just makes somebody wait
-        twice for the same message — this is the one exception, because
-        dropping the parameter genuinely changes the answer.
+        Gemini's OpenAI-compatible endpoint returns tool calls with an
+        ``extra_content`` field: ``{"google": {"thought_signature": "..."}}``.
+        nanobot preserves it through the parse -> serialize round-trip so
+        replayed calls stay valid. Calls produced by other providers (e.g.
+        after a mid-conversation model switch) carry no signature.
         """
-        text = str(error).lower()
-        return 'temperature' in text and (
-            'only 1' in text or 'not support' in text or 'unsupported' in text
-            or 'invalid' in text or 'does not support' in text)
+        extra = tool_call.get("extra_content")
+        if not isinstance(extra, dict):
+            return None
+        google = cast(dict[str, Any], extra).get("google")
+        if not isinstance(google, dict):
+            return None
+        signature = cast(dict[str, Any], google).get("thought_signature")
+        if isinstance(signature, str) and signature:
+            return signature
+        return None
+
+    def _ensure_gemini_thought_signatures(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Keep migrated tool history wire-valid without losing tool context.
+
+        Gemini requires the first call in each function-call step to carry a
+        thought signature. Native parallel calls intentionally leave later
+        calls unsigned, so they must remain in their original order. For a
+        fully unsigned step imported from another provider, Google documents
+        ``skip_thought_signature_validator`` as a last-resort migration value.
+        """
+        kept: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            calls = msg.get("tool_calls")
+            if role != "assistant" or not isinstance(calls, list) or not calls:
+                kept.append(msg)
+                continue
+
+            call_values = cast(list[object], calls)
+            typed_calls = [
+                cast(dict[str, Any], tool_call)
+                for tool_call in call_values
+                if isinstance(tool_call, dict)
+            ]
+            if not typed_calls:
+                if msg.get("content"):
+                    clean = dict(msg)
+                    clean.pop("tool_calls", None)
+                    kept.append(clean)
+                continue
+
+            clean_calls = typed_calls
+            if self._gemini_thought_signature(typed_calls[0]) is None:
+                first = dict(typed_calls[0])
+                extra_value = first.get("extra_content")
+                extra = dict(cast(dict[str, Any], extra_value)) if isinstance(
+                    extra_value, dict
+                ) else {}
+                google_value = extra.get("google")
+                google = dict(cast(dict[str, Any], google_value)) if isinstance(
+                    google_value, dict
+                ) else {}
+                google["thought_signature"] = _GEMINI_SKIP_THOUGHT_SIGNATURE
+                extra["google"] = google
+                first["extra_content"] = extra
+                clean_calls = [first, *typed_calls[1:]]
+
+            if clean_calls != call_values:
+                msg = dict(msg)
+                msg["tool_calls"] = clean_calls
+            kept.append(msg)
+        return kept
+
+
+    def _request_model_name(self, model_name: str) -> str:
+        return self._spec.request_model_name(model_name) if self._spec else model_name
 
     @staticmethod
-    def _requires_streaming(error: Exception) -> bool:
-        """Is this the provider saying the model will only answer streamed?
-
-        Narrow for the same reason as `_rejected_temperature`: a 400 is usually
-        wrong the same way twice. This one is worth re-sending because the
-        request was right and only the transport was refused -- Together says
-        `This model only supports streaming. Set "stream": true.` for
-        Qwen/Qwen3.8-Flash, and the *whole* model is unreachable without it.
-
-        Found because it was this stack's fallback model: when the main model
-        went down, the rescue could not run either, so an outage that should
-        have been a slower answer became no answer at all.
-        """
-        text = str(error).lower()
-        return "stream" in text and (
-            "only supports streaming" in text
-            or "only support streaming" in text
-            or ('"stream": true' in text or "'stream': true" in text)
-            or ("must" in text and "stream" in text and "true" in text))
-
-    @classmethod
     def _supports_temperature(
-        cls,
         model_name: str,
         reasoning_effort: str | None = None,
     ) -> bool:
         """Return True when the model accepts a temperature parameter.
 
-        GPT-5 family and reasoning models (o1/o3/o4) reject temperature
-        when reasoning_effort is set to anything other than ``"none"``.
+        Temperature is omitted for fixed-temperature Kimi K3, GPT-5, and
+        o-series models. GPT-6 requires explicit ``"none"`` effort; its
+        default enables reasoning.
         """
-        if reasoning_effort and reasoning_effort.lower() != "none":
+        if _model_slug(model_name) in KIMI_K3_MODELS:
+            return False
+        from nanobot.household.compat_retries import refuses_temperature
+
+        if refuses_temperature(model_name):  # household: learned from a refusal (D1)
             return False
         name = model_name.lower()
-        if name in cls._NO_TEMPERATURE:
-            return False
-        return not any(token in name for token in ("gpt-5", "gpt-6", "o1", "o3", "o4"))
+        if "gpt-6" in name:
+            return bool(reasoning_effort and reasoning_effort.lower() == "none")
+        return not any(token in name for token in ("gpt-5", "o1", "o3", "o4"))
+
+    def _opencode_affinity_headers(
+        self,
+        provider_context: "ProviderCallContext | None",
+    ) -> dict[str, str] | None:
+        if (
+            not self._opencode_session_affinity
+            or provider_context is None
+            or not provider_context.session_id
+        ):
+            return None
+        session_key = hashlib.sha256(provider_context.session_id.encode("utf-8")).hexdigest()
+        return {"x-opencode-session": session_key}
 
     def _build_kwargs(
         self,
@@ -571,6 +869,7 @@ class OpenAICompatProvider(LLMProvider):
         temperature: float,
         reasoning_effort: str | None,
         tool_choice: str | dict[str, Any] | None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         model_name = model or self.default_model
         spec = self._spec
@@ -580,20 +879,22 @@ class OpenAICompatProvider(LLMProvider):
             if any(model_name.lower().startswith(k) for k in ("anthropic/", "claude")):
                 messages, tools = self._apply_cache_control(messages, tools)
 
-        if spec and spec.strip_model_prefix:
-            model_name = model_name.split("/")[-1]
+        model_name = self._request_model_name(model_name)
 
         kwargs: dict[str, Any] = {
             "model": model_name,
-            "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
+            "messages": self._sanitize_messages(
+                self._sanitize_empty_content(messages),
+                model_name,
+            ),
         }
 
-        # GPT-5 and reasoning models (o1/o3/o4) reject temperature when
-        # reasoning_effort is active.  Only include it when safe.
         if self._supports_temperature(model_name, reasoning_effort):
             kwargs["temperature"] = temperature
 
-        if spec and getattr(spec, "supports_max_completion_tokens", False):
+        if (
+            spec and getattr(spec, "supports_max_completion_tokens", False)
+        ) or _requires_max_completion_tokens(model_name):
             kwargs["max_completion_tokens"] = max(1, max_tokens)
         else:
             kwargs["max_tokens"] = max(1, max_tokens)
@@ -605,6 +906,16 @@ class OpenAICompatProvider(LLMProvider):
                     kwargs.update(overrides)
                     break
 
+        # Moonshot selects the only valid temperature from the K2.5/K2.6 thinking mode:
+        # 1.0 when enabled and 0.6 when disabled. Omitting the parameter lets the API
+        # apply the matching value for both its default and explicit thinking controls.
+        if (
+            spec
+            and spec.name == "moonshot"
+            and _model_slug(model_name) in _KIMI_SERVER_MANAGED_TEMPERATURE_MODELS
+        ):
+            kwargs.pop("temperature", None)
+
         # Normalize reasoning_effort into a semantic form (OpenAI vocab)
         # used for internal decisions, and a wire form actually sent out.
         # "minimum" is accepted as a DashScope-native alias for "minimal".
@@ -615,88 +926,130 @@ class OpenAICompatProvider(LLMProvider):
                 semantic_effort = "minimal"
 
         wire_effort = reasoning_effort
+        slug = _model_slug(model_name)
+        if slug in KIMI_K3_MODELS and semantic_effort is not None:
+            # K3 always reasons and accepts top-level low/high/max effort.
+            # Keep disabled presets on the default and normalize other legacy
+            # enabled values to "max".
+            if semantic_effort in ("none", "minimal"):
+                wire_effort = None
+            else:
+                if semantic_effort not in ("low", "high", "max"):
+                    semantic_effort = "max"
+                wire_effort = semantic_effort
         if spec and spec.name == "dashscope" and semantic_effort == "minimal":
             # DashScope accepts none/minimum/low/medium/high/xhigh; "minimal" 400s.
             wire_effort = "minimum"
+        elif spec and spec.name == "deepseek" and semantic_effort == "minimal":
+            # DeepSeek's minimal alias enables low-effort thinking.
+            semantic_effort = wire_effort = "low"
 
-        accepted = self._EFFORTS_ACCEPTED.get(str(model_name or "").lower())
-        if wire_effort and accepted and wire_effort.lower() not in accepted:
-            wire_effort = self._nearest_effort(wire_effort.lower(), accepted)
-        if wire_effort:
-            kwargs["reasoning_effort"] = wire_effort
-
-        # Provider-specific thinking parameters.
-        # Only sent when reasoning_effort is explicitly configured so that
-        # the provider default is preserved otherwise.
-        # The mapping is driven by ProviderSpec.thinking_style so that adding
-        # a new provider never requires touching this function.
-        if spec and spec.thinking_style and reasoning_effort is not None:
-            # "none" is an off switch, exactly as _supports_temperature already
-            # reads it. Tested only against "minimal", it fell through to the
-            # enabled branch and *turned thinking on* for the one value the
-            # rest of the stack documents as the way to turn it off.
-            thinking_enabled = semantic_effort not in ("minimal", "none")
-            extra = _THINKING_STYLE_MAP.get(spec.thinking_style, lambda _: None)(thinking_enabled)
-            if extra:
-                kwargs.setdefault("extra_body", {}).update(extra)
-
-        # Model-level thinking injection for Kimi thinking-capable models.
-        # Strip any provider prefix (e.g. "moonshotai/") before the set lookup
-        # so that OpenRouter-style names like "moonshotai/kimi-k2.5" are handled
-        # identically to bare names like "kimi-k2.5".
-        if reasoning_effort is not None and _is_kimi_thinking_model(model_name):
-            thinking_enabled = semantic_effort not in ("minimal", "none")
-            kwargs.setdefault("extra_body", {}).update(
-                {"thinking": {"type": "enabled" if thinking_enabled else "disabled"}}
+        # Magistral and other providers where reasoning is implicit reject the
+        # reasoning_effort kwarg entirely. Strip it before the remap so we don't
+        # accidentally send "none"/"high" to a model that always reasons.
+        strip_effort = False
+        if spec and getattr(spec, "implicit_reasoning_models", ()):
+            model_lower = model_name.lower()
+            strip_effort = any(
+                pat in model_lower for pat in spec.implicit_reasoning_models
             )
+
+        # Some providers accept a constrained reasoning_effort vocabulary
+        # (Mistral: only "high"/"none"). Remap from OpenAI vocab to the
+        # provider's accepted set; an empty mapped value means "omit".
+        if (
+            not strip_effort
+            and spec
+            and getattr(spec, "reasoning_effort_remap", ())
+            and isinstance(semantic_effort, str)
+        ):
+            remap = dict(spec.reasoning_effort_remap)
+            mapped = remap.get(semantic_effort)
+            if mapped is not None:
+                wire_effort = mapped or None
+                semantic_effort = mapped or "none"
+
+        if strip_effort:
+            wire_effort = None
+        elif wire_effort and semantic_effort != "none":
+            kwargs["reasoning_effort"] = wire_effort
+        # household: Ollama honours reasoning_effort "none" by not thinking at
+        # all (measured: 433 ms and an answer, against 1.3 s of thinking and an
+        # empty reply in 80 tokens). Upstream drops "none", so the classifier,
+        # the heartbeat and the event profiles thought anyway; the fork sent it.
+        from nanobot.household.compat_retries import sends_effort_none
+
+        if not strip_effort and semantic_effort == "none" and sends_effort_none(spec):
+            kwargs["reasoning_effort"] = "none"
+
+        # Only send thinking controls when reasoning_effort is explicit so
+        # omitting the config preserves each provider's default.
+        if reasoning_effort is not None:
+            thinking_enabled = semantic_effort not in ("none", "minimal")
+            for thinking_style in _thinking_styles_for(spec, model_name):
+                if not thinking_enabled and slug in _KIMI_ALWAYS_THINKING_MODELS:
+                    continue
+                extra = _thinking_extra_body(thinking_style, thinking_enabled)
+                if extra:
+                    kwargs.setdefault("extra_body", {}).update(extra)
+            gateway_style = getattr(spec, "gateway_reasoning_style", "") if spec else ""
+            if (
+                gateway_style
+                and _model_thinking_style(model_name)
+                and (thinking_enabled or slug not in _KIMI_ALWAYS_THINKING_MODELS)
+            ):
+                extra = _gateway_reasoning_extra_body(gateway_style, semantic_effort)
+                if extra:
+                    kwargs.setdefault("extra_body", {}).update(extra)
+
+            # Moonshot rejects requests that carry both 'reasoning_effort'
+            # and the native 'thinking' param.  We already expressed the
+            # user's intent via the provider-native shape, so drop the
+            # redundant wire-level kwarg.  Only kimi models need this —
+            # Xiaomi's API accepts both params.
+            if slug in _KIMI_THINKING_MODELS:
+                kwargs.pop("reasoning_effort", None)
 
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice or "auto"
 
-        # Backfill reasoning_content on legacy assistant messages.
-        # DeepSeek V4 (and potentially others) rejects thinking-mode
-        # requests that contain assistant messages without reasoning_content
-        # — even on turns that had no tool calls. This happens when a
-        # session was started with a non-thinking model or without
-        # reasoning_effort, then the user switches thinking mode on
-        # mid-session. Injecting an empty string satisfies the API
-        # without altering semantics (the model treats it as "no
-        # thinking happened on that turn").
-        thinking_active = (
-            (spec and spec.thinking_style and reasoning_effort is not None
-             and semantic_effort not in ("minimal", "none"))
-            or (reasoning_effort is not None and _is_kimi_thinking_model(model_name)
-                and semantic_effort not in ("minimal", "none"))
-        )
-        # …and the case none of the above can see: a thinking model reached
-        # through a gateway this registry has never heard of. `provider:
-        # "custom"` is just a base URL, so its spec carries no thinking_style
-        # and every condition above is False — while the model behind it (this
-        # house runs DeepSeek V4 through opencode's zen) thinks on every
-        # turn and enforces the rule. The history says what the spec cannot: if
-        # any assistant message came back carrying reasoning_content, this
-        # conversation *is* in thinking mode, and every assistant message in it
-        # needs the field.
-        #
-        # Presence, not truthiness — the field is legitimately "" on the turns
-        # where nothing was thought, and those are exactly the ones that prove
-        # the mode is on.
-        #
-        # This is a net, not the fix: an assistant message written by this
-        # process rather than by the model should carry the field from birth
-        # (see build_assistant_message, and the injection sites in agent/loop).
-        # It is here because those sites are easy to add and the failure is a
-        # whole turn lost with the raw provider error in the person's chat.
-        if not thinking_active:
-            thinking_active = any(
-                msg.get("role") == "assistant" and "reasoning_content" in msg
-                for msg in kwargs["messages"]
+        # Backfill reasoning_content="" on assistants missing it: DeepSeek
+        # thinking mode rejects history otherwise (#3554, #3584); "" reads
+        # as "no thinking that turn". DeepSeek Flash/V4/reasoner reason natively,
+        # so backfill even without explicit reasoning_effort.
+        explicit_thinking = (
+            reasoning_effort is not None
+            and semantic_effort not in ("none", "minimal")
+            and (
+                (spec and spec.thinking_style)
+                or _model_thinking_style(model_name)
             )
-        if thinking_active:
+        )
+        implicit_deepseek_thinking = (
+            spec is not None
+            and spec.name == "deepseek"
+            and semantic_effort not in ("none", "minimal", "minimum")
+            and (
+                slug == "deepseek-flash"
+                or any(t in model_name.lower() for t in ("deepseek-v4", "deepseek-reasoner"))
+            )
+        )
+        if explicit_thinking or implicit_deepseek_thinking:
             for msg in kwargs["messages"]:
                 if msg.get("role") == "assistant" and "reasoning_content" not in msg:
                     msg["reasoning_content"] = ""
+        from nanobot.household.compat_retries import normalize_outgoing
+
+        normalize_outgoing(kwargs["messages"])  # household: "" beside tool calls; thinking-mode net
+
+        # Merge user-configured extra_body last so ordinary fields can override
+        # provider defaults. Keep configured tools at the top level: the SDK
+        # otherwise lets extra_body.tools replace nanobot's generated functions.
+        if self._extra_body:
+            kwargs = _merge_chat_extra_body(kwargs, self._extra_body)
+        if extra_headers:
+            kwargs["extra_headers"] = extra_headers
 
         return kwargs
 
@@ -705,50 +1058,95 @@ class OpenAICompatProvider(LLMProvider):
         model: str | None,
         reasoning_effort: str | None,
     ) -> bool:
-        """Use Responses API only for requests that benefit from it."""
-        # OpenCode's gateway splits by model, not by account: `gpt-5.6-luna` and
-        # its siblings answer on /v1/responses and return 500 on
-        # /v1/chat/completions, while `deepseek-v4-flash` on the same key and
-        # the same base is the other way round. Measured across all 64 models on
-        # 2026-09-03: six answer 200 on /responses and 500 on /chat/completions.
-        # Without this branch nanobot posts /chat/completions to all of them, and
-        # the household reads six working models as broken.
-        opencode = _uses_opencode(self._spec, self._effective_base)
-
-        if not opencode:
-            if self._spec and self._spec.name not in ("openai", "github_copilot"):
-                return False
-            if self._spec is None or self._spec.name != "github_copilot":
-                if not _is_direct_openai_base(self._effective_base):
-                    return False
-
-        model_name = (model or self.default_model).lower()
-        family = any(token in model_name for token in ("gpt-5", "gpt-6", "o1", "o3", "o4"))
-        if opencode:
-            # The model decides, and *only* the model. Elsewhere a reasoning
-            # effort is reason enough to prefer /responses; here it would route
-            # deepseek to an endpoint it answers 404 on the moment a role asked
-            # it to think. The two request shapes are not interchangeable on this
-            # gateway, so the choice has to follow the model that has to serve
-            # them rather than what the caller happens to want.
-            wants = family
-        else:
-            wants = False
-            if reasoning_effort and reasoning_effort.lower() != "none":
-                wants = True
-            elif family:
-                wants = True
-        if not wants:
+        api = self._model_api_capabilities(model, reasoning_effort)
+        if self._hosted_web_search_enabled() and "responses" in api.supported_apis:
+            return True
+        if api.preferred_api != "responses":
             return False
+        if self._responses_is_required(model, reasoning_effort):
+            return True
+        return self._responses_circuit_allows_probe(model, reasoning_effort)
 
-        # Circuit breaker: skip after repeated failures, probe periodically.
+    def _model_api_capabilities(
+        self, model: str | None = None, reasoning_effort: str | None = None,
+    ) -> ModelAPICapabilities:
+        if self._preset_model_api is not None:
+            return self._preset_model_api
+        if self._spec is None:
+            return ModelAPICapabilities()
+        return self._spec.default_model_api(
+            model or self.default_model, reasoning_effort,
+            api_base=self._effective_base, extra_body=self._extra_body,
+        )
+
+    def _responses_is_required(
+        self, model: str | None = None, reasoning_effort: str | None = None,
+    ) -> bool:
+        api = self._model_api_capabilities(model, reasoning_effort)
+        return "chat_completions" not in api.supported_apis or self._hosted_web_search_enabled()
+
+    def _hosted_web_search_enabled(self) -> bool:
+        return hosted_web_search_enabled(self._extra_body)
+
+    def _responses_capabilities(self) -> ResponsesCapabilities | None:
+        capabilities = self._spec.responses if self._spec is not None else None
+        if capabilities is not None:
+            return capabilities
+        if self._preset_model_api is not None and "responses" in self._preset_model_api.supported_apis:
+            return ResponsesCapabilities()
+        return None
+
+    def _responses_state_provider(self) -> str:
+        spec_name = self._spec.name if self._spec is not None else "custom"
+        effective_base = self._effective_base or "https://api.openai.com/v1"
+        return f"openai_compat:{spec_name}:{effective_base.rstrip('/')}"
+
+    def _responses_state_model(self, model: str | None) -> str:
+        return self._request_model_name(model or self.default_model)
+
+    def can_resume_conversation_state(
+        self,
+        state: ProviderConversationState,
+        model: str | None = None,
+    ) -> bool:
+        return responses_state_matches(
+            state,
+            provider=self._responses_state_provider(),
+            model=self._responses_state_model(model),
+        )
+
+    def supports_native_compaction(self, model: str | None = None) -> bool:
+        """Enable server compaction only on direct OpenAI Responses endpoints."""
+        capabilities = self._responses_capabilities()
+        if (
+            not self._responses.native_compaction_available
+            or capabilities is None
+            or not capabilities.supports_native_compaction
+        ):
+            return False
+        if self._preset_model_api is not None:
+            if "responses" not in self._preset_model_api.supported_apis:
+                return False
+            if self._preset_model_api.preferred_api != "responses" and not self._hosted_web_search_enabled():
+                return False
+        if (
+            capabilities.requires_direct_openai_base
+            and not is_direct_openai_base(self._effective_base)
+        ):
+            return False
+        return True
+
+    def _responses_circuit_allows_probe(
+        self,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> bool:
         key = _responses_circuit_key(model, self.default_model, reasoning_effort)
         failures = self._responses_failures.get(key, 0)
         if failures >= _RESPONSES_FAILURE_THRESHOLD:
             tripped = self._responses_tripped_at.get(key, 0.0)
             if (time.monotonic() - tripped) < _RESPONSES_PROBE_INTERVAL_S:
                 return False
-            # Half-open: allow one probe attempt
         return True
 
     def _record_responses_failure(self, model: str | None, reasoning_effort: str | None) -> None:
@@ -769,32 +1167,9 @@ class OpenAICompatProvider(LLMProvider):
 
     @staticmethod
     def _should_fallback_from_responses_error(e: Exception) -> bool:
-        """Fallback only for likely Responses API compatibility errors."""
-        response = getattr(e, "response", None)
-        status_code = getattr(e, "status_code", None)
-        if status_code is None and response is not None:
-            status_code = getattr(response, "status_code", None)
-        if status_code not in {400, 404, 422}:
-            return False
-
-        body = (
-            getattr(e, "body", None)
-            or getattr(e, "doc", None)
-            or getattr(response, "text", None)
-        )
-        body_text = str(body).lower() if body is not None else ""
-        compatibility_markers = (
-            "responses",
-            "response api",
-            "max_output_tokens",
-            "instructions",
-            "previous_response",
-            "unsupported",
-            "not supported",
-            "unknown parameter",
-            "unrecognized request argument",
-        )
-        return any(marker in body_text for marker in compatibility_markers)
+        """Fallback only when the endpoint rejects a Responses API feature."""
+        status, body = response_error_details(e)
+        return is_unsupported_feature_error(status, body, RESPONSES_FEATURES)
 
     def _build_responses_body(
         self,
@@ -805,88 +1180,122 @@ class OpenAICompatProvider(LLMProvider):
         temperature: float,
         reasoning_effort: str | None,
         tool_choice: str | dict[str, Any] | None,
+        provider_context: ProviderCallContext | None = None,
     ) -> dict[str, Any]:
-        """Build a Responses API body for direct OpenAI requests."""
         model_name = model or self.default_model
-        if self._spec and self._spec.strip_model_prefix:
-            model_name = model_name.split("/")[-1]
-        sanitized_messages = self._sanitize_messages(self._sanitize_empty_content(messages))
-        instructions, input_items = convert_messages(sanitized_messages)
+        model_name = self._request_model_name(model_name)
+        sanitized_messages = self._sanitize_messages(
+            self._sanitize_empty_content(messages),
+            model_name,
+        )
+        sanitized_state = (
+            provider_context.conversation_state
+            if provider_context is not None
+            else None
+        )
+        if sanitized_state is not None:
+            sanitized_state = sanitized_state.with_pending_messages(
+                self._sanitize_messages(
+                    self._sanitize_empty_content(sanitized_state.pending_messages),
+                    model_name,
+                )
+            )
+        supports_reasoning_none = bool(
+            self._spec and self._spec.name in {"deepseek", "xiaomi_mimo"}
+        )
+        capabilities = self._responses_capabilities()
+        preserve_reasoning = (
+            capabilities is not None and capabilities.reasoning_replay == "plaintext"
+        )
+        prepared = self._responses.prepare(
+            sanitized_messages, state=sanitized_state,
+            provider=self._responses_state_provider(), model=model_name,
+            tools=tools, tool_choice=tool_choice, preserve_reasoning=preserve_reasoning,
+        )
+        body = prepared.body
+        body["max_output_tokens"] = max(1, max_tokens)
+        if self.supports_native_compaction(model_name):
+            self._responses.add_compaction(
+                body, provider_context.context_window_tokens if provider_context else None,
+                max_tokens,
+            )
 
-        body: dict[str, Any] = {
-            "model": model_name,
-            "instructions": instructions or None,
-            "input": input_items,
-            "max_output_tokens": max(1, max_tokens),
-            "store": False,
-            "stream": False,
-            # Routing, not permission: caching is on by default above 1,024
-            # input tokens, but a gateway spreads requests across machines and
-            # only the ones landing on the same machine find a warm prefix.
-            # OpenAI's guide is explicit that the key is what makes matching
-            # reliable, and the same symptom is filed against OpenCode itself
-            # -- zero cache hits across a 32-hour session.
-            #
-            # The same id the session headers carry, so one conversation's
-            # requests group together and two households never share a key.
-            #
-            # Gated the same way that header is, and for a stronger reason.
-            # `prompt_cache_key` is OpenAI's own field: a self-hosted vLLM,
-            # SGLang or Ollama Responses endpoint may reject an unknown body
-            # field outright, so sending it everywhere turns a caching hint
-            # into a 400 on providers it does nothing for. CLAUDE.md already
-            # says a session id means nothing to Together or Ollama; this is
-            # the same value, in the body instead of a header.
-            "prompt_cache_key": (
-                getattr(self, "_session_id", None)
-                if _uses_openai_caching(self._spec, self._effective_base)
-                else None),
-        }
-
-        if self._supports_temperature(model_name, reasoning_effort):
+        supports_temperature = self._supports_temperature(model_name, reasoning_effort)
+        if supports_temperature:
             body["temperature"] = temperature
 
-        if reasoning_effort and reasoning_effort.lower() != "none":
-            body["reasoning"] = {"effort": reasoning_effort}
+        reasoning_enabled = bool(reasoning_effort and reasoning_effort.lower() != "none")
+        if (
+            (not supports_temperature or reasoning_enabled)
+            and capabilities is not None
+            and capabilities.reasoning_replay == "encrypted"
+        ):
             body["include"] = ["reasoning.encrypted_content"]
+        if reasoning_effort and (reasoning_effort.lower() != "none" or supports_reasoning_none):
+            body["reasoning"] = {"effort": reasoning_effort}
+        if prepared.replayed and "gpt-5.6" in model_name.lower():
+            body.setdefault("reasoning", {})["context"] = "all_turns"
+        from nanobot.household.cache_key import uses_openai_caching  # household A12
 
-        if tools:
-            body["tools"] = convert_tools(tools)
-            body["tool_choice"] = tool_choice or "auto"
+        if uses_openai_caching(self._opencode_session_affinity, self._effective_base):
+            body.setdefault("prompt_cache_key", self._session_id)
 
-        # A subclass may build its client its own way and never set one.
-        # Sending `null` is not the same as not sending the field.
-        if not body.get("prompt_cache_key"):
-            body.pop("prompt_cache_key", None)
+        extra_body = getattr(self, "_extra_body", {})
+        if extra_body:
+            body = _merge_responses_extra_body(body, extra_body)
+
+        if self._hosted_web_search_enabled():
+            configured_tools = body.get("tools")
+            if isinstance(configured_tools, list):
+                managed_tools: list[object] = []
+                hosted_search_seen = False
+                for tool in cast(list[object], configured_tools):
+                    if _is_named_function_tool(tool, "web_search"):
+                        continue
+                    if is_hosted_web_search_tool(tool):
+                        if hosted_search_seen:
+                            continue
+                        hosted_search_seen = True
+                    managed_tools.append(tool)
+                body["tools"] = managed_tools
+            if self._spec and self._spec.name == "openai":
+                source_include = "web_search_call.action.sources"
+                configured_include = body.get("include")
+                if isinstance(configured_include, list):
+                    if source_include not in configured_include:
+                        body["include"] = [*configured_include, source_include]
+                else:
+                    body["include"] = [source_include]
 
         return body
 
-    # ------------------------------------------------------------------
-    # Response parsing
-    # ------------------------------------------------------------------
 
     @staticmethod
-    def _maybe_mapping(value: Any) -> dict[str, Any] | None:
+    def _maybe_mapping(value: object) -> dict[str, Any] | None:
         if isinstance(value, dict):
-            return value
+            return cast(dict[str, Any], value)
         model_dump = getattr(value, "model_dump", None)
         if callable(model_dump):
-            dumped = model_dump()
+            dumped: object = model_dump()
             if isinstance(dumped, dict):
-                return dumped
+                return cast(dict[str, Any], dumped)
         return None
 
     @classmethod
-    def _extract_text_content(cls, value: Any) -> str | None:
+    def _extract_text_content(cls, value: object) -> str | None:
         if value is None:
             return None
         if isinstance(value, str):
             return value
         if isinstance(value, list):
             parts: list[str] = []
-            for item in value:
+            for item in cast(list[object], value):
                 item_map = cls._maybe_mapping(item)
                 if item_map:
+                    # Skip Mistral-style {"type":"thinking","thinking":[...]}
+                    # blocks: their text belongs in reasoning_content.
+                    if item_map.get("type") == "thinking":
+                        continue
                     text = item_map.get("text")
                     if isinstance(text, str):
                         parts.append(text)
@@ -901,14 +1310,38 @@ class OpenAICompatProvider(LLMProvider):
         return str(value)
 
     @classmethod
-    def _extract_usage(cls, response: Any) -> dict[str, int]:
+    def _extract_thinking_content(cls, value: object) -> str | None:
+        """Extract reasoning text from Mistral-style thinking blocks.
+
+        Mistral returns content as a list mixing
+        ``{"type":"thinking","thinking":[{"type":"text","text":...}]}`` and
+        ``{"type":"text","text":...}``. The thinking text belongs in
+        ``reasoning_content`` so the agent can surface it as a reasoning
+        trace rather than as the assistant's reply.
+        """
+        if not isinstance(value, list):
+            return None
+        parts: list[str] = []
+        for item in cast(list[object], value):
+            item_map = cls._maybe_mapping(item)
+            if not item_map:
+                continue
+            if item_map.get("type") != "thinking":
+                continue
+            inner = item_map.get("thinking")
+            text = cls._extract_text_content(inner)
+            if text:
+                parts.append(text)
+        return "".join(parts) or None
+
+    @classmethod
+    def _extract_usage(cls, response: Any) -> LLMUsage | None:
         """Extract token usage from an OpenAI-compatible response.
 
         Handles both dict-based (raw JSON) and object-based (SDK Pydantic)
-        responses.  Provider-specific ``cached_tokens`` fields are normalised
-        under a single key; see the priority chain inside for details.
+        responses. Provider-specific cache fields are normalized once at
+        this Chat Completions wire boundary.
         """
-        # --- resolve usage object ---
         usage_obj = None
         response_map = cls._maybe_mapping(response)
         if response_map is not None:
@@ -918,21 +1351,17 @@ class OpenAICompatProvider(LLMProvider):
 
         usage_map = cls._maybe_mapping(usage_obj)
         if usage_map is not None:
-            result = {
-                "prompt_tokens": int(usage_map.get("prompt_tokens") or 0),
-                "completion_tokens": int(usage_map.get("completion_tokens") or 0),
-                "total_tokens": int(usage_map.get("total_tokens") or 0),
-            }
+            input_tokens = int(usage_map.get("prompt_tokens") or 0)
+            output_tokens = int(usage_map.get("completion_tokens") or 0)
         elif usage_obj:
-            result = {
-                "prompt_tokens": getattr(usage_obj, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(usage_obj, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
-            }
+            input_tokens = int(getattr(usage_obj, "prompt_tokens", 0) or 0)
+            output_tokens = int(getattr(usage_obj, "completion_tokens", 0) or 0)
         else:
-            return {}
+            return None
 
-        # --- cached_tokens (normalised across providers) ---
+        wire_total = cls._get_nested_int(usage_obj, ("total_tokens",))
+
+        cache_read: int | None = None
         # Try nested paths first (dict), fall back to attribute (SDK object).
         # Priority order ensures the most specific field wins.
         for path in (
@@ -941,302 +1370,147 @@ class OpenAICompatProvider(LLMProvider):
             ("prompt_cache_hit_tokens",),                # DeepSeek/SiliconFlow
         ):
             cached = cls._get_nested_int(usage_map, path)
-            if not cached and usage_obj:
+            if cached is None and usage_obj:
                 cached = cls._get_nested_int(usage_obj, path)
-            if cached:
-                result["cached_tokens"] = cached
+            if cached is not None:
+                cache_read = cached
                 break
 
-        return result
+        cache_write = cls._get_nested_int(
+            usage_obj,
+            ("prompt_tokens_details", "cache_write_tokens"),
+        )
+
+        return LLMUsage.reported(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=wire_total,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
 
     @staticmethod
-    def _get_nested_int(obj: Any, path: tuple[str, ...]) -> int:
-        """Drill into *obj* by *path* segments and return an ``int`` value.
+    def _get_nested_int(obj: object, path: tuple[str, ...]) -> int | None:
+        """Return a present usage count while preserving explicit zero.
 
         Supports both dict-key access and attribute access so it works
         uniformly with raw JSON dicts **and** SDK Pydantic models.
         """
-        current = obj
+        current: object = obj
         for segment in path:
             if current is None:
-                return 0
+                return None
             if isinstance(current, dict):
-                current = current.get(segment)
+                current = cast(dict[str, Any], current).get(segment)
             else:
                 current = getattr(current, segment, None)
-        return int(current or 0) if current is not None else 0
-
-    def _reasoning_is_answer(self, model: str | None = None) -> bool:
-        """Whether the `reasoning` field carries the reply itself.
-
-        True only for StepFun, whose Plan API answers there -- recognised by
-        its provider entry, its base URL (a `custom` provider pointed at it) or
-        its model name (reached through a gateway). Everywhere else it is the
-        model's thinking, which is never shown to the person it is talking to."""
-        spec = getattr(self, "_spec", None)
-        if spec and spec.name == "stepfun":
-            return True
-        base = (getattr(self, "_effective_base", None) or getattr(self, "api_base", None) or "")
-        if "stepfun" in str(base).lower():
-            return True
-        name = (model or getattr(self, "default_model", "") or "").lower()
-        return "stepfun" in name or name.split("/")[-1].startswith("step-")
-
-    def _settle_reply(self, response: LLMResponse, model: str | None = None) -> LLMResponse:
-        """The one place a reply and its reasoning are reconciled, for every
-        path -- chat/completions or Responses, plain or streamed -- so they
-        cannot disagree the way per-parser copies did.
-
-        StepFun: an empty reply takes the reasoning, which is its answer.
-        Anyone else: a reply that is the reasoning again is no reply, and goes
-        through the runner's empty-response retry instead of being published."""
-        if not isinstance(response, LLMResponse) or response.finish_reason == "error":
-            return response
-        if self._reasoning_is_answer(model):
-            if not response.content and response.reasoning_content:
-                response.content = response.reasoning_content
-            return response
-        if _is_reasoning_echo(response.content, response.reasoning_content):
-            # Loud on purpose: if a gateway ever copies every real reply into
-            # `reasoning` too, this is the line that says why turns go empty.
-            logger.warning(
-                "provider: {} via {} sent its reasoning back as the reply "
-                "({} chars); dropped so the turn retries instead of publishing it",
-                model or self.default_model, self.provider_label(),
-                len(response.content or ""))
-            response.content = None
-        return response
+        if current is None or isinstance(current, bool):
+            return None
+        try:
+            return int(cast(Any, current))
+        except (TypeError, ValueError):
+            return None
 
     def _parse(self, response: Any) -> LLMResponse:
         if isinstance(response, str):
             return LLMResponse(content=response, finish_reason="stop")
 
         response_map = self._maybe_mapping(response)
-        if response_map is not None:
-            choices = response_map.get("choices") or []
-            if not choices:
-                content = self._extract_text_content(
-                    response_map.get("content") or response_map.get("output_text")
+        if response_map is None:
+            raise TypeError(f"Unsupported chat response type: {type(response).__name__}")
+        choices = cast(
+            list[object],
+            response_map.get("choices") or [],
+        )
+        if not choices:
+            content = self._extract_text_content(
+                response_map.get("content") or response_map.get("output_text")
+            )
+            reasoning_content = self._extract_text_content(
+                response_map.get("reasoning_content")
+            )
+            if content is not None:
+                return LLMResponse(
+                    content=content,
+                    reasoning_content=reasoning_content,
+                    finish_reason=str(response_map.get("finish_reason") or "stop"),
+                    usage=self._extract_usage(response_map),
                 )
-                reasoning_content = self._extract_text_content(
-                    response_map.get("reasoning_content")
-                )
-                if content is not None:
-                    return LLMResponse(
-                        content=content,
-                        reasoning_content=reasoning_content,
-                        finish_reason=str(response_map.get("finish_reason") or "stop"),
-                        usage=self._extract_usage(response_map),
-                    )
-                return LLMResponse(content="Error: API returned empty choices.", finish_reason="error")
-
-            choice0 = self._maybe_mapping(choices[0]) or {}
-            msg0 = self._maybe_mapping(choice0.get("message")) or {}
-            content = self._extract_text_content(msg0.get("content"))
-            finish_reason = str(choice0.get("finish_reason") or "stop")
-
-            raw_tool_calls: list[Any] = []
-            # `reasoning` stays reasoning here. Whether it is the answer (StepFun)
-            # is decided once, in `_settle_reply`; promoting it for every
-            # gateway published DeepSeek's private planning as its reply.
-            reasoning_content = msg0.get("reasoning_content")
-            if not reasoning_content and msg0.get("reasoning"):
-                reasoning_content = self._extract_text_content(msg0.get("reasoning"))
-            for ch in choices:
-                ch_map = self._maybe_mapping(ch) or {}
-                m = self._maybe_mapping(ch_map.get("message")) or {}
-                tool_calls = m.get("tool_calls")
-                if isinstance(tool_calls, list) and tool_calls:
-                    raw_tool_calls.extend(tool_calls)
-                    if ch_map.get("finish_reason") in ("tool_calls", "stop"):
-                        finish_reason = str(ch_map["finish_reason"])
-                if not content:
-                    content = self._extract_text_content(m.get("content"))
-                if not reasoning_content:
-                    reasoning_content = m.get("reasoning_content")
-
-            parsed_tool_calls = []
-            for tc in raw_tool_calls:
-                tc_map = self._maybe_mapping(tc) or {}
-                fn = self._maybe_mapping(tc_map.get("function")) or {}
-                args = fn.get("arguments", {})
-                if isinstance(args, str):
-                    args = json_repair.loads(args)
-                ec, prov, fn_prov = _extract_tc_extras(tc)
-                parsed_tool_calls.append(ToolCallRequest(
-                    id=_short_tool_id(),
-                    name=str(fn.get("name") or ""),
-                    arguments=args if isinstance(args, dict) else {},
-                    extra_content=ec,
-                    provider_specific_fields=prov,
-                    function_provider_specific_fields=fn_prov,
-                ))
-
             return LLMResponse(
-                content=content,
-                tool_calls=parsed_tool_calls,
-                finish_reason=finish_reason,
-                usage=self._extract_usage(response_map),
-                reasoning_content=reasoning_content if isinstance(reasoning_content, str) else None,
+                content="Error: API returned empty choices.",
+                finish_reason="error",
+                error_kind="empty",
             )
 
-        if not response.choices:
-            return LLMResponse(content="Error: API returned empty choices.", finish_reason="error")
+        choice0 = self._maybe_mapping(choices[0]) or {}
+        msg0 = self._maybe_mapping(choice0.get("message")) or {}
+        content = self._extract_text_content(msg0.get("content"))
+        finish_reason = str(choice0.get("finish_reason") or "stop")
 
-        choice = response.choices[0]
-        msg = choice.message
-        content = msg.content
-        finish_reason = choice.finish_reason
+        raw_tool_calls: list[object] = []
+        # StepFun: fallback to reasoning field when content is empty
+        if not content and msg0.get("reasoning") and self._spec and self._spec.reasoning_as_content:
+            content = self._extract_text_content(msg0.get("reasoning"))
+        reasoning_content = msg0.get("reasoning_content")
+        if reasoning_content is None and msg0.get("reasoning"):
+            reasoning_content = self._extract_text_content(msg0.get("reasoning"))
+        # Mistral reasoning models return thinking text inside the content
+        # array; lift it into reasoning_content so the runner records it
+        # under the reasoning trace.
+        spec = getattr(self, "_spec", None)
+        if reasoning_content is None and getattr(spec, "extract_thinking_blocks", False):
+            reasoning_content = self._extract_thinking_content(msg0.get("content"))
+        for ch in choices:
+            ch_map = self._maybe_mapping(ch) or {}
+            m = self._maybe_mapping(ch_map.get("message")) or {}
+            message_tool_calls = cast(object, m.get("tool_calls"))
+            if isinstance(message_tool_calls, list) and message_tool_calls:
+                raw_tool_calls.extend(
+                    cast(list[object], message_tool_calls)
+                )
+                if ch_map.get("finish_reason") in ("tool_calls", "stop"):
+                    finish_reason = str(ch_map["finish_reason"])
+            if not content:
+                content = self._extract_text_content(m.get("content"))
+            if reasoning_content is None:
+                reasoning_content = m.get("reasoning_content")
 
-        raw_tool_calls: list[Any] = []
-        for ch in response.choices:
-            m = ch.message
-            if hasattr(m, "tool_calls") and m.tool_calls:
-                raw_tool_calls.extend(m.tool_calls)
-                if ch.finish_reason in ("tool_calls", "stop"):
-                    finish_reason = ch.finish_reason
-            if not content and m.content:
-                content = m.content
-
-        tool_calls = []
+        # Deduplicate tool call IDs (same pattern as streaming path)
+        # Some providers reuse the same ID for parallel tool calls.
+        _seen_tc_ids: set[str] = set()
+        parsed_tool_calls: list[ToolCallRequest] = []
         for tc in raw_tool_calls:
-            args = tc.function.arguments
-            if isinstance(args, str):
-                args = json_repair.loads(args)
+            tc_map = self._maybe_mapping(tc) or {}
+            fn = self._maybe_mapping(tc_map.get("function")) or {}
+            args = parse_tool_arguments(fn.get("arguments", {}))
             ec, prov, fn_prov = _extract_tc_extras(tc)
-            tool_calls.append(ToolCallRequest(
-                id=_short_tool_id(),
-                name=tc.function.name,
+            raw_id = str(tc_map.get("id") or _short_tool_id())
+            if not raw_id or raw_id in _seen_tc_ids:
+                raw_id = _short_tool_id()
+            _seen_tc_ids.add(raw_id)
+            parsed_tool_calls.append(ToolCallRequest(
+                id=raw_id,
+                name=str(fn.get("name") or ""),
                 arguments=args,
                 extra_content=ec,
                 provider_specific_fields=prov,
                 function_provider_specific_fields=fn_prov,
             ))
 
-        reasoning_content = getattr(msg, "reasoning_content", None) or None
-        if not reasoning_content and getattr(msg, "reasoning", None):
-            reasoning_content = msg.reasoning
-
         return LLMResponse(
             content=content,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason or "stop",
-            usage=self._extract_usage(response),
-            reasoning_content=reasoning_content,
+            tool_calls=parsed_tool_calls,
+            finish_reason=finish_reason,
+            usage=self._extract_usage(response_map),
+            reasoning_content=reasoning_content if isinstance(reasoning_content, str) else None,
         )
 
     @classmethod
-    def _parse_chunks(cls, chunks: list[Any]) -> LLMResponse:
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tc_bufs: dict[int, dict[str, Any]] = {}
-        finish_reason = "stop"
-        usage: dict[str, int] = {}
-
-        def _accum_tc(tc: Any, idx_hint: int) -> None:
-            """Accumulate one streaming tool-call delta into *tc_bufs*."""
-            tc_index: int = _get(tc, "index") if _get(tc, "index") is not None else idx_hint
-            buf = tc_bufs.setdefault(tc_index, {
-                "id": "", "name": "", "arguments": "",
-                "extra_content": None, "prov": None, "fn_prov": None,
-            })
-            tc_id = _get(tc, "id")
-            if tc_id:
-                buf["id"] = str(tc_id)
-            fn = _get(tc, "function")
-            if fn is not None:
-                fn_name = _get(fn, "name")
-                if fn_name:
-                    buf["name"] = str(fn_name)
-                fn_args = _get(fn, "arguments")
-                if fn_args:
-                    buf["arguments"] += str(fn_args)
-            ec, prov, fn_prov = _extract_tc_extras(tc)
-            if ec:
-                buf["extra_content"] = ec
-            if prov:
-                buf["prov"] = prov
-            if fn_prov:
-                buf["fn_prov"] = fn_prov
-
+    def _parse_chunks(cls, chunks: Iterable[Any]) -> LLMResponse:
+        accumulator = cls._ChatStreamAccumulator(cls)
         for chunk in chunks:
-            if isinstance(chunk, str):
-                content_parts.append(chunk)
-                continue
-
-            chunk_map = cls._maybe_mapping(chunk)
-            if chunk_map is not None:
-                choices = chunk_map.get("choices") or []
-                if not choices:
-                    usage = cls._extract_usage(chunk_map) or usage
-                    text = cls._extract_text_content(
-                        chunk_map.get("content") or chunk_map.get("output_text")
-                    )
-                    if text:
-                        content_parts.append(text)
-                    continue
-                choice = cls._maybe_mapping(choices[0]) or {}
-                if choice.get("finish_reason"):
-                    finish_reason = str(choice["finish_reason"])
-                delta = cls._maybe_mapping(choice.get("delta")) or {}
-                text = cls._extract_text_content(delta.get("content"))
-                if text:
-                    content_parts.append(text)
-                text = cls._extract_text_content(delta.get("reasoning_content"))
-                if not text:
-                    text = cls._extract_text_content(delta.get("reasoning"))
-                if text:
-                    reasoning_parts.append(text)
-                for idx, tc in enumerate(delta.get("tool_calls") or []):
-                    _accum_tc(tc, idx)
-                usage = cls._extract_usage(chunk_map) or usage
-                continue
-
-            if not chunk.choices:
-                usage = cls._extract_usage(chunk) or usage
-                continue
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            delta = choice.delta
-            if delta and delta.content:
-                content_parts.append(delta.content)
-            if delta:
-                reasoning = getattr(delta, "reasoning_content", None)
-                if not reasoning:
-                    reasoning = getattr(delta, "reasoning", None)
-                if reasoning:
-                    reasoning_parts.append(reasoning)
-            for tc in (delta.tool_calls or []) if delta else []:
-                _accum_tc(tc, getattr(tc, "index", 0))
-
-        content = "".join(content_parts) or None
-        reasoning = "".join(reasoning_parts) or None
-        # Some providers reuse one id across parallel streamed calls; two tool
-        # results under one id and the next request is refused. The first keeps
-        # it, the rest get fresh ones. (Upstream HKUDS/nanobot#3943.)
-        seen_ids: set[str] = set()
-        for b in tc_bufs.values():
-            if not b["id"] or b["id"] in seen_ids:
-                b["id"] = _short_tool_id()
-            seen_ids.add(b["id"])
-        return LLMResponse(
-            content=content,
-            tool_calls=[
-                ToolCallRequest(
-                    id=b["id"],
-                    name=b["name"],
-                    arguments=json_repair.loads(b["arguments"]) if b["arguments"] else {},
-                    extra_content=b.get("extra_content"),
-                    provider_specific_fields=b.get("prov"),
-                    function_provider_specific_fields=b.get("fn_prov"),
-                )
-                for b in tc_bufs.values()
-            ],
-            finish_reason=finish_reason,
-            usage=usage,
-            reasoning_content=reasoning,
-        )
+            accumulator.add(chunk)
+        return accumulator.finish()
 
     @classmethod
     def _extract_error_metadata(cls, e: Exception) -> dict[str, Any]:
@@ -1320,23 +1594,75 @@ class OpenAICompatProvider(LLMProvider):
             **OpenAICompatProvider._extract_error_metadata(e),
         )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
-    async def chat(
+    async def chat_with_context(
         self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        reasoning_effort: str | None = None,
-        tool_choice: str | dict[str, Any] | None = None,
+        *,
+        provider_context: ProviderCallContext,
+        **kwargs: Any,
     ) -> LLMResponse:
-        return self._settle_reply(await self._chat_unsettled(
-            messages, tools, model, max_tokens, temperature, reasoning_effort,
-            tool_choice), model)
+        return await self.chat(
+            **kwargs,
+            provider_context=provider_context,
+        )
+
+    async def chat_stream_with_context(
+        self,
+        *,
+        provider_context: ProviderCallContext,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        return await self.chat_stream(
+            **kwargs,
+            provider_context=provider_context,
+        )
+
+    def _settle_reply(self, response: LLMResponse, model: str | None = None) -> LLMResponse:
+        """household: drop a reply that only repeats the reasoning, so the
+        runner's empty-response retry runs instead of publishing it. Specs
+        whose reasoning *is* the answer (``reasoning_as_content``) are exempt.
+
+        StepFun reached through a gateway is recognised by base URL or model
+        name too, and an empty reply takes its reasoning (A14). Streamed text
+        is held while it could still be an echo (household/stream_hold.py)."""
+        from nanobot.household.stream_hold import reasoning_is_answer
+
+        if not isinstance(response, LLMResponse) or response.finish_reason == "error":
+            return response
+        if reasoning_is_answer(self._spec, self._effective_base, model or self.default_model):
+            if not response.content and response.reasoning_content:
+                response.content = response.reasoning_content
+            return response
+        if _is_reasoning_echo(response.content, response.reasoning_content):
+            logger.warning(
+                "provider: {} sent its reasoning back as the reply ({} chars); dropped",
+                model or self.default_model, len(response.content or ""))
+            response.content = None
+        return response
+
+    async def chat(self, messages: list[dict[str, Any]], *args: Any, **kwargs: Any) -> LLMResponse:
+        from nanobot.household import compat_retries  # household: effort/temperature/streaming-only (D1)
+
+        model = kwargs.get("model") if "model" in kwargs else (args[1] if len(args) > 1 else None)
+        response = await compat_retries.call(self, streaming=False, messages=messages, args=args, kwargs=kwargs)
+        return self._settle_reply(response, model)
+
+    async def chat_stream(self, messages: list[dict[str, Any]], *args: Any, **kwargs: Any) -> LLMResponse:
+        from nanobot.household import compat_retries
+
+        from nanobot.household.stream_hold import EchoHold, reasoning_is_answer
+
+        model = kwargs.get("model") if "model" in kwargs else (args[1] if len(args) > 1 else None)
+        hold = None
+        if kwargs.get("on_content_delta") is not None and not reasoning_is_answer(
+                self._spec, self._effective_base, model or self.default_model):
+            hold = EchoHold(kwargs["on_content_delta"], kwargs.get("on_thinking_delta"))
+            kwargs = {**kwargs, "on_content_delta": hold.content, "on_thinking_delta": hold.thinking}
+        response = await compat_retries.call(self, streaming=True, messages=messages, args=args, kwargs=kwargs)
+        response = self._settle_reply(response, model)
+        if hold is not None:
+            await hold.settle(response.content if isinstance(response, LLMResponse) else None)
+        return response
 
     async def _chat_unsettled(
         self,
@@ -1347,22 +1673,26 @@ class OpenAICompatProvider(LLMProvider):
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        provider_context: ProviderCallContext | None = None,
     ) -> LLMResponse:
+        client = await self._ensure_client()
+        affinity = self._opencode_affinity_headers(provider_context)
         try:
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
                     body = self._build_responses_body(
                         messages, tools, model, max_tokens, temperature,
                         reasoning_effort, tool_choice,
+                        provider_context,
                     )
-                    result = parse_response_output(await self._client.responses.create(**body))
+                    result = await self._responses.sdk_request(
+                        client, body, provider=self._responses_state_provider(),
+                        extra_headers=affinity,
+                    )
                     self._record_responses_success(model, reasoning_effort)
                     return result
                 except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
+                    if self._responses_is_required(model, reasoning_effort):
                         raise
                     if not self._should_fallback_from_responses_error(responses_error):
                         raise
@@ -1371,50 +1701,18 @@ class OpenAICompatProvider(LLMProvider):
             kwargs = self._build_kwargs(
                 messages, tools, model, max_tokens, temperature,
                 reasoning_effort, tool_choice,
+                extra_headers=affinity,
             )
-            try:
-                return self._parse(await self._client.chat.completions.create(**kwargs))
-            except Exception as first:
-                if self._requires_streaming(first):
-                    # The request was fine; the transport was refused. Ask the
-                    # same question down the streaming path, which is the only
-                    # one this model answers on. No `on_content_delta`: nobody
-                    # is reading deltas here, and `chat_stream` still returns
-                    # the assembled reply.
-                    logger.info(
-                        "provider: {} answers only streamed; re-sending on the "
-                        "streaming path", model or self.default_model)
-                    return await self.chat_stream(
-                        messages=messages, tools=tools, model=model,
-                        max_tokens=max_tokens, temperature=temperature,
-                        reasoning_effort=reasoning_effort,
-                        tool_choice=tool_choice,
-                    )
-                accepted = self._accepted_efforts(first)
-                if accepted and 'reasoning_effort' in kwargs:
-                    name = (model or self.default_model or '').lower()
-                    self._EFFORTS_ACCEPTED[name] = accepted
-                    kwargs = self._build_kwargs(
-                        messages, tools, model, max_tokens, temperature,
-                        reasoning_effort, tool_choice,
-                    )
-                    logger.info("provider: {} accepts reasoning_effort {} only; sending {}",
-                                name, ", ".join(accepted), kwargs.get("reasoning_effort"))
-                    return self._parse(await self._client.chat.completions.create(**kwargs))
-                # "only 1 is allowed for this model". Send it again without the
-                # parameter it objected to rather than handing the person an
-                # error about a setting they did not choose and cannot see.
-                if not (self._rejected_temperature(first) and 'temperature' in kwargs):
-                    raise
-                self._NO_TEMPERATURE.add((model or self.default_model or '').lower())
-                logger.info("provider: {} refuses temperature; retrying without it",
-                            model or self.default_model)
-                kwargs.pop('temperature', None)
-                return self._parse(await self._client.chat.completions.create(**kwargs))
+            kwargs = await prepare_inline_images(kwargs)
+            chat_raw = cast(
+                Any,
+                await client.chat.completions.create(**kwargs),
+            )
+            return self._parse(chat_raw)
         except Exception as e:
             return self._handle_error(e, spec=self._spec, api_base=self.api_base)
 
-    async def chat_stream(
+    async def _chat_stream_unsettled(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
@@ -1424,52 +1722,31 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         on_content_delta: Callable[[str], Awaitable[None]] | None = None,
-        on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_call_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        provider_context: ProviderCallContext | None = None,
     ) -> LLMResponse:
-        idle_timeout_s = int(os.environ.get("NANOBOT_STREAM_IDLE_TIMEOUT_S", "90"))
+        client = await self._ensure_client()
+        idle_timeout_s = resolve_stream_idle_timeout_s()
+        affinity = self._opencode_affinity_headers(provider_context)
         try:
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
                     body = self._build_responses_body(
                         messages, tools, model, max_tokens, temperature,
                         reasoning_effort, tool_choice,
+                        provider_context,
                     )
                     body["stream"] = True
-                    stream = await self._client.responses.create(**body)
-
-                    async def _timed_stream():
-                        stream_iter = stream.__aiter__()
-                        while True:
-                            try:
-                                yield await asyncio.wait_for(
-                                    stream_iter.__anext__(),
-                                    timeout=idle_timeout_s,
-                                )
-                            except StopAsyncIteration:
-                                break
-
-                    content, tool_calls, finish_reason, usage, reasoning_content = await consume_sdk_stream(
-                        _timed_stream(),
-                        on_content_delta,
+                    result = await self._responses.sdk_request(
+                        client, body, provider=self._responses_state_provider(),
+                        extra_headers=affinity, on_content_delta=on_content_delta,
+                        on_thinking_delta=on_thinking_delta, on_tool_call_delta=on_tool_call_delta,
                     )
                     self._record_responses_success(model, reasoning_effort)
-                    # Settled like every other reply, though its deltas were
-                    # already streamed by consume_sdk_stream with no hold: an
-                    # echo here is kept out of the stored reply and the retry
-                    # runs, but what was painted stays. No gateway in this
-                    # house reaches /responses with a reasoning echo today.
-                    return self._settle_reply(LLMResponse(
-                        content=content or None,
-                        tool_calls=tool_calls,
-                        finish_reason=finish_reason,
-                        usage=usage,
-                        reasoning_content=reasoning_content,
-                    ), model)
+                    return result
                 except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
+                    if self._responses_is_required(model, reasoning_effort):
                         raise
                     if not self._should_fallback_from_responses_error(responses_error):
                         raise
@@ -1478,102 +1755,110 @@ class OpenAICompatProvider(LLMProvider):
             kwargs = self._build_kwargs(
                 messages, tools, model, max_tokens, temperature,
                 reasoning_effort, tool_choice,
+                extra_headers=affinity,
             )
+            kwargs = await prepare_inline_images(kwargs)
+            if self._spec and self._spec.name == "zhipu" and tools and on_tool_call_delta:
+                # Z.AI/GLM keeps streaming tool-call arguments behind an
+                # explicit provider flag.  Pass it through the OpenAI SDK's
+                # extra_body escape hatch so the usual delta.tool_calls path
+                # can surface live file-edit progress.
+                kwargs.setdefault("extra_body", {})["tool_stream"] = True
             kwargs["stream"] = True
+            kwargs["timeout"] = idle_timeout_s
             kwargs["stream_options"] = {"include_usage": True}
-            try:
-                stream = await self._client.chat.completions.create(**kwargs)
-            except Exception as first:
-                # Same again on the streaming path, which is the one the chat
-                # actually uses — fixing only the other would have left every
-                # real turn failing.
-                accepted = self._accepted_efforts(first)
-                if accepted and 'reasoning_effort' in kwargs:
-                    name = (model or self.default_model or '').lower()
-                    self._EFFORTS_ACCEPTED[name] = accepted
-                    kwargs = self._build_kwargs(
-                        messages, tools, model, max_tokens, temperature,
-                        reasoning_effort, tool_choice,
-                    )
-                    kwargs["stream"] = True
-                    kwargs["stream_options"] = {"include_usage": True}
-                    logger.info("provider: {} accepts reasoning_effort {} only; sending {}",
-                                name, ", ".join(accepted), kwargs.get("reasoning_effort"))
-                    stream = await self._client.chat.completions.create(**kwargs)
-                elif not (self._rejected_temperature(first) and 'temperature' in kwargs):
-                    raise
-                else:
-                    self._NO_TEMPERATURE.add((model or self.default_model or '').lower())
-                    logger.info("provider: {} refuses temperature; retrying without it",
-                                model or self.default_model)
-                    kwargs.pop('temperature', None)
-                    stream = await self._client.chat.completions.create(**kwargs)
-            chunks: list[Any] = []
-            # The live half of `_settle_reply`'s echo rule: content is held
-            # while it could still be the reasoning coming back, and released
-            # for good the moment it is not. StepFun's answer arrives in
-            # `reasoning` legitimately, so nothing is held for it.
-            hold = on_content_delta is not None and not self._reasoning_is_answer(model)
-            reasoning_parts: list[str] = []
-            squashed_reasoning = ""
-            reasoning_dirty = False
-            held_content = ""
-            released = False
-            stream_iter = stream.__aiter__()
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        stream_iter.__anext__(),
-                        timeout=idle_timeout_s,
-                    )
-                except StopAsyncIteration:
-                    break
-                chunks.append(chunk)
-                if chunk.choices:
-                    delta = chunk.choices[0].delta
-                    thought = getattr(delta, "reasoning_content", None) or getattr(
-                        delta, "reasoning", None
-                    )
-                    if thought:
-                        reasoning_parts.append(thought)
-                        reasoning_dirty = True
-                    text = getattr(delta, "content", None)
-                    if text and on_content_delta:
-                        if released or not hold:
-                            await on_content_delta(text)
-                        else:
-                            held_content += text
-                            if reasoning_dirty:
-                                squashed_reasoning = _squash("".join(reasoning_parts))
-                                reasoning_dirty = False
-                            squashed = _squash(held_content)
-                            # Still possibly the reasoning again (blank so far,
-                            # or found inside it): keep holding. Otherwise it
-                            # is a reply -- send what was held and stop holding.
-                            if squashed and not (squashed_reasoning
-                                                 and squashed in squashed_reasoning):
-                                released = True
-                                await on_content_delta(held_content)
-                                held_content = ""
-                    if on_reasoning_delta and thought:
-                        # DeepSeek-style thinking arrives here and nowhere else.
-                        # On a hard question it is the *only* thing on the wire
-                        # for a minute or more, so a caller watching just
-                        # `content` sees a dead stream on the turns that are
-                        # working hardest.
-                        await on_reasoning_delta(thought)
-            response = self._settle_reply(self._parse_chunks(chunks), model)
-            # One rule decides both what is stored and what is shown: whatever
-            # is still held goes out only if the settled reply kept it -- a
-            # short answer that also appeared in the reasoning.
-            if held_content and response.content:
-                await on_content_delta(held_content)
+            chat_stream = cast(
+                Any,
+                await client.chat.completions.create(**kwargs),
+            )
+            async with _managed_chat_stream(chat_stream) as stream:
+                accumulator = self._ChatStreamAccumulator(type(self))
+                parse_error: Exception | None = None
+                completed = False
+                stream_iter: AsyncIterator[Any] = stream.__aiter__()
+                while True:
+                    try:
+                        chunk: Any = await asyncio.wait_for(
+                            stream_iter.__anext__(),
+                            timeout=idle_timeout_s,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    if chunk.choices:
+                        completed |= bool(chunk.choices[0].finish_reason)
+                        delta_obj = chunk.choices[0].delta
+                        raw_delta_content = getattr(delta_obj, "content", None)
+                        if on_content_delta:
+                            # Mistral streams content as a list of {"type":"thinking",
+                            # ...} + {"type":"text",...} blocks. Extract just the
+                            # text portion before invoking the callback so callers
+                            # never see non-string content.
+                            text = self._extract_text_content(raw_delta_content)
+                            if text:
+                                await _emit_chat_delta(on_content_delta, text)
+                        if on_thinking_delta:
+                            reasoning = getattr(delta_obj, "reasoning_content", None) or getattr(
+                                delta_obj, "reasoning", None,
+                            )
+                            r_text = self._extract_text_content(reasoning)
+                            if not r_text:
+                                # Mistral keeps the thinking trace inside the
+                                # content array rather than a separate field.
+                                r_text = self._extract_thinking_content(raw_delta_content)
+                            if r_text:
+                                await _emit_chat_delta(on_thinking_delta, r_text)
+                        if on_tool_call_delta:
+                            for idx, tool_delta in enumerate(
+                                getattr(delta_obj, "tool_calls", None) or []
+                            ):
+                                fn = _get(tool_delta, "function")
+                                tool_index = _get(tool_delta, "index")
+                                await _emit_chat_delta(on_tool_call_delta, {
+                                    "index": tool_index if tool_index is not None else idx,
+                                    "call_id": str(_get(tool_delta, "id") or ""),
+                                    "name": str(_get(fn, "name") or "") if fn is not None else "",
+                                    "arguments_delta": (
+                                        str(_get(fn, "arguments") or "") if fn is not None else ""
+                                    ),
+                                })
+                            function_call = getattr(delta_obj, "function_call", None)
+                            if function_call:
+                                await _emit_chat_delta(on_tool_call_delta, {
+                                    "index": 0,
+                                    "call_id": "",
+                                    "name": str(_get(function_call, "name") or ""),
+                                    "arguments_delta": str(_get(function_call, "arguments") or ""),
+                                })
+                    if parse_error is None:
+                        try:
+                            accumulator.add(chunk)
+                        except Exception as e:
+                            # The old parser ran after streaming: keep its first error,
+                            # but let later callbacks and stream failures take priority.
+                            # A traceback would retain the failed SDK chunk until EOF.
+                            parse_error = e.with_traceback(None)
+                if not completed:
+                    raise ConnectionError("Model stream ended before a finish reason was received")
+                if parse_error is not None:
+                    raise parse_error
+                return accumulator.finish()
+        except _ChatStreamCallbackError as e:
+            response = self._handle_error(e.error, spec=self._spec, api_base=self.api_base)
+            response.error_kind = "callback"
+            response.error_should_retry = False
             return response
+        except _ChatStreamCloseError as e:
+            return LLMResponse(
+                content=f"Error closing LLM stream: {e}",
+                finish_reason="error",
+                error_kind="cleanup",
+                error_should_retry=False,
+            )
         except asyncio.TimeoutError:
             return LLMResponse(
                 content=(
                     f"Error calling LLM: stream stalled for more than "
-                    f"{idle_timeout_s} seconds"
+                    f"{idle_timeout_s:g} seconds"
                 ),
                 finish_reason="error",
                 error_kind="timeout",
@@ -1583,3 +1868,118 @@ class OpenAICompatProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self.default_model
+
+
+    class _ChatStreamAccumulator:
+        """Build one response without retaining the SDK's completed chunks."""
+
+        def __init__(self, parser: type[OpenAICompatProvider]) -> None:
+            self._parser = parser
+            self._content_parts: list[str] = []
+            self._reasoning_parts: list[str] = []
+            self._tool_calls: dict[int, dict[str, Any]] = {}
+            self._finish_reason = "stop"
+            self._usage: LLMUsage | None = None
+
+        def _tool_call(self, index: int) -> dict[str, Any]:
+            return self._tool_calls.setdefault(index, {
+                "id": "", "name": "", "arguments": "",
+                "extra_content": None, "prov": None, "fn_prov": None,
+            })
+
+        def _accum_tc(self, tc: Any, idx_hint: int) -> None:
+            tc_index: int = _get(tc, "index") if _get(tc, "index") is not None else idx_hint
+            buf = self._tool_call(tc_index)
+            tc_id = _get(tc, "id")
+            if tc_id:
+                buf["id"] = str(tc_id)
+            fn = _get(tc, "function")
+            if fn is not None:
+                fn_name = _get(fn, "name")
+                if fn_name:
+                    buf["name"] = str(fn_name)
+                fn_args = _get(fn, "arguments")
+                if fn_args:
+                    buf["arguments"] += str(fn_args)
+            ec, prov, fn_prov = _extract_tc_extras(tc)
+            if ec:
+                buf["extra_content"] = ec
+            if prov:
+                buf["prov"] = prov
+            if fn_prov:
+                buf["fn_prov"] = fn_prov
+
+        def _accum_legacy_function_call(self, function_call: Any) -> None:
+            if not function_call:
+                return
+            buf = self._tool_call(0)
+            fn_name = _get(function_call, "name")
+            if fn_name:
+                buf["name"] = str(fn_name)
+            fn_args = _get(function_call, "arguments")
+            if fn_args:
+                buf["arguments"] += str(fn_args)
+
+        def add(self, chunk: Any) -> None:
+            if isinstance(chunk, str):
+                self._content_parts.append(chunk)
+                return
+
+            cls = self._parser
+            chunk_map = cls._maybe_mapping(chunk)
+            if chunk_map is None:
+                raise TypeError(f"Unsupported chat chunk type: {type(chunk).__name__}")
+            choices = cast(list[object], chunk_map.get("choices") or [])
+            if not choices:
+                self._usage = cls._extract_usage(chunk_map) or self._usage
+                text = cls._extract_text_content(
+                    chunk_map.get("content") or chunk_map.get("output_text")
+                )
+                if text:
+                    self._content_parts.append(text)
+                return
+            choice = cls._maybe_mapping(choices[0]) or {}
+            if choice.get("finish_reason"):
+                self._finish_reason = str(choice["finish_reason"])
+            delta = cls._maybe_mapping(choice.get("delta")) or {}
+            raw_delta_content = delta.get("content")
+            text = cls._extract_text_content(raw_delta_content)
+            if text:
+                self._content_parts.append(text)
+            text = cls._extract_text_content(delta.get("reasoning_content"))
+            if not text:
+                text = cls._extract_text_content(delta.get("reasoning"))
+            if not text:
+                text = cls._extract_thinking_content(raw_delta_content)
+            if text:
+                self._reasoning_parts.append(text)
+            for idx, tc in enumerate(cast(Iterable[object], delta.get("tool_calls") or [])):
+                self._accum_tc(tc, idx)
+            self._accum_legacy_function_call(delta.get("function_call"))
+            self._usage = cls._extract_usage(chunk_map) or self._usage
+
+        def finish(self) -> LLMResponse:
+            # Some providers reuse the same ID for parallel calls.
+            seen_ids: set[str] = set()
+            for buf in self._tool_calls.values():
+                if not buf["id"] or buf["id"] in seen_ids:
+                    buf["id"] = _short_tool_id()
+                seen_ids.add(buf["id"])
+            tool_calls = [
+                ToolCallRequest(
+                    id=buf["id"] or _short_tool_id(),
+                    name=buf["name"],
+                    arguments=parse_tool_arguments(buf["arguments"]),
+                    extra_content=buf.get("extra_content"),
+                    provider_specific_fields=buf.get("prov"),
+                    function_provider_specific_fields=buf.get("fn_prov"),
+                )
+                for buf in self._tool_calls.values()
+            ]
+            return LLMResponse(
+                content="".join(self._content_parts) or None,
+                tool_calls=tool_calls,
+                finish_reason=self._finish_reason,
+                usage=self._usage,
+                reasoning_content="".join(self._reasoning_parts) or None,
+            )

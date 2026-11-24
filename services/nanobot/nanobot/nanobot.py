@@ -1,23 +1,66 @@
-"""High-level programmatic interface to nanobot."""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.hook import AgentHook
+from nanobot.agent.hook import AgentHook, SDKCaptureHook
+from nanobot.agent.hooks import create_file_edit_activity_hook
 from nanobot.agent.loop import AgentLoop
-from nanobot.bus.queue import MessageBus
+from nanobot.agent.tools.image_generation import register_image_generation_tool
+from nanobot.agent.tools.mcp import MCPProvider
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.config.schema import Config
+from nanobot.providers.base import LLMUsage
+from nanobot.sdk.clients import MemoryClient, RuntimeClient, SessionClient
+from nanobot.sdk.runtime import (
+    build_process_direct_kwargs,
+    ensure_single_model_selector,
+)
+from nanobot.sdk.streaming import RunStream, SDKStreamEmitter, SDKStreamingHook
+from nanobot.sdk.types import (
+    STREAM_EVENT_REASONING_COMPLETED,
+    STREAM_EVENT_REASONING_DELTA,
+    STREAM_EVENT_RUN_COMPLETED,
+    STREAM_EVENT_RUN_FAILED,
+    STREAM_EVENT_RUN_STARTED,
+    STREAM_EVENT_TEXT_COMPLETED,
+    STREAM_EVENT_TEXT_DELTA,
+    STREAM_EVENT_TOOL_COMPLETED,
+    STREAM_EVENT_TOOL_FAILED,
+    STREAM_EVENT_TOOL_STARTED,
+    STREAM_EVENT_TYPES,
+    RunResult,
+    SessionInfo,
+    SessionSnapshot,
+    StreamEvent,
+    StreamEventType,
+    result_from_response,
+)
+from nanobot.utils.llm_runtime import LLMRuntime
 
-
-@dataclass(slots=True)
-class RunResult:
-    """Result of a single agent run."""
-
-    content: str
-    tools_used: list[str]
-    messages: list[dict[str, Any]]
+__all__ = [
+    "Nanobot",
+    "LLMUsage",
+    "RunResult",
+    "RunStream",
+    "SessionInfo",
+    "SessionSnapshot",
+    "STREAM_EVENT_REASONING_COMPLETED",
+    "STREAM_EVENT_REASONING_DELTA",
+    "STREAM_EVENT_RUN_COMPLETED",
+    "STREAM_EVENT_RUN_FAILED",
+    "STREAM_EVENT_RUN_STARTED",
+    "STREAM_EVENT_TEXT_COMPLETED",
+    "STREAM_EVENT_TEXT_DELTA",
+    "STREAM_EVENT_TOOL_COMPLETED",
+    "STREAM_EVENT_TOOL_FAILED",
+    "STREAM_EVENT_TOOL_STARTED",
+    "STREAM_EVENT_TYPES",
+    "StreamEvent",
+    "StreamEventType",
+]
 
 
 class Nanobot:
@@ -30,8 +73,19 @@ class Nanobot:
         print(result.content)
     """
 
-    def __init__(self, loop: AgentLoop) -> None:
+    def __init__(
+        self,
+        loop: AgentLoop,
+        *,
+        config: Config | None = None,
+        mcp_provider: MCPProvider | None = None,
+    ) -> None:
         self._loop = loop
+        self._config = config
+        self._mcp_provider = mcp_provider
+        self.sessions = SessionClient(loop)
+        self.memory = MemoryClient(loop)
+        self.runtime = RuntimeClient(loop)
 
     @classmethod
     def from_config(
@@ -39,6 +93,8 @@ class Nanobot:
         config_path: str | Path | None = None,
         *,
         workspace: str | Path | None = None,
+        model: str | None = None,
+        model_preset: str | None = None,
     ) -> Nanobot:
         """Create a Nanobot instance from a config file.
 
@@ -46,54 +102,60 @@ class Nanobot:
             config_path: Path to ``config.json``.  Defaults to
                 ``~/.nanobot/config.json``.
             workspace: Override the workspace directory from config.
+            model: Override the instance default model.
+            model_preset: Override the instance default model preset.
         """
         from nanobot.config.loader import load_config, resolve_config_env_vars
-        from nanobot.config.schema import Config
 
+        ensure_single_model_selector(model=model, model_preset=model_preset)
         resolved: Path | None = None
         if config_path is not None:
             resolved = Path(config_path).expanduser().resolve()
             if not resolved.exists():
                 raise FileNotFoundError(f"Config not found: {resolved}")
 
-        config: Config = resolve_config_env_vars(load_config(resolved))
+        config: Config = resolve_config_env_vars(
+            load_config(resolved),
+            config_path=resolved,
+        )
         if workspace is not None:
             config.agents.defaults.workspace = str(
                 Path(workspace).expanduser().resolve()
             )
+        if model is not None:
+            config.agents.defaults.model_preset = None
+            config.agents.defaults.model = model
+            config.agents.defaults.provider = "auto"
+        elif model_preset is not None:
+            config.agents.defaults.model_preset = model_preset
 
-        provider = _make_provider(config)
-        bus = MessageBus()
-        defaults = config.agents.defaults
+        tools = ToolRegistry()
+        register_image_generation_tool(config, tools, workspace=config.workspace_path)
+        mcp_provider = MCPProvider.from_config(config, tools)
+        from nanobot.goal.assembly import install_goal
 
-        loop = AgentLoop(
-            bus=bus,
-            provider=provider,
-            workspace=config.workspace_path,
-            model=defaults.model,
-            max_iterations=defaults.max_tool_iterations,
-            context_window_tokens=defaults.context_window_tokens,
-            context_block_limit=defaults.context_block_limit,
-            max_tool_result_chars=defaults.max_tool_result_chars,
-            provider_retry_mode=defaults.provider_retry_mode,
-            web_config=config.tools.web,
-            exec_config=config.tools.exec,
-            restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
-            timezone=defaults.timezone,
-            unified_session=defaults.unified_session,
-            disabled_skills=defaults.disabled_skills,
-            session_ttl_minutes=defaults.session_ttl_minutes,
-            tools_config=config.tools,
+        loop = AgentLoop.from_config(
+            config,
+            hook_factories=[create_file_edit_activity_hook],
+            tool_registry=tools,
+            builtin_assembly=install_goal,
         )
-        return cls(loop)
+        return cls(loop, config=config, mcp_provider=mcp_provider)
 
     async def run(
         self,
         message: str,
         *,
         session_key: str = "sdk:default",
+        channel: str = "cli",
+        chat_id: str = "direct",
+        sender_id: str = "user",
+        media: list[str] | None = None,
+        ephemeral: bool = False,
+        attributes: Mapping[str, Any] | None = None,
         hooks: list[AgentHook] | None = None,
+        model: str | None = None,
+        model_preset: str | None = None,
     ) -> RunResult:
         """Run the agent once and return the result.
 
@@ -101,87 +163,198 @@ class Nanobot:
             message: The user message to process.
             session_key: Session identifier for conversation isolation.
                 Different keys get independent history.
+            channel: Logical channel label for runtime context.
+            chat_id: Logical chat identifier for runtime context.
+            sender_id: Logical sender identifier for runtime context.
+            media: Optional local media paths attached to the message.
+            ephemeral: If true, do not persist the turn or compact session history.
+            attributes: Optional caller-owned request data exposed to context
+                providers and turn-hook factories. Attributes are kept separate
+                from nanobot's trusted internal message metadata.
             hooks: Optional lifecycle hooks for this run.
+            model: Override the model for this run only.
+            model_preset: Override the model preset for this run only.
         """
-        prev = self._loop._extra_hooks
-        if hooks is not None:
-            self._loop._extra_hooks = list(hooks)
-        try:
-            response = await self._loop.process_direct(
-                message, session_key=session_key,
+        capture = SDKCaptureHook()
+        per_run_hooks = [capture, *(hooks or [])]
+        runtime = self._loop.runtime_resolver.resolve_override(
+            model=model,
+            model_preset=model_preset,
+            config=self._config,
+        )
+        kwargs = build_process_direct_kwargs(
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            sender_id=sender_id,
+            media=media,
+            ephemeral=ephemeral,
+            attributes=attributes,
+        )
+        if runtime is not None:
+            kwargs["runtime"] = runtime
+        if self._mcp_provider is not None:
+            await self._mcp_provider.connect()
+        response = await self._loop.process_direct(
+            message,
+            **kwargs,
+            hooks=per_run_hooks,
+        )
+
+        return result_from_response(response, capture)
+
+    async def run_streamed(
+        self,
+        message: str,
+        *,
+        session_key: str = "sdk:default",
+        channel: str = "cli",
+        chat_id: str = "direct",
+        sender_id: str = "user",
+        media: list[str] | None = None,
+        ephemeral: bool = False,
+        attributes: Mapping[str, Any] | None = None,
+        hooks: list[AgentHook] | None = None,
+        model: str | None = None,
+        model_preset: str | None = None,
+    ) -> RunStream:
+        """Start a streamed run and return a handle for events and final result."""
+        override_runtime = self._loop.runtime_resolver.resolve_override(
+            model=model,
+            model_preset=model_preset,
+            config=self._config,
+        )
+        queue: asyncio.Queue[StreamEvent | object] = asyncio.Queue(maxsize=256)
+        emitter = SDKStreamEmitter(queue)
+        stream_hook = SDKStreamingHook(emitter)
+        capture = SDKCaptureHook()
+        per_run_hooks = [capture, stream_hook, *(hooks or [])]
+        run_started = False
+
+        async def _emit_run_started(runtime: LLMRuntime | None = None) -> None:
+            nonlocal run_started
+            if run_started:
+                return
+            if runtime is None:
+                runtime = override_runtime
+            metadata: dict[str, Any] = {
+                "session_key": session_key,
+                "channel": channel,
+                "chat_id": chat_id,
+                "sender_id": sender_id,
+            }
+            if runtime is not None:
+                metadata.update({
+                    "model": runtime.model,
+                    "model_preset": runtime.model_preset,
+                })
+            await emitter.emit(StreamEvent(
+                type=STREAM_EVENT_RUN_STARTED,
+                metadata=metadata,
+            ))
+            run_started = True
+
+        async def _on_stream(delta: str) -> None:
+            await emitter.text_delta(delta)
+
+        async def _on_stream_end(*_args: Any, resuming: bool = False, **_kwargs: Any) -> None:
+            await emitter.text_completed(resuming=resuming)
+
+        async def _run() -> RunResult:
+            kwargs = build_process_direct_kwargs(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                media=media,
+                ephemeral=ephemeral,
+                attributes=attributes,
+                on_stream=_on_stream,
+                on_stream_end=_on_stream_end,
             )
+            kwargs["on_runtime_admitted"] = _emit_run_started
+            if override_runtime is not None:
+                kwargs["runtime"] = override_runtime
+            try:
+                if self._mcp_provider is not None:
+                    await self._mcp_provider.connect()
+                response = await self._loop.process_direct(
+                    message,
+                    **kwargs,
+                    hooks=per_run_hooks,
+                )
+                await _emit_run_started()
+                await emitter.text_completed(resuming=False, force=False)
+                result = result_from_response(response, capture)
+                await emitter.emit(StreamEvent(
+                    type=STREAM_EVENT_RUN_COMPLETED,
+                    content=result.content,
+                    result=result,
+                    usage=result.usage,
+                    metadata=dict(result.metadata),
+                ))
+                return result
+            except Exception as exc:
+                await _emit_run_started()
+                await emitter.emit(StreamEvent(
+                    type=STREAM_EVENT_RUN_FAILED,
+                    error=str(exc),
+                    metadata={"exception_type": type(exc).__name__},
+                ))
+                raise
+            finally:
+                await emitter.close()
+
+        task = asyncio.create_task(_run())
+        return RunStream(task, queue)
+
+    async def stream(
+        self,
+        message: str,
+        *,
+        session_key: str = "sdk:default",
+        channel: str = "cli",
+        chat_id: str = "direct",
+        sender_id: str = "user",
+        media: list[str] | None = None,
+        ephemeral: bool = False,
+        attributes: Mapping[str, Any] | None = None,
+        hooks: list[AgentHook] | None = None,
+        model: str | None = None,
+        model_preset: str | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream events for one agent turn."""
+        run = await self.run_streamed(
+            message,
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            sender_id=sender_id,
+            media=media,
+            ephemeral=ephemeral,
+            attributes=attributes,
+            hooks=hooks,
+            model=model,
+            model_preset=model_preset,
+        )
+        try:
+            async for event in run.stream_events():
+                yield event
+            await run.wait()
         finally:
-            self._loop._extra_hooks = prev
+            if not run.done:
+                await run.aclose()
 
-        content = (response.content if response else None) or ""
-        return RunResult(content=content, tools_used=[], messages=[])
+    async def aclose(self) -> None:
+        """Release resources held by this instance."""
+        try:
+            await self._loop.aclose()
+        finally:
+            if self._mcp_provider is not None:
+                await self._mcp_provider.aclose()
 
+    async def __aenter__(self) -> Nanobot:
+        return self
 
-def _make_provider(config: Any) -> Any:
-    """Create the LLM provider from config (extracted from CLI)."""
-    from nanobot.providers.base import GenerationSettings
-    from nanobot.providers.registry import find_by_name
-
-    model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
-    spec = find_by_name(provider_name) if provider_name else None
-    backend = spec.backend if spec else "openai_compat"
-
-    if backend == "azure_openai":
-        if not p or not p.api_key or not p.api_base:
-            raise ValueError("Azure OpenAI requires api_key and api_base in config.")
-    elif backend == "openai_compat" and not model.startswith("bedrock/"):
-        needs_key = not (p and p.api_key)
-        exempt = spec and (spec.is_oauth or spec.is_local or spec.is_direct)
-        if needs_key and not exempt:
-            raise ValueError(f"No API key configured for provider '{provider_name}'.")
-
-    if backend == "openai_codex":
-        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-
-        provider = OpenAICodexProvider(default_model=model)
-    elif backend == "github_copilot":
-        from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
-
-        provider = GitHubCopilotProvider(default_model=model)
-    elif backend == "azure_openai":
-        from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
-
-        provider = AzureOpenAIProvider(
-            api_key=p.api_key, api_base=p.api_base, default_model=model
-        )
-    elif backend == "anthropic":
-        from nanobot.providers.anthropic_provider import AnthropicProvider
-
-        provider = AnthropicProvider(
-            api_key=p.api_key if p else None,
-            api_base=config.get_api_base(model),
-            default_model=model,
-            extra_headers=p.extra_headers if p else None,
-        )
-    else:
-        from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-
-        provider = OpenAICompatProvider(
-            api_key=p.api_key if p else None,
-            api_base=config.get_api_base(model),
-            default_model=model,
-            extra_headers=p.extra_headers if p else None,
-            spec=spec,
-        )
-
-    defaults = config.agents.defaults
-    provider.generation = GenerationSettings(
-        temperature=defaults.temperature,
-        max_tokens=defaults.max_tokens,
-        reasoning_effort=defaults.reasoning_effort,
-        fallback_model=defaults.model_fallback,
-    )
-    # How a cross-provider fallback reaches its own client. Absent on a
-    # provider built any other way -- every test double -- and the rescue path
-    # checks rather than assumes.
-    from nanobot.providers.sibling import sibling_factory
-
-    provider.sibling_for = sibling_factory(config)
-    return provider
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()

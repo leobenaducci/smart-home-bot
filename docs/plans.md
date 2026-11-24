@@ -11,10 +11,10 @@ and what the person actually asked to change) runs on a strong hosted model,
 and the part that is mechanical (call this skill with these arguments, report
 what came back) can run on the house's own card.
 
-Code: `services/nanobot/nanobot/agent/tools/plan.py` (the `plan` tool and
-`TurnPlan`), `AgentLoop._step_runner` and `tools_for_step` in
-`services/nanobot/nanobot/agent/loop.py`, `build_step_system_prompt` in
-`services/nanobot/nanobot/agent/context.py`.
+Code: `services/nanobot/nanobot/household/plan.py` (the `plan` tool and
+`TurnPlan`), `make_executor`, `tools_for_step` and `step_system_prompt` in
+`services/nanobot/nanobot/household/plan_steps.py`, and the routing to a plan in
+`services/nanobot/nanobot/household/loop.py`.
 
 ## Who plans, who runs a step
 

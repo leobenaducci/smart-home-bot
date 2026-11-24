@@ -2782,27 +2782,6 @@ def derive_service_token(shared_secret: str, service: str) -> str:
         f"{shared_secret}:svc:{service}".encode()).hexdigest()
 
 
-def house_image(cfg: dict) -> str:
-    """`services.nanobot-house.nanobot_image`, checked like a member's."""
-    members = _generator("compose_members")
-    DEFAULT_NANOBOT_IMAGE, NANOBOT_IMAGES = members.DEFAULT_NANOBOT_IMAGE, members.NANOBOT_IMAGES
-    house = ((cfg.get("services") or {}).get("nanobot-house") or {})
-    image = str(house.get("nanobot_image") or "").strip() or DEFAULT_NANOBOT_IMAGE
-    if image not in NANOBOT_IMAGES:
-        raise ValueError(f"services.nanobot-house.nanobot_image must be one of "
-                         f"{', '.join(NANOBOT_IMAGES)}, not {image!r}")
-    return image
-
-
-def _unit_compose_names(unit: dict) -> list[str]:
-    """Every compose file a unit names, optional ones included, whatever the
-    shape of `compose:` (one name, a list, {file, when} entries)."""
-    entries = unit.get("compose", "docker-compose.yml")
-    if isinstance(entries, (str, dict)):
-        entries = [entries]
-    return [e if isinstance(e, str) else str(e.get("file") or "") for e in entries]
-
-
 def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
                 contributions: dict | None = None) -> dict[str, str]:
     """Build the complete environment one unit's compose file will interpolate.
@@ -3036,12 +3015,6 @@ def collect_env(spec: dict, unit: dict, secrets: dict, cfg: dict,
     # than root, or the next deploy cannot read what they wrote.
     env.setdefault("UID", str(os.getuid()))
     env.setdefault("GID", str(os.getgid()))
-    # The house assistant's image, read by docker-compose.house.yml: the
-    # fork's unless `services.nanobot-house.nanobot_image` names the rebased
-    # one (the house switches last, after every member). Only for that unit:
-    # a bad value there must not stop a deploy of anything else.
-    if "docker-compose.house.yml" in _unit_compose_names(unit):
-        env["NANOBOT_HOUSE_IMAGE"] = house_image(cfg)
 
     # HOST_HUB / HOST_COMPUTE / HOST_STORAGE used to be exported here, under
     # the comment "so a compose file can pin extra_hosts without a literal".
@@ -4708,7 +4681,7 @@ def apply_model_choices(config_json: str, cfg: dict) -> str:
     if effort.get("classifier"):
         defaults["classifierReasoningEffort"] = str(effort["classifier"])
     # `assistant.routing` is the turn classifier's rules -- see
-    # services/nanobot/nanobot/agent/classify.py and docs/routing.md. Written
+    # services/nanobot/nanobot/household/classify.py and docs/routing.md. Written
     # whole, in the camelCase the config file speaks, so a key the site config
     # drops falls back to nanobot's own default rather than to a stale value.
     routing = (cfg.get("assistant") or {}).get("routing")
@@ -6179,6 +6152,8 @@ def load_plugins(cfg: dict) -> list[dict]:
 # directory); this half exists so the answer is a failed deploy rather than a
 # warning in a refresher thread nobody is watching.
 SHIPPED_SKILLS_DIR = ROOT / "services" / "nanobot" / "nanobot" / "skills"
+# The household's own skills, which the assistant ships beside upstream's.
+HOUSEHOLD_SKILLS_DIR = ROOT / "services" / "nanobot" / "nanobot" / "household" / "skills_data"
 
 # A skill name becomes a directory name under the agent's cache. Anything that
 # is not a single path component escapes it.
@@ -6192,11 +6167,13 @@ PLUGIN_FLOOR_MARKER = ".plugin-floor"
 
 
 def shipped_skill_names() -> set[str]:
-    try:
-        return {d.name for d in SHIPPED_SKILLS_DIR.iterdir()
-                if (d / "SKILL.md").is_file()}
-    except OSError:
-        return set()
+    names: set[str] = set()
+    for root in (SHIPPED_SKILLS_DIR, HOUSEHOLD_SKILLS_DIR):
+        try:
+            names |= {d.name for d in root.iterdir() if (d / "SKILL.md").is_file()}
+        except OSError:
+            pass
+    return names
 
 
 def plugin_contributions(manifest: dict, service: str, cfg: dict) -> dict:
@@ -6679,21 +6656,13 @@ def restore_image_tags(target, before: dict[str, str | None], remote_dir: str, o
 
 def _image_build_options(unit: dict, tag: str) -> dict:
     """The `image_build` entry for *tag*, when it is a dict: `dockerfile`,
-    `only_if_used`. Kept beside `unit_image_specs` rather than widening its
+    `source`. Kept beside `unit_image_specs` rather than widening its
     tuple, which the tag-restore path also reads."""
     builds = unit.get("image_build")
     for b in (builds if isinstance(builds, list) else ([builds] if builds else [])):
         if isinstance(b, dict) and b.get("tag") == tag:
             return b
     return {}
-
-
-def nanobot_images_in_use(cfg: dict) -> set[str]:
-    """Every assistant image a member or the house is set to run."""
-    members = _generator("compose_members")
-    used = {members.member_image(cfg, mid) for mid in member_ids(cfg)}
-    used.add(house_image(cfg))
-    return used
 
 
 def stage_skill_floors(tree: Path, skills_dir: str, floors: list) -> int:
@@ -6747,18 +6716,14 @@ def push_image_sources(unit: dict, cfg: dict, contributions: dict, target,
     """Ship the tree of every `image_build` entry that names a `source:`.
 
     The unit's own directory is what reaches `remote_dir`; an image built from
-    another tree (the rebased assistant, `context: ../nanobot-v04`) would find
-    nothing at its context there. Its tree goes to that context, staged the way
+    another tree (`context: ../<tree>`) would find nothing at its context there. Its tree goes to that context, staged the way
     the unit's own is where it reaches the image: the plugins' floor skills
     (`skill_floors:`) and the assistant's name (`assistant_name_in:`), both
     relative to the source tree. Config the containers mount stays the unit's.
-    Skipped, like the build, while nobody runs an `only_if_used` image.
     """
     builds = unit.get("image_build")
     for b in (builds if isinstance(builds, list) else ([builds] if builds else [])):
         if not isinstance(b, dict) or not b.get("source"):
-            continue
-        if b.get("only_if_used") and b.get("tag") not in nanobot_images_in_use(cfg):
             continue
         src = ROOT / b["source"]
         if not src.is_dir():
@@ -6796,13 +6761,6 @@ def build_unit_images(unit: dict, target, remote_dir: str, env: dict, out,
     # entry; nothing that declared a single image has to change.
     for tag, context, stage in unit_image_specs(unit):
         options = _image_build_options(unit, tag)
-        # An image only some members run (the rebased assistant while it is
-        # being rolled out) is built only while somebody is set to run it:
-        # minutes of build on every deploy for an image nobody starts is the
-        # cost the one-image rule above exists to avoid.
-        if options.get("only_if_used") and cfg is not None and tag not in nanobot_images_in_use(cfg):
-            out.sub(f"image {tag}: no member or house runs it, not built")
-            continue
         # A named stage, for a Dockerfile that keeps its test tooling out
         # of the runtime image. Without it the only way to run a service's
         # own suite against the thing being deployed is to ship pytest to
@@ -6839,6 +6797,13 @@ def deploy_service(name: str, spec: dict, cfg: dict, secrets: dict,
     if target is None:
         raise DeployError(f"no host configured for role '{role}'")
     out.sub(f"target: {target}")
+    if name in ("nanobot", "nanobot-house"):
+        # One assistant image for everyone since the switch; the per-member
+        # key that chose between two is read nowhere now.
+        stale = _generator("compose_members").legacy_image_keys(cfg)
+        if stale:
+            out.warn(f"{', '.join(stale)}: no longer used (every assistant runs "
+                     f"alfred-nanobot:latest); remove it from the site config")
 
     # From here on, `{paths.*}` means what it means *on that machine*. A role
     # with no override sees the same dict it always did.

@@ -1,13 +1,42 @@
-Extract key facts from this conversation. Only output items matching these categories, skip everything else:
-- User facts: personal info, preferences, stated opinions, habits
-- Decisions: choices made, conclusions reached
-- Solutions: working approaches discovered through trial and error, especially non-obvious methods that succeeded after failed attempts
-- Events: plans, deadlines, notable occurrences
-- Preferences: communication style, tool preferences
+Create a compact replacement checkpoint for this session.
 
-Priority: user corrections and preferences > solutions > decisions > events > environment facts. The most valuable memory prevents the user from having to repeat themselves.
+When `[Archived Context Summary]` appears in the system prompt, update that previous checkpoint to reflect the current conversation state.
 
-Skip: code patterns derivable from source, git history, or anything already captured in existing memory.
+## Merge rules
 
-Output as concise bullet points, one fact per line. No preamble, no commentary.
-If nothing noteworthy happened, output: (nothing)
+- Use the latest correction or decision as the current version of a fact, and merge duplicates.
+- Preserve exact names, identifiers, paths, commands, decisions, results, and unresolved blockers when they are needed to continue the session.
+- Retain a fact already present in long-term memory when it is needed for session continuity.
+
+## What to retain
+
+Always retain a compact working-state handoff:
+- active objective
+- current status
+- completed results that constrain later work
+- unresolved blockers
+- next action
+- exact identifiers needed for that action
+
+Mark working-state facts `[ephemeral]`.
+
+For other facts, retain a candidate only when it meets all four SNIP criteria:
+- Signal: remembering it saves the user from repeating it
+- Novel: it adds a distinct fact to this checkpoint
+- Important: losing it would cause rework or discard a preference or rule
+- Persistent: it is expected to remain useful for at least two weeks
+
+Assign each retained fact its best current mark:
+- `[permanent]` for core preferences, personal traits, and habits that remain relevant indefinitely
+- `[durable]` for technical discoveries, project knowledge, and configuration that remains valid for months
+- `[ephemeral]` for active task state and temporary decisions that may change within weeks
+- `[correction]` for the current fact that supersedes conflicting earlier long-term memory
+
+When space is limited, prioritize user corrections and preferences, then solutions, decisions, events, and environment facts.
+
+## Output
+
+Return one concise retained fact per line in this form:
+- [mark] fact
+
+Use `(nothing)` when neither the previous checkpoint nor the current conversation contains a qualifying fact or active working state.

@@ -57,9 +57,7 @@ services:
 
   nanobot-house:
     container_name: nanobot-house
-    # alfred-nanobot:latest (the fork) unless the deployer says otherwise:
-    # services.nanobot-house.nanobot_image -> NANOBOT_HOUSE_IMAGE.
-    image: ${NANOBOT_HOUSE_IMAGE:-alfred-nanobot:latest}
+    image: alfred-nanobot:latest
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     cap_drop:

@@ -6,8 +6,6 @@ history.jsonl (e.g. ``"cursor": "abc"``).  The original ``_next_cursor`` and
 ``TypeError`` / ``ValueError``, blocking all subsequent history appends.
 """
 
-import json
-
 import pytest
 
 from nanobot.agent.memory import MemoryStore
@@ -23,20 +21,17 @@ class TestNextCursorRecovery:
     cursor is corrupted (non-int)."""
 
     def test_string_cursor_falls_back_to_scan(self, store):
-        """Last entry has a string cursor — scan backwards to find a valid int."""
         store.history_file.write_text(
             '{"cursor": 5, "timestamp": "2026-04-01 10:00", "content": "good"}\n'
             '{"cursor": 6, "timestamp": "2026-04-01 10:01", "content": "also good"}\n'
             '{"cursor": "bad", "timestamp": "2026-04-01 10:02", "content": "corrupted"}\n',
             encoding="utf-8",
         )
-        # Delete .cursor file so _next_cursor falls back to reading JSONL
         store._cursor_file.unlink(missing_ok=True)
         cursor = store.append_history("recovered event")
         assert cursor == 7
 
     def test_all_corrupted_cursors_return_one(self, store):
-        """Every entry has a non-int cursor — should restart at 1."""
         store.history_file.write_text(
             '{"cursor": "a", "timestamp": "2026-04-01 10:00", "content": "bad1"}\n'
             '{"cursor": "b", "timestamp": "2026-04-01 10:01", "content": "bad2"}\n',
@@ -47,7 +42,6 @@ class TestNextCursorRecovery:
         assert cursor == 1
 
     def test_non_int_cursor_types(self, store):
-        """Float, None, list — all non-int types handled gracefully."""
         store.history_file.write_text(
             '{"cursor": 3, "timestamp": "2026-04-01 10:00", "content": "valid"}\n'
             '{"cursor": 3.5, "timestamp": "2026-04-01 10:01", "content": "float"}\n'
@@ -60,9 +54,7 @@ class TestNextCursorRecovery:
         assert cursor == 4
 
     def test_cursor_file_with_string_content(self, store):
-        """Cursor file contains a non-numeric string — should fall back."""
         store._cursor_file.write_text("not_a_number", encoding="utf-8")
-        # Also add valid JSONL so the fallback scan finds something
         store.history_file.write_text(
             '{"cursor": 10, "timestamp": "2026-04-01 10:00", "content": "valid"}\n',
             encoding="utf-8",
@@ -70,13 +62,43 @@ class TestNextCursorRecovery:
         cursor = store.append_history("after bad cursor file")
         assert cursor == 11
 
+    def test_stale_cursor_file_does_not_reuse_history_cursor(self, store):
+        store.history_file.write_text(
+            '{"cursor": 10, "timestamp": "2026-04-01 10:00", "content": "valid"}\n',
+            encoding="utf-8",
+        )
+        store._cursor_file.write_text("2", encoding="utf-8")
+
+        cursor = store.append_history("after stale cursor file")
+
+        assert cursor == 11
+        entries = store.read_unprocessed_history(since_cursor=0)
+        assert [e["cursor"] for e in entries] == [10, 11]
+
+    def test_cursor_file_stays_ahead_after_history_compaction(self, store):
+        store.history_file.write_text(
+            '{"cursor": 10, "timestamp": "2026-04-01 10:00", "content": "valid"}\n',
+            encoding="utf-8",
+        )
+        store._cursor_file.write_text("100", encoding="utf-8")
+
+        cursor = store.append_history("after compacted history")
+
+        assert cursor == 101
+
+    def test_negative_cursor_file_content_falls_back(self, store):
+        store._cursor_file.write_text("-5", encoding="utf-8")
+
+        cursor = store.append_history("after negative cursor file")
+
+        assert cursor == 1
+
 
 class TestReadUnprocessedWithCorruption:
-    """``read_unprocessed_history`` must skip entries with non-int cursors
+    """``read_unprocessed_history`` must skip entries with invalid cursors
     instead of crashing on comparison."""
 
     def test_skips_string_cursor_entries(self, store):
-        """Entries with string cursors are silently skipped."""
         store.history_file.write_text(
             '{"cursor": 1, "timestamp": "2026-04-01 10:00", "content": "valid1"}\n'
             '{"cursor": "bad", "timestamp": "2026-04-01 10:01", "content": "corrupted"}\n'
@@ -88,7 +110,6 @@ class TestReadUnprocessedWithCorruption:
         assert [e["cursor"] for e in entries] == [1, 3]
 
     def test_mixed_corruption_preserves_order(self, store):
-        """Valid entries maintain correct order despite corrupt neighbors."""
         store.history_file.write_text(
             '{"cursor": "x", "timestamp": "2026-04-01 10:00", "content": "bad"}\n'
             '{"cursor": 2, "timestamp": "2026-04-01 10:01", "content": "good2"}\n'
@@ -100,7 +121,6 @@ class TestReadUnprocessedWithCorruption:
         assert [e["cursor"] for e in entries] == [2, 4]
 
     def test_all_valid_still_works(self, store):
-        """Normal operation unaffected — baseline regression check."""
         store.append_history("event 1")
         store.append_history("event 2")
         store.append_history("event 3")
@@ -121,6 +141,7 @@ class TestCursorValidationInvariant:
         """
         assert MemoryStore._valid_cursor(True) is None
         assert MemoryStore._valid_cursor(False) is None
+        assert MemoryStore._valid_cursor(-1) is None
         assert MemoryStore._valid_cursor(5) == 5
         assert MemoryStore._valid_cursor(0) == 0
 
@@ -134,6 +155,17 @@ class TestCursorValidationInvariant:
 
         entries = store.read_unprocessed_history(since_cursor=0)
         assert [e["cursor"] for e in entries] == [4, 5]
+
+    def test_negative_history_cursor_rejected(self, store):
+        store.history_file.write_text(
+            '{"cursor": -5, "timestamp": "2026-04-01 10:00", "content": "negative"}\n',
+            encoding="utf-8",
+        )
+        store._cursor_file.unlink(missing_ok=True)
+
+        assert store.append_history("next") == 1
+        entries = store.read_unprocessed_history(since_cursor=0)
+        assert [e["cursor"] for e in entries] == [1]
 
     def test_next_cursor_returns_max_not_just_last_int(self, store):
         """Under adversarial corruption, file order ≠ numeric order.  The
@@ -155,10 +187,11 @@ class TestCursorValidationInvariant:
         assert store.append_history("safe next") == 101
 
     def test_corruption_is_logged_exactly_once_per_store(self, store, caplog):
-        """Observability without spam: the first non-int cursor emits one
+        """Observability without spam: the first invalid cursor emits one
         warning, subsequent reads on the same store stay quiet.  Without
         this, a poisoned file produces one warning per agent turn."""
         import logging
+
         from loguru import logger as loguru_logger
 
         store.history_file.write_text(
@@ -180,7 +213,7 @@ class TestCursorValidationInvariant:
             loguru_logger.remove(handler_id)
 
         corruption_warnings = [
-            r for r in caplog.records if "non-int cursor" in r.getMessage()
+            r for r in caplog.records if "invalid cursor" in r.getMessage()
         ]
         assert len(corruption_warnings) == 1, (
             "Expected exactly one corruption warning per store instance; "
