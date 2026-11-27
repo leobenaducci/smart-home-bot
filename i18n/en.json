@@ -970,6 +970,8 @@
   "chat.plan.handoff": "The rest continues in the background; the answer arrives here.",
   "chat.plan.title": "Plan",
   "chat.plan.tools": "{n} tools",
+  "chat.project_switch_confirm": "This conversation is working on «{from}». Switch it to «{to}»?\n\nTo work on another project, starting a new conversation (✚) keeps the two apart.",
+  "chat.project_none": "no project",
   "chat.reply_you": "You",
   "chat.replying_to": "Replying to",
   "chat.working_frame": "{name} is {what}…",

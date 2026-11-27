@@ -972,6 +972,8 @@
   "chat.plan.handoff": "Lo que falta sigue en segundo plano; la respuesta llega acá.",
   "chat.plan.title": "Plan",
   "chat.plan.tools": "{n} herramientas",
+  "chat.project_switch_confirm": "Esta conversación está trabajando en «{from}». ¿Cambiarla a «{to}»?\n\nPara trabajar en otro proyecto, empezar una conversación nueva (✚) los mantiene separados.",
+  "chat.project_none": "ningún proyecto",
   "chat.reply_you": "Tú",
   "chat.replying_to": "Respondiendo a",
   "chat.working_frame": "{name} está {what}…",

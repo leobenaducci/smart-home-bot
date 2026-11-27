@@ -2529,8 +2529,15 @@ def append_user_history(username, msg, day=None, space=None):
                     and abs(ts - (prev.get('ts') or 0)) < HISTORY_DEDUP_WINDOW_MS):
                 # The same reply from the page and from the turn: the page's
                 # copy has no plan, the turn's may. Kept, not dropped with it.
-                if msg.get('plan') and not prev.get('plan'):
-                    prev['plan'] = msg['plan']
+                # Same for the project a Programmer turn was about: the page
+                # files the reply without one, and it is what reopening the
+                # conversation in another browser restores the selector from.
+                merged = False
+                for k in ('plan', 'project'):
+                    if msg.get(k) and not prev.get(k):
+                        prev[k] = msg[k]
+                        merged = True
+                if merged:
                     save_user_history(username, msgs, day, space)
                 return False
         msgs.append(msg)
@@ -2585,6 +2592,13 @@ def append_chat_history():
             entry['branch_at'] = at
     except (TypeError, ValueError):
         pass
+    # Which project a Programmer message was about, filed with the message
+    # rather than only in the browser's localStorage: that is what lets the
+    # conversation, opened from another browser or phone, come back on the
+    # project it was on instead of whatever that browser last chose.
+    project = _valid_project(body, _valid_space(body.get('space')))
+    if project:
+        entry['project'] = project
     append_user_history(session['user'], entry, body.get('date'), body.get('space'))
     return jsonify(ok=True)
 
@@ -9821,6 +9835,11 @@ def _turn_deliver(turn, error=None):
          # — by the person, and by anyone scrolling the day next week.
          **({'interrupted': True} if turn.get('cancelled') else {}),
          **({'plan': turn['plan']} if turn.get('plan') else {}),
+         # Every turn ends here -- typed, queued, branched, a fix request --
+         # so this is the one place the conversation's project is always
+         # recorded server-side; see `append_chat_history`.
+         **({'project': turn['project']}
+            if turn.get('project') and turn.get('space') in PROJECT_SPACES else {}),
          **({'conv': turn['conv']} if turn['conv'] else {})},
         turn['day'], turn['space'])
     # Nobody needs a push about an answer they just stopped.
