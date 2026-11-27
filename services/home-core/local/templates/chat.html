@@ -2068,6 +2068,55 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
       convertBtn.disabled = false;
     }
   });
+  /* The project the conversation on screen is about: the newest message the
+     server filed one with (`append_chat_history`, `_turn_deliver`). Stored with
+     the history, not in localStorage, so the same conversation opened in
+     another browser comes back on the same project -- localStorage is only the
+     default for a conversation that has none yet. */
+  var convProject = null;
+  function conversationProject(msgs) {
+    for (var i = (msgs || []).length - 1; i >= 0; i--) {
+      if (msgs[i].project) return msgs[i].project;
+    }
+    return null;
+  }
+  function projectLabel(slug) {
+    if (!projectSel) return slug;
+    for (var i = 0; i < projectSel.options.length; i++) {
+      if (projectSel.options[i].value === slug) return projectSel.options[i].textContent || slug;
+    }
+    return slug;
+  }
+  function selectProject(slug) {
+    // Before the list has arrived the option may not exist yet; put a
+    // placeholder in under the slug, as the setup block does, so the message
+    // typed in that window still carries it.
+    var found = Array.prototype.some.call(projectSel.options,
+      function(o) { return o.value === slug; });
+    if (!found) {
+      var pre = document.createElement('option');
+      pre.value = slug; pre.textContent = slug;
+      projectSel.appendChild(pre);
+    }
+    projectSel.value = slug;
+  }
+  /* Repaints come often (catchUp, a queued turn starting), and one that brings
+     nothing new must not undo a switch the person just confirmed before they
+     have sent anything on it. So the stamp is applied once per conversation
+     and per value: only a different conversation, or a newer project filed in
+     this one, moves the selector. */
+  var appliedProjectKey = null;
+  function applyConversationProject(msgs) {
+    var stamp = conversationProject(msgs);
+    var key = (convStart() || '') + ':' + (stamp || '');
+    if (key === appliedProjectKey) return;
+    appliedProjectKey = key;
+    convProject = stamp;
+    if (!projectSel || !HAS_PROJECTS || fixConv) return;
+    // A conversation with no project yet keeps whatever is on screen: a new
+    // chat starts on the project you were last using.
+    if (convProject && projectSel.value !== convProject) selectProject(convProject);
+  }
   function markFixConversation(msgs) {
     // Any of the person's messages, not only the first: a conversation made a
     // fix request partway through carries the request's opening further down.
@@ -2085,6 +2134,7 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
       projectSel.value = localStorage.getItem('programador-project') || '';
       projectSel.disabled = false;
     }
+    applyConversationProject(msgs);
   }
   async function loadProjects() {
     if (!projectSel || !HAS_PROJECTS) return false;
@@ -2104,13 +2154,16 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
          what somebody saved under the old name was not. */
       var saved = localStorage.getItem('programador-project') || '';
       var list = data.projects || [];
-      var matched = false;
+      var matched = false, convMatched = false;
       list.forEach(function(p) {
         var opt = document.createElement('option');
         opt.value = p.slug; opt.textContent = p.name;
         if (p.slug === saved) { opt.selected = true; matched = true; }
+        if (p.slug === convProject) convMatched = true;
         projectSel.appendChild(opt);
       });
+      // The conversation's own project beats this browser's last choice.
+      if (convMatched) projectSel.value = convProject;
       /* A remembered slug that is no longer in the list names a project that
          was deleted or is no longer shared with this person. Forgetting it is
          the honest move: kept, it is sent on every turn and the assistant
@@ -2152,6 +2205,21 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
       projectSel.appendChild(pre);
     }
     projectSel.addEventListener('change', function() {
+      /* Switching project in the middle of a conversation about another one
+         leaves the Programmer with one session's worth of context about the
+         first checkout and instructions for the second. Ask; a new
+         conversation (✚) is the clean way to move. */
+      if (convProject && projectSel.value !== convProject && allMsgs.length) {
+        var msg = {{ t('chat.project_switch_confirm')|tojson }}
+          .replace('{from}', projectLabel(convProject))
+          .replace('{to}', projectSel.value ? projectLabel(projectSel.value)
+                                            : {{ t('chat.project_none')|tojson }});
+        if (!window.confirm(msg)) {
+          projectSel.value = convProject;
+          return;
+        }
+        convProject = projectSel.value || null;
+      }
       if (projectSel.value) localStorage.setItem('programador-project', projectSel.value);
       else localStorage.removeItem('programador-project');
     });
@@ -2304,6 +2372,10 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
     // on silence alone filed the new chat under the previous one — and then
     // handed back the old conversation's id when it was reopened.
     msg.conv = conv;
+    if (role === 'user' && activeProject()) {
+      msg.project = activeProject();
+      convProject = msg.project;
+    }
     // Only into the view when the view is still showing that conversation.
     if (!pinned || (day === curDay && conv === convStart())) {
       allMsgs.push(msg);
@@ -2313,7 +2385,10 @@ const HAS_PROJECTS = {{ 'true' if has_projects else 'false' }};
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
       body: JSON.stringify({ role: msg.role, text: msg.text, ts: msg.ts,
-                             conv: msg.conv, date: day, space: SPACE }),
+                             conv: msg.conv, date: day, space: SPACE,
+                             // The project goes into the stored history, so the
+                             // conversation reopens on it from any browser.
+                             project: role === 'user' ? activeProject() : null }),
     }).catch(function() {});
   }
 
