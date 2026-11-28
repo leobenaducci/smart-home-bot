@@ -1101,6 +1101,30 @@ _green["state"]["output"] = "5 passed in 0.1s"
 w.tool(_green)
 check("  nor red then green", not w.at_end())
 
+# 2026-11-27: the local model's whole answer, twice running.
+LEAKED = ("I'll start by opening the project and reading its own instructions before touching anything.\n\n"
+          "<tool_call>\n<function=tools.alfred.list_projects>\n</function>\n</tool_call>")
+w = A._LocalWatch()
+check("a tool call written as text is a failed turn", "tool call as text" in w.at_end(LEAKED), w.why)
+check("  and says so to the person", w.reason[0] == "programmer.local_why_leaked", w.reason)
+w = A._LocalWatch()
+check("  a bare <function=...> line is one too",
+      w.at_end("Reading it.\n<function=read>\n<parameter=path>a.py</parameter>\n</function>"), w.why)
+w = A._LocalWatch()
+check("  talking about the format inside a code fence is not",
+      not w.at_end("Qwen spells a call like this:\n\n```xml\n<tool_call>\n<function=read>\n"
+                   "</function>\n</tool_call>\n```\n\nthe server parses it."), w.why)
+w = A._LocalWatch()
+check("  nor mentioning it inline", not w.at_end("It printed `<tool_call>` instead of calling."), w.why)
+stripped = A._strip_leaked_calls(LEAKED)
+check("the handover does not pass the markup on",
+      "<tool_call>" not in stripped and "list_projects" not in stripped
+      and "it never ran" in stripped and stripped.startswith("I'll start by opening"), stripped)
+fenced = "See:\n```\n<tool_call>\n<function=x>\n</function>\n</tool_call>\n```\n"
+check("  but leaves a fenced example alone", A._strip_leaked_calls(fenced) == fenced,
+      A._strip_leaked_calls(fenced))
+check("  and plain text unchanged", A._strip_leaked_calls("todo bien") == "todo bien")
+
 LSID = "ses_LOCALFIRST"
 looping = [{"type": "message.part.updated", "properties": {
     "sessionID": LSID, "part": {**_tool(f"x{i}", "read", filePath="/w/app.py"), "sessionID": LSID}}}
