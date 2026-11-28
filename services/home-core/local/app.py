@@ -7304,7 +7304,7 @@ def _opencode_handover(username, conv, since_ms, engine):
         return ''
 
     def line(m):
-        text = m['text'].strip()
+        text = _strip_leaked_calls(m['text']).strip()
         if len(text) > OPENCODE_HANDOVER_MSG_CHARS:
             text = text[:OPENCODE_HANDOVER_MSG_CHARS] + ' [...]'
         return ('Person: ' if m['role'] == 'user' else 'Programmer: ') + text
@@ -7508,12 +7508,50 @@ class _LocalWatch:
                 self.tests = 'green'
         return self.why
 
-    def at_end(self):
-        """Why the finished turn counts as failed, or ''."""
+    def at_end(self, text=''):
+        """Why the finished turn counts as failed, or ''. *text* is what the
+        turn said."""
         if not self.why and self.edits and self.tests == 'red':
             self.why = 'finished with its tests failing'
             self.reason = ('programmer.local_why_tests', {})
+        if not self.why and _leaked_tool_call(text):
+            self.why = 'wrote a tool call as text instead of making it'
+            self.reason = ('programmer.local_why_leaked', {})
         return self.why
+
+
+# A tool call the model wrote into its answer instead of making it. Qwen's
+# coders spell calls as `<tool_call>` / `<function=name>` lines, which the
+# server turns into a real call only when the name is a tool's. On OpenCode 2
+# every household tool is reached through `execute`, and the local model has
+# called `tools.alfred.list_projects` -- the JavaScript name -- as if it were a
+# tool (2026-11-27, twice running): the markup comes back as text, opencode
+# sees an answer, and the turn ends having done nothing. Whole lines only, and
+# never inside a code fence, so an answer that *talks about* the format is not
+# taken for one.
+_LEAKED_CALL_RE = re.compile(r'^[ \t]*<(?:tool_call|function=[\w.\-]+)>[ \t]*$', re.M)
+_LEAKED_BLOCK_RE = re.compile(r'^[ \t]*<tool_call>.*?(?:</tool_call>[ \t]*$|\Z)'
+                              r'|^[ \t]*<function=[\w.\-]+>.*?(?:</function>[ \t]*$|\Z)', re.M | re.S)
+_FENCE_SPLIT_RE = re.compile(r'(^[ \t]*```.*?^[ \t]*```[ \t]*$)', re.M | re.S)
+
+
+def _outside_fences(text, fn):
+    """*fn* applied to the parts of *text* outside ``` fences."""
+    return ''.join(seg if i % 2 else fn(seg) for i, seg in enumerate(_FENCE_SPLIT_RE.split(text)))
+
+
+def _leaked_tool_call(text):
+    found = []
+    _outside_fences(text or '', lambda seg: found.append(bool(_LEAKED_CALL_RE.search(seg))) or seg)
+    return any(found)
+
+
+def _strip_leaked_calls(text):
+    """*text* without tool calls written as text: handed to the next model, one
+    would be copied -- the second failure of 2026-11-27 was the first one's
+    markup, repeated from the handover."""
+    return _outside_fences(text, lambda seg: _LEAKED_BLOCK_RE.sub(
+        '[a tool call written as text; it never ran]', seg))
 
 
 def _local_failed(turn, base, why, reason):
@@ -8886,7 +8924,7 @@ def _turn_opencode_v2(turn, base, session_id, msg_content, watch, conv, seen_key
                            turn['id'], username)
         return ('opencode stopped answering part way through -- its server went '
                 'away mid-turn. Nothing was lost; ask again.'), True
-    if watch and watch.at_end():
+    if watch and watch.at_end(turn['text']):
         return _local_failed(turn, base, watch.why, watch.reason)
     return None, False
 
@@ -9190,7 +9228,7 @@ def _turn_attempt_opencode(turn, msg_content):
                            turn['id'], username)
         return ('opencode stopped answering part way through -- its server went '
                 'away mid-turn. Nothing was lost; ask again.'), True
-    if watch and not turn['cancelled'] and watch.at_end():
+    if watch and not turn['cancelled'] and watch.at_end(turn['text']):
         return _local_failed(turn, base, watch.why, watch.reason)
     return None, False
 

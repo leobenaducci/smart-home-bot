@@ -2163,6 +2163,7 @@
   "programmer.local_why_idle": "{n} steps without changing a file",
   "programmer.local_why_errors": "{n} of its tool calls failed in a row",
   "programmer.local_why_tests": "its tests were still failing",
+  "programmer.local_why_leaked": "it wrote a tool call as text instead of making it",
   "programmer.local_why_error": "its model stopped answering",
   "programmer.retry_go_q": "Answered by this house's model.",
   "programmer.retry_go": "Retry on OpenCode Go",
